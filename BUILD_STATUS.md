@@ -38,6 +38,11 @@ adapter); **everything else** = AWS (data plane, control plane, app, ML).
 > **Not yet real:** the **AI/agent plane** (no Anthropic Managed Agents creds — `runtime.py` stub,
 > noop executor) and the **provisioning integrations** (Stripe/Resend/Admin stubs). The cube/worker/
 > observability/provisioning-Lambda/cortex modules are authored but unapplied.
+> **Security (2026-06-09):** a 37-agent adversarial audit produced 27 findings (in TODO.md). A
+> **critical cross-tenant leak was FIXED** (shared DB connection + session-level tenant GUC raced
+> across the threadpool → pooled per-request conns + `SET LOCAL`; proven on live Aurora + CI).
+> Aurora durability (deletion protection + 7-day backups) applied.
+>
 > To tear down: `cd infra && terraform destroy`.
 
 Source of truth: `docs/uplift-build-guide.pdf` (Build Guide, Phases 0–12) and the

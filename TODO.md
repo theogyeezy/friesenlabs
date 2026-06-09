@@ -14,6 +14,8 @@ _Last updated 2026-06-09. Synthesized from 5 dimension audits (frontend-auth, ai
 | ⛔ **Not live** | cube + worker services, observability, cortex retrain | authored + `validate`-clean, **not applied** | deploy |
 | ⛔ **Not live** | Provisioning (Stripe checkout/webhook, Resend email, signup) | `prod_deps` wires `_Stub`/`_Noop`; email/SMS verify hardcoded off | **Stripe / Resend / Admin creds** |
 | ✅ **Reconciled** | Terraform state | out-of-band SG rules imported; ECR back to IMMUTABLE; full plan = 0 change/destroy to live resources | — |
+| ✅ **Hardened** | Tenant isolation under concurrency | **critical** shared-connection cross-tenant leak FIXED (pooled per-request conns + `SET LOCAL`); proven on live Aurora (16 threads), CI real-Postgres, local. Aurora durability on. | — |
+| 🟡 **Open** | Security-audit backlog | 27 findings (1 critical FIXED, 2 high [1 fixed], 7 med, 17 low) — see the Security audit section below | work the high/medium items |
 
 ## What is LIVE today (verified 2026-06-09)
 - **The product end-to-end, including login** — browser-verified: sign-in gate → Cognito Hosted UI (PKCE) → code exchange → app shell → real RLS-scoped tenant rows. Path: `browser → Amplify (real mode) → CloudFront (d1vw20lc120dpa.cloudfront.net) → ALB (HTTP) → arm64 Fargate API (1 task) → Aurora`.
@@ -210,3 +212,254 @@ _Last updated 2026-06-09. Synthesized from 5 dimension audits (frontend-auth, ai
 - [ ] **Enable ECS Exec (break-glass debugging) on the api service** — `enableExecuteCommand=false`; tasks run in private subnets with no shell access for live incident debugging. Enable execute-command (+ ssmmessages on the task role), guarded to non-prod/approval. _(P3 · blocked: none · `infra/modules/api_service/main.tf`, `infra/modules/iam/main.tf` · done when: `ecs execute-command ... whoami` opens a session against a live task)_
 - [ ] **Reduce CloudWatch log retention drift + confirm KMS encryption** — the two live log groups are 30d with no KMS and no central retention policy for future services. Standardize retention (+ optional KMS) via a shared variable. _(P3 · blocked: none · `infra/modules/api_service/main.tf`, `infra/modules/observability/main.tf` · done when: all uplift log groups share one retention variable; `describe-log-groups` shows consistent retention/encryption)_
 - [ ] **Add GuardDuty + AWS Config + the SCP-deny follow-up** — no GuardDuty, no Config recorder for the account now holding tenant data behind an internet-facing ALB. Enable GuardDuty + Config baseline; the SCP needs an Org. _(P3 · blocked: AWS Org context for the SCP · `infra/modules/baseline/main.tf` · done when: `list-detectors` shows an enabled GuardDuty; `describe-configuration-recorders` shows a recorder; SCP tracked as an Org follow-up)_
+---
+
+## Security audit (2026-06-09, 37-agent adversarial)
+
+27 confirmed findings. ✅ = fixed this session.
+
+- [x] **[CRITICAL] Live API shares ONE psycopg2 connection across all tenants and sets app.current_tenant with session-level SET (not SET LOCAL) — concurrent requests can read/write across tenants** — _RLS correctness end-to-end_. Fix: Do not share one connection across tenants/threads. Use a connection pool and check out a fresh connection per request, or wrap each tenant operation in a transaction using `SET LOCAL app.current_tena
+- [ ] **[HIGH] api TASK role can read every uplift/* secret at runtime, not just its DB credential** — _IAM least-privilege (api task role)_. Fix: Scope the api task role to exactly the secret it needs at runtime: Resource = [crm_app_db_secret_arn]. Remove rds!* and the uplift/* wildcard from the TASK role (the master secret is only needed by th
+- [x] **[HIGH] Aurora cluster has deletion protection OFF and only 1-day backup retention** — _Aurora durability/recoverability_. Fix: Set deletion_protection=true, raise backup_retention_period to a real RPO (e.g. 7-35 days), set skip_final_snapshot=false (or a deletion plan with a final snapshot), and add a second serverless instan
+- [ ] **[MEDIUM] Any CloudFront customer can reach the origin ALB: prefix-list ingress + NO shared-secret header + NO app-layer origin check** — _Network/edge — CloudFront-to-ALB origin trust_. Fix: Add a high-entropy secret custom header on the distribution origin (aws_cloudfront_distribution.origin.custom_header in infra/modules/api_cdn/main.tf, value from Secrets Manager) AND enforce it at the
+- [ ] **[MEDIUM] No WAF on the CloudFront distribution or the ALB** — _Network/edge — perimeter filtering_. Fix: Attach an AWS WAFv2 web ACL (scope CLOUDFRONT) to distribution ETZLYZ2VC4KBI with AWSManagedRulesCommonRuleSet + KnownBadInputs + a rate-based rule, and add web_acl_id to aws_cloudfront_distribution.a
+- [ ] **[MEDIUM] CloudFront default certificate forces weak minimum TLS (TLSv1) at the viewer edge** — _Network/edge — viewer TLS_. Fix: Move to a custom domain + ACM cert on the distribution and set minimum_protocol_version = 'TLSv1.2_2021'. This is the same domain/cert work that also fixes the http-only origin hop (finding #2).
+- [ ] **[MEDIUM] CloudFront-to-ALB origin leg is plaintext HTTP — the ID-token bearer crosses AWS's public network unencrypted** — _Transport / token confidentiality_. Fix: Add an HTTPS:443 listener to uplift-alb with an ACM cert and switch the CloudFront origin to `OriginProtocolPolicy: https-only` (or `match-viewer`), so the bearer token is encrypted end-to-end. The :8
+- [ ] **[MEDIUM] Shared ecsTaskExecutionRole grants all three services (api, cube, worker) read on every uplift/* + rds!* secret** — _IAM least-privilege (execution role)_. Fix: Either (a) give each service its own execution role with a Resource list narrowed to the exact secret ARNs that service's task def injects (api => crm-app-db only), or (b) keep one execution role but 
+- [ ] **[MEDIUM] Aurora does not enforce TLS (rds.force_ssl=0) and the app/migrate DSNs set no sslmode — crm_app credentials and tenant data can traverse the network in plaintext** — _Encryption in transit (Aurora)_. Fix: Set rds.force_ssl=1 on a CUSTOM cluster parameter group (the default group cannot be edited) and reboot, AND make the app fail closed in transit: append `?sslmode=verify-full&sslrootcert=<rds-combined
+- [ ] **[MEDIUM] API/worker images and the live task def pin floating :latest tags (non-reproducible, mutable supply chain)** — _API image contents / supply chain_. Fix: Pin base images by digest (FROM python:3.13-slim@sha256:..., cubejs/cube:vX.Y@sha256:...). Tag app images with immutable content tags (git SHA) and reference that tag in prod.auto.tfvars + the task de
+- [ ] **[LOW] Plaintext edge→origin: CloudFront origins to the ALB over HTTP (http-only), so all API traffic crosses AWS network in cleartext** — _Network/edge — CloudFront origin protocol_. Fix: Provision an ACM cert + domain on the ALB and switch the ALB to the HTTPS:443 listener path already authored at infra/modules/alb/main.tf:40-52 (the has_cert branch), then set CloudFront origin_protoc
+- [ ] **[LOW] ALB security group opens 443 to 0.0.0.0/0 with no 443 listener — misleading dead rule, and any future 443 listener is world-open** — _Network/edge — ALB security group hygiene_. Fix: Either remove the 443/0.0.0.0/0 rule (it serves no live listener) or, when HTTPS is enabled, restrict the 443 ingress to the CloudFront origin-facing prefix list (same as the 80 rule) so the ALB is ne
+- [ ] **[LOW] ALB and API security-group egress is allow-all (0.0.0.0/0, all protocols)** — _Network/edge — egress controls_. Fix: Remove ALB egress entirely (or scope to the API SG on 8000). For the API tier, replace allow-all with the VPC-endpoint approach already noted as a cost lever in infra/modules/vpc/main.tf:60-62 (interf
+- [ ] **[LOW] CloudFront access logging disabled and no response-headers/HSTS policy** — _Network/edge — edge observability & response hardening_. Fix: Enable standard logging to an S3 bucket (logging_config) and attach a ResponseHeadersPolicy with Strict-Transport-Security and the standard security headers in infra/modules/api_cdn/main.tf.
+- [ ] **[LOW] Cognito Hosted UI public self-registration is open on a pool meant to be provisioning-only** — _Cognito pool config / account lifecycle_. Fix: Set AllowAdminCreateUserOnly=true (provisioning creates users via AdminCreateUser), and/or disable the Hosted UI sign-up page for the app client. Also turn MFA on (or enforce via the app) for the admi
+- [ ] **[LOW] Refresh token lives 30 days with no rotation; client deliberately keeps the same refresh token across refreshes** — _Token lifetime / revocation_. Fix: Shorten RefreshTokenValidity (e.g. 1-7 days) for a browser SPA, and consider httpOnly cookie storage for the refresh token if a session backend is added. The revoke-on-signout path is good; keep it.
+- [ ] **[LOW] User pool has DeletionProtection INACTIVE** — _Cognito pool resilience_. Fix: Set DeletionProtection: ACTIVE on the pool (and confirm the same on the Aurora cluster / critical resources).
+- [ ] **[LOW] Demo-user login password sits in Secrets Manager under the broad uplift/* grant, with no CMK and no rotation** — _Secrets Manager (demo-user credential)_. Fix: Treat the demo login as a Cognito user managed via the user pool, not a long-lived Secrets Manager password; if it must persist as a secret, remove it from the wildcard grant (it is never injected int
+- [ ] **[LOW] No rotation on any uplift/* secret (DB app creds, Anthropic key, connector creds, Cube signing secret)** — _Secrets Manager (rotation)_. Fix: Enable rotation (or a documented manual rotation cadence) for uplift/crm-app-db and uplift/cube-api-secret at minimum. crm-app can be rotated by an RDS-style rotation Lambda; cube-api-secret rotation 
+- [ ] **[LOW] provisioning Step Functions role can invoke ANY Lambda in the account (lambda:InvokeFunction on Resource *)** — _IAM least-privilege (provisioning-sfn)_. Fix: Scope Resource to the specific provisioning Lambda ARN(s) (arn:aws:lambda:us-east-1:186052668426:function:uplift-provisioning-*), not '*'.
+- [ ] **[LOW] rds!* wildcard in the secret grant is broader than the single Aurora master it targets** — _IAM least-privilege (rds!* wildcard)_. Fix: Pin to the exact master secret ARN (or its prefix rds!cluster-a47e8ca1-18db-4a9b-9dbc-ae0a6a4ba80c-*) instead of rds!*, and only on the role/task that actually runs migrate, not the always-on api serv
+- [ ] **[LOW] Redis (Valkey) has no AUTH token and no RBAC user group — tenant isolation relies entirely on app-side key prefixing** — _Redis auth_. Fix: Enable Valkey RBAC with a least-privilege user group (or at minimum an AUTH token stored in Secrets Manager) so cache access requires a credential, not just network reachability. Wire the credential i
+- [ ] **[LOW] crm_app database credential is not on rotation** — _Aurora credential hygiene_. Fix: Put uplift/crm-app-db on a rotation schedule using a Postgres single-user rotation Lambda that also issues ALTER ROLE crm_app PASSWORD against Aurora so the DB and secret stay in sync.
+- [ ] **[LOW] Public GitHub repo leaks the live AWS account ID and live resource hostnames** — _Public-repo exposure_. Fix: Make the repo private, or scrub the literal account id + live hostnames from README/CLAUDE/BUILD_STATUS/TODO and replace with placeholders (e.g. <ACCOUNT_ID>). Treat account id + Cognito pool/client i
+- [ ] **[LOW] Python runtime dependencies are entirely unpinned (>=) with no lockfile or hashes** — _Dependency pinning_. Fix: Compile pinned, hashed requirements (pip-compile --generate-hashes) and have the Dockerfile install with `pip install --require-hashes`. At minimum pin exact == versions for the image. Keep the >= dev
+- [ ] **[LOW] GitHub Actions are pinned to mutable major-version tags, and the workflow declares no permissions block** — _CI supply chain / token scope_. Fix: Pin actions to full commit SHAs (e.g. actions/checkout@<40-char-sha>) with a comment of the version, and add an explicit top-level `permissions: { contents: read }` to the workflow.
+- [ ] **[LOW] .stignore drops the docs/*.pdf parity but not docs/*.txt (Syncthing leak of the confidential build guide)** — _Gitignored-files hygiene (sync side channel)_. Fix: Add `docs/*.txt` (or the specific docs/uplift-build-guide.txt) to .stignore to match .gitignore, so the confidential spec does not leave the machine via Syncthing.
+
+## Cost trim levers (run-rate ~$185/mo, $200 is a TOTAL ceiling → ~33-day runway)
+
+Prioritized by $/mo saved. SAFE-NOW = no functional impact at current pre-launch/idle state; WAIT-UNTIL-LAUNCH = could affect availability/perf once real traffic arrives.
+
+- [ ] **Replace NAT Gateway with VPC interface endpoints (ECR api+dkr, Secrets Manager, CloudWatch Logs, STS) and delete NAT** — saves ~$33/mo (or net ~$11/mo if you keep ~3 single-AZ interface endpoints at ~$7.30/mo each; full removal is cheapest since the Fargate task only egresses to AWS services + S3 already has a free gateway endpoint). Effort: MEDIUM (Terraform: add endpoints, repoint private route table, verify image pulls still work). **SAFE-NOW** (do before traffic; validate a task can still pull its image and read secrets).
+- [ ] **Lower Aurora MinCapacity from 1.0 to 0.5 ACU** — saves ~$43.80/mo (floor drops $87.60 → $43.80). Live data shows it pins at the floor with CPU ~2.8%, so 0.5 has ample headroom pre-launch. Effort: LOW (single SLv2 scaling-config change). **SAFE-NOW** for dev/pre-launch; re-raise the floor before production load if latency-sensitive.
+- [ ] **Aurora auto-pause to 0 ACU when idle** (pg 16.x SLv2 supports min=0) — saves up to ~$87/mo, drops idle Aurora to near-$0 with a few-second cold-start resume. Effort: LOW-MEDIUM. **SAFE-NOW** for non-prod; **WAIT-UNTIL-LAUNCH** for prod (cold-start latency on first query).
+- [ ] **Downsize ElastiCache cache.t4g.small → cache.t4g.micro** — saves ~$11.68/mo ($23.36 → $11.68). Mem usage is ~0.88%, fits easily in micro's ~0.5GB. Effort: LOW (node-type modify, brief blip). **SAFE-NOW**; revisit if working set grows past ~0.5GB. (Or pause Redis entirely if the app can run without cache pre-launch → -$23.36.)
+- [ ] **Right-size Fargate task 512/1024 → 256/512** — saves ~$9/mo ($18 → ~$9). CPU avg 0.40%, mem ~70MB of 1024MB. Effort: LOW (new task-def revision). **WAIT-UNTIL-LAUNCH** only because the api + aws-otel-collector sidecar want a little headroom; 256/512 is fine now but verify the sidecar fits. SAFE-NOW if you drop/trim the otel sidecar.
+- [ ] **Fargate Spot for the api task** — saves ~$12.6/mo (~70% off → ~$5.40/mo). Effort: LOW (capacity-provider change). **WAIT-UNTIL-LAUNCH** (interruption risk); fine for dev now.
+- [ ] **Pause whole stack when not actively developing** (scale Fargate desired→0, stop/pause Aurora, optionally delete NAT) — saves ~$5-6/day while idle. Effort: LOW (a stop/start script). **SAFE-NOW** for pre-launch — this is the single biggest budget protector before launch.
+- [ ] **Consolidate Secrets Manager: merge the 6 friesenlabs/platform/shared/* + uplift/* into fewer JSON secrets, or move low-sensitivity config to SSM Parameter Store (free)** — saves ~$2-3/mo. Effort: MEDIUM (code refs to update). **SAFE-NOW** but low priority vs the infra levers.
+- [ ] **Set CloudWatch Logs retention on /aws/rds/cluster/uplift-aurora/postgresql (currently NEVER-EXPIRE) to 30d** — saves $0 now, prevents unbounded future storage growth. Effort: LOW. **SAFE-NOW** (preventive).
+- [ ] **Switch CloudFront PriceClass_All → PriceClass_100 (NA+EU)** — $0 now, lowers future per-GB/request once traffic starts (if audience is US/EU). Effort: LOW. **WAIT-UNTIL-LAUNCH** (only matters with traffic).
+
+_Note: Aurora `min_capacity=1` is deliberate (HNSW index builds starve at 0.5) — use auto-pause-to-0-when-idle, not a 0.5 floor._
+
+
+## AI-plane readiness — when Anthropic Managed Agents creds arrive
+
+The MA beta API exists today as assumed (`managed-agents-2026-04-01`); model ids + pricing verified. 4 reworks needed before live (none blocked on the API):
+
+- [ ] Hoist per-tenant provisioning out of the request path — `conv/session.py` calls `coordinator.build()` (env+7 agents+coordinator) on every Conversation; persist `coordinator_id`/`environment_id` per tenant (the 'agent once' fix).
+- [ ] `send_message`: replace the sync dict facade with the real event-stream flow (stream→send→drain-to-idle).
+- [ ] `create_session`: pass the now-persisted `environment_id` (currently never persisted).
+- [ ] Worker tool adapter: wrap repo `Tool` ABCs as the SDK `BetaFunctionTool` type (preserve ALWAYS_ASK→Greenlight).
+
+
+**Open questions needing a decision before AI onboarding:**
+
+- [ ] HIPAA fallback runtime: CLAUDE.md says HIPAA tenants use a Bedrock/1P fallback via the runtime.py seam — but Managed Agents is NOT available on Amazon Bedrock (only first-party API + Claude Platform on AWS). What does the HIPAA path actually run? If it needs the agent loop, it can't be MA-on-Bedrock; it would have to be Claude API + tool use (self-hosted loop) or MA on Claude Platform on AWS (which does NOT support self_hosted sandboxes). This needs a concrete decision before a HIPAA tenant onboards.
+- [ ] 100-workspace ceiling: the one-workspace-per-tenant model breaks past ~100 tenants. Is the target tenant count under 100, and if growth is expected, is the strategy multiple Anthropic orgs, or a coarser isolation boundary (shared workspace + per-session vault/metadata)?
+- [ ] Custom-tool execution path: does Uplift run tools via the self-hosted EnvironmentWorker (no agent.custom_tool_use round-trip) OR as client-side custom tools (orchestrator handles agent.custom_tool_use over SSE)? The repo conflates both — roster lists tools as custom names while the worker executes them as environment-worker tools. One path must be chosen consistently before wiring.
+- [ ] self_hosted resource limitations: self_hosted sandboxes do NOT support memory stores and do NOT mount file/github_repository resources Anthropic-side (you pass pointers via session metadata and fetch them yourself). Does any Uplift agent flow assume Anthropic-side file/repo mounting or memory stores? If so it must move to the self_hosted pointer-passing pattern.
+- [ ] tools callable invocation cadence: the workers_polling heartbeat (worker.py:63-67) assumes EnvironmentWorker calls the tools callable once per poll iteration. If the SDK caches the callable result instead, the per-poll heartbeat won't fire and the worker-absent alarm semantics break — needs runtime verification against the live SDK.
+- [ ] environment key generation: the env key (sk-ant-oat01-…) is Console-only even when the environment is API-created. Is there an operational runbook for generating + rotating it into Secrets Manager, given the rest of provisioning is automated/Terraform?
+
+## Next-chunk loop prompts (paste-ready)
+
+
+### ai-plane — _Anthropic Managed Agents creds (org API key + beta access) — every ManagedAgentsRuntime method raises NotImplementedErro_
+
+```
+/loop Wire the Uplift AI/agent plane end-to-end for a real chat round-trip. Work in dependency order — do NOT skip a step whose inputs do not yet exist. For each step: implement, write tests, verify they pass, then move on.
+
+SEQUENCE:
+
+1. Read and verify MA beta SDK shapes (no code). Confirm client.beta.environments / client.beta.agents / client.beta.sessions / client.beta.vaults paths and the managed-agents-2026-04-01 header against current SDK docs. Record discrepancies. BLOCKED until Anthropic creds — author only.
+
+2. Amend /Users/yee/Desktop/friesenlabs/db/schema.sql: add tenant_workspaces table (tenant_id uuid PK, environment_id text, coordinator_id text, workspace_id text, created_at). Add it to the tenant_tables array in the existing DO block so FORCE RLS is applied. Add explicit ENABLE+FORCE statements below (belt-and-suspenders). Verify: run the SQL through libpg_query (pytest tests/unit/test_sql_schema.py must stay green).
+
+3. Create /Users/yee/Desktop/friesenlabs/agents/workspace_store.py with InMemoryWorkspaceStore and PgWorkspaceStore (psycopg2, lazy import, SET app.current_tenant before every query — same pattern as api/control/greenlight.py PgApprovalStore). Write tests/unit/test_workspace_store.py. Verify: pytest tests/unit/test_workspace_store.py passes; import is network-free.
+
+4. Implement the five ManagedAgentsRuntime methods in /Users/yee/Desktop/friesenlabs/agents/runtime.py using the verified SDK shapes. Keep BLOCKED/VERIFY comments. Keep FakeRuntime and get_runtime() unchanged. Verify: pytest tests/unit/test_runtime_adapter.py still passes; python -c 'from agents.runtime import ManagedAgentsRuntime' is import-safe.
+
+5. Create /Users/yee/Desktop/friesenlabs/api/pg_clients.py with PgRagClient (pgvector cosine search, SET app.current_tenant first) and PgCrmClient (allow-listed table reads, set_tenant, find_companies, find_contacts). Write unit tests mocking psycopg2. Verify: SET before SELECT invariant is tested; import-safe.
+
+6. Create /Users/yee/Desktop/friesenlabs/conv/synthesizer.py with AnthropicSynthesizer (messages.create with MA beta header, parse claims, filter source_refs to retrieved set). Write unit tests with mocked Anthropic client. Verify: citation invariant holds in tests; import-safe.
+
+7. Wire /Users/yee/Desktop/friesenlabs/api/asgi.py: replace conversation_factory=lambda tenant_id: None with a real factory using PgWorkspaceStore + ManagedAgentsRuntime + PgRagClient + PgCrmClient + AnthropicSynthesizer + Greenlight. Replace executor=lambda action: {'status':'noop'} with agents.tools.registry.resolve(action.name).invoke(ToolContext(...), **action.payload). Verify: pytest tests/integration/test_asgi_prod.py passes; add test_chat_503_when_workspace_not_provisioned.
+
+8. Update IaC — /Users/yee/Desktop/friesenlabs/infra/modules/secrets/main.tf (add uplift/env-id secret), /Users/yee/Desktop/friesenlabs/infra/modules/worker/main.tf (add UPLIFT_ENV_ID + DB_USER/DB_PASS + CLOUDWATCH_METRICS env), /Users/yee/Desktop/friesenlabs/infra/main.tf (wire new variables). Verify: terraform validate exits 0 for all 19 modules. BLOCKED: needs Nick to apply.
+
+9. Update /Users/yee/Desktop/friesenlabs/worker/worker.py: in run(), build PgCrmClient + PgRagClient + PgApprovalStore-backed Greenlight from env vars; pass to build_context(). Verify: python -c 'from worker.worker import run' is import-safe; existing tests pass.
+
+10. Update /Users/yee/Desktop/friesenlabs/signup/provisioning.py: add workspace_store=None to __init__; after agent_plane.ensure() call workspace_store.upsert(tenant_id, env_id, coordinator_id, workspace_id). Update api/prod_deps.py _Noop agent_plane.ensure() to return {'environment_id':'stub','coordinator_id':'stub'}. Verify: pytest tests/unit/test_signup_provisioning.py passes with new assertion that workspace row is written.
+
+11. Create /Users/yee/Desktop/friesenlabs/tests/integration/test_agent_plane_live.py gated on ANTHROPIC_MANAGED_AGENTS_TEST env var. Tests: create_environment, coordinator.build, create_session, send_message, conversation round-trip via InMemoryWorkspaceStore seeded with a live coordinator_id. Verify: all tests skip cleanly without creds; pass with creds.
+
+VERIFY LIKE A SKEPTIC after every step:
+- pytest full suite must stay green (currently 193 passed / 2 skipped).
+- terraform validate clean after IaC changes.
+- python -c 'import api.asgi' must not crash (import-safe).
+- RLS: confirm SET app.current_tenant is called before every DB query in the new code.
+- THE TRUST RULE: tenant_id comes only from the verified JWT claim in api/auth.py make_current_tenant; never from request body or a header.
+- Org API key only in API Fargate task; never in worker task def.
+
+PR: branch feat/agent-plane-live, short-lived, squash-merge to main. Update README.md, CLAUDE.md, BUILD_STATUS.md (check off the AI plane items), TODO.md (mark the P0 agent-plane tasks done) on every commit.
+```
+
+### provisioning — _All real production calls are BLOCKED: needs Nick. Specifically: terraform apply for infra/modules/secrets/main.tf new r_
+
+```
+/loop You are implementing the real signup/provisioning stack for Uplift. The codebase is at /Users/yee/Desktop/friesenlabs. Read CLAUDE.md before any change. This is a code-only chunk — no terraform apply, no real sends, no live AWS mutations.
+
+WHAT TO BUILD (in dependency order):
+1. db/schema.sql + db/roles.sql — add `accounts` table (pre-tenant, no tenant_id RLS filter, explain the exception) and `stripe_events` idempotency ledger; GRANT crm_app DML on both.
+2. signup/tokens.py — HMAC-SHA256 signed email tokens + random SMS OTP with TTL and constant-time verify.
+3. signup/store_pg.py — PgAccountStore (get/get_by_email/insert/update over accounts table, crm_app DSN, psycopg2); PgStripeEventLedger (is_handled/mark_handled with ON CONFLICT DO NOTHING); PgOtpStore (OTP stored in accounts.meta jsonb with atomic merge).
+4. signup/cognito_admin.py — CognitoAdminClient wrapping boto3 cognito-idp for admin_create_user (MessageAction=SUPPRESS), admin_update_user_attributes (custom:tenant_id), admin_confirm_sign_up. Idempotent. VERIFY comments on confirm() call sequence.
+5. signup/stripe_adapter.py — StripeAdapter over stripe library. Plan->Price ID via injected dict. Add stripe>=7 to requirements-api.txt.
+6. signup/resend_sender.py — ResendEmailSender over Resend REST API (urllib.request). send_verification (signed link) + send_welcome. Logs but does not raise on send failure.
+7. signup/sms_sender.py — SnsSmsOtpSender via boto3 SNS. SmsSendError exception.
+8. signup/anthropic_admin.py — AnthropicAdminClient. Mark every endpoint URL with VERIFY comment. Implements ensure_workspace (idempotent), create_workspace_key, set_limits, delete_workspace.
+9. signup/lambda_handler.py — Lambda handler for the Step Functions provisioning machine. Builds clients from env on cold start. Calls Provisioner.provision() (idempotent). Handles activate and park_failed as state-only flips.
+10. api/prod_deps.py — replace all _Stub/_Noop with real clients behind env guards. Add SfnProvisioningTrigger (start_execution keyed by account_id). Keep stubs as fallback when env vars absent so /healthz still boots without creds.
+11. signup/payment.py — add optional event_ledger to PaymentService. Check ledger before state mutation; mark after.
+12. api/signup_routes.py — add GET /signup/{account_id}/verify-email?token={token} for email click-through; 303 redirect to SPA on success.
+13. IaC (terraform validate must stay green, no apply): infra/modules/secrets/main.tf (6 new SM secrets + outputs), infra/modules/api_service/main.tf (new secret vars + secrets[] + env vars), infra/modules/iam/main.tf (cognito-admin-ops + sfn-start-execution policies on api task role, new variable inputs), infra/modules/provisioning/main.tf (aws_lambda_function resource + correct IAM scoping).
+14. Tests: tests/unit/test_tokens.py (9 tests), tests/unit/test_pg_account_store.py (6 tests), tests/unit/test_stripe_adapter.py (5 tests), tests/unit/test_cognito_admin.py (4 tests), tests/integration/test_provisioning_e2e.py (3 tests, skipped without STRIPE_TEST_SECRET_KEY). All existing 193 tests must still pass.
+15. Living docs: update README.md (new env vars), BUILD_STATUS.md (provisioning adapters now real, blocked items updated), TODO.md (check off completed items), CLAUDE.md (update parked/not-live list).
+
+HARD CONSTRAINTS (from CLAUDE.md):
+- THE TRUST RULE: custom:tenant_id comes ONLY from the verified Cognito JWT custom:tenant_id claim. CognitoAdminClient.set_tenant_id uses admin-only IAM, never the client app.
+- Provisioning fires ONLY on the signed Stripe webhook. The SfnProvisioningTrigger replaces the synchronous on_paid call but is still invoked only from handle_webhook after construct_event succeeds.
+- No live sends: all new senders (Resend, SNS, Anthropic Admin) must be gated behind env vars and stub/noop in offline tests.
+- Secrets never in repo. Use os.environ + Secrets Manager refs only.
+- RLS: the accounts table is pre-tenant (explain the exception in a comment); all other tables keep FORCE RLS.
+- VERIFY before any Anthropic Admin API call — mark every endpoint with # VERIFY comment.
+- On every commit: update README.md + CLAUDE.md + BUILD_STATUS.md + TODO.md to reflect what changed.
+
+VERIFY LIKE A SKEPTIC after each step:
+- python -c 'from signup.X import Y' exits 0 (import-safe, no network on import)
+- pytest --ignore=.venv — 193 + N passed, same 2 skips, no new failures
+- cd infra && terraform validate — 0 errors across all 19 modules
+- grep -r 'STRIPE_SECRET\\|RESEND_API_KEY\\|ANTHROPIC_ADMIN' **/*.py shows only os.environ reads, never hardcoded values
+- grep 'custom:tenant_id' signup/cognito_admin.py confirms admin-only attribute set
+
+When done, open a PR with title 'feat/provisioning-real-clients' on branch feat/provisioning-real-clients targeting main.
+```
+
+### cube-worker-deploy — _UPLIFT_ENV_KEY and UPLIFT_ENV_ID for the worker service require Anthropic Managed Agents environment provisioning (creat_
+
+```
+/loop Deploy cube + worker Fargate services with digest-pinned arm64 images. No new external credentials are needed for the build/push/cube-apply sequence; only UPLIFT_ENV_KEY (Anthropic MA env key) blocks the worker from being functional.
+
+Sequence, verify like a skeptic at each step:
+
+1. MODIFY infra/modules/cube/main.tf — add `variable "image"` (default ""), add `runtime_platform { cpu_architecture="ARM64" operating_system_family="LINUX" }` to aws_ecs_task_definition.cube, change hardcoded `cubejs/cube:latest` to `var.image != "" ? var.image : "cubejs/cube:latest"`, add env `CUBEJS_SCHEMA_PATH=/cube/conf`. Wire `image = var.cube_image` in infra/main.tf module.cube block.
+
+2. MODIFY infra/modules/worker/main.tf — add `runtime_platform { cpu_architecture="ARM64" operating_system_family="LINUX" }` to the worker task def. Add plaintext env vars: `UPLIFT_ENV_ID` (from new var `uplift_env_id`), `CLOUDWATCH_METRICS=1`, `AWS_REGION` (from var.region), `CUBE_ENDPOINT` (from new var `cube_endpoint`). Wire in main.tf. Add `variable worker_image` and pass as `image` to module.worker.
+
+3. ADD `variable cube_image`, `variable worker_image`, `variable uplift_env_id` (default ""), `variable cube_endpoint` (default "") to infra/variables.tf.
+
+4. ADD Cloud Map service discovery to infra/modules/cube/main.tf: `aws_service_discovery_private_dns_namespace` "uplift.local" + `aws_service_discovery_service` "cube" + `service_registries` on aws_ecs_service.cube. Output the DNS name. Pass `cube_endpoint = module.cube.service_dns_name` in main.tf.
+
+5. ADD cloudwatch:PutMetricData inline policy to the worker task role in infra/modules/iam/main.tf (resource aws_iam_role_policy "worker_task_cloudwatch").
+
+6. PIN Dockerfiles: resolve arm64 digest for `python:3.13-slim` and current stable digest for `cubejs/cube`, substitute in worker/Dockerfile and semantic/Dockerfile FROM lines.
+
+7. BUILD + PUSH (requires Nick/AWS creds):
+   - docker build --platform linux/arm64 -t 186052668426.dkr.ecr.us-east-1.amazonaws.com/uplift-cube:v1.0.0 -f semantic/Dockerfile semantic/
+   - docker push ...; capture sha256 digest
+   - docker build --platform linux/arm64 -t 186052668426.dkr.ecr.us-east-1.amazonaws.com/uplift-worker:v1.0.0 -f worker/Dockerfile .
+   - docker push ...; capture sha256 digest
+
+8. SET in infra/prod.auto.tfvars (gitignored): cube_image and worker_image using @sha256:<digest> URIs.
+
+9. POPULATE Secrets Manager uplift/cube-api-secret with `openssl rand -base64 32`. (env-key BLOCKED: needs Nick — MA creds.)
+
+10. VALIDATE then APPLY (requires Nick/AWS apply authorization):
+    - terraform validate (must be 0 errors, 19+ modules)
+    - terraform plan (must show only adds for cube+worker services, 0 change/destroy to live)
+    - terraform apply
+
+VERIFY like a skeptic:
+- After apply: `aws ecs describe-services --cluster uplift-cluster --services uplift-cube uplift-worker` → runningCount=1 each
+- Cube health: curl from within VPC to the Cloud Map DNS `http://uplift-cube.uplift.local:4000/livez` → 200
+- Worker metric: `aws cloudwatch get-metric-statistics --namespace Uplift/Agents --metric-name workers_polling ...` → datapoints with Value=1 within 60s (only verifiable once env-key is populated)
+- ECR immutability: attempt docker push with the same tag → must be rejected (IMMUTABLE)
+- Trust rule: confirm cube security context — a Cube REST query without a signed JWT carrying tenant_id is rejected by queryRewrite with "no tenant"
+
+PR: open feat/deploy-cube-worker, update BUILD_STATUS.md (cube/worker status: applied), update TODO.md (check off the cube and worker deploy items), update CLAUDE.md parked section.
+
+BLOCKED items (do not attempt): worker full functionality until Nick provides Anthropic MA env-key + env-id. Mark worker service applied-but-parked in BUILD_STATUS.
+```
+
+### observability-cicd — _The OIDC IAM identity provider for GitHub Actions and the deploy IAM role (DEPLOY_ROLE_ARN) must be created by Nick befo_
+
+```
+/loop /loop Operations deployment chunk for Uplift — observability, guardrails fix, WAF, origin-secret, Aurora hardening, CI/CD pipeline.
+
+## Scope
+Implement the following changes, in dependency order. Read every file before editing it. Do not apply terraform. Do not run docker build or push. Author code and IaC only.
+
+## Files to create or modify
+
+1. `infra/modules/guardrails/main.tf` — Add `variable "notify_topic_arn"` (type=string, default=""). Add `alarm_actions = var.notify_topic_arn != "" ? [var.notify_topic_arn] : []` to `aws_cloudwatch_metric_alarm.billing`. This wires the billing alarm to the shared SNS topic so someone actually gets paged.
+
+2. `infra/modules/data/main.tf` — In `aws_rds_cluster.this` add: `backup_retention_period = 7`, `deletion_protection = true`, `skip_final_snapshot = false`, `final_snapshot_identifier = "${var.project}-aurora-final"`, `copy_tags_to_snapshot = true`. In `aws_rds_cluster_instance.this` add: `performance_insights_enabled = true`, `performance_insights_retention_period = 7`.
+
+3. `infra/modules/secrets/main.tf` — Add `aws_secretsmanager_secret.origin_verify` (name=`uplift/origin-verify-secret`). Add `output "origin_verify_secret_arn"`.
+
+4. `infra/variables.tf` — Add `variable "x_origin_verify_secret"` (type=string, sensitive=true, default="", description="Shared secret for CloudFront→ALB X-Origin-Verify header").
+
+5. `infra/modules/api_cdn/main.tf` — Add `variable "x_origin_verify_secret"` (sensitive=true, default=""). In the `origin` block add a dynamic `custom_header` block (for_each on secret != ""; name=X-Origin-Verify; value=var.x_origin_verify_secret). Add `aws_wafv2_web_acl.api` (scope=CLOUDFRONT; rules: AWSManagedRulesCommonRuleSet priority=1, AWSManagedRulesKnownBadInputsRuleSet priority=2, rate-based limit=2000/IP priority=3 action=block). Set `web_acl_id = aws_wafv2_web_acl.api.arn` on the distribution.
+
+6. `infra/modules/alb/main.tf` — Add `variable "x_origin_verify_secret"` (sensitive=true, default=""). Add `aws_lb_listener_rule.origin_verify` (count = secret != "" ? 1 : 0; listener=http_forward[0].arn; priority=1; action=forward to target group; condition=http_header X-Origin-Verify == secret). Keep the existing http_forward default_action as-is (forward, not 403) so that count=0 in CI validate mode keeps CI green. The rule at priority=1 takes precedence over the default forward action for requests WITH the header; requests WITHOUT the header still reach the default action. Note: this means requests without the header still get forwarded in the initial deploy. A separate follow-up (after verifying CloudFront always sends the header) changes the default_action to fixed-response 403.
+
+7. `infra/main.tf` — Four changes: (a) Add `x_origin_verify_secret = var.x_origin_verify_secret` to module.api_cdn. (b) Add `x_origin_verify_secret = var.x_origin_verify_secret` to module.alb. (c) Add `notify_topic_arn = module.observability.alarms_topic_arn` to module.guardrails. (d) Confirm (read before modifying) that `notify_email = var.notify_email` is already in both module.observability and module.guardrails — it is, at lines 155 and 163 respectively.
+
+8. `.github/workflows/deploy.yml` — Create this file. Trigger: `on: push: tags: ['v*.*.*']`. Jobs in order: (a) `build-push` — OIDC configure-aws-credentials (role=DEPLOY_ROLE_ARN secret), docker/setup-buildx, docker/login to ECR, docker/build-push with platforms=linux/arm64, file=api/Dockerfile, tag=${{ secrets.ECR_REPO }}:${{ github.sha }}, push=true. Output image_tag=${{ github.sha }}. (b) `tf-plan` — needs build-push. setup-terraform@v3. terraform init -chdir=infra with -backend-config flags from secrets TF_BACKEND_BUCKET, TF_BACKEND_KEY, TF_BACKEND_REGION. terraform plan -chdir=infra -var="api_image=${{ secrets.ECR_REPO }}:${{ needs.build-push.outputs.image_tag }}" -var="x_origin_verify_secret=${{ secrets.X_ORIGIN_VERIFY_SECRET }}" -var="notify_email=${{ secrets.NOTIFY_EMAIL }}" -out=tfplan -no-color | tee plan.txt. Upload plan.txt and tfplan binary as artifacts. (c) `tf-apply` — needs tf-plan. environment: production (manual approval). Download tfplan artifact. terraform init (same). terraform apply -chdir=infra tfplan. (d) `deploy-ecs` — needs tf-apply. aws ecs update-service --cluster uplift --service uplift-api --force-new-deployment. aws ecs wait services-stable --cluster uplift --services uplift-api. (e) `deploy-amplify` — needs tf-apply. aws amplify start-job --app-id ${{ secrets.AMPLIFY_APP_ID }} --branch-name main --job-type RELEASE. Poll for SUCCEED/FAILED with a 5-minute timeout.
+
+## Verification after each step
+
+After all edits, run:
+```
+terraform -chdir=infra fmt -check -recursive   # must pass (CI gate)
+terraform -chdir=infra init -backend=false
+terraform -chdir=infra validate                 # must pass (CI gate)
+```
+
+Then update the living docs:
+- `TODO.md` — check off: "Close the ALB origin", "Put a WAFv2 web ACL", "Deploy the observability module", "Fix the billing alarm/budget notification", "Build a real CI/CD deploy pipeline", "Raise Aurora backup retention + deletion protection".
+- `BUILD_STATUS.md` — update the unapplied modules list to reflect observability/guardrails/WAF/origin-verify are now authored+wired (apply still needs Nick for the first run, but the code is ready).
+- `CLAUDE.md` — remove observability from the parked/unapplied list in the bullet at line 29.
+- `README.md` — add WAF, alarms, shared-secret origin to the live infra description.
+
+## Constraints (MUST follow)
+- No `terraform apply`, no `docker build`, no AWS CLI calls that mutate live state.
+- Secrets never in the repo. The x_origin_verify_secret value goes in the gitignored prod.auto.tfvars only.
+- ECR tags: the deploy.yml must use `github.sha` as the image tag, never `:latest`.
+- WAFv2 scope=CLOUDFRONT must be in the same provider as CloudFront (us-east-1, which is the only provider configured).
+- `terraform validate` must remain clean after every file edit — check before moving to the next file.
+- CI (.github/workflows/ci.yml) runs on push to main and PRs; deploy.yml runs only on semver tags. They must not conflict.
+- Update README, CLAUDE.md, BUILD_STATUS.md, TODO.md on the final commit per the repo convention.
+```

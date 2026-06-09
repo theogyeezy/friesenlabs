@@ -59,6 +59,8 @@ Everything that can be built and tested offline is done, and a final adversarial
 | ✅ **Reconciled** | Terraform state | out-of-band SG rules imported, ECR back to IMMUTABLE; full plan = 0 change/destroy to live resources (only the unapplied modules show as adds) | — |
 
 Applied to AWS account 186052668426 (us-east-1) under a $200 budget alarm; Terraform state in S3 (KMS).
+**Security:** a 37-agent adversarial audit (2026-06-09) found + we **fixed a critical cross-tenant data leak** (the request-path stores shared one DB connection + a session-level tenant GUC, racing across the threadpool) — now pooled per-request connections + `SET LOCAL`, proven on live Aurora under concurrency. Aurora durability (deletion protection + 7-day backups) on. The remaining 25 findings (2 high, 7 medium, 17 low) are tracked in TODO.md.
+
 The full granular, prioritized work list (119 items, P0→P3) and the critical path to a fully-real
 product (login flow first) live in **[TODO.md](./TODO.md)**. Tear down with `cd infra && terraform destroy`.
 

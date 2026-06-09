@@ -34,6 +34,12 @@ app shell → real RLS-scoped tenant rows. Unauth `/api/*` → 401; `/chat` → 
 - **Ops:** state in **S3** (`uplift-tfstate-*`, KMS) — init `terraform init -backend-config=backend.hcl`
   (gitignored). API image (arm64): `docker build --platform linux/arm64`. DB migrate
   `python -m api.migrate`; tenant seed `scripts/seed_demo_tenant.py` — both as one-off Fargate tasks.
+- **Security:** a 37-agent adversarial audit (2026-06-09) is folded into `TODO.md` (27 findings). A
+  **critical cross-tenant leak is FIXED** — the request-path stores (`PgApprovalStore`/`PgSavedViewStore`)
+  now use a per-request pooled connection + `SET LOCAL app.current_tenant` in a transaction (NOT a
+  shared connection + session-level SET, which raced across the anyio threadpool). Tenant is threaded
+  explicitly; proven on live Aurora (16 threads) + CI real-Postgres. **Follow-up:** the `ingest_cursor`
+  stores (`ingest/pipeline.py`) share the old single-conn pattern but run off the request path.
 - **The full granular, prioritized work list is in [`TODO.md`](./TODO.md)**. Next big chunks: AI plane
   (needs Anthropic creds), provisioning (needs Stripe/Resend), cube/worker/observability deploys.
 
