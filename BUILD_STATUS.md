@@ -312,6 +312,10 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   plan would destroy the live Amplify app (`github_access_token` absent from machine-local
   `prod.auto.tfvars`) and strip the budget notification (`notify_email` unset). Both parked —
   needs Matt (PAT + budget email/limit). Apply discipline: no full apply; pure-add `-target` only.
+- 2026-06-09 — Aurora hardening authored (feat/nick-aurora-hardening): TODO premise stale — live
+  cluster already at retention=7 + deletion_protection=true (verified). Authored the 2 real gaps
+  (copy_tags_to_snapshot, performance_insights_enabled); `plan -target=module.data` = 0 add /
+  2 in-place change / 0 destroy, exactly those attrs. Apply follows merge (intended-change rule).
 
 ## Lane Matt (app code) — log
 - _(no entries yet)_

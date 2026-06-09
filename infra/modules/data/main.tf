@@ -35,6 +35,7 @@ resource "aws_rds_cluster" "this" {
   deletion_protection       = true
   skip_final_snapshot       = false
   final_snapshot_identifier = "${var.project}-aurora-final"
+  copy_tags_to_snapshot     = true
 }
 
 resource "aws_rds_cluster_instance" "this" {
@@ -43,6 +44,10 @@ resource "aws_rds_cluster_instance" "this" {
   engine             = aws_rds_cluster.this.engine
   engine_version     = aws_rds_cluster.this.engine_version
   instance_class     = "db.serverless"
+
+  # Query-level visibility into the only datastore holding tenant data (7-day
+  # retention = the free tier).
+  performance_insights_enabled = true
 }
 
 output "cluster_endpoint" { value = aws_rds_cluster.this.endpoint }
