@@ -52,3 +52,15 @@ variable "web_api_base_url" {
   type        = string
   default     = ""
 }
+
+variable "api_image" {
+  description = "ECR image URI for the API service (uplift-api). Empty = the local-tag placeholder."
+  type        = string
+  default     = ""
+}
+
+variable "api_desired_count" {
+  description = "Number of API Fargate tasks."
+  type        = number
+  default     = 2
+}

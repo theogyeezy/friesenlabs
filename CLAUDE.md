@@ -13,11 +13,20 @@ Postgres isolation gate in CI, `terraform validate` + `plan`, web build/typechec
 a final adversarial audit pass is merged. CI runs on `main`; trunk is **`main`** (branch via
 short-lived `feat/…` PRs — see `CONTRIBUTING.md`).
 
-**Live infra (partial — real money):** the foundation + data plane + auth tier IS applied to AWS
-(acct 186052668426, us-east-1, ~63 resources incl. Aurora + Redis, ~$5/day) under a $200 budget alarm.
-The ALB + Fargate app tier is NOT applied (needs a TLS cert + pushed ECR images). Terraform state is
-LOCAL at `infra/terraform.tfstate` (back it up / move to an S3 backend before relying on it). Manage
-with `cd infra && terraform plan|apply|destroy`. Anything still un-applied is `BLOCKED: needs Nick`.
+**Live infra (real money) — the backend is LIVE end-to-end.** Applied to AWS (acct 186052668426,
+us-east-1) under a $200 budget alarm. Live path: **browser → Amplify (Vite SPA) → CloudFront → ALB
+(HTTP) → arm64 Fargate API → Aurora** (RLS) with real Cognito JWKS auth enforced. Verified:
+`/api/healthz` 200, `/api/approvals` 401 (unauth rejected). The **AI/agent plane stays parked** (no
+Anthropic Managed Agents creds — `agents/runtime.py` stub). The **web UI runs in mock mode** (working
+demo) until a Cognito login flow exists to obtain a JWT; the real API is live at `/api`.
+- Terraform state is in **S3** (`uplift-tfstate-*`, KMS, S3-native lock); init with
+  `terraform init -backend-config=backend.hcl` (gitignored; account-id bucket name kept out of the repo).
+- API image: `uplift-api:latest` (arm64) in ECR; rebuild with `docker build --platform linux/arm64`.
+- DB migrate: `python -m api.migrate` as a one-off Fargate task (loads `db/` into private Aurora).
+- **Known state drift:** several SG rules (`api_from_alb`, ALB egress, ALB:80-from-CloudFront) were
+  added out-of-band via CLI during the deploy and aren't in TF state yet — `terraform import` them
+  before the next `terraform apply -target=module.security`. Anything still un-applied / the AI plane is
+  `BLOCKED: needs Nick`.
 
 **Tooling:** `.claude/settings.json` enables the official-marketplace plugins so collaborators inherit
 them on clone+trust. Don't commit secrets to it.

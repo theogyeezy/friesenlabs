@@ -44,6 +44,22 @@ resource "aws_security_group_rule" "alb_https_in" {
   description       = "Public HTTPS"
 }
 
+# Until a real domain + ACM cert exist, the ALB serves HTTP:80 to CloudFront ONLY (the CF edge
+# terminates TLS with its trusted *.cloudfront.net cert; the Amplify site proxies /api/* through it).
+data "aws_ec2_managed_prefix_list" "cloudfront" {
+  name = "com.amazonaws.global.cloudfront.origin-facing"
+}
+
+resource "aws_security_group_rule" "alb_http_from_cloudfront" {
+  type              = "ingress"
+  security_group_id = aws_security_group.alb.id
+  protocol          = "tcp"
+  from_port         = 80
+  to_port           = 80
+  prefix_list_ids   = [data.aws_ec2_managed_prefix_list.cloudfront.id]
+  description       = "HTTP from CloudFront origins only (TLS terminated at the CF edge)"
+}
+
 resource "aws_security_group_rule" "api_from_alb" {
   type                     = "ingress"
   security_group_id        = aws_security_group.api.id

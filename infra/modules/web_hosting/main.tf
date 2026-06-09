@@ -24,6 +24,10 @@ variable "api_base_url" {
   type    = string
   default = "" # set to the deployed API URL to take the site out of mock mode
 }
+variable "api_cdn_domain" {
+  type    = string
+  default = "" # CloudFront HTTPS domain in front of the ALB; when set, Amplify proxies /api/* to it
+}
 
 resource "aws_amplify_app" "web" {
   name         = "${var.project}-web"
@@ -57,6 +61,18 @@ resource "aws_amplify_app" "web" {
   environment_variables = {
     VITE_API_MOCK     = var.api_base_url == "" ? "1" : "0"
     VITE_API_BASE_URL = var.api_base_url
+  }
+
+  # Proxy /api/* to the CloudFront HTTPS edge in front of the ALB — must come BEFORE the SPA catch-all.
+  # The browser hits the trusted Amplify domain; Amplify forwards to CloudFront (HTTPS, required), which
+  # origins to the ALB. So the API needs no domain/cert and there's no CORS (same-origin to the browser).
+  dynamic "custom_rule" {
+    for_each = var.api_cdn_domain != "" ? [1] : []
+    content {
+      source = "/api/<*>"
+      target = "https://${var.api_cdn_domain}/<*>"
+      status = "200"
+    }
   }
 
   # SPA rewrite: serve index.html (200) for any path that 404s, so deep links + refresh work.

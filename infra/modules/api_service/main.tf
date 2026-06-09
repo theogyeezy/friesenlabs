@@ -18,6 +18,18 @@ variable "db_secret_arn" { type = string }
 variable "anthropic_api_key_secret_arn" { type = string }
 variable "cognito_user_pool_id" { type = string }
 variable "cognito_client_id" { type = string }
+variable "aurora_endpoint" {
+  type    = string
+  default = ""
+}
+variable "aurora_master_secret_arn" {
+  type    = string
+  default = ""
+}
+variable "desired_count" {
+  type    = number
+  default = 2
+}
 
 resource "aws_cloudwatch_log_group" "api" {
   name              = "/ecs/${var.project}-api"
@@ -39,6 +51,12 @@ resource "aws_ecs_task_definition" "api" {
   execution_role_arn       = var.execution_role_arn
   task_role_arn            = var.task_role_arn
 
+  # Image is arm64 (Graviton, cheaper); built on Apple Silicon.
+  runtime_platform {
+    cpu_architecture        = "ARM64"
+    operating_system_family = "LINUX"
+  }
+
   container_definitions = jsonencode([
     {
       name         = "api"
@@ -49,10 +67,15 @@ resource "aws_ecs_task_definition" "api" {
         { name = "AWS_REGION", value = var.region },
         { name = "COGNITO_USER_POOL_ID", value = var.cognito_user_pool_id },
         { name = "COGNITO_CLIENT_ID", value = var.cognito_client_id },
+        { name = "DB_HOST", value = var.aurora_endpoint },
+        { name = "DB_NAME", value = "uplift" },
+        # For `python -m api.migrate` (one-off task): master + crm secret ARNs (read via boto3).
+        { name = "AURORA_MASTER_SECRET_ARN", value = var.aurora_master_secret_arn },
+        { name = "CRM_APP_SECRET_ARN", value = var.db_secret_arn },
       ]
       secrets = [
-        # Org API key creates agent sessions (lives on the API, NEVER the worker).
-        { name = "ANTHROPIC_API_KEY", valueFrom = var.anthropic_api_key_secret_arn },
+        # crm_app (non-owner) DB credentials so RLS applies. (Anthropic key omitted — AI parked,
+        # and an unset secret would block task startup.)
         { name = "DB_USER", valueFrom = "${var.db_secret_arn}:username::" },
         { name = "DB_PASS", valueFrom = "${var.db_secret_arn}:password::" },
       ]
@@ -88,8 +111,11 @@ resource "aws_ecs_service" "api" {
   name            = "${var.project}-api"
   cluster         = var.cluster_id
   task_definition = aws_ecs_task_definition.api.arn
-  desired_count   = 2
+  desired_count   = var.desired_count
   launch_type     = "FARGATE"
+
+  # First deploy: tasks need time to pull the image + pass health checks before the LB drains them.
+  health_check_grace_period_seconds = 120
 
   network_configuration {
     subnets          = var.private_subnet_ids

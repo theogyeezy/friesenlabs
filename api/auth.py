@@ -35,13 +35,36 @@ class CognitoJwtVerifier:
         self.pool_id = pool_id
         self.client_id = client_id
         self.region = region
-        self._jwks = None
+        self._jwks_client = None
 
-    def verify(self, token: str) -> dict:  # pragma: no cover — live JWKS, BLOCKED: needs Nick
-        # VERIFY: fetch JWKS from
-        #   https://cognito-idp.{region}.amazonaws.com/{pool_id}/.well-known/jwks.json
-        # then validate signature + iss + aud + exp with PyJWT before trusting any claim.
-        raise NotImplementedError("live Cognito JWKS verification — BLOCKED: needs Nick")
+    @property
+    def issuer(self) -> str:
+        return f"https://cognito-idp.{self.region}.amazonaws.com/{self.pool_id}"
+
+    def verify(self, token: str) -> dict:
+        """Validate signature against the pool JWKS + iss/aud/exp. Returns the verified claims.
+
+        Cognito ID tokens carry `aud=client_id` and the `custom:tenant_id` claim; access tokens carry
+        `client_id` and `token_use=access`. We require an ID token (it has the tenant claim) — verify
+        aud, and reject access tokens.
+        """
+        import jwt  # noqa: PLC0415 — lazy (PyJWT, runtime-only)
+        from jwt import PyJWKClient  # noqa: PLC0415
+
+        if self._jwks_client is None:
+            self._jwks_client = PyJWKClient(f"{self.issuer}/.well-known/jwks.json")
+        signing_key = self._jwks_client.get_signing_key_from_jwt(token)
+        claims = jwt.decode(
+            token,
+            signing_key.key,
+            algorithms=["RS256"],
+            audience=self.client_id,
+            issuer=self.issuer,
+            options={"require": ["exp", "iss", "aud"]},
+        )
+        if claims.get("token_use") not in (None, "id"):
+            raise ValueError("expected a Cognito ID token (carries custom:tenant_id)")
+        return claims
 
 
 def _bearer(request: Request) -> str:
