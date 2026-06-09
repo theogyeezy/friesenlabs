@@ -46,13 +46,24 @@ docs/       # spec PDFs (gitignored — confidential, kept local only)
 
 **All 13 phases (0–12) + the frontend are implemented and green** — see
 **[BUILD_STATUS.md](./BUILD_STATUS.md)** for the per-phase / per-feature map with test + review status.
-Everything that can be built and tested offline is done; the only remaining work is the
-`BLOCKED: needs Nick` list (live cloud `apply`, credentials, and verifying the beta APIs). The full
-ordered manual is the Build Guide (kept local in `docs/`, not published).
+Everything that can be built and tested offline is done, and a final adversarial audit pass is merged.
 
-CI (`.github/workflows/ci.yml`) runs on every push/PR to **`main`** (the trunk): pytest + isolation
-gate, `terraform fmt`/`validate`, and the web build + typecheck + Playwright. See
-[CONTRIBUTING.md](./CONTRIBUTING.md) for the branching model.
+**Live deployment (partial):** the foundation + data plane + auth tier is **applied to AWS** (account
+186052668426, us-east-1, ~63 resources: Aurora, Redis, VPC/NAT, Cognito, ECR, S3, CloudTrail, Step
+Functions, ECS cluster) under a $200 budget alarm. The ALB + Fargate app tier is **not** applied yet
+(needs a TLS cert + pushed container images). State is local at `infra/terraform.tfstate`; tear down
+with `cd infra && terraform destroy`. See BUILD_STATUS.md for the live map and the remaining
+`BLOCKED: needs Nick` items.
+
+CI (`.github/workflows/ci.yml`) runs on every push/PR to **`main`** (the trunk): pytest + a real
+Postgres+pgvector isolation gate, `terraform fmt`/`validate`, and the web build + typecheck +
+Playwright. See [CONTRIBUTING.md](./CONTRIBUTING.md) for the branching model.
+
+## Claude Code tooling
+This repo ships **`.claude/settings.json`** with `enabledPlugins` for the official-marketplace plugins
+used in development (code-review, superpowers, feature-dev, and the AWS toolkits). When you clone and
+**trust** the repo in Claude Code, you'll be prompted to install that same set; the skills bundled in
+those plugins come along. Repo-local skills (if any) live in `.claude/skills/` and load automatically.
 
 ## Safety constraints (in force)
 
