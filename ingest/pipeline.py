@@ -263,29 +263,25 @@ class PgDocumentStore:
 
 
 class PgCursorStore:
-    """Cursor store backed by a tiny side table (created on construction).
+    """Cursor store over the `ingest_cursor` table (defined in db/schema.sql, tenant-scoped + RLS).
 
-    Kept out of schema.sql (owned by db/); this side table is ingestion-private.
-    VERIFY: in prod, fold ingest_cursor into db/schema.sql + RLS rather than
-    creating it here.
+    Connects as the non-owner crm_app role and SETs app.current_tenant before every access, so RLS
+    applies to the cursor table too. The table is owned by db/schema.sql (no self-create here).
     """
 
     def __init__(self, dsn: str):
         import psycopg2  # noqa: PLC0415 — guarded
 
         self._conn = psycopg2.connect(dsn)
-        with self._conn.cursor() as cur:
-            cur.execute(
-                "CREATE TABLE IF NOT EXISTS ingest_cursor ("
-                "tenant_id text NOT NULL, source text NOT NULL, cursor text, "
-                "PRIMARY KEY (tenant_id, source))"
-            )
-        self._conn.commit()
+
+    def _set_tenant(self, cur, tenant_id):
+        cur.execute("SET app.current_tenant = %s", (str(tenant_id),))
 
     def get(self, tenant_id, source):
         with self._conn.cursor() as cur:
+            self._set_tenant(cur, tenant_id)
             cur.execute(
-                "SELECT cursor FROM ingest_cursor WHERE tenant_id=%s AND source=%s",
+                "SELECT cursor_value FROM ingest_cursor WHERE tenant_id=%s AND source=%s",
                 (str(tenant_id), source),
             )
             row = cur.fetchone()
@@ -293,9 +289,11 @@ class PgCursorStore:
 
     def set(self, tenant_id, source, cursor):
         with self._conn.cursor() as cur:
+            self._set_tenant(cur, tenant_id)
             cur.execute(
-                "INSERT INTO ingest_cursor (tenant_id, source, cursor) VALUES (%s,%s,%s) "
-                "ON CONFLICT (tenant_id, source) DO UPDATE SET cursor=EXCLUDED.cursor",
+                "INSERT INTO ingest_cursor (tenant_id, source, cursor_value) VALUES (%s,%s,%s) "
+                "ON CONFLICT (tenant_id, source) DO UPDATE SET cursor_value=EXCLUDED.cursor_value, "
+                "updated_at=now()",
                 (str(tenant_id), source, cursor),
             )
         self._conn.commit()

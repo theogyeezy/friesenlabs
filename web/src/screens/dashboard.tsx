@@ -1,6 +1,7 @@
 // @ts-nocheck
 import React from "react";
 import "../globals";
+import { SafeHtml } from "../lib/SafeHtml";
 const { useState, useEffect, useRef, useMemo, useCallback, useLayoutEffect, useReducer, useContext, useImperativeHandle, useId } = React;
 const { Icon, Logo, FL_DATA, FLStore, useStore, askClaude, bizContext, confettiBurst, XPBadge, useCountUp, CountUp, AreaChart, Sparkline, LoadBars, Donut, SlideOver, CommandPalette, HEAT, fmtMoney, FLflag, useTweaks, TweaksPanel, TweakSection, TweakRow, TweakSlider, TweakToggle, TweakRadio, TweakSelect, TweakText, TweakNumber, TweakColor, TweakButton, FoxDemo, KanbanDemo, WorkflowDemo, GreenlightDemo, CommandDemo, IntegrationDemo, SupportDemo, SecurityDemo, SidecarDemo, CortexDemo } = window as any;
 // dashboard.jsx, Command Center
@@ -260,7 +261,7 @@ function Dashboard({ agents, onNavigate }) {
                     <ToneIco tone={f.tone} name={f.ico} />
                   </div>
                   <div className="feed-body">
-                    <p dangerouslySetInnerHTML={{ __html: f.html }} />
+                    <SafeHtml as="p" html={f.html} />
                     <div className="feed-meta">
                       <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
                         <span style={{ width: 6, height: 6, borderRadius: 99, background: agents[f.agent].color }} />

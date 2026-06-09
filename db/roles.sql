@@ -22,7 +22,7 @@ ALTER ROLE crm_app NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
 GRANT USAGE ON SCHEMA public TO crm_app;
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON
-    documents, companies, contacts, deals, activities, saved_views, approvals, traces
+    documents, companies, contacts, deals, activities, saved_views, approvals, traces, ingest_cursor
 TO crm_app;
 
 -- documents.id is an identity column; grant sequence usage for the others' gen_random_uuid is not

@@ -13,18 +13,28 @@ from typing import Any, Protocol
 
 
 class ApprovalStore(Protocol):
-    def insert(self, row: dict) -> int: ...
-    def get(self, approval_id: int) -> dict | None: ...
+    def insert(self, row: dict) -> object: ...
+    def get(self, approval_id: object) -> dict | None: ...
     def list_pending(self, tenant_id: str) -> list[dict]: ...
-    def update(self, approval_id: int, changes: dict) -> None: ...
+    def update(self, approval_id: object, changes: dict) -> None: ...
+    def bind_tenant(self, tenant_id: str) -> None: ...
 
 
 class InMemoryApprovalStore:
-    """Offline approval store (the real one is `approvals` in Aurora with RLS)."""
+    """Offline approval store (the real one is `PgApprovalStore` over Aurora with RLS)."""
 
     def __init__(self):
         self._rows: dict[int, dict] = {}
         self._n = 0
+
+    @staticmethod
+    def _key(approval_id):
+        # tolerate numeric string ids (FastAPI path params arrive as strings).
+        s = str(approval_id)
+        return int(s) if s.isdigit() else s
+
+    def bind_tenant(self, tenant_id: str) -> None:
+        pass  # in-memory has no RLS; isolation is enforced by explicit tenant filtering
 
     def insert(self, row: dict) -> int:
         self._n += 1
@@ -32,14 +42,77 @@ class InMemoryApprovalStore:
         self._rows[self._n] = row
         return self._n
 
-    def get(self, approval_id: int) -> dict | None:
-        return self._rows.get(approval_id)
+    def get(self, approval_id) -> dict | None:
+        return self._rows.get(self._key(approval_id))
 
     def list_pending(self, tenant_id: str) -> list[dict]:
         return [r for r in self._rows.values() if r["tenant_id"] == tenant_id and r["status"] == "pending"]
 
-    def update(self, approval_id: int, changes: dict) -> None:
-        self._rows[approval_id].update(changes)
+    def update(self, approval_id, changes: dict) -> None:
+        self._rows[self._key(approval_id)].update(changes)
+
+
+class PgApprovalStore:
+    """Aurora-backed approval store over the `approvals` table.
+
+    Connects as the non-owner crm_app role and SETs app.current_tenant before every access so Postgres
+    RLS scopes all reads/writes to the tenant. Import-safe (psycopg2 imported lazily on construction).
+    Ids are the table's uuids (as strings).
+    """
+
+    def __init__(self, dsn: str):
+        import psycopg2  # noqa: PLC0415 — guarded
+        self._psycopg2 = psycopg2
+        from psycopg2.extras import Json, RealDictCursor  # noqa: PLC0415
+        self._Json = Json
+        self._cursor_factory = RealDictCursor
+        self._conn = psycopg2.connect(dsn)
+        self._tenant: str | None = None
+
+    def bind_tenant(self, tenant_id: str) -> None:
+        self._tenant = str(tenant_id)
+
+    def _cur(self):
+        cur = self._conn.cursor(cursor_factory=self._cursor_factory)
+        if self._tenant is not None:
+            cur.execute("SET app.current_tenant = %s", (self._tenant,))
+        return cur
+
+    def insert(self, row: dict) -> str:
+        self.bind_tenant(row["tenant_id"])
+        with self._cur() as cur:
+            cur.execute(
+                "INSERT INTO approvals (tenant_id, proposed_action, agent, reasoning, value_at_stake, status) "
+                "VALUES (%s,%s,%s,%s,%s,%s) RETURNING id",
+                (row["tenant_id"], self._Json(row["proposed_action"]), row.get("agent"),
+                 row.get("reasoning"), row.get("value_at_stake"), row.get("status", "pending")),
+            )
+            rid = cur.fetchone()["id"]
+        self._conn.commit()
+        return str(rid)
+
+    def get(self, approval_id) -> dict | None:
+        with self._cur() as cur:
+            cur.execute("SELECT * FROM approvals WHERE id = %s", (str(approval_id),))
+            row = cur.fetchone()
+        return dict(row) if row else None
+
+    def list_pending(self, tenant_id: str) -> list[dict]:
+        self.bind_tenant(tenant_id)
+        with self._cur() as cur:
+            cur.execute("SELECT * FROM approvals WHERE status = 'pending' ORDER BY created_at")
+            return [dict(r) for r in cur.fetchall()]
+
+    def update(self, approval_id, changes: dict) -> None:
+        if not changes:
+            return
+        cols = ", ".join(f"{k} = %s" for k in changes)
+        # jsonb columns (e.g. proposed_action) need the Json adapter.
+        vals = [self._Json(v) if isinstance(v, dict) else v for v in changes.values()]
+        vals.append(str(approval_id))
+        with self._cur() as cur:
+            cur.execute(f"UPDATE approvals SET {cols} WHERE id = %s", vals)
+        self._conn.commit()
 
 
 class Greenlight:
