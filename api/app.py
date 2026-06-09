@@ -1,0 +1,139 @@
+"""FastAPI control plane (Build Guide Phase 9, Step 49).
+
+Owns JWT verification, the Greenlight/approvals endpoints, view CRUD, agent-session orchestration, and
+the action-gate pipeline. Every authed route derives the tenant ONLY from the verified JWT claim
+(`api.auth.current_tenant`) and threads it into the gate / greenlight / views / session — never from
+the request body or a header.
+
+Built via `create_app(deps)` so it is fully testable offline with a fake verifier + in-memory stores.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Callable
+
+from fastapi import Depends, FastAPI, HTTPException
+from pydantic import BaseModel
+
+from api.auth import JwtVerifier, TenantClaims, make_current_tenant
+from api.control.autonomy import AutonomyConfig
+from api.control.gate import ActionGate, GateContext
+from api.control.greenlight import Greenlight
+from api.control.killswitch import KillSwitch
+from api.control.traces import InMemoryTraceStore, TraceStore
+from api.control.types import Action
+from api.views import SavedViews
+
+
+@dataclass
+class ApiDeps:
+    verifier: JwtVerifier
+    greenlight: Greenlight
+    saved_views: SavedViews
+    conversation_factory: Callable[[str], Any]          # tenant_id -> conv.session.Conversation
+    autonomy_config: AutonomyConfig
+    executor: Callable[[Action], Any]                   # performs an approved/auto action
+    killswitch: KillSwitch = field(default_factory=KillSwitch)
+    trace_store: TraceStore = field(default_factory=InMemoryTraceStore)
+
+
+# --- request bodies (note: NONE carry tenant_id — the trust rule forbids it) ---
+class DecideBody(BaseModel):
+    decision: str
+    edits: dict | None = None
+    deny_message: str = ""
+
+
+class SaveViewBody(BaseModel):
+    spec: dict
+    source_prompt: str = ""
+
+
+class RefineBody(BaseModel):
+    instruction: str
+
+
+class ChatBody(BaseModel):
+    message: str
+
+
+class ActionBody(BaseModel):
+    name: str
+    side_effecting: bool = False
+    channel: str | None = None
+    payload: dict = {}
+    reasoning: str = ""
+    value_at_stake: float | None = None
+    discount: float | None = None
+
+
+def create_app(deps: ApiDeps) -> FastAPI:
+    app = FastAPI(title="Uplift control plane")
+    current_tenant = make_current_tenant(deps.verifier)
+
+    @app.get("/healthz")
+    def healthz():
+        return {"status": "ok"}
+
+    @app.get("/approvals")
+    def list_approvals(claims: TenantClaims = Depends(current_tenant)):
+        return {"approvals": deps.greenlight.list_pending(claims.tenant_id)}
+
+    @app.post("/approvals/{approval_id}/decide")
+    def decide_approval(approval_id: int, body: DecideBody, claims: TenantClaims = Depends(current_tenant)):
+        rec = deps.greenlight.store.get(approval_id)
+        if rec is None or rec["tenant_id"] != claims.tenant_id:
+            raise HTTPException(status_code=404, detail="no such approval")  # tenant-scoped
+        try:
+            return deps.greenlight.decide(approval_id, body.decision, edits=body.edits,
+                                          deny_message=body.deny_message, decided_by=claims.sub)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    @app.get("/views")
+    def list_views(claims: TenantClaims = Depends(current_tenant)):
+        return {"views": deps.saved_views.store.list(claims.tenant_id)}
+
+    @app.get("/views/{view_id}")
+    def get_view(view_id: str, claims: TenantClaims = Depends(current_tenant)):
+        v = deps.saved_views.get(claims.tenant_id, view_id)
+        if v is None:
+            raise HTTPException(status_code=404, detail="no such view")
+        return v
+
+    @app.post("/views")
+    def save_view(body: SaveViewBody, claims: TenantClaims = Depends(current_tenant)):
+        try:
+            return deps.saved_views.save(claims.tenant_id, body.spec,
+                                         source_prompt=body.source_prompt, created_by=claims.sub)
+        except Exception as e:  # validation error -> 422
+            raise HTTPException(status_code=422, detail=str(e))
+
+    @app.post("/views/{view_id}/refine")
+    def refine_view(view_id: str, body: RefineBody, claims: TenantClaims = Depends(current_tenant)):
+        # The model patcher is part of the conversation/runtime; here refine echoes via saved_views.
+        raise HTTPException(status_code=501, detail="NL refine wired via the agent runtime (verify)")
+
+    @app.post("/chat")
+    def chat(body: ChatBody, claims: TenantClaims = Depends(current_tenant)):
+        convo = deps.conversation_factory(claims.tenant_id)
+        turn = convo.send(body.message)
+        return turn.as_dict() if hasattr(turn, "as_dict") else turn
+
+    @app.post("/actions")
+    def run_action(body: ActionBody, claims: TenantClaims = Depends(current_tenant)):
+        action = Action(
+            name=body.name, agent=claims.sub, side_effecting=body.side_effecting,
+            channel=body.channel, payload=body.payload, reasoning=body.reasoning,
+            value_at_stake=body.value_at_stake, discount=body.discount,
+        )
+        ctx = GateContext(
+            tenant_id=claims.tenant_id, autonomy_config=deps.autonomy_config,
+            executor=deps.executor, greenlight=deps.greenlight,
+            killswitch=deps.killswitch, trace_store=deps.trace_store,
+        )
+        result = ActionGate().run(action, ctx)
+        return {"status": result.status, "decision": result.decision.value, "detail": result.detail,
+                "approval": result.approval, "result": result.result}
+
+    return app

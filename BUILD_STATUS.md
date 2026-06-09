@@ -37,7 +37,7 @@ tests: U=unit · I=integration · S=smoke · E=e2e(Playwright) · X=isolation �
 | 6 | Conversational Layer (front door, slots, agentic RAG+cites) | ✅ | bg-agent | ✓ | ✓ | · | · | · | cross ✓ |
 | 7 | Dashboard Engine (view-spec, generate, render, save/edit) | ✅ | orch+agent | ✓ | · | ✓ | ✓ | · | cross ✓ |
 | 8 | Cortex / ML (per-tenant models, train, registry, retrain) | ✅* | orchestrator | ✓ | · | · | · | · | self ✓ |
-| 9 | App, Auth & API (Cognito, FastAPI/Fargate, ALB, web) | ⬜ | — | · | · | · | · | · | — |
+| 9 | App, Auth & API (Cognito, FastAPI/Fargate, ALB, web) | 🟡 | orch+agent | ✓ | ✓ | · | ? | ✓ | self ✓ (api) |
 | 10 | Acquisition, Signup & Provisioning (landing, Stripe, auto-provision) | ⬜ | — | · | · | · | · | · | — |
 | 11 | Cost, Guardrails & Observability (budgets, caps, CloudWatch, OTEL) | ⬜ | — | · | · | · | · | · | — |
 | 12 | IaC, CI/CD & Launch (Terraform/CDK, pipelines, smoke+isolation) | ⬜ | — | · | · | · | · | · | — |
@@ -159,7 +159,17 @@ tests: U=unit · I=integration · S=smoke · E=e2e(Playwright) · X=isolation �
   only). 11 tests (learner beats random AUC>0.7, deterministic, gate promotes only on margin, run_model
   tenant-scoped, drift flags degradation). Full suite 138 passed / 2 skipped; terraform validate +
   smoke_all green. Committed + pushed. Live SageMaker/Modal training + EventBridge target BLOCKED: needs Nick.
-- **Next** — Phase 9 (app/auth/API): Cognito (JWT w/ tenant_id claim), FastAPI on Fargate, ALB, and
-  wire the React front end to the control plane + agent sessions.
+- **Cycle 12 (Phase 9 backend)** — `api/auth.py` (THE TRUST RULE: `current_tenant` reads tenant ONLY
+  from the verified Cognito JWT `custom:tenant_id`; injected verifier; real CognitoJwtVerifier flagged
+  verify), `api/app.py` FastAPI (`create_app(deps)`: healthz, approvals list/decide, views CRUD, chat
+  via conv.session, actions via control/gate) — every route tenant-scoped from the claim, never the
+  body. IaC: `modules/auth` (Cognito pool, tenant_id immutable + client-read-only), `modules/alb`
+  (public ALB 443→8000, HTTP→HTTPS redirect, /healthz health check), `modules/api_service` (api
+  Fargate ×2, behind TG, secrets from SM; org API key on API never worker). 12 API tests incl. the
+  trust rule + two-tenant HTTP isolation; full suite 150 passed / 2 skipped; terraform validate + smoke
+  green. Committed + pushed. Dispatched **background agent** for frontend wiring
+  (`scripts/briefs/09b_frontend_wiring.md`). Live Cognito/ALB/Fargate apply BLOCKED: needs Nick.
+- **Next** — integrate frontend wiring (Greenlight UI + chat + dashboard → API), then Phase 10
+  (acquisition/signup/Stripe/provisioning).
   (Aurora/Redis/S3 IaC + `db/schema.sql` with FORCE'd RLS + the two-tenant isolation proof
   incl. a vector query).

@@ -44,3 +44,15 @@ output "ecs_cluster_name" {
 output "cube_service_name" {
   value = module.cube.service_name
 }
+
+output "cognito_user_pool_id" {
+  value = module.auth.user_pool_id
+}
+
+output "alb_dns_name" {
+  value = module.alb.alb_dns_name
+}
+
+output "api_service_name" {
+  value = module.api_service.service_name
+}

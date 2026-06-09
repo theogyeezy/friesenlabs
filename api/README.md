@@ -40,6 +40,12 @@ pytest tests/unit/test_autonomy.py tests/unit/test_gate.py tests/unit/test_green
        tests/integration/test_control_tool_seam.py -q
 ```
 
-## Not yet here
-The FastAPI HTTP surface (Cognito auth, routes) is Phase 9; this phase is the control *logic* the API
-and worker call into. Live MA confirmation/interrupt calls are BLOCKED: needs Nick (beta verify).
+## HTTP surface (Phase 9)
+`app.py` + `auth.py` are the FastAPI control plane (`create_app(deps)` for testability).
+**THE TRUST RULE:** every authed route derives the tenant ONLY from the verified Cognito JWT
+`custom:tenant_id` claim (`auth.make_current_tenant`) — never from a header/body. Routes:
+`GET /healthz`, `GET /approvals` + `POST /approvals/{id}/decide`, `GET/POST /views` +
+`GET /views/{id}` + `POST /views/{id}/refine`, `POST /chat` (conv.session), `POST /actions`
+(runs through `control/gate`). Two-tenant isolation is proven at the HTTP layer in
+`tests/integration/test_api_auth.py`. Live Cognito JWKS verification + the org API key for sessions
+are authored + flagged verify — BLOCKED: needs Nick.
