@@ -38,7 +38,7 @@ tests: U=unit · I=integration · S=smoke · E=e2e(Playwright) · X=isolation �
 | 7 | Dashboard Engine (view-spec, generate, render, save/edit) | ✅ | orch+agent | ✓ | · | ✓ | ✓ | · | cross ✓ |
 | 8 | Cortex / ML (per-tenant models, train, registry, retrain) | ✅* | orchestrator | ✓ | · | · | · | · | self ✓ |
 | 9 | App, Auth & API (Cognito, FastAPI/Fargate, ALB, web) | ✅ | orch+agent | ✓ | ✓ | · | ✓ | ✓ | cross ✓ |
-| 10 | Acquisition, Signup & Provisioning (landing, Stripe, auto-provision) | ⬜ | — | · | · | · | · | · | — |
+| 10 | Acquisition, Signup & Provisioning (landing, Stripe, auto-provision) | ✅* | orchestrator | ✓ | · | · | · | ✓ | self ✓ |
 | 11 | Cost, Guardrails & Observability (budgets, caps, CloudWatch, OTEL) | ⬜ | — | · | · | · | · | · | — |
 | 12 | IaC, CI/CD & Launch (Terraform/CDK, pipelines, smoke+isolation) | ⬜ | — | · | · | · | · | · | — |
 | FE | Frontend: convert ~45 JSX → React+TS app in `web/` | ✅ | bg-agent | · | · | ✓ | ✓ | · | cross ✓ (fixed) |
@@ -59,6 +59,11 @@ tests: U=unit · I=integration · S=smoke · E=e2e(Playwright) · X=isolation �
 - **Live Anthropic (Phase 4)** — create environment / agents / coordinator / vaults / sessions, run the
   worker against the real queue. All authored behind `agents/runtime.py` + flagged "verify" (MA beta);
   `ManagedAgentsRuntime` methods raise until creds+verify. BLOCKED: needs Nick (org key, env key, beta).
+- **Live Cognito JWKS verification (Phase 9)** — `CognitoJwtVerifier.verify` authored + flagged verify;
+  raises until wired. BLOCKED: needs Nick.
+- **Live signup integrations (Phase 10)** — Stripe (keys + webhook secret), Cognito, the Anthropic
+  **Admin API** (workspace/key endpoints — verify against current docs), Resend domain (SPF/DKIM/DMARC),
+  SNS/Twilio. All injected + tested with fakes; live calls BLOCKED: needs Nick.
 
 ## Follow-ups (non-blocking cleanups)
 - **`ingest_cursor` table** — `ingest.pipeline.PgCursorStore` creates a per-tenant cursor side-table
@@ -175,7 +180,15 @@ tests: U=unit · I=integration · S=smoke · E=e2e(Playwright) · X=isolation �
   DashboardView (getView/saveView → SpecRenderer). Independent review: build exit 0, typecheck clean,
   Playwright 5 passed (smoke + 2 dashboard + 2 greenlight); confirmed the client NEVER sends tenant_id
   (only Bearer from config) — the trust rule holds client-side. Committed + pushed. **Phase 9 done.**
-- **Next** — Phase 10 (acquisition/signup/provisioning): signup + email/phone verify + Stripe payment,
-  and idempotent rollback-safe per-tenant provisioning gated on the signed payment webhook.
+- **Cycle 14 (Phase 10 acquisition/signup/provisioning)** — `signup/`: `accounts.py` (verify email+phone
+  BEFORE pay; Cognito unconfirmed, no tenant_id yet; idempotent create), `payment.py` (Stripe; checkout
+  refused until verified + idempotency key; `handle_webhook` is the ONLY provisioning trigger,
+  signature-verified + idempotent), `provisioning.py` (the 6-step idempotent rollback-safe pipeline:
+  tenant→workspace+key→agent plane→Cognito tenant→Cube/defaults→welcome; mint tenant_id at provisioning;
+  mid-failure parks provisioning_failed + tears down the orphan workspace), `funnel.py` (PostHog,
+  server-side revenue). 7 tests proving every anti-accidental-charge guarantee. Full suite 157 passed /
+  2 skipped; smoke green. Committed + pushed. Live Stripe/Cognito/Anthropic-Admin/Resend BLOCKED: needs Nick.
+- **Next** — Phase 11 (cost/guardrails/observability): inference levers (tiering/caching/batch),
+  AWS Budgets + 90% Deny action, per-workspace caps, cost tags, CloudWatch alarms, OTEL/ADOT tracing.
   (Aurora/Redis/S3 IaC + `db/schema.sql` with FORCE'd RLS + the two-tenant isolation proof
   incl. a vector query).
