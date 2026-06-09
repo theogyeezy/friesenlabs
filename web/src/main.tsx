@@ -11,6 +11,21 @@ import "./globals";
 
 import App from "./app";
 import DashboardDemo from "./dashboard/Demo";
+import { SafeHtml } from "./lib/SafeHtml";
+
+// Demo proving feed HTML is sanitized: a malicious payload renders inert, safe markup survives.
+function SafeHtmlDemo() {
+  const payload =
+    '<img src=x onerror="window.__pwned=1"><script>window.__pwned=1<\/script><b>safe bold</b>';
+  return (
+    <div style={{ padding: 24 }}>
+      <h1>SafeHtml</h1>
+      <div data-testid="feed">
+        <SafeHtml as="p" html={payload} />
+      </div>
+    </div>
+  );
+}
 
 // API-wired surfaces (Phase 9b). Each reads through the typed ApiClient, which
 // defaults to mock mode so these mount fully offline. They share the same
@@ -38,6 +53,8 @@ function Root() {
       return <DashboardView />;
     case "signup":
       return <SignupFlow />;
+    case "safehtml-demo":
+      return <SafeHtmlDemo />;
     default:
       return <App />;
   }

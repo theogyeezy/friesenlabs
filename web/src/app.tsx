@@ -1,6 +1,7 @@
 // @ts-nocheck
 import React from "react";
 import "./globals";
+import { SafeHtml } from "./lib/SafeHtml";
 const { useState, useEffect, useRef, useMemo, useCallback, useLayoutEffect, useReducer, useContext, useImperativeHandle, useId } = React;
 const { Icon, Logo, FL_DATA, FLStore, useStore, askClaude, bizContext, confettiBurst, XPBadge, useCountUp, CountUp, AreaChart, Sparkline, LoadBars, Donut, SlideOver, CommandPalette, HEAT, fmtMoney, StatCard, ToneIco, FLflag, useTweaks, TweaksPanel, TweakSection, TweakRow, TweakSlider, TweakToggle, TweakRadio, TweakSelect, TweakText, TweakNumber, TweakColor, TweakButton, FoxDemo, KanbanDemo, WorkflowDemo, GreenlightDemo, CommandDemo, IntegrationDemo, SupportDemo, SecurityDemo, SidecarDemo, CortexDemo } = window as any;
 // app.jsx, shell: sidebar, topbar, routing, tweaks, palette
@@ -224,7 +225,7 @@ function App() {
                   {feed.slice(0, 8).map((f, i) => (
                     <div key={f._k || i} style={{ display: "flex", gap: 10, padding: "11px 15px", borderBottom: "1px solid var(--line-2)" }}>
                       <span style={{ width: 7, height: 7, borderRadius: 99, background: agents[f.agent] ? agents[f.agent].color : "var(--accent)", marginTop: 5, flexShrink: 0 }} />
-                      <div><p style={{ fontSize: 12.5, lineHeight: 1.45 }} dangerouslySetInnerHTML={{ __html: f.html }} /><span style={{ fontSize: 11, color: "var(--ink-4)", fontFamily: "var(--mono)" }}>{f.meta}</span></div>
+                      <div><SafeHtml as="p" style={{ fontSize: 12.5, lineHeight: 1.45 }} html={f.html} /><span style={{ fontSize: 11, color: "var(--ink-4)", fontFamily: "var(--mono)" }}>{f.meta}</span></div>
                     </div>
                   ))}
                 </div>

@@ -1,6 +1,7 @@
 // @ts-nocheck
 import React from "react";
 import "../globals";
+import { SafeHtml } from "../lib/SafeHtml";
 const { useState, useEffect, useRef, useMemo, useCallback, useLayoutEffect, useReducer, useContext, useImperativeHandle, useId } = React;
 const { Icon, Logo, FL_DATA, FLStore, useStore, askClaude, bizContext, confettiBurst, XPBadge, useCountUp, CountUp, AreaChart, Sparkline, LoadBars, Donut, SlideOver, CommandPalette, HEAT, fmtMoney, StatCard, ToneIco, FLflag, useTweaks, TweaksPanel, TweakSection, TweakRow, TweakSlider, TweakToggle, TweakRadio, TweakSelect, TweakText, TweakNumber, TweakColor, TweakButton, FoxDemo, KanbanDemo, WorkflowDemo, GreenlightDemo, CommandDemo, IntegrationDemo, SupportDemo, SecurityDemo, SidecarDemo, CortexDemo } = window as any;
 // security.jsx, Security & control center: kill switch, autonomy, guardrails, access, audit
@@ -389,7 +390,7 @@ function SecAudit({ sec, feed, agents }) {
         {feed.map((f, i) => (
           <div className="feed-item" key={f._k || i}>
             <div className="feed-rail"><span style={{ width: 7, height: 7, borderRadius: 99, background: agents[f.agent] ? agents[f.agent].color : "var(--accent)", marginTop: 6 }} /></div>
-            <div className="feed-body"><p dangerouslySetInnerHTML={{ __html: f.html }} /><div className="feed-meta">{agents[f.agent] ? agents[f.agent].name : "System"} · {f.meta}</div></div>
+            <div className="feed-body"><SafeHtml as="p" html={f.html} /><div className="feed-meta">{agents[f.agent] ? agents[f.agent].name : "System"} · {f.meta}</div></div>
           </div>
         ))}
       </div>
