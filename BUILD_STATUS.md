@@ -36,7 +36,7 @@ tests: U=unit · I=integration · S=smoke · E=e2e(Playwright) · X=isolation �
 | 5 | Control Plane (autonomy, Greenlight, traces, kill switch) | ✅ | orchestrator | ✓ | ✓ | · | · | · | self ✓ |
 | 6 | Conversational Layer (front door, slots, agentic RAG+cites) | ✅ | bg-agent | ✓ | ✓ | · | · | · | cross ✓ |
 | 7 | Dashboard Engine (view-spec, generate, render, save/edit) | ✅ | orch+agent | ✓ | · | ✓ | ✓ | · | cross ✓ |
-| 8 | Cortex / ML (per-tenant models, train, registry, retrain) | ⬜ | — | · | · | · | · | · | — |
+| 8 | Cortex / ML (per-tenant models, train, registry, retrain) | ✅* | orchestrator | ✓ | · | · | · | · | self ✓ |
 | 9 | App, Auth & API (Cognito, FastAPI/Fargate, ALB, web) | ⬜ | — | · | · | · | · | · | — |
 | 10 | Acquisition, Signup & Provisioning (landing, Stripe, auto-provision) | ⬜ | — | · | · | · | · | · | — |
 | 11 | Cost, Guardrails & Observability (budgets, caps, CloudWatch, OTEL) | ⬜ | — | · | · | · | · | · | — |
@@ -150,7 +150,16 @@ tests: U=unit · I=integration · S=smoke · E=e2e(Playwright) · X=isolation �
   typecheck clean, Playwright 3 passed incl. an XSS spec that yields the fallback (`window.__pwned`
   undefined, payload never in DOM). Committed + pushed. (Logged a separate pre-existing prototype-feed
   XSS follow-up.)
-- **Next** — Phase 8 (Cortex/ML): per-tenant propensity model, train, registry, champion/challenger
-  gate, run_model tool, scheduled retrain.
+- **Cycle 11 (Phase 8 Cortex/ML)** — `ml/`: `features.py` (lead→booked feature build), `estimator.py`
+  (Estimator protocol + real pure-Python LogisticRegression + MajorityBaseline floor; LightGBM/XGBoost
+  drop in for prod), `train.py` (split→bake-off→held-out AUC, deterministic), `metrics.py` (AUC/acc),
+  `registry.py` (per-tenant versioned registry + champion/challenger gate with promotion margin),
+  `retrain.py` (retrain orchestration + drift check), `agents/tools/run_model.py` (AUTO tool serving
+  the tenant champion, tenant-scoped). IaC: `modules/cortex` EventBridge retrain schedule (validate
+  only). 11 tests (learner beats random AUC>0.7, deterministic, gate promotes only on margin, run_model
+  tenant-scoped, drift flags degradation). Full suite 138 passed / 2 skipped; terraform validate +
+  smoke_all green. Committed + pushed. Live SageMaker/Modal training + EventBridge target BLOCKED: needs Nick.
+- **Next** — Phase 9 (app/auth/API): Cognito (JWT w/ tenant_id claim), FastAPI on Fargate, ALB, and
+  wire the React front end to the control plane + agent sessions.
   (Aurora/Redis/S3 IaC + `db/schema.sql` with FORCE'd RLS + the two-tenant isolation proof
   incl. a vector query).

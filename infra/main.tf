@@ -80,6 +80,12 @@ module "cube" {
   cube_api_secret_arn = module.secrets.cube_api_secret_arn
 }
 
+# --- Phase 8: Cortex scheduled retrain ---
+module "cortex" {
+  source  = "./modules/cortex"
+  project = var.project
+}
+
 # --- Phase 4: self-hosted tool-execution worker ---
 module "worker" {
   source             = "./modules/worker"
