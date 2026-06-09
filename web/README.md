@@ -93,6 +93,31 @@ web/
                         list of @ts-nocheck files to tighten later
 ```
 
+## Dashboard renderer
+
+`src/dashboard/` holds the Phase 7 trusted view-spec renderer: the one component
+that turns a declarative dashboard spec into pixels.
+
+- `viewSpec.ts` is the client-side mirror of
+  `shared/schemas/view_spec.schema.json`: a TypeScript type plus
+  `validateViewSpec(spec)`, a hand-written validator that rejects unknown
+  component types, any chart encoding other than `vega-lite`, and any extra
+  ("additional") property at every level. The catalog is closed by construction.
+- `SpecRenderer.tsx` is the renderer. It re-validates the spec first and shows a
+  safe "could not render" fallback if invalid. It renders ONLY the catalog: KPI
+  card, Vega-Lite chart (via `vega-embed`, SVG, loaders disabled), and table.
+  It never uses `dangerouslySetInnerHTML`, `eval`, or any raw-HTML sink, so spec
+  strings can only appear as escaped React text. Data comes solely through the
+  injected `loadData(query)` prop; the renderer never fetches.
+- `sample.ts` is a valid KPI + bar-chart spec plus an offline `loadData` stub.
+- `Demo.tsx` mounts the renderer at `?view=dashboard-demo` (a switch in
+  `main.tsx`), with a toggle between the valid spec and a malicious/invalid spec
+  to demonstrate the safe fallback.
+
+The e2e (`e2e/dashboard.spec.ts`) asserts the KPI number and chart SVG render
+for the valid spec, and that an injected `<script>`/HTML payload never reaches
+the DOM or executes for the invalid spec.
+
 ## Notes
 
 - Brand voice: no em-dashes in user-facing copy; say "Managed" not "Claude" in

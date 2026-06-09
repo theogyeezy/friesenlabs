@@ -10,9 +10,15 @@ import "./landing.css";
 import "./globals";
 
 import App from "./app";
+import DashboardDemo from "./dashboard/Demo";
+
+// Demo seam for the Phase 7 view-spec renderer. Reachable at ?view=dashboard-demo;
+// the normal SPA shell renders otherwise. Keeps the renderer mountable in the
+// running app without touching the converted (@ts-nocheck) shell.
+const isDashboardDemo = /[?&]view=dashboard-demo\b/.test(window.location.search);
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <App />
+    {isDashboardDemo ? <DashboardDemo /> : <App />}
   </React.StrictMode>
 );

@@ -35,7 +35,7 @@ tests: U=unit · I=integration · S=smoke · E=e2e(Playwright) · X=isolation �
 | 4 | Agent Plane (Managed Agents, roster, vaults, worker) | ✅* | orchestrator | ✓ | ✓ | · | · | · | self ✓ |
 | 5 | Control Plane (autonomy, Greenlight, traces, kill switch) | ✅ | orchestrator | ✓ | ✓ | · | · | · | self ✓ |
 | 6 | Conversational Layer (front door, slots, agentic RAG+cites) | ✅ | bg-agent | ✓ | ✓ | · | · | · | cross ✓ |
-| 7 | Dashboard Engine (view-spec, generate, render, save/edit) | 🟡 | orch+agent | ✓ | · | · | ? | · | self ✓ (core) |
+| 7 | Dashboard Engine (view-spec, generate, render, save/edit) | ✅ | orch+agent | ✓ | · | ✓ | ✓ | · | cross ✓ |
 | 8 | Cortex / ML (per-tenant models, train, registry, retrain) | ⬜ | — | · | · | · | · | · | — |
 | 9 | App, Auth & API (Cognito, FastAPI/Fargate, ALB, web) | ⬜ | — | · | · | · | · | · | — |
 | 10 | Acquisition, Signup & Provisioning (landing, Stripe, auto-provision) | ⬜ | — | · | · | · | · | · | — |
@@ -67,6 +67,10 @@ tests: U=unit · I=integration · S=smoke · E=e2e(Playwright) · X=isolation �
 - **`documents` content-hash** — ingest derives `sha256(content)` at read time for skip-if-unchanged
   since the schema has no hash column; consider adding `content_hash` to `documents` for efficiency.
 - Tighten the 42 `// @ts-nocheck` files in `web/` (see `web/CONVERSION_NOTES.md`).
+- **SECURITY: prototype feed XSS** — `web/src/app.tsx`, `screens/dashboard.tsx`, `screens/security.tsx`
+  render activity-feed `f.html` via `dangerouslySetInnerHTML` (inherited from the original prototype).
+  Sanitize (DOMPurify) or convert to structured text before any real/user-derived content flows in.
+  Not introduced by the spec-renderer (which is injection-safe), but must be fixed before launch.
 
 ## Cycle log
 - **Cycle 1** — repo scaffold (monorepo layout per Build Guide §Step 4), Python venv +
@@ -138,7 +142,15 @@ tests: U=unit · I=integration · S=smoke · E=e2e(Playwright) · X=isolation �
   save/version/refine-NL/edit, never persists invalid). 13 tests; full suite 127 passed / 2 skipped.
   Committed + pushed. Dispatched **background agent** for the trusted Vega-Lite renderer in `web/`
   (`scripts/briefs/07_dashboard_renderer.md`).
-- **Next** — integrate the renderer (build + Playwright), then Phase 8 (Cortex/ML): per-tenant
-  propensity model, train, registry, champion/challenger gate, run_model tool, scheduled retrain.
+- **Cycle 10 (Phase 7 renderer)** — background agent built the trusted renderer in `web/`:
+  `SpecRenderer.tsx` (re-validates the spec first → SafeFallback on error; renders only catalog
+  components: KPI card / Vega-Lite chart / table; no dangerouslySetInnerHTML / eval; vega-embed with
+  `actions:false` + loaders disabled so a spec can't reach the network), `viewSpec.ts` client
+  validator mirroring the JSON schema, sample spec + demo mount. Independent review: build exit 0,
+  typecheck clean, Playwright 3 passed incl. an XSS spec that yields the fallback (`window.__pwned`
+  undefined, payload never in DOM). Committed + pushed. (Logged a separate pre-existing prototype-feed
+  XSS follow-up.)
+- **Next** — Phase 8 (Cortex/ML): per-tenant propensity model, train, registry, champion/challenger
+  gate, run_model tool, scheduled retrain.
   (Aurora/Redis/S3 IaC + `db/schema.sql` with FORCE'd RLS + the two-tenant isolation proof
   incl. a vector query).
