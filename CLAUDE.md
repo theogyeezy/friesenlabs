@@ -14,26 +14,28 @@ Postgres isolation gate in CI, `terraform validate` + `plan`, web build/typechec
 a final adversarial audit pass is merged. CI runs on `main`; trunk is **`main`** (branch via
 short-lived `feat/…` PRs — see `CONTRIBUTING.md`).
 
-**Live infra (real money) — the backend is LIVE end-to-end.** Applied to AWS (acct 186052668426,
-us-east-1) under a $200 budget alarm. Live path: **browser → Amplify (Vite SPA) → CloudFront → ALB
-(HTTP) → arm64 Fargate API → Aurora** (FORCE'd RLS) with real Cognito JWKS auth enforced. Verified:
-`/api/healthz` 200, `/api/approvals` 401 (unauth rejected).
-- 🟡 **Demo/mock:** the **Cognito Hosted-UI PKCE login flow is built** (`web/src/auth/` — hand-rolled,
-  no auth SDK; sign-in gate, `/auth/callback`, ID-token attach + 401-refresh-retry, `npm test` unit
-  tests), but the deployed web build still ships `VITE_API_MOCK=1`; rebuild with `VITE_API_MOCK=0`
-  + a seeded Cognito user/tenant to go real. The real API is live at `/api`.
+**Live infra (real money) — the product is LIVE end-to-end, including login.** Applied to AWS
+(acct 186052668426, us-east-1) under a $200 budget alarm. Live path: **browser → Amplify (Vite SPA,
+real mode) → CloudFront → ALB (HTTP) → arm64 Fargate API → Aurora** (FORCE'd RLS) with real Cognito
+JWKS auth. **Browser-verified end-to-end:** sign-in gate → Hosted UI (PKCE) → code exchange →
+app shell → real RLS-scoped tenant rows. Unauth `/api/*` → 401; `/chat` → graceful 503 (AI parked).
+- ✅ **Login:** Cognito Hosted UI (`uplift-<acct>.auth.us-east-1.amazoncognito.com`) + hand-rolled
+  PKCE in `web/src/auth/` (no auth SDK). Demo user creds live in Secrets Manager `uplift/demo-user`
+  (tenant seeded via `scripts/seed_demo_tenant.py` as a one-off Fargate task, run as `crm_app`).
+  Note: Amplify 301s `/auth/callback` → `/auth/callback/` — the path match tolerates the slash.
 - ⛔ **Not live (parked):** the AI/agent plane (`agents/runtime.py` stub, `/chat` 503, noop executor —
   needs Anthropic creds); provisioning clients (`api/prod_deps.py` `_Stub`/`_Noop`, verify hardcoded off
   — needs Stripe/Resend/Admin creds); the cube/worker/observability/provisioning-Lambda/cortex modules
   (authored, unapplied).
-- ⚠️ **Drift:** ALB / api_service / api_cdn / IAM secret policies / 4 SG rules were created out-of-band
-  (CLI) and aren't in TF state; ECR `uplift-api` is MUTABLE. `terraform import` + reconcile before the
-  next `apply`.
+- ✅ **State reconciled:** out-of-band SG rules imported, budget untainted, ECR `uplift-api` back to
+  **IMMUTABLE** (push new image versions as new tags, not `:latest` overwrites). Full plan: 0
+  change/destroy to live resources; only the unapplied modules show as adds. Live var values load from
+  gitignored `infra/prod.auto.tfvars`.
 - **Ops:** state in **S3** (`uplift-tfstate-*`, KMS) — init `terraform init -backend-config=backend.hcl`
-  (gitignored). API image `uplift-api:latest` (arm64); rebuild `docker build --platform linux/arm64`.
-  DB migrate `python -m api.migrate` as a one-off Fargate task.
-- **The full granular, prioritized work list (119 items, P0→P3) is in [`TODO.md`](./TODO.md)** — start
-  at the login-flow critical path. Anything still un-applied / the AI plane is `BLOCKED: needs Nick`.
+  (gitignored). API image (arm64): `docker build --platform linux/arm64`. DB migrate
+  `python -m api.migrate`; tenant seed `scripts/seed_demo_tenant.py` — both as one-off Fargate tasks.
+- **The full granular, prioritized work list is in [`TODO.md`](./TODO.md)**. Next big chunks: AI plane
+  (needs Anthropic creds), provisioning (needs Stripe/Resend), cube/worker/observability deploys.
 
 **Tooling:** `.claude/settings.json` enables the official-marketplace plugins so collaborators inherit
 them on clone+trust. Don't commit secrets to it.

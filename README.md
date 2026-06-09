@@ -53,10 +53,10 @@ Everything that can be built and tested offline is done, and a final adversarial
 | State | Component | Why | Unblocked by |
 |-------|-----------|-----|--------------|
 | ✅ **Live & working** | Amplify → CloudFront → ALB → arm64 Fargate API → Aurora (FORCE'd RLS); Cognito JWKS auth | deployed + **verified** (`/api/healthz` 200, `/api/approvals` 401) | — |
-| 🟡 **Demo / mock** | Web UI (landing, dashboards, Greenlight, chat) | renders on sample data — Cognito Hosted-UI PKCE login flow is **built** (`web/src/auth/`); deployed build still ships `VITE_API_MOCK=1` | redeploy with `VITE_API_MOCK=0` + seeded user/tenant |
+| ✅ **Live & working** | Web UI with real login (Hosted-UI PKCE, `web/src/auth/`) | deployed real-mode build, **browser-verified end-to-end**: sign-in gate → Hosted UI → code exchange → app shell → real RLS-scoped rows from Aurora | — |
 | ⛔ **Not live** | AI / agent plane (chat, tools) | `runtime.py` stub, `/chat` 503, noop executor | Anthropic Managed Agents creds |
 | ⛔ **Not live** | cube/worker, observability, provisioning (Stripe/Resend), cortex | authored, not applied / stubbed | deploy + Stripe/Resend/Admin creds |
-| ⚠️ **Live but drifted** | ALB / api_service / api_cdn / IAM / SG rules | created out-of-band during deploy, not in TF state; ECR is MUTABLE | `terraform import` + reconcile |
+| ✅ **Reconciled** | Terraform state | out-of-band SG rules imported, ECR back to IMMUTABLE; full plan = 0 change/destroy to live resources (only the unapplied modules show as adds) | — |
 
 Applied to AWS account 186052668426 (us-east-1) under a $200 budget alarm; Terraform state in S3 (KMS).
 The full granular, prioritized work list (119 items, P0→P3) and the critical path to a fully-real

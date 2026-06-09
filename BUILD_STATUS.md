@@ -28,13 +28,17 @@ adapter); **everything else** = AWS (data plane, control plane, app, ML).
 > (`d1vw20lc120dpa.cloudfront.net`), **Amplify Hosting** (`main.d224yxym1ehrim.amplifyapp.com`, `/api`
 > proxy). **$200 budget alarm** armed. **State in S3** (`uplift-tfstate-*`, KMS).
 >
-> **Not yet real:** the **AI/agent plane** (no Anthropic Managed Agents creds — `runtime.py` stub).
-> The **Cognito login flow is now built into the SPA** (`web/src/auth/`: hand-rolled Hosted-UI
-> authorization-code + PKCE, no auth SDK; `/auth/callback` route, AuthProvider, ID-token attach
-> with 401-refresh-retry, sign-in gate over the landing screen, real-claims topbar chip;
-> unit-tested via `npm test` / `node --test`) — the **deployed** build still ships
-> `VITE_API_MOCK=1` until it is rebuilt with `VITE_API_MOCK=0` + a seeded Cognito user/tenant.
-> To tear down: `cd infra && terraform destroy`. Known SG-rule state drift — see CLAUDE.md.
+> **The login flow is LIVE and browser-verified end-to-end** (real-mode build deployed): sign-in
+> gate → Cognito Hosted UI (`web/src/auth/`: hand-rolled authorization-code + PKCE, no auth SDK) →
+> code exchange at `/auth/callback` → app shell with **real RLS-scoped tenant rows from Aurora**
+> (seeded via `scripts/seed_demo_tenant.py`; demo creds in Secrets Manager `uplift/demo-user`).
+> Unauth API → 401; `/chat` → graceful 503. State drift reconciled (SG rules imported, ECR
+> IMMUTABLE; plan = 0 change/destroy to live resources).
+>
+> **Not yet real:** the **AI/agent plane** (no Anthropic Managed Agents creds — `runtime.py` stub,
+> noop executor) and the **provisioning integrations** (Stripe/Resend/Admin stubs). The cube/worker/
+> observability/provisioning-Lambda/cortex modules are authored but unapplied.
+> To tear down: `cd infra && terraform destroy`.
 
 Source of truth: `docs/uplift-build-guide.pdf` (Build Guide, Phases 0–12) and the
 Architecture Design doc. Build in **dependency order**, not feature order.
