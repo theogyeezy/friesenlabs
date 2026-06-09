@@ -8,11 +8,19 @@ Uplift: a multi-tenant agentic CRM. Hybrid architecture — **agent plane** on C
 Agents (beta), **everything else** on AWS. See `README.md` for the shape and `BUILD_STATUS.md`
 for where the build currently is.
 
-**Status:** all 13 phases (0–12) + the frontend are implemented and green offline (pytest,
-`terraform validate`, web build/typecheck/Playwright, smoke, isolation harness). CI runs on `main`.
-The only remaining work is the `BLOCKED: needs Nick` list in `BUILD_STATUS.md` (live `apply`,
-credentials, and verifying the beta APIs). The trunk is **`main`** (branch via short-lived
-`feat/…` PRs — see `CONTRIBUTING.md`).
+**Status:** all 13 phases (0–12) + the frontend are implemented and green (pytest 193, real
+Postgres isolation gate in CI, `terraform validate` + `plan`, web build/typecheck/Playwright, smoke);
+a final adversarial audit pass is merged. CI runs on `main`; trunk is **`main`** (branch via
+short-lived `feat/…` PRs — see `CONTRIBUTING.md`).
+
+**Live infra (partial — real money):** the foundation + data plane + auth tier IS applied to AWS
+(acct 186052668426, us-east-1, ~63 resources incl. Aurora + Redis, ~$5/day) under a $200 budget alarm.
+The ALB + Fargate app tier is NOT applied (needs a TLS cert + pushed ECR images). Terraform state is
+LOCAL at `infra/terraform.tfstate` (back it up / move to an S3 backend before relying on it). Manage
+with `cd infra && terraform plan|apply|destroy`. Anything still un-applied is `BLOCKED: needs Nick`.
+
+**Tooling:** `.claude/settings.json` enables the official-marketplace plugins so collaborators inherit
+them on clone+trust. Don't commit secrets to it.
 
 ## How we build
 - **Dependency order, not feature order.** Phase 0 → 12. Don't start a phase whose inputs
