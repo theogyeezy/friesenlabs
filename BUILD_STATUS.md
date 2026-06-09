@@ -208,6 +208,24 @@ tests: U=unit · I=integration · S=smoke · E=e2e(Playwright) · X=isolation �
   (trunk-based on `prod`, branch model, the isolation gate), `scripts/demo.sh` (offline end-to-end
   dry-run). Fixed a `.gitignore` trailing-comment bug so env tfvars are tracked while secret tfvars stay
   ignored. Committed + pushed.
-- **All 13 phases (0-12) + frontend complete.** Final Definition-of-Done verification pass next.
+- **All 13 phases (0-12) + frontend complete.** Final Definition-of-Done verification pass done.
+- **Section A (connective tissue between units + the outside world)** — closed the gaps that stood
+  between "phases tested" and "runnable product":
+  - **A1** — exposed signup over HTTP: `api/signup_routes.py` (POST /signup, /verify-email,
+    /verify-phone, /checkout, GET /signup/{id}, **POST /webhooks/stripe** = the only provisioning
+    trigger) + wired `/views/{id}/refine`. Tests prove verify-before-pay, webhook-only provisioning,
+    bad-sig rejected, re-delivery idempotent.
+  - **A2** — `api/asgi.py` production entrypoint (boots, /healthz 200) + Dockerfiles for api / worker /
+    cube (+ `requirements-api.txt`). Images authored; `docker build` itself is a CI/Nick step.
+  - **A3** — `infra/modules/provisioning` Step Functions state machine (idempotent step-per-stage +
+    Retry + Catch→ParkProvisioningFailed). validate clean (19 modules).
+  - **A4** — signup funnel UI (`web/src/signup/SignupFlow.tsx`, ?view=signup) + PostHog client
+    (`web/src/analytics/posthog.ts`, env-only key, no-op in tests, masked replay, /ph proxy). Playwright
+    6 passed. (background agent, cross-reviewed)
+  - Full suite **166 passed / 2 skipped**; terraform validate + smoke + web build/typecheck/e2e green.
+    Pushed to `prod`.
+- **Next** — Section D (launch-blocker security follow-ups I flagged): sanitize the prototype-feed
+  `dangerouslySetInnerHTML` XSS; fold `ingest_cursor` into `db/schema.sql` under RLS. Then the
+  DB-backed production stores (ApprovalStore/SavedViewStore over Aurora) referenced by `api/asgi.py` TODOs.
   (Aurora/Redis/S3 IaC + `db/schema.sql` with FORCE'd RLS + the two-tenant isolation proof
   incl. a vector query).
