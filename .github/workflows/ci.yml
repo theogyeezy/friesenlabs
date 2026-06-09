@@ -59,17 +59,23 @@ jobs:
       - name: Unit + integration tests
         # UPLIFT_TEST_DB_URL = owner DSN (loads/owns schema); UPLIFT_DB_URL = NON-OWNER crm_app DSN
         # so RLS is actually exercised. These make the two DB integration tests run instead of skip.
+        # 127.0.0.1 (not localhost) so psycopg2 uses IPv4 — the service publishes on IPv4 and
+        # `localhost` can resolve to ::1 first, which is why the DB tests silently skipped before.
         env:
-          UPLIFT_TEST_DB_URL: postgresql://postgres:postgres@localhost:5432/uplift
-          UPLIFT_DB_URL: postgresql://crm_app:ci@localhost:5432/uplift
+          UPLIFT_TEST_DB_URL: postgresql://postgres:postgres@127.0.0.1:5432/uplift
+          UPLIFT_DB_URL: postgresql://crm_app:ci@127.0.0.1:5432/uplift
         run: pytest -q
       - name: Multi-tenant isolation gate
         # UPLIFT_REQUIRE_DB=1 makes the gate FAIL (non-zero) if no DB is reachable, instead of the
         # graceful PENDING skip — so the gate truly gates in CI. Runs as the non-owner crm_app role.
+        # Re-assert crm_app's password first: the RLS integration test resets it, so make the gate
+        # self-contained.
         env:
-          UPLIFT_DB_URL: postgresql://crm_app:ci@localhost:5432/uplift
+          UPLIFT_DB_URL: postgresql://crm_app:ci@127.0.0.1:5432/uplift
           UPLIFT_REQUIRE_DB: "1"
-        run: python scripts/isolation_test.py
+        run: |
+          psql -v ON_ERROR_STOP=1 -c "ALTER ROLE crm_app PASSWORD 'ci'"
+          python scripts/isolation_test.py
 
   terraform:
     runs-on: ubuntu-latest

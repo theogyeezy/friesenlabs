@@ -10,6 +10,7 @@ for f in semantic/cube.js semantic/security.js semantic/model/cubes/*.js; do
 done
 
 echo "[smoke:semantic] tenant security context tests (force tenant filter / throw without tenant)"
-node --test "semantic/test/*.test.js" >/dev/null
+# Unquoted so the SHELL expands the glob (Node <21 doesn't expand globs in --test; CI runs Node 20).
+node --test semantic/test/*.test.js >/dev/null
 
 echo "[smoke:semantic] OK"
