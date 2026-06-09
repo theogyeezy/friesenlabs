@@ -12,8 +12,8 @@ import os
 from api.app import ApiDeps, create_app
 from api.auth import CognitoJwtVerifier, JwtVerifier
 from api.control.autonomy import AutonomyConfig
-from api.control.greenlight import Greenlight
-from api.views import SavedViews
+from api.control.greenlight import Greenlight, PgApprovalStore
+from api.views import PgSavedViewStore, SavedViews
 
 
 def _verifier() -> JwtVerifier:
@@ -33,10 +33,18 @@ def _verifier() -> JwtVerifier:
 
 
 def build_app():
+    # Aurora-backed stores when a crm_app DSN is configured; else in-memory (boots for /healthz).
+    dsn = os.environ.get("UPLIFT_DB_URL")
+    if dsn:
+        greenlight = Greenlight(store=PgApprovalStore(dsn))
+        saved_views = SavedViews(store=PgSavedViewStore(dsn))
+    else:
+        greenlight = Greenlight()
+        saved_views = SavedViews()
     deps = ApiDeps(
         verifier=_verifier(),
-        greenlight=Greenlight(),          # TODO(prod): Aurora-backed ApprovalStore over `approvals`
-        saved_views=SavedViews(),         # TODO(prod): Aurora-backed SavedViewStore over `saved_views`
+        greenlight=greenlight,
+        saved_views=saved_views,
         conversation_factory=lambda tenant_id: None,  # TODO(prod): real conv.session.Conversation
         autonomy_config=AutonomyConfig(),
         executor=lambda action: {"status": "noop"},   # TODO(prod): real tool executor via the worker

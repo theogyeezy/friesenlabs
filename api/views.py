@@ -16,13 +16,17 @@ class SavedViewStore(Protocol):
     def insert(self, row: dict) -> None: ...
     def latest(self, tenant_id: str, view_id: str) -> dict | None: ...
     def list(self, tenant_id: str) -> list[dict]: ...
+    def bind_tenant(self, tenant_id: str) -> None: ...
 
 
 class InMemorySavedViewStore:
-    """Offline store (the real one is `saved_views` in Aurora, tenant-scoped via RLS)."""
+    """Offline store (the real one is `PgSavedViewStore` over Aurora, tenant-scoped via RLS)."""
 
     def __init__(self):
         self.rows: list[dict] = []
+
+    def bind_tenant(self, tenant_id: str) -> None:
+        pass
 
     def insert(self, row: dict) -> None:
         self.rows.append(dict(row))
@@ -40,6 +44,56 @@ class InMemorySavedViewStore:
             if r["view_id"] not in latest or r["version"] > latest[r["view_id"]]["version"]:
                 latest[r["view_id"]] = r
         return list(latest.values())
+
+
+class PgSavedViewStore:
+    """Aurora-backed saved-views store over `saved_views`. Connects as crm_app and SETs
+    app.current_tenant so RLS scopes every read/write. Import-safe (lazy psycopg2)."""
+
+    def __init__(self, dsn: str):
+        import psycopg2  # noqa: PLC0415 — guarded
+        from psycopg2.extras import Json, RealDictCursor  # noqa: PLC0415
+        self._Json = Json
+        self._cursor_factory = RealDictCursor
+        self._conn = psycopg2.connect(dsn)
+        self._tenant: str | None = None
+
+    def bind_tenant(self, tenant_id: str) -> None:
+        self._tenant = str(tenant_id)
+
+    def _cur(self):
+        cur = self._conn.cursor(cursor_factory=self._cursor_factory)
+        if self._tenant is not None:
+            cur.execute("SET app.current_tenant = %s", (self._tenant,))
+        return cur
+
+    def insert(self, row: dict) -> None:
+        self.bind_tenant(row["tenant_id"])
+        with self._cur() as cur:
+            cur.execute(
+                "INSERT INTO saved_views (tenant_id, view_id, version, spec_json, semantic_refs, "
+                "source_prompt, created_by) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                (row["tenant_id"], row["view_id"], row["version"], self._Json(row["spec_json"]),
+                 self._Json(row.get("semantic_refs") or []), row.get("source_prompt"), row.get("created_by")),
+            )
+        self._conn.commit()
+
+    def latest(self, tenant_id: str, view_id: str) -> dict | None:
+        self.bind_tenant(tenant_id)
+        with self._cur() as cur:
+            cur.execute(
+                "SELECT * FROM saved_views WHERE view_id = %s ORDER BY version DESC LIMIT 1", (view_id,)
+            )
+            row = cur.fetchone()
+        return dict(row) if row else None
+
+    def list(self, tenant_id: str) -> list[dict]:
+        self.bind_tenant(tenant_id)
+        with self._cur() as cur:
+            cur.execute(
+                "SELECT DISTINCT ON (view_id) * FROM saved_views ORDER BY view_id, version DESC"
+            )
+            return [dict(r) for r in cur.fetchall()]
 
 
 class SavedViews:

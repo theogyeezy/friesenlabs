@@ -82,9 +82,11 @@ def create_app(deps: ApiDeps) -> FastAPI:
         return {"approvals": deps.greenlight.list_pending(claims.tenant_id)}
 
     @app.post("/approvals/{approval_id}/decide")
-    def decide_approval(approval_id: int, body: DecideBody, claims: TenantClaims = Depends(current_tenant)):
+    def decide_approval(approval_id: str, body: DecideBody, claims: TenantClaims = Depends(current_tenant)):
+        # Bind the tenant so RLS scopes the read/write (no-op for the in-memory store).
+        deps.greenlight.store.bind_tenant(claims.tenant_id)
         rec = deps.greenlight.store.get(approval_id)
-        if rec is None or rec["tenant_id"] != claims.tenant_id:
+        if rec is None or str(rec["tenant_id"]) != str(claims.tenant_id):
             raise HTTPException(status_code=404, detail="no such approval")  # tenant-scoped
         try:
             return deps.greenlight.decide(approval_id, body.decision, edits=body.edits,

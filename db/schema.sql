@@ -97,6 +97,8 @@ CREATE TABLE IF NOT EXISTS approvals (
     reasoning       text,
     value_at_stake  numeric(14, 2),
     status          text NOT NULL DEFAULT 'pending',   -- pending|approved|denied|expired
+    decided_by      text,
+    deny_message    text,
     created_at      timestamptz NOT NULL DEFAULT now(),
     decided_at      timestamptz
 );
