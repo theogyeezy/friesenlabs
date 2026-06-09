@@ -4,6 +4,7 @@ import pytest
 from signup.accounts import AccountService, State
 from signup.payment import PaymentError, PaymentService
 from signup.provisioning import Provisioner
+from signup.funnel import Funnel
 
 
 # ---------------- fakes ----------------
@@ -225,3 +226,134 @@ def test_rollback_on_midfailure_parks_failed_and_tears_down_workspace():
     # the half-created workspace was rolled back (no orphan)
     assert admin.deleted == list(admin.workspaces.values())
     assert "provisioning_error" in acct.meta
+
+
+# ---------------- M6: signed webhook for an unknown account is a handled no-op ----------------
+@pytest.mark.unit
+def test_webhook_unknown_account_is_handled_noop_not_crash():
+    svc = _account_service()
+    _verified_account(svc)  # the only real account is "a1"
+    provisioned = []
+    # A signed event whose client_reference_id matches no account.
+    event = {"type": "checkout.session.completed",
+             "data": {"object": {"client_reference_id": "ghost"}}}
+    pay = PaymentService(Stripe(event), svc, on_paid=lambda a: provisioned.append(a.id))
+    res = pay.handle_webhook(b"{}", "good-sig", "whsec")
+    assert res == {"handled": False, "reason": "unknown account"}  # no AttributeError / no 400
+    assert provisioned == []  # nothing provisioned for a phantom account
+
+
+# ---------------- M7: server-side input validation on AccountService.create ----------------
+@pytest.mark.unit
+def test_create_rejects_invalid_email():
+    svc = _account_service()
+    with pytest.raises(ValueError):
+        svc.create("a1", "not-an-email", "+15555550100")
+
+
+@pytest.mark.unit
+def test_create_rejects_disposable_email():
+    svc = _account_service()
+    with pytest.raises(ValueError):
+        svc.create("a1", "burner@mailinator.com", "+15555550100")
+
+
+@pytest.mark.unit
+def test_create_rejects_bad_phone():
+    svc = _account_service()
+    with pytest.raises(ValueError):
+        svc.create("a1", "u@x.com", "not-a-phone")
+
+
+@pytest.mark.unit
+def test_create_normalizes_email_and_phone():
+    svc = _account_service()
+    acct = svc.create("a1", "  User@Example.COM ", "+1 (555) 555-0100")
+    assert acct.email == "user@example.com"  # lowercased + trimmed
+    assert acct.phone == "+15555550100"      # E.164-ish: '+' + digits only
+
+
+@pytest.mark.unit
+def test_create_enforces_email_uniqueness():
+    svc = _account_service()
+    first = svc.create("a1", "dup@x.com", "+15555550100")
+    # A *different* account_id but the same email returns the existing account (no duplicate).
+    second = svc.create("a2", "DUP@x.com", "+15555550101")
+    assert second is first
+    assert "a2" not in svc.store.rows  # no second row was inserted
+
+
+# ---------------- L4: phone-before-email ordering reaches PHONE_VERIFIED ----------------
+@pytest.mark.unit
+def test_verify_phone_then_email_ends_phone_verified():
+    svc = _account_service()
+    svc.create("a1", "u@x.com", "+15555550100")
+    # Phone first (the previously-stuck ordering), then email.
+    svc.verify_phone("a1", True)
+    acct = svc.verify_email("a1", True)
+    assert acct.email_verified and acct.phone_verified
+    assert acct.state is State.PHONE_VERIFIED  # not stuck — fully verified, ready to pay
+    assert acct.may_pay
+
+
+# ---------------- L2: provision() asserts fully_verified (defense in depth) ----------------
+@pytest.mark.unit
+def test_provision_refuses_unverified_account_even_if_paid():
+    svc = _account_service()
+    acct = svc.create("a1", "u@x.com", "+15555550100")
+    acct.state = State.PAID            # forced into PAID without verifying email/phone
+    prov = _provisioner(svc.store)
+    with pytest.raises(ValueError):
+        prov.provision(acct)
+
+
+# ---------------- H7: server-side funnel wiring ----------------
+class FunnelRecorder:
+    """PostHog stand-in: records (distinct_id, event, properties) and group() calls."""
+    def __init__(self):
+        self.captures = []
+        self.groups = []
+
+    def capture(self, distinct_id, event, properties):
+        self.captures.append((distinct_id, event, properties))
+
+    def group(self, distinct_id, tenant_id):
+        self.groups.append((distinct_id, tenant_id))
+
+
+@pytest.mark.unit
+def test_funnel_records_payment_succeeded_on_webhook():
+    svc = _account_service()
+    _verified_account(svc)
+    rec = FunnelRecorder()
+    funnel = Funnel(rec)
+    event = {"type": "checkout.session.completed",
+             "data": {"object": {"client_reference_id": "a1",
+                                 "metadata": {"plan": "pro", "mrr": 99.0}}}}
+    pay = PaymentService(Stripe(event), svc, on_paid=lambda a: None, funnel=funnel)
+    pay.handle_webhook(b"{}", "good-sig", "whsec")
+    events = [e for (_, e, _) in rec.captures]
+    assert "payment_succeeded" in events
+    distinct_id, _, props = next(c for c in rec.captures if c[1] == "payment_succeeded")
+    assert distinct_id == "a1"
+    assert props == {"plan": "pro", "mrr": 99.0}
+
+
+@pytest.mark.unit
+def test_funnel_records_instance_provisioned_on_provision():
+    svc = _account_service()
+    acct = _verified_account(svc)
+    acct.state = State.PAID
+    rec = FunnelRecorder()
+    funnel = Funnel(rec)
+    prov = Provisioner(
+        store=svc.store, mint_tenant_id=lambda aid: f"tenant-{aid}", db=DB(),
+        anthropic_admin=AnthropicAdmin(), secrets=Secrets(), cognito=Cognito(),
+        cube=Recorder(), resend=Recorder(), agent_plane=Recorder(), funnel=funnel,
+    )
+    res = prov.provision(acct)
+    assert res.ok
+    events = [e for (_, e, _) in rec.captures]
+    assert "instance_provisioned" in events
+    # grouped under the tenant minted at provisioning
+    assert rec.groups == [("a1", "tenant-a1")]

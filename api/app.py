@@ -60,9 +60,9 @@ class ChatBody(BaseModel):
 
 
 class ActionBody(BaseModel):
+    # NOTE: side_effecting + channel are intentionally NOT accepted from the client — the gate derives
+    # them from the trusted tool registry (a forged flag must not bypass Greenlight/compliance).
     name: str
-    side_effecting: bool = False
-    channel: str | None = None
     payload: dict = {}
     reasoning: str = ""
     value_at_stake: float | None = None
@@ -128,14 +128,22 @@ def create_app(deps: ApiDeps) -> FastAPI:
     @app.post("/chat")
     def chat(body: ChatBody, claims: TenantClaims = Depends(current_tenant)):
         convo = deps.conversation_factory(claims.tenant_id)
+        if convo is None:  # conversation backend not wired (e.g. agent runtime needs creds) — fail clean
+            raise HTTPException(status_code=503, detail="chat backend not configured")
         turn = convo.send(body.message)
         return turn.as_dict() if hasattr(turn, "as_dict") else turn
 
     @app.post("/actions")
     def run_action(body: ActionBody, claims: TenantClaims = Depends(current_tenant)):
+        # Derive whether the action is side-effecting + its channel from the TRUSTED tool registry,
+        # never from the request body — a forged flag must not bypass Greenlight/compliance.
+        from agents.tools.registry import TOOL_REGISTRY, tool_meta
+        if body.name not in TOOL_REGISTRY:
+            raise HTTPException(status_code=400, detail=f"unknown tool: {body.name}")
+        meta = tool_meta(body.name)
         action = Action(
-            name=body.name, agent=claims.sub, side_effecting=body.side_effecting,
-            channel=body.channel, payload=body.payload, reasoning=body.reasoning,
+            name=body.name, agent=claims.sub, side_effecting=meta["side_effecting"],
+            channel=meta["channel"], payload=body.payload, reasoning=body.reasoning,
             value_at_stake=body.value_at_stake, discount=body.discount,
         )
         ctx = GateContext(

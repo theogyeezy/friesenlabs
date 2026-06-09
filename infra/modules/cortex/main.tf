@@ -14,7 +14,17 @@ resource "aws_cloudwatch_event_rule" "retrain" {
   schedule_expression = var.retrain_schedule
 }
 
-# Target (SageMaker pipeline / Fargate task) is attached at apply time; left out so validate needs no
-# live ARNs. VERIFY: point this at the retrain job and add the drift-alarm SNS topic before apply.
+# NOTE — the EventBridge rule above has NO target attached here on purpose.
+# The retrain target (a SageMaker pipeline / training-job Lambda, or a Fargate task) requires live
+# ARNs that don't exist until apply, so attaching an `aws_cloudwatch_event_target` now would break
+# `terraform validate`. BLOCKED: needs Nick — at apply, add an `aws_cloudwatch_event_target` whose
+# `arn` points at the retrain compute and grant EventBridge `iam:PassRole` / invoke permission.
+
+# Drift-alarm SNS topic: authored now (validate-clean) so the retrain job + Cortex drift detector
+# have a stable topic to publish to. Subscriptions/alarm wiring land at apply (needs Nick).
+resource "aws_sns_topic" "drift" {
+  name = "${var.project}-cortex-drift"
+}
 
 output "retrain_rule_name" { value = aws_cloudwatch_event_rule.retrain.name }
+output "drift_topic_arn" { value = aws_sns_topic.drift.arn }

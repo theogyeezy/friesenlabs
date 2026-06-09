@@ -13,11 +13,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-# Illustrative $/1M tokens (input, output) — VERIFY against live pricing.
+# $/1M tokens (input, output) per the Build Guide pricing table (Appendix B) — VERIFY against live pricing.
 TIER_PRICES = {
-    "haiku":  (0.80, 4.00),
+    "haiku":  (1.00, 5.00),
     "sonnet": (3.00, 15.00),
-    "opus":   (15.00, 75.00),
+    "opus":   (5.00, 25.00),
 }
 DEFAULT_MIX = {"haiku": 0.70, "sonnet": 0.25, "opus": 0.05}  # 70/25/5
 

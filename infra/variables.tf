@@ -27,3 +27,15 @@ variable "ecr_repos" {
   type        = list(string)
   default     = ["api", "cube", "worker"]
 }
+
+variable "notify_email" {
+  description = "Email for budget + alarm SNS notifications. Empty = no subscription wired (validate-clean)."
+  type        = string
+  default     = ""
+}
+
+variable "budgets_action_execution_role_arn" {
+  description = "IAM role AWS Budgets assumes to apply the Deny-at-90% policy. Empty = budget action not created (BLOCKED: needs Nick)."
+  type        = string
+  default     = ""
+}

@@ -20,10 +20,11 @@ class CheckoutResult:
 
 
 class PaymentService:
-    def __init__(self, stripe, accounts, on_paid):
+    def __init__(self, stripe, accounts, on_paid, *, funnel=None):
         self.stripe = stripe          # injected Stripe client (construct_event, customers, checkout)
         self.accounts = accounts      # AccountService (for store access)
         self.on_paid = on_paid        # callback(account) -> starts provisioning
+        self.funnel = funnel          # optional signup.funnel.Funnel; None = no-op (offline tests)
 
     def start_checkout(self, account_id: str, plan: str, idempotency_key: str) -> CheckoutResult:
         acct = self.accounts.store.get(account_id)
@@ -45,9 +46,15 @@ class PaymentService:
         if event["type"] not in ("checkout.session.completed", "invoice.paid"):
             return {"handled": False, "reason": f"ignored {event['type']}"}
 
-        account_id = event["data"]["object"]["client_reference_id"]
+        obj = event["data"]["object"]
+        account_id = obj["client_reference_id"]
         acct = self.accounts.store.get(account_id)
         from .accounts import State
+
+        # M6: a signed event whose client_reference_id matches no account is a handled no-op,
+        # not an AttributeError -> opaque 400. (Stale/foreign reference, manual test event, etc.)
+        if acct is None:
+            return {"handled": False, "reason": "unknown account"}
 
         # Idempotent: a re-delivered webhook for an already-paid/provisioned account is a no-op.
         if acct.state in (State.PAID, State.PROVISIONING, State.ACTIVE):
@@ -55,5 +62,11 @@ class PaymentService:
 
         acct.state = State.PAID
         self.accounts.store.update(acct)
+        # H7: emit the revenue event SERVER-side (from the signed webhook) so ad-blockers can't
+        # drop it. Optional/injected — None is a no-op so offline tests need no PostHog.
+        if self.funnel is not None:
+            plan = obj.get("plan") or (obj.get("metadata") or {}).get("plan") or "unknown"
+            mrr = obj.get("mrr") or (obj.get("metadata") or {}).get("mrr") or 0.0
+            self.funnel.revenue(account_id, plan, mrr)
         self.on_paid(acct)            # start provisioning (Step 55)
         return {"handled": True, "account_id": account_id}

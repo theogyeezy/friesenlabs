@@ -124,13 +124,18 @@ module "provisioning" {
 
 # --- Phase 11: cost guardrails + observability ---
 module "guardrails" {
-  source  = "./modules/guardrails"
-  project = var.project
+  source       = "./modules/guardrails"
+  project      = var.project
+  notify_email = var.notify_email
+  # Empty default leaves the Deny-at-90% budget action un-created (validate-clean); set at apply.
+  budgets_action_execution_role_arn = var.budgets_action_execution_role_arn
 }
 
 module "observability" {
-  source  = "./modules/observability"
-  project = var.project
+  source         = "./modules/observability"
+  project        = var.project
+  notify_email   = var.notify_email
+  alb_arn_suffix = module.alb.arn_suffix
 }
 
 # --- Phase 4: self-hosted tool-execution worker ---

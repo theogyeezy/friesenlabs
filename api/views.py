@@ -97,12 +97,24 @@ class PgSavedViewStore:
 
 
 class SavedViews:
-    def __init__(self, store: SavedViewStore | None = None, allowed_members: set[str] | None = None):
+    def __init__(self, store: SavedViewStore | None = None, allowed_members: set[str] | None = None,
+                 members_provider=None):
         self.store = store or InMemorySavedViewStore()
         self.allowed_members = allowed_members
+        # Optional per-tenant resolver: tenant_id -> set[str] of real Cube members (live catalog).
+        # In production wire this to the Cube catalog so specs are validated against THAT tenant's
+        # members; without it the static allowed_members is used (tests) — but never silently skip
+        # when a provider is configured.
+        self.members_provider = members_provider
+
+    def _members_for(self, tenant_id: str) -> set[str] | None:
+        if self.members_provider is not None:
+            return set(self.members_provider(tenant_id))
+        return self.allowed_members
 
     def _persist(self, tenant_id: str, spec: dict, source_prompt: str, created_by: str, version: int) -> dict:
-        view_spec.validate(spec, allowed_members=self.allowed_members)  # never persist an invalid spec
+        # Validate against THIS tenant's real Cube members (never persist an invalid spec).
+        view_spec.validate(spec, allowed_members=self._members_for(tenant_id))
         row = {
             "tenant_id": tenant_id,
             "view_id": spec["view_id"],
