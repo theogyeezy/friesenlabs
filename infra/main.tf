@@ -116,6 +116,12 @@ module "cortex" {
   project = var.project
 }
 
+# --- Phase 10: provisioning orchestration (Step Functions) ---
+module "provisioning" {
+  source  = "./modules/provisioning"
+  project = var.project
+}
+
 # --- Phase 11: cost guardrails + observability ---
 module "guardrails" {
   source  = "./modules/guardrails"
