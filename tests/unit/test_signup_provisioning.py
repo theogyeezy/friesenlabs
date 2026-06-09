@@ -307,6 +307,60 @@ def test_provision_refuses_unverified_account_even_if_paid():
         prov.provision(acct)
 
 
+# ---------------- per-tenant Managed Agents ids persisted at provisioning ----------------
+class AgentPlane:
+    """Agent-plane fake: ensure() returns the created MA ids (the real plane's contract)."""
+
+    def ensure(self, *, tenant_id, workspace_id):
+        return {"workspace_id": workspace_id,
+                "environment_id": f"env-{tenant_id}",
+                "coordinator_id": f"coord-{tenant_id}"}
+
+
+@pytest.mark.unit
+def test_provisioning_upserts_workspace_ids_after_agent_plane_ensure():
+    from agents.workspace_store import InMemoryWorkspaceStore
+
+    svc = _account_service()
+    acct = _verified_account(svc)
+    acct.state = State.PAID
+    ws_store = InMemoryWorkspaceStore()
+    prov = Provisioner(
+        store=svc.store, mint_tenant_id=lambda aid: f"tenant-{aid}", db=DB(),
+        anthropic_admin=AnthropicAdmin(), secrets=Secrets(), cognito=Cognito(),
+        cube=Recorder(), resend=Recorder(), agent_plane=AgentPlane(),
+        workspace_store=ws_store,
+    )
+    res = prov.provision(acct)
+    assert res.ok
+    # The row the conversation factory + worker read back (no per-request roster rebuild).
+    assert ws_store.get("tenant-a1") == {
+        "tenant_id": "tenant-a1",
+        "workspace_id": "ws_1",
+        "environment_id": "env-tenant-a1",
+        "coordinator_id": "coord-tenant-a1",
+    }
+
+
+@pytest.mark.unit
+def test_provisioning_skips_workspace_store_when_none():
+    # Default workspace_store=None must change nothing (offline tests / DB unconfigured).
+    svc = _account_service()
+    acct = _verified_account(svc)
+    acct.state = State.PAID
+    res = _provisioner(svc.store).provision(acct)
+    assert res.ok  # no AttributeError; persistence simply skipped
+
+
+@pytest.mark.unit
+def test_prod_deps_noop_agent_plane_returns_stub_ids():
+    from api.prod_deps import _Noop
+
+    assert _Noop().ensure(tenant_id="t", workspace_id="ws") == {
+        "workspace_id": "stub-ws", "environment_id": "stub-env", "coordinator_id": "stub-coord",
+    }
+
+
 # ---------------- H7: server-side funnel wiring ----------------
 class FunnelRecorder:
     """PostHog stand-in: records (distinct_id, event, properties) and group() calls."""

@@ -50,7 +50,8 @@ class AgentRuntime(abc.ABC):
     def create_vault(self, display_name: str, external_user_id: str) -> str: ...
 
     @abc.abstractmethod
-    def create_session(self, coordinator_id: str, tenant_id: str, vault_id: str | None = None) -> Session: ...
+    def create_session(self, coordinator_id: str, tenant_id: str, vault_id: str | None = None,
+                       environment_id: str | None = None) -> Session: ...
 
     @abc.abstractmethod
     def send_message(self, session: Session, message: str) -> dict[str, Any]: ...
@@ -61,8 +62,11 @@ class ManagedAgentsRuntime(AgentRuntime):
     (tests inject a mocked client); every assumed SDK shape carries a `# VERIFY:` flag. The org API
     key creates sessions/agents; it must never reach the worker (the worker holds the env key only).
 
-    `environment_id` may be passed in (the persisted per-tenant id) or is captured from
-    `create_environment` — `create_session` refuses to run without one.
+    Environment binding is PER TENANT: `create_session(..., environment_id=...)` takes the
+    persisted id for THAT tenant (resolved from the WorkspaceStore by the caller). The
+    constructor/`create_environment` id is only a single-tenant convenience fallback — an
+    instance-global must never silently serve every tenant, and `create_environment` refuses to
+    overwrite an already-configured id.
     """
 
     def __init__(self, api_key: str | None = None, environment_id: str | None = None):
@@ -110,6 +114,15 @@ class ManagedAgentsRuntime(AgentRuntime):
         return getattr(stop, "type", None)
 
     def create_environment(self, name: str) -> str:
+        # Guard: never silently overwrite a configured environment id (the persisted per-tenant id
+        # from the WorkspaceStore). A runtime bound to tenant X's environment must not be repointed
+        # at a fresh one mid-flight — provision on a fresh runtime instead.
+        if self._environment_id is not None:
+            raise RuntimeError(
+                f"this runtime is already bound to environment {self._environment_id!r}; "
+                "refusing to create (and overwrite it with) a new environment — provision on a "
+                "fresh ManagedAgentsRuntime instance"
+            )
         # VERIFY: POST /v1/environments — self-hosted config is the bare {"type": "self_hosted"}
         # (no networking/packages sub-fields apply); tool execution stays in our VPC via
         # worker/worker.py polling this environment's work queue with the env key.
@@ -173,11 +186,16 @@ class ManagedAgentsRuntime(AgentRuntime):
         )
         return vault.id
 
-    def create_session(self, coordinator_id, tenant_id, vault_id=None) -> Session:
-        if self._environment_id is None:
+    def create_session(self, coordinator_id, tenant_id, vault_id=None, environment_id=None) -> Session:
+        # PER-TENANT environment binding: the caller resolves THIS tenant's persisted environment
+        # id (WorkspaceStore row) and passes it here. The instance-level id is only a fallback for
+        # single-tenant/dev runtimes — it must never silently serve every tenant in a pooled API.
+        env_id = environment_id or self._environment_id
+        if env_id is None:
             raise RuntimeError(
-                "create_session needs an environment_id — call create_environment() first or "
-                "construct ManagedAgentsRuntime(environment_id=...) with the tenant's persisted id"
+                "create_session needs an environment_id — pass the tenant's persisted id "
+                "(WorkspaceStore row), call create_environment() first, or construct "
+                "ManagedAgentsRuntime(environment_id=...) for single-tenant use"
             )
         # HARD LIMIT: <= 25 concurrent threads. Client-side guard: each session holds at least one
         # live thread, so this adapter refuses to hold more than 25 open sessions at once.
@@ -194,7 +212,7 @@ class ManagedAgentsRuntime(AgentRuntime):
         metadata: dict[str, str] = {"tenant_id": tenant_id}
         kwargs: dict[str, Any] = dict(
             agent=coordinator_id,  # VERIFY: string shorthand pins the agent's latest version
-            environment_id=self._environment_id,
+            environment_id=env_id,
             metadata=metadata,
             extra_headers=self._beta_headers(),
         )
@@ -328,12 +346,13 @@ class FakeRuntime(AgentRuntime):
         self.vaults.append(vid)
         return vid
 
-    def create_session(self, coordinator_id, tenant_id, vault_id=None) -> Session:
+    def create_session(self, coordinator_id, tenant_id, vault_id=None, environment_id=None) -> Session:
         s = Session(
             id=self._id("sess"),
             tenant_id=tenant_id,
             coordinator_id=coordinator_id,
-            metadata={"tenant_id": tenant_id, "vault_id": vault_id},
+            metadata={"tenant_id": tenant_id, "vault_id": vault_id,
+                      "environment_id": environment_id},
         )
         self.sessions[s.id] = s
         return s

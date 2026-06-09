@@ -26,7 +26,7 @@ class ProvisionResult:
 
 class Provisioner:
     def __init__(self, *, store, mint_tenant_id, db, anthropic_admin, secrets, cognito, cube, resend,
-                 agent_plane=None, funnel=None):
+                 agent_plane=None, funnel=None, workspace_store=None):
         self.store = store
         self.mint_tenant_id = mint_tenant_id      # injected (deterministic in tests)
         self.db = db
@@ -37,6 +37,10 @@ class Provisioner:
         self.resend = resend
         self.agent_plane = agent_plane            # builds env+agents+coordinator in the workspace
         self.funnel = funnel                      # optional signup.funnel.Funnel; None = no-op
+        # Optional agents.workspace_store.WorkspaceStore: persists the per-tenant Managed Agents
+        # ids so the conversation factory + worker read them back instead of rebuilding the roster
+        # per request. None = skip (offline tests / DB not configured).
+        self.workspace_store = workspace_store
 
     def provision(self, account: Account) -> ProvisionResult:
         # Guard: provisioning is only valid after payment, and is idempotent if already done.
@@ -71,9 +75,17 @@ class Provisioner:
             self.admin.set_limits(ws_id, tenant_id)               # per-workspace spend + rate limits
             done.append("workspace")
 
-            # 3. Agent plane in that workspace (env + specialists + coordinator).
+            # 3. Agent plane in that workspace (env + specialists + coordinator) — then PERSIST
+            # the per-tenant ids (tenant_workspaces row) so the request path never re-provisions.
             if self.agent_plane is not None:
-                self.agent_plane.ensure(tenant_id=tenant_id, workspace_id=ws_id)
+                plane = self.agent_plane.ensure(tenant_id=tenant_id, workspace_id=ws_id) or {}
+                if self.workspace_store is not None:
+                    self.workspace_store.upsert(
+                        tenant_id,
+                        plane.get("workspace_id", ws_id),
+                        plane.get("environment_id"),
+                        plane.get("coordinator_id"),
+                    )
             done.append("agent_plane")
 
             # 4. Set Cognito custom:tenant_id (now that it exists) + confirm the account.
