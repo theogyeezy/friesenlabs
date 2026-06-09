@@ -314,4 +314,11 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   needs Matt (PAT + budget email/limit). Apply discipline: no full apply; pure-add `-target` only.
 
 ## Lane Matt (app code) — log
-- _(no entries yet)_
+- 2026-06-09 — **Cycle 1 (AI plane, 4 parallel module PRs, all adversarially reviewed PASS):**
+  #22 `tenant_workspaces` + `WorkspaceStore` (RLS FORCE'd, PgApprovalStore pattern) · #21
+  `ManagedAgentsRuntime` implemented (env/agent/coordinator/session/vault + event-stream
+  `send_message`, 12 VERIFY flags, hard limits enforced) · #20 `api/pg_clients.py` (PgRag/PgCrm,
+  allow-listed, SET LOCAL proven in tests) · #18 `conv/synthesizer.py` (citation invariant
+  enforced, graceful extractive fallback). Suite 195→249 passed / 4 skipped. Cycle-2 follow-ups:
+  tenant↔environment binding via store lookup in the conversation factory (review medium), asgi
+  factory+executor wiring, provisioning upsert, worker client wiring.
