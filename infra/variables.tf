@@ -39,3 +39,16 @@ variable "budgets_action_execution_role_arn" {
   type        = string
   default     = ""
 }
+
+variable "github_access_token" {
+  description = "GitHub PAT (repo scope) to connect Amplify Hosting to the repo. Empty = no web hosting created."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "web_api_base_url" {
+  description = "Deployed API base URL for the hosted web app. Empty = the site runs in mock mode."
+  type        = string
+  default     = ""
+}

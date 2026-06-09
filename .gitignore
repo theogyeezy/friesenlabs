@@ -46,3 +46,6 @@ logs/*.log
 docs/*.pdf
 docs/uplift-build-guide.txt
 docs/uplift-infra-design.txt
+
+# terraform backend config (contains account-id bucket name) - keep out of the public repo
+infra/backend.hcl
