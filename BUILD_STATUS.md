@@ -33,7 +33,7 @@ tests: U=unit · I=integration · S=smoke · E=e2e(Playwright) · X=isolation �
 | 2 | Ingestion & Embeddings (connectors, chunk, Titan, pipeline) | ✅ | bg-agent | ✓ | ✓skip | · | · | · | cross ✓ |
 | 3 | Semantic Layer (Cube deploy, metrics, tenant security ctx) | ✅* | orchestrator | ✓ | · | ✓ | · | ✓ | self ✓ |
 | 4 | Agent Plane (Managed Agents, roster, vaults, worker) | ✅* | orchestrator | ✓ | ✓ | · | · | · | self ✓ |
-| 5 | Control Plane (autonomy, Greenlight, traces, kill switch) | ⬜ | — | · | · | · | · | · | — |
+| 5 | Control Plane (autonomy, Greenlight, traces, kill switch) | ✅ | orchestrator | ✓ | ✓ | · | · | · | self ✓ |
 | 6 | Conversational Layer (front door, slots, agentic RAG+cites) | ⬜ | — | · | · | · | · | · | — |
 | 7 | Dashboard Engine (view-spec, generate, render, save/edit) | ⬜ | — | · | · | · | · | · | — |
 | 8 | Cortex / ML (per-tenant models, train, registry, retrain) | ⬜ | — | · | · | · | · | · | — |
@@ -113,7 +113,16 @@ tests: U=unit · I=integration · S=smoke · E=e2e(Playwright) · X=isolation �
   import-safe). IaC: `modules/worker` Fargate + env-key/cube/db secrets. Tests: 15 new (adapter/roster/
   tool-policy/session), full suite 53 passed / 2 skipped; smoke_all green; terraform validate clean.
   Committed + pushed. Live Anthropic provisioning BLOCKED: needs Nick.
-- **Next** — Phase 5 (control plane): autonomy levels, Greenlight queue (real, over `approvals`),
-  traces, compliance, kill switch.
+- **Cycle 7 (Phase 5 control plane)** — `api/control/`: `gate.py` (single path:
+  propose→validate→autonomy→Greenlight→execute→trace, exactly one trace per run, executor never
+  called on block/deny), `autonomy.py` (L0-L3 + L2 thresholds), `greenlight.py` (HITL queue over
+  `approvals`, approve/edit/deny, conforms to the Phase 4 tool Greenlight protocol + MA confirmation
+  mapping flagged verify), `compliance.py` (TCPA/CAN-SPAM deterministic + injected critic; hard fail
+  never reaches the queue), `traces.py` (minimized per-step records), `killswitch.py` (per-tenant +
+  global). Tests: 27 unit (autonomy/gate/greenlight/killswitch/compliance) + integration proving a
+  Phase 4 send_email tool routes into the control-plane queue without sending. Full suite 81 passed /
+  2 skipped; smoke_all green. Committed + pushed.
+- **Next** — Phase 6 (conversational layer): omnichannel front door (one MA session per conversation),
+  query understanding/rewrite, slot-resolver layer, agentic RAG + citations.
   (Aurora/Redis/S3 IaC + `db/schema.sql` with FORCE'd RLS + the two-tenant isolation proof
   incl. a vector query).
