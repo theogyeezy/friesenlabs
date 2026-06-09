@@ -37,7 +37,7 @@ tests: U=unit · I=integration · S=smoke · E=e2e(Playwright) · X=isolation �
 | 6 | Conversational Layer (front door, slots, agentic RAG+cites) | ✅ | bg-agent | ✓ | ✓ | · | · | · | cross ✓ |
 | 7 | Dashboard Engine (view-spec, generate, render, save/edit) | ✅ | orch+agent | ✓ | · | ✓ | ✓ | · | cross ✓ |
 | 8 | Cortex / ML (per-tenant models, train, registry, retrain) | ✅* | orchestrator | ✓ | · | · | · | · | self ✓ |
-| 9 | App, Auth & API (Cognito, FastAPI/Fargate, ALB, web) | 🟡 | orch+agent | ✓ | ✓ | · | ? | ✓ | self ✓ (api) |
+| 9 | App, Auth & API (Cognito, FastAPI/Fargate, ALB, web) | ✅ | orch+agent | ✓ | ✓ | · | ✓ | ✓ | cross ✓ |
 | 10 | Acquisition, Signup & Provisioning (landing, Stripe, auto-provision) | ⬜ | — | · | · | · | · | · | — |
 | 11 | Cost, Guardrails & Observability (budgets, caps, CloudWatch, OTEL) | ⬜ | — | · | · | · | · | · | — |
 | 12 | IaC, CI/CD & Launch (Terraform/CDK, pipelines, smoke+isolation) | ⬜ | — | · | · | · | · | · | — |
@@ -169,7 +169,13 @@ tests: U=unit · I=integration · S=smoke · E=e2e(Playwright) · X=isolation �
   trust rule + two-tenant HTTP isolation; full suite 150 passed / 2 skipped; terraform validate + smoke
   green. Committed + pushed. Dispatched **background agent** for frontend wiring
   (`scripts/briefs/09b_frontend_wiring.md`). Live Cognito/ALB/Fargate apply BLOCKED: needs Nick.
-- **Next** — integrate frontend wiring (Greenlight UI + chat + dashboard → API), then Phase 10
-  (acquisition/signup/Stripe/provisioning).
+- **Cycle 13 (Phase 9 frontend wiring)** — background agent built `web/src/api/client.ts` (typed,
+  injectable baseURL+token, mock-mode default for offline e2e) + wired GreenlightQueue (reasoning +
+  value-at-stake + editable draft; approve/edit/deny), ChatDock (answer + inline citations), and a
+  DashboardView (getView/saveView → SpecRenderer). Independent review: build exit 0, typecheck clean,
+  Playwright 5 passed (smoke + 2 dashboard + 2 greenlight); confirmed the client NEVER sends tenant_id
+  (only Bearer from config) — the trust rule holds client-side. Committed + pushed. **Phase 9 done.**
+- **Next** — Phase 10 (acquisition/signup/provisioning): signup + email/phone verify + Stripe payment,
+  and idempotent rollback-safe per-tenant provisioning gated on the signed payment webhook.
   (Aurora/Redis/S3 IaC + `db/schema.sql` with FORCE'd RLS + the two-tenant isolation proof
   incl. a vector query).

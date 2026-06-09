@@ -12,13 +12,36 @@ import "./globals";
 import App from "./app";
 import DashboardDemo from "./dashboard/Demo";
 
-// Demo seam for the Phase 7 view-spec renderer. Reachable at ?view=dashboard-demo;
-// the normal SPA shell renders otherwise. Keeps the renderer mountable in the
-// running app without touching the converted (@ts-nocheck) shell.
-const isDashboardDemo = /[?&]view=dashboard-demo\b/.test(window.location.search);
+// API-wired surfaces (Phase 9b). Each reads through the typed ApiClient, which
+// defaults to mock mode so these mount fully offline. They share the same
+// ?view= seam pattern as the dashboard demo and never touch the converted
+// (@ts-nocheck) shell.
+import GreenlightQueue from "./api/GreenlightQueue";
+import ChatDock from "./api/ChatDock";
+import DashboardView from "./api/DashboardView";
+
+// Demo/wiring seams reachable via ?view=. The normal SPA shell renders otherwise.
+const search = window.location.search;
+const viewMatch = /[?&]view=([a-z0-9-]+)/.exec(search);
+const view = viewMatch ? viewMatch[1] : null;
+
+function Root() {
+  switch (view) {
+    case "dashboard-demo":
+      return <DashboardDemo />;
+    case "greenlight":
+      return <GreenlightQueue />;
+    case "chat":
+      return <ChatDock />;
+    case "dashboard":
+      return <DashboardView />;
+    default:
+      return <App />;
+  }
+}
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    {isDashboardDemo ? <DashboardDemo /> : <App />}
+    <Root />
   </React.StrictMode>
 );

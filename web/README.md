@@ -118,6 +118,37 @@ The e2e (`e2e/dashboard.spec.ts`) asserts the KPI number and chart SVG render
 for the valid spec, and that an injected `<script>`/HTML payload never reaches
 the DOM or executes for the invalid spec.
 
+## Control-plane API client
+
+`src/api/` wires the app to the FastAPI control plane (`api/app.py`).
+
+- `client.ts` is the typed client. It takes an injectable `baseURL` + `token`
+  and exposes `listApprovals`, `decideApproval`, `listViews`, `getView`,
+  `saveView`, `chat`, and `runAction`. The token is read from config
+  (`VITE_API_TOKEN`), never hardcoded, and attached only as
+  `Authorization: Bearer <token>`. The client NEVER sends `tenant_id`: the server
+  derives the tenant from the verified token (the trust rule), and no request
+  body shape carries a tenant field.
+- Mock mode is the default (`VITE_API_MOCK` unset, or anything other than `0` /
+  `false`). In mock mode every method resolves from in-memory fixtures and makes
+  no network call, so Playwright runs fully offline. Production is a config flip:
+  set `VITE_API_MOCK=0`, `VITE_API_BASE_URL`, and `VITE_API_TOKEN`.
+- The wired surfaces mount via the same `?view=` seam as the dashboard demo and
+  do not touch the converted (`@ts-nocheck`) shell:
+  - `?view=greenlight` (`GreenlightQueue.tsx`): the approval queue. Each pending
+    item shows the agent's reasoning, the value at stake, and an editable draft;
+    approve / approve-with-edits / deny call `decideApproval` and drop the item.
+    The bearer token and the full proposed-action payload are never rendered.
+  - `?view=chat` (`ChatDock.tsx`): calls `chat` and renders the answer with
+    inline citations (claim, source ref, snippet).
+  - `?view=dashboard` (`DashboardView.tsx`): loads a saved view via `getView`,
+    renders it through the trusted `SpecRenderer`, and persists edits via
+    `saveView`.
+
+`e2e/greenlight.spec.ts` exercises the queue in mock mode (reasoning + value
+render, approve removes the item, edited draft approves with edits, and no
+token/payload leaks into the DOM).
+
 ## Notes
 
 - Brand voice: no em-dashes in user-facing copy; say "Managed" not "Claude" in
