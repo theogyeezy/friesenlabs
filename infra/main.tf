@@ -58,3 +58,24 @@ module "s3" {
   source  = "./modules/s3"
   project = var.project
 }
+
+# --- Phase 3: semantic layer (Cube on Fargate) ---
+module "ecs" {
+  source  = "./modules/ecs"
+  project = var.project
+}
+
+module "cube" {
+  source              = "./modules/cube"
+  project             = var.project
+  region              = var.aws_region
+  cluster_id          = module.ecs.cluster_id
+  private_subnet_ids  = module.vpc.private_subnet_ids
+  security_group_id   = module.security.sg_api
+  execution_role_arn  = module.iam.ecs_task_execution_role_arn
+  task_role_arn       = module.iam.task_role_arns["cube"]
+  aurora_endpoint     = module.data.cluster_endpoint
+  redis_endpoint      = module.redis.primary_endpoint
+  db_secret_arn       = module.secrets.crm_app_db_secret_arn
+  cube_api_secret_arn = module.secrets.cube_api_secret_arn
+}

@@ -36,3 +36,11 @@ output "redis_primary_endpoint" {
 output "s3_bucket_names" {
   value = module.s3.bucket_names
 }
+
+output "ecs_cluster_name" {
+  value = module.ecs.cluster_name
+}
+
+output "cube_service_name" {
+  value = module.cube.service_name
+}

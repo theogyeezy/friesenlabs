@@ -31,7 +31,7 @@ tests: U=unit · I=integration · S=smoke · E=e2e(Playwright) · X=isolation �
 | 0 | AWS Foundation (IAM, VPC, SGs, secrets, ECR, baseline) | ✅* | orchestrator | · | · | · | · | · | self ✓ |
 | 1 | Data Plane (Aurora+pgvector, RLS, schema, S3, Redis) | ✅* | orchestrator | ✓ | ✓skip | ✓ | · | ✓skip | self ✓ |
 | 2 | Ingestion & Embeddings (connectors, chunk, Titan, pipeline) | ✅ | bg-agent | ✓ | ✓skip | · | · | · | cross ✓ |
-| 3 | Semantic Layer (Cube deploy, metrics, tenant security ctx) | ⬜ | — | · | · | · | · | · | — |
+| 3 | Semantic Layer (Cube deploy, metrics, tenant security ctx) | ✅* | orchestrator | ✓ | · | ✓ | · | ✓ | self ✓ |
 | 4 | Agent Plane (Managed Agents, roster, vaults, worker) | ⬜ | — | · | · | · | · | · | — |
 | 5 | Control Plane (autonomy, Greenlight, traces, kill switch) | ⬜ | — | · | · | · | · | · | — |
 | 6 | Conversational Layer (front door, slots, agentic RAG+cites) | ⬜ | — | · | · | · | · | · | — |
@@ -95,7 +95,14 @@ tests: U=unit · I=integration · S=smoke · E=e2e(Playwright) · X=isolation �
   cursor). Independent review: import-safe confirmed (no eager boto3/network), 22 ingest unit tests +
   incremental proof (2nd sync embeds ~0) pass; full suite 38 passed / 2 skipped. Committed + pushed.
   Two follow-ups recorded (ingest_cursor RLS, content_hash column).
-- **Next** — Phase 3 (semantic layer): Cube on Fargate IaC + cube models + tenant security context
-  (in progress).
+- **Cycle 5 (Phase 3 semantic layer)** — `semantic/security.js` (tenant security context: force a
+  `tenant_id` filter onto every referenced cube; throw `no tenant` on missing/forged context),
+  `cube.js`, cube models for Deals/Contacts/Companies/Activities (tenant_id `shown:false`),
+  6 Node tests green. IaC: shared ECS cluster (`modules/ecs`) + Cube Fargate service (`modules/cube`,
+  crm_app creds via Secrets Manager, internal-only), `terraform validate` clean. smoke_all green.
+  Committed + pushed.
+- **Next** — Phase 4 (agent plane): `agents/runtime.py` swappable adapter (Managed Agents behind it),
+  roster (scout/nadia/margo/ledger/echo/pip/critic) + tools (query_cube/search_rag/read_crm/
+  draft_email/run_model), the self-hosted worker. Verify-flag all MA endpoints (beta).
   (Aurora/Redis/S3 IaC + `db/schema.sql` with FORCE'd RLS + the two-tenant isolation proof
   incl. a vector query).
