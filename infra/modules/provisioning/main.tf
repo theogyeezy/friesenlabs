@@ -38,8 +38,14 @@ resource "aws_iam_role_policy" "sfn_invoke" {
   })
 }
 
+data "aws_caller_identity" "current" {}
+data "aws_region" "current" {}
+
 locals {
-  lambda = var.provisioning_lambda_arn != "" ? var.provisioning_lambda_arn : "PLACEHOLDER_SET_AT_APPLY"
+  # Use the real Lambda ARN when supplied; otherwise a syntactically-valid placeholder ARN so the
+  # Step Functions definition passes the provider's schema validation at plan time (the real ARN is
+  # set at apply, once the provisioning Lambda is deployed).
+  lambda = var.provisioning_lambda_arn != "" ? var.provisioning_lambda_arn : "arn:aws:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-provisioning"
 
   # One idempotent step per provisioning stage; a failure in any stage is caught and the account is
   # parked (the Provisioner also rolls back partial resources like the half-created workspace).
