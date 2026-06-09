@@ -129,6 +129,22 @@ CREATE TABLE IF NOT EXISTS ingest_cursor (
     PRIMARY KEY (tenant_id, source)
 );
 
+-- ---------------------------------------------------------------------------
+-- tenant_workspaces — per-tenant Managed Agents ids (AI plane P0)
+-- One row per tenant: the Anthropic workspace / environment / coordinator created at provisioning
+-- time, read back by the conversation factory + worker (no per-request roster rebuild).
+-- NOTE: declared BEFORE the RLS DO block (like every other tenant table) — the block executes when
+-- reached, so any table named in its array must already exist or a fresh load (CI psql
+-- ON_ERROR_STOP=1, api/migrate.py's single batch) aborts. Explicit RLS statements are at EOF.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tenant_workspaces (
+    tenant_id      uuid PRIMARY KEY,
+    workspace_id   text,
+    environment_id text,
+    coordinator_id text,
+    created_at     timestamptz NOT NULL DEFAULT now()
+);
+
 -- ===========================================================================
 -- ROW LEVEL SECURITY — apply the identical pattern to every tenant-scoped table.
 -- The DO block keeps it DRY and guarantees no table is missed (and never without FORCE).
@@ -138,7 +154,7 @@ DECLARE
     t text;
     tenant_tables text[] := ARRAY[
         'documents', 'companies', 'contacts', 'deals', 'activities',
-        'saved_views', 'approvals', 'traces', 'ingest_cursor'
+        'saved_views', 'approvals', 'traces', 'ingest_cursor', 'tenant_workspaces'
     ];
 BEGIN
     FOREACH t IN ARRAY tenant_tables LOOP
@@ -165,3 +181,11 @@ ALTER TABLE saved_views ENABLE ROW LEVEL SECURITY; ALTER TABLE saved_views FORCE
 ALTER TABLE approvals   ENABLE ROW LEVEL SECURITY; ALTER TABLE approvals   FORCE ROW LEVEL SECURITY;
 ALTER TABLE traces      ENABLE ROW LEVEL SECURITY; ALTER TABLE traces      FORCE ROW LEVEL SECURITY;
 ALTER TABLE ingest_cursor ENABLE ROW LEVEL SECURITY; ALTER TABLE ingest_cursor FORCE ROW LEVEL SECURITY;
+
+-- tenant_workspaces — explicit ENABLE/FORCE + policy (belt and suspenders with the DO block above;
+-- DROP IF EXISTS + CREATE keeps re-runs idempotent, same as the block's own policy refresh).
+ALTER TABLE tenant_workspaces ENABLE ROW LEVEL SECURITY; ALTER TABLE tenant_workspaces FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON tenant_workspaces;
+CREATE POLICY tenant_isolation ON tenant_workspaces
+    USING (tenant_id = current_setting('app.current_tenant', true)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.current_tenant', true)::uuid);
