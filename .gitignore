@@ -3,7 +3,8 @@
 .env.*
 *.pem
 *.key
-secrets/
+# a top-level secrets/ dir only — NOT infra/modules/secrets/ (a source module)
+/secrets/
 **/secrets.auto.tfvars
 # non-secret per-env config (infra/envs/*.tfvars) is tracked; all other tfvars are ignored
 *.tfvars
