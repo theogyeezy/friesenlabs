@@ -24,7 +24,7 @@ def test_propose_then_list_pending():
 def test_approve():
     gl = Greenlight()
     rec = _propose(gl)
-    out = gl.decide(rec["id"], "approve", decided_by="matt")
+    out = gl.decide("t1", rec["id"], "approve", decided_by="matt")
     assert out["status"] == "approved" and out["decided_by"] == "matt"
     assert gl.list_pending("t1") == []
 
@@ -33,7 +33,7 @@ def test_approve():
 def test_edit_changes_what_would_execute():
     gl = Greenlight()
     rec = _propose(gl)
-    out = gl.decide(rec["id"], "edit", edits={"body": "edited by human"})
+    out = gl.decide("t1", rec["id"], "edit", edits={"body": "edited by human"})
     assert out["status"] == "approved"
     assert out["proposed_action"]["body"] == "edited by human"
 
@@ -42,7 +42,7 @@ def test_edit_changes_what_would_execute():
 def test_deny_carries_message():
     gl = Greenlight()
     rec = _propose(gl)
-    out = gl.decide(rec["id"], "deny", deny_message="not now")
+    out = gl.decide("t1", rec["id"], "deny", deny_message="not now")
     assert out["status"] == "denied" and out["deny_message"] == "not now"
 
 
@@ -50,9 +50,9 @@ def test_deny_carries_message():
 def test_cannot_decide_twice():
     gl = Greenlight()
     rec = _propose(gl)
-    gl.decide(rec["id"], "approve")
+    gl.decide("t1", rec["id"], "approve")
     with pytest.raises(ValueError):
-        gl.decide(rec["id"], "deny")
+        gl.decide("t1", rec["id"], "deny")
 
 
 @pytest.mark.unit
@@ -68,6 +68,6 @@ def test_tenant_scoped_listing():
 def test_ma_confirmation_mapping():
     gl = Greenlight()
     rec = _propose(gl)
-    approved = gl.decide(rec["id"], "approve")
+    approved = gl.decide("t1", rec["id"], "approve")
     ev = gl.to_ma_confirmation(approved, tool_use_id="tu_1")
     assert ev["result"] == "allow" and ev["type"] == "user.tool_confirmation"

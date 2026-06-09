@@ -7,17 +7,16 @@ mapping is authored + flagged "verify"; it is never called live here.
 
 Conforms to the `Greenlight` protocol in agents/tools/base.py (so Phase 4 tools route through it).
 """
-from __future__ import annotations
-
+import os
+from contextlib import contextmanager
 from typing import Any, Protocol
 
 
 class ApprovalStore(Protocol):
     def insert(self, row: dict) -> object: ...
-    def get(self, approval_id: object) -> dict | None: ...
+    def get(self, tenant_id: str, approval_id: object) -> dict | None: ...
     def list_pending(self, tenant_id: str) -> list[dict]: ...
-    def update(self, approval_id: object, changes: dict) -> None: ...
-    def bind_tenant(self, tenant_id: str) -> None: ...
+    def update(self, tenant_id: str, approval_id: object, changes: dict) -> None: ...
 
 
 class InMemoryApprovalStore:
@@ -33,86 +32,119 @@ class InMemoryApprovalStore:
         s = str(approval_id)
         return int(s) if s.isdigit() else s
 
-    def bind_tenant(self, tenant_id: str) -> None:
-        pass  # in-memory has no RLS; isolation is enforced by explicit tenant filtering
-
     def insert(self, row: dict) -> int:
         self._n += 1
         row = {"id": self._n, **row}
         self._rows[self._n] = row
         return self._n
 
-    def get(self, approval_id) -> dict | None:
-        return self._rows.get(self._key(approval_id))
+    def get(self, tenant_id: str, approval_id) -> dict | None:
+        row = self._rows.get(self._key(approval_id))
+        # Tenant-scope the read (mirrors the Pg RLS boundary): never return another tenant's row.
+        if row is None or str(row["tenant_id"]) != str(tenant_id):
+            return None
+        return row
 
     def list_pending(self, tenant_id: str) -> list[dict]:
-        return [r for r in self._rows.values() if r["tenant_id"] == tenant_id and r["status"] == "pending"]
+        return [r for r in self._rows.values()
+                if str(r["tenant_id"]) == str(tenant_id) and r["status"] == "pending"]
 
-    def update(self, approval_id, changes: dict) -> None:
-        self._rows[self._key(approval_id)].update(changes)
+    def update(self, tenant_id: str, approval_id, changes: dict) -> None:
+        row = self._rows.get(self._key(approval_id))
+        if row is None or str(row["tenant_id"]) != str(tenant_id):
+            return  # tenant-scoped: silently ignore a cross-tenant write
+        row.update(changes)
 
 
 class PgApprovalStore:
     """Aurora-backed approval store over the `approvals` table.
 
-    Connects as the non-owner crm_app role and SETs app.current_tenant before every access so Postgres
-    RLS scopes all reads/writes to the tenant. Import-safe (psycopg2 imported lazily on construction).
-    Ids are the table's uuids (as strings).
+    Connects as the non-owner crm_app role. Each operation checks out a connection from a thread-safe
+    pool and runs in ONE transaction that begins with `SET LOCAL app.current_tenant = %s` (the tenant
+    for THIS operation) — so Postgres RLS scopes every read/write and the GUC auto-resets at txn end,
+    never leaking past the unit of work across the pooled connection. Import-safe (psycopg2 imported
+    lazily on construction). Ids are the table's uuids (as strings).
     """
 
     def __init__(self, dsn: str):
         import psycopg2  # noqa: PLC0415 — guarded
-        self._psycopg2 = psycopg2
+        import psycopg2.pool  # noqa: PLC0415
         from psycopg2.extras import Json, RealDictCursor  # noqa: PLC0415
+        self._psycopg2 = psycopg2
         self._Json = Json
         self._cursor_factory = RealDictCursor
-        self._conn = psycopg2.connect(dsn)
-        self._tenant: str | None = None
+        pool_max = int(os.environ.get("UPLIFT_DB_POOL_MAX", "10"))
+        # min == max: a fixed-size pool RETAINS returned connections (psycopg2 closes any
+        # connection beyond minconn on putconn), avoiding TCP/auth churn under concurrent load.
+        self._pool = psycopg2.pool.ThreadedConnectionPool(pool_max, pool_max, dsn)
 
-    def bind_tenant(self, tenant_id: str) -> None:
-        self._tenant = str(tenant_id)
+    def _getconn(self):
+        """Check out a pooled connection, waiting briefly if the pool is momentarily exhausted.
 
-    def _cur(self):
-        cur = self._conn.cursor(cursor_factory=self._cursor_factory)
-        if self._tenant is not None:
-            cur.execute("SET app.current_tenant = %s", (self._tenant,))
-        return cur
+        psycopg2's pool raises rather than blocks when all connections are out; under a burst wider
+        than the pool (the anyio threadpool can exceed pool_max) we'd otherwise 500. Wait up to a few
+        seconds for a peer's short tenant-scoped txn to release one, then give up.
+        """
+        import time  # noqa: PLC0415
+        deadline = time.monotonic() + 10.0
+        while True:
+            try:
+                return self._pool.getconn()
+            except self._psycopg2.pool.PoolError as exc:
+                if "exhausted" not in str(exc) or time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.005)
+
+    @contextmanager
+    def _tx(self, tenant_id):
+        """Yield a RealDict cursor inside a single tenant-scoped transaction.
+
+        Begins with `SET LOCAL app.current_tenant` (auto-resets at COMMIT/ROLLBACK), commits on
+        success / rolls back on error, and always returns the connection to the pool. The per-op
+        connection is never shared across threads (checked out for the duration of the txn).
+        """
+        conn = self._getconn()
+        try:
+            cur = conn.cursor(cursor_factory=self._cursor_factory)
+            cur.execute("SET LOCAL app.current_tenant = %s", (str(tenant_id),))
+            yield cur
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            self._pool.putconn(conn)
 
     def insert(self, row: dict) -> str:
-        self.bind_tenant(row["tenant_id"])
-        with self._cur() as cur:
+        with self._tx(row["tenant_id"]) as cur:
             cur.execute(
                 "INSERT INTO approvals (tenant_id, proposed_action, agent, reasoning, value_at_stake, status) "
                 "VALUES (%s,%s,%s,%s,%s,%s) RETURNING id",
                 (row["tenant_id"], self._Json(row["proposed_action"]), row.get("agent"),
                  row.get("reasoning"), row.get("value_at_stake"), row.get("status", "pending")),
             )
-            rid = cur.fetchone()["id"]
-        self._conn.commit()
-        return str(rid)
+            return str(cur.fetchone()["id"])
 
-    def get(self, approval_id) -> dict | None:
-        with self._cur() as cur:
+    def get(self, tenant_id: str, approval_id) -> dict | None:
+        with self._tx(tenant_id) as cur:
             cur.execute("SELECT * FROM approvals WHERE id = %s", (str(approval_id),))
             row = cur.fetchone()
         return dict(row) if row else None
 
     def list_pending(self, tenant_id: str) -> list[dict]:
-        self.bind_tenant(tenant_id)
-        with self._cur() as cur:
+        with self._tx(tenant_id) as cur:
             cur.execute("SELECT * FROM approvals WHERE status = 'pending' ORDER BY created_at")
             return [dict(r) for r in cur.fetchall()]
 
-    def update(self, approval_id, changes: dict) -> None:
+    def update(self, tenant_id: str, approval_id, changes: dict) -> None:
         if not changes:
             return
         cols = ", ".join(f"{k} = %s" for k in changes)
         # jsonb columns (e.g. proposed_action) need the Json adapter.
         vals = [self._Json(v) if isinstance(v, dict) else v for v in changes.values()]
         vals.append(str(approval_id))
-        with self._cur() as cur:
+        with self._tx(tenant_id) as cur:
             cur.execute(f"UPDATE approvals SET {cols} WHERE id = %s", vals)
-        self._conn.commit()
 
 
 class Greenlight:
@@ -130,15 +162,19 @@ class Greenlight:
             "value_at_stake": value_at_stake,
             "status": "pending",
         })
-        return self.store.get(approval_id)
+        return self.store.get(tenant_id, approval_id)
 
     def list_pending(self, tenant_id: str) -> list[dict]:
         return self.store.list_pending(tenant_id)
 
-    def decide(self, approval_id: int, decision: str, *, edits: dict | None = None,
+    def decide(self, tenant_id: str, approval_id: int, decision: str, *, edits: dict | None = None,
                deny_message: str = "", decided_by: str | None = None) -> dict:
-        """Apply a human decision. 'approve' | 'edit' (approve with edits) | 'deny'."""
-        rec = self.store.get(approval_id)
+        """Apply a human decision. 'approve' | 'edit' (approve with edits) | 'deny'.
+
+        tenant_id is the verified per-request tenant (THE TRUST RULE) — threaded into every store call
+        so RLS scopes the read/write; the store never relies on shared connection state.
+        """
+        rec = self.store.get(tenant_id, approval_id)
         if rec is None or rec["status"] != "pending":
             raise ValueError(f"approval {approval_id} not pending")
         if decision == "deny":
@@ -150,8 +186,8 @@ class Greenlight:
             changes = {"status": "approved", "proposed_action": action, "decided_by": decided_by}
         else:
             raise ValueError(f"unknown decision {decision!r}")
-        self.store.update(approval_id, changes)
-        return self.store.get(approval_id)
+        self.store.update(tenant_id, approval_id, changes)
+        return self.store.get(tenant_id, approval_id)
 
     def to_ma_confirmation(self, rec: dict, tool_use_id: str) -> dict:
         """The Managed Agents reply event for this decision (VERIFY against live SDK; not sent here)."""

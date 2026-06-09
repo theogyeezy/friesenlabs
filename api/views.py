@@ -7,6 +7,8 @@ views stay correct as metric definitions evolve.
 """
 from __future__ import annotations
 
+import os
+from contextlib import contextmanager
 from typing import Callable, Protocol
 
 from shared import view_spec
@@ -16,7 +18,6 @@ class SavedViewStore(Protocol):
     def insert(self, row: dict) -> None: ...
     def latest(self, tenant_id: str, view_id: str) -> dict | None: ...
     def list(self, tenant_id: str) -> list[dict]: ...
-    def bind_tenant(self, tenant_id: str) -> None: ...
 
 
 class InMemorySavedViewStore:
@@ -25,21 +26,19 @@ class InMemorySavedViewStore:
     def __init__(self):
         self.rows: list[dict] = []
 
-    def bind_tenant(self, tenant_id: str) -> None:
-        pass
-
     def insert(self, row: dict) -> None:
         self.rows.append(dict(row))
 
     def latest(self, tenant_id: str, view_id: str) -> dict | None:
-        versions = [r for r in self.rows if r["tenant_id"] == tenant_id and r["view_id"] == view_id]
+        versions = [r for r in self.rows
+                    if str(r["tenant_id"]) == str(tenant_id) and r["view_id"] == view_id]
         return max(versions, key=lambda r: r["version"]) if versions else None
 
     def list(self, tenant_id: str) -> list[dict]:
         # latest version per view_id
         latest: dict[str, dict] = {}
         for r in self.rows:
-            if r["tenant_id"] != tenant_id:
+            if str(r["tenant_id"]) != str(tenant_id):
                 continue
             if r["view_id"] not in latest or r["version"] > latest[r["view_id"]]["version"]:
                 latest[r["view_id"]] = r
@@ -47,40 +46,62 @@ class InMemorySavedViewStore:
 
 
 class PgSavedViewStore:
-    """Aurora-backed saved-views store over `saved_views`. Connects as crm_app and SETs
-    app.current_tenant so RLS scopes every read/write. Import-safe (lazy psycopg2)."""
+    """Aurora-backed saved-views store over `saved_views`. Connects as crm_app.
+
+    Each operation checks out a connection from a thread-safe pool and runs in ONE transaction that
+    begins with `SET LOCAL app.current_tenant = %s` (the tenant for THIS operation) — so RLS scopes
+    every read/write and the GUC auto-resets at txn end, never leaking across the pooled connection.
+    Import-safe (lazy psycopg2)."""
 
     def __init__(self, dsn: str):
         import psycopg2  # noqa: PLC0415 — guarded
+        import psycopg2.pool  # noqa: PLC0415
         from psycopg2.extras import Json, RealDictCursor  # noqa: PLC0415
+        self._psycopg2 = psycopg2
         self._Json = Json
         self._cursor_factory = RealDictCursor
-        self._conn = psycopg2.connect(dsn)
-        self._tenant: str | None = None
+        pool_max = int(os.environ.get("UPLIFT_DB_POOL_MAX", "10"))
+        # min == max: fixed-size pool retains returned connections (avoids TCP/auth churn under load).
+        self._pool = psycopg2.pool.ThreadedConnectionPool(pool_max, pool_max, dsn)
 
-    def bind_tenant(self, tenant_id: str) -> None:
-        self._tenant = str(tenant_id)
+    def _getconn(self):
+        """Check out a pooled connection, waiting briefly if exhausted (see PgApprovalStore._getconn)."""
+        import time  # noqa: PLC0415
+        deadline = time.monotonic() + 10.0
+        while True:
+            try:
+                return self._pool.getconn()
+            except self._psycopg2.pool.PoolError as exc:
+                if "exhausted" not in str(exc) or time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.005)
 
-    def _cur(self):
-        cur = self._conn.cursor(cursor_factory=self._cursor_factory)
-        if self._tenant is not None:
-            cur.execute("SET app.current_tenant = %s", (self._tenant,))
-        return cur
+    @contextmanager
+    def _tx(self, tenant_id):
+        """Yield a RealDict cursor inside a single tenant-scoped transaction (see PgApprovalStore._tx)."""
+        conn = self._getconn()
+        try:
+            cur = conn.cursor(cursor_factory=self._cursor_factory)
+            cur.execute("SET LOCAL app.current_tenant = %s", (str(tenant_id),))
+            yield cur
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            self._pool.putconn(conn)
 
     def insert(self, row: dict) -> None:
-        self.bind_tenant(row["tenant_id"])
-        with self._cur() as cur:
+        with self._tx(row["tenant_id"]) as cur:
             cur.execute(
                 "INSERT INTO saved_views (tenant_id, view_id, version, spec_json, semantic_refs, "
                 "source_prompt, created_by) VALUES (%s,%s,%s,%s,%s,%s,%s)",
                 (row["tenant_id"], row["view_id"], row["version"], self._Json(row["spec_json"]),
                  self._Json(row.get("semantic_refs") or []), row.get("source_prompt"), row.get("created_by")),
             )
-        self._conn.commit()
 
     def latest(self, tenant_id: str, view_id: str) -> dict | None:
-        self.bind_tenant(tenant_id)
-        with self._cur() as cur:
+        with self._tx(tenant_id) as cur:
             cur.execute(
                 "SELECT * FROM saved_views WHERE view_id = %s ORDER BY version DESC LIMIT 1", (view_id,)
             )
@@ -88,8 +109,7 @@ class PgSavedViewStore:
         return dict(row) if row else None
 
     def list(self, tenant_id: str) -> list[dict]:
-        self.bind_tenant(tenant_id)
-        with self._cur() as cur:
+        with self._tx(tenant_id) as cur:
             cur.execute(
                 "SELECT DISTINCT ON (view_id) * FROM saved_views ORDER BY view_id, version DESC"
             )
