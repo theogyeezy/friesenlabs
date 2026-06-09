@@ -40,7 +40,7 @@ tests: U=unit · I=integration · S=smoke · E=e2e(Playwright) · X=isolation �
 | 9 | App, Auth & API (Cognito, FastAPI/Fargate, ALB, web) | ✅ | orch+agent | ✓ | ✓ | · | ✓ | ✓ | cross ✓ |
 | 10 | Acquisition, Signup & Provisioning (landing, Stripe, auto-provision) | ✅* | orchestrator | ✓ | · | · | · | ✓ | self ✓ |
 | 11 | Cost, Guardrails & Observability (budgets, caps, CloudWatch, OTEL) | ✅* | orchestrator | ✓ | · | · | · | · | self ✓ |
-| 12 | IaC, CI/CD & Launch (Terraform/CDK, pipelines, smoke+isolation) | ⬜ | — | · | · | · | · | · | — |
+| 12 | IaC, CI/CD & Launch (Terraform/CDK, pipelines, smoke+isolation) | ✅ | orchestrator | · | · | ✓ | · | ✓ | self ✓ |
 | FE | Frontend: convert ~45 JSX → React+TS app in `web/` | ✅ | bg-agent | · | · | ✓ | ✓ | · | cross ✓ (fixed) |
 
 `✅*` = code complete + `terraform validate`-clean; **apply BLOCKED: needs Nick** (cost/irreversible).
@@ -195,8 +195,12 @@ tests: U=unit · I=integration · S=smoke · E=e2e(Playwright) · X=isolation �
   5xx/p95 latency, Aurora ACU, Redis evictions, worker workers_polling<1, + SNS topic). 6 cost tests;
   full suite 163 passed / 2 skipped; terraform validate + smoke green. Committed + pushed. Live
   budgets/alarms BLOCKED: needs Nick.
-- **Next** — Phase 12 (IaC/CI-CD/launch): dev/staging/prod config, GitHub Actions CI (ruff/pytest +
-  terraform validate + web build + Playwright + isolation gate), trunk branching doc, demo script;
-  then the final Definition-of-Done verification pass.
+- **Cycle 16 (Phase 12 IaC/CI-CD/launch)** — `.github/workflows/ci.yml` (python: pytest + isolation
+  gate; terraform: fmt-check + validate; web: typecheck + build + Playwright), `infra/envs/{dev,staging,
+  prod}.tfvars` (environments = deploys of the trunk; secrets stay in SM), `CONTRIBUTING.md`
+  (trunk-based on `prod`, branch model, the isolation gate), `scripts/demo.sh` (offline end-to-end
+  dry-run). Fixed a `.gitignore` trailing-comment bug so env tfvars are tracked while secret tfvars stay
+  ignored. Committed + pushed.
+- **All 13 phases (0-12) + frontend complete.** Final Definition-of-Done verification pass next.
   (Aurora/Redis/S3 IaC + `db/schema.sql` with FORCE'd RLS + the two-tenant isolation proof
   incl. a vector query).

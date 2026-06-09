@@ -5,8 +5,10 @@
 *.key
 secrets/
 **/secrets.auto.tfvars
+# non-secret per-env config (infra/envs/*.tfvars) is tracked; all other tfvars are ignored
 *.tfvars
 !example.tfvars
+!infra/envs/*.tfvars
 
 # --- Python ---
 .venv/
