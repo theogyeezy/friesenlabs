@@ -28,9 +28,13 @@ adapter); **everything else** = AWS (data plane, control plane, app, ML).
 > (`d1vw20lc120dpa.cloudfront.net`), **Amplify Hosting** (`main.d224yxym1ehrim.amplifyapp.com`, `/api`
 > proxy). **$200 budget alarm** armed. **State in S3** (`uplift-tfstate-*`, KMS).
 >
-> **Not yet real:** the **AI/agent plane** (no Anthropic Managed Agents creds — `runtime.py` stub) and
-> a **Cognito login flow** in the web UI (so the SPA runs in mock/demo mode until a user can obtain a
-> JWT). To tear down: `cd infra && terraform destroy`. Known SG-rule state drift — see CLAUDE.md.
+> **Not yet real:** the **AI/agent plane** (no Anthropic Managed Agents creds — `runtime.py` stub).
+> The **Cognito login flow is now built into the SPA** (`web/src/auth/`: hand-rolled Hosted-UI
+> authorization-code + PKCE, no auth SDK; `/auth/callback` route, AuthProvider, ID-token attach
+> with 401-refresh-retry, sign-in gate over the landing screen, real-claims topbar chip;
+> unit-tested via `npm test` / `node --test`) — the **deployed** build still ships
+> `VITE_API_MOCK=1` until it is rebuilt with `VITE_API_MOCK=0` + a seeded Cognito user/tenant.
+> To tear down: `cd infra && terraform destroy`. Known SG-rule state drift — see CLAUDE.md.
 
 Source of truth: `docs/uplift-build-guide.pdf` (Build Guide, Phases 0–12) and the
 Architecture Design doc. Build in **dependency order**, not feature order.

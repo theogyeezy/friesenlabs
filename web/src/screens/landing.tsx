@@ -521,7 +521,10 @@ function ProductPage({ id, onClose, onAdd, onBook }) {
   );
 }
 
-function Landing() {
+// onSignIn: wired by main.tsx to the Cognito Hosted UI signIn() when the
+// sign-in gate is active. Defaults to a no-op so the screen is render-safe
+// standalone.
+function Landing({ onSignIn = () => {} } = {}) {
   const [demoTab, setDemoTab] = useState("agents");
   const [plan, setPlan] = useState("keepcrm");
   const [sel, setSel] = useState({ command: true, agents: true, workflows: true, greenlight: true, integration: true });
@@ -572,7 +575,7 @@ function Landing() {
           </div>
           <div className="lp-nav-cta">
             <span className="lp-signin" onClick={() => setModal("book")}>Book a call</span>
-            <a className="lp-signin" href="index.html">Sign in</a>
+            <a className="lp-signin" onClick={onSignIn}>Sign in</a>
             <button className="btn btn-primary" onClick={() => document.getElementById("pricing").scrollIntoView({ behavior: "smooth" })}>Get started</button>
           </div>
         </div>
@@ -1009,7 +1012,7 @@ function Landing() {
                 <a onClick={() => document.getElementById("products").scrollIntoView({ behavior: "smooth" })}>Products</a>
                 <a onClick={() => document.getElementById("pricing").scrollIntoView({ behavior: "smooth" })}>Pricing</a>
                 <a onClick={() => document.getElementById("demos").scrollIntoView({ behavior: "smooth" })}>See it work</a>
-                <a href="index.html">Sign in</a>
+                <a onClick={onSignIn}>Sign in</a>
               </div>
               <div className="lp-foot-col">
                 <h5>Organization</h5>
@@ -1118,4 +1121,6 @@ function Landing() {
     </div>
   );
 }
+
+export default Landing;
 

@@ -82,8 +82,10 @@ module "cube" {
 
 # --- Phase 9: auth + ALB + api service ---
 module "auth" {
-  source  = "./modules/auth"
-  project = var.project
+  source        = "./modules/auth"
+  project       = var.project
+  callback_urls = var.web_callback_urls
+  logout_urls   = var.web_logout_urls
 }
 
 module "alb" {
@@ -141,6 +143,9 @@ module "web_hosting" {
   github_access_token = var.github_access_token
   api_base_url        = var.web_api_base_url
   api_cdn_domain      = module.api_cdn.domain
+  cognito_domain      = module.auth.hosted_ui_domain
+  cognito_client_id   = module.auth.user_pool_client_id
+  cognito_region      = var.aws_region
 }
 
 # --- Phase 11: cost guardrails + observability ---

@@ -18,8 +18,10 @@ short-lived `feat/…` PRs — see `CONTRIBUTING.md`).
 us-east-1) under a $200 budget alarm. Live path: **browser → Amplify (Vite SPA) → CloudFront → ALB
 (HTTP) → arm64 Fargate API → Aurora** (FORCE'd RLS) with real Cognito JWKS auth enforced. Verified:
 `/api/healthz` 200, `/api/approvals` 401 (unauth rejected).
-- 🟡 **Demo/mock:** the web UI runs in mock mode (`VITE_API_MOCK=1`) until a Cognito login flow exists
-  to obtain a JWT; the real API is live at `/api`.
+- 🟡 **Demo/mock:** the **Cognito Hosted-UI PKCE login flow is built** (`web/src/auth/` — hand-rolled,
+  no auth SDK; sign-in gate, `/auth/callback`, ID-token attach + 401-refresh-retry, `npm test` unit
+  tests), but the deployed web build still ships `VITE_API_MOCK=1`; rebuild with `VITE_API_MOCK=0`
+  + a seeded Cognito user/tenant to go real. The real API is live at `/api`.
 - ⛔ **Not live (parked):** the AI/agent plane (`agents/runtime.py` stub, `/chat` 503, noop executor —
   needs Anthropic creds); provisioning clients (`api/prod_deps.py` `_Stub`/`_Noop`, verify hardcoded off
   — needs Stripe/Resend/Admin creds); the cube/worker/observability/provisioning-Lambda/cortex modules

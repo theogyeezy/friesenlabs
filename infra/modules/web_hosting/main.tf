@@ -28,6 +28,18 @@ variable "api_cdn_domain" {
   type    = string
   default = "" # CloudFront HTTPS domain in front of the ALB; when set, Amplify proxies /api/* to it
 }
+variable "cognito_domain" {
+  type    = string
+  default = "" # Hosted UI host (no scheme); empty disables the login flow in the build
+}
+variable "cognito_client_id" {
+  type    = string
+  default = ""
+}
+variable "cognito_region" {
+  type    = string
+  default = "us-east-1"
+}
 
 resource "aws_amplify_app" "web" {
   name         = "${var.project}-web"
@@ -58,9 +70,13 @@ resource "aws_amplify_app" "web" {
 
   # Mock mode ON by default so the hosted site is a working demo before the backend API is live.
   # Flip VITE_API_MOCK=0 + set VITE_API_BASE_URL once the API (ALB/Fargate) is deployed.
+  # VITE_COGNITO_*: Hosted UI config for the SPA login flow (public identifiers, not secrets).
   environment_variables = {
-    VITE_API_MOCK     = var.api_base_url == "" ? "1" : "0"
-    VITE_API_BASE_URL = var.api_base_url
+    VITE_API_MOCK          = var.api_base_url == "" ? "1" : "0"
+    VITE_API_BASE_URL      = var.api_base_url
+    VITE_COGNITO_DOMAIN    = var.cognito_domain
+    VITE_COGNITO_CLIENT_ID = var.cognito_client_id
+    VITE_COGNITO_REGION    = var.cognito_region
   }
 
   # Proxy /api/* to the CloudFront HTTPS edge in front of the ALB — must come BEFORE the SPA catch-all.

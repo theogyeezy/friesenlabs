@@ -3,7 +3,7 @@
 // answer so Playwright runs offline. No token or payload is ever rendered.
 
 import React from "react";
-import { ApiClient, defaultClient, type Citation } from "./client";
+import { ApiClient, ApiError, defaultClient, type Citation } from "./client";
 
 const { useState, useCallback } = React;
 
@@ -39,10 +39,17 @@ export function ChatDock({ client }: ChatDockProps) {
         const res = await api.chat(body);
         setMsgs((m) => [...m, { who: "agent", text: res.answer, citations: res.citations }]);
       } catch (e) {
-        setMsgs((m) => [
-          ...m,
-          { who: "agent", text: e instanceof Error ? e.message : "Something went wrong." },
-        ]);
+        // The agent plane is parked until the Managed runtime is connected;
+        // /chat returns 503 in that state (api/app.py). Show friendly copy
+        // instead of the raw "API 503: ..." error string.
+        const text =
+          e instanceof ApiError && e.status === 503
+            ? "The agent runtime isn't connected yet, so chat is offline for now. " +
+              "Everything else keeps working — check back soon."
+            : e instanceof Error
+              ? e.message
+              : "Something went wrong.";
+        setMsgs((m) => [...m, { who: "agent", text }]);
       } finally {
         setSending(false);
       }

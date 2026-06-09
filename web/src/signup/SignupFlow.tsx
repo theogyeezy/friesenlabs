@@ -22,6 +22,7 @@
 import React from "react";
 import { ApiClient, defaultClient, type SignupState } from "../api/client";
 import { Analytics, defaultAnalytics } from "../analytics/posthog";
+import { isAuthEnabled, signIn } from "../auth/cognito";
 
 const { useState, useCallback, useRef, useEffect } = React;
 
@@ -288,7 +289,12 @@ export function SignupFlow({ client, analytics, pollMs = 600 }: SignupFlowProps)
 
   const goToLogin = useCallback(() => {
     ph.capture("first_login");
-    // In the real app this routes to the authenticated login surface.
+    if (isAuthEnabled()) {
+      // Real builds route to the Cognito Hosted UI sign-in.
+      void signIn();
+      return;
+    }
+    // Mock/unconfigured builds keep the demo behavior.
     window.location.search = "?view=greenlight";
   }, [ph]);
 

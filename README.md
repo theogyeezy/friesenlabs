@@ -53,7 +53,7 @@ Everything that can be built and tested offline is done, and a final adversarial
 | State | Component | Why | Unblocked by |
 |-------|-----------|-----|--------------|
 | ✅ **Live & working** | Amplify → CloudFront → ALB → arm64 Fargate API → Aurora (FORCE'd RLS); Cognito JWKS auth | deployed + **verified** (`/api/healthz` 200, `/api/approvals` 401) | — |
-| 🟡 **Demo / mock** | Web UI (landing, dashboards, Greenlight, chat) | renders on sample data — no login flow to get a JWT yet (`VITE_API_MOCK=1`) | Cognito login flow |
+| 🟡 **Demo / mock** | Web UI (landing, dashboards, Greenlight, chat) | renders on sample data — Cognito Hosted-UI PKCE login flow is **built** (`web/src/auth/`); deployed build still ships `VITE_API_MOCK=1` | redeploy with `VITE_API_MOCK=0` + seeded user/tenant |
 | ⛔ **Not live** | AI / agent plane (chat, tools) | `runtime.py` stub, `/chat` 503, noop executor | Anthropic Managed Agents creds |
 | ⛔ **Not live** | cube/worker, observability, provisioning (Stripe/Resend), cortex | authored, not applied / stubbed | deploy + Stripe/Resend/Admin creds |
 | ⚠️ **Live but drifted** | ALB / api_service / api_cdn / IAM / SG rules | created out-of-band during deploy, not in TF state; ECR is MUTABLE | `terraform import` + reconcile |

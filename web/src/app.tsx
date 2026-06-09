@@ -2,6 +2,7 @@
 import React from "react";
 import "./globals";
 import { SafeHtml } from "./lib/SafeHtml";
+import { useAuth } from "./auth/AuthContext";
 const { useState, useEffect, useRef, useMemo, useCallback, useLayoutEffect, useReducer, useContext, useImperativeHandle, useId } = React;
 const { Icon, Logo, FL_DATA, FLStore, useStore, askClaude, bizContext, confettiBurst, XPBadge, useCountUp, CountUp, AreaChart, Sparkline, LoadBars, Donut, SlideOver, CommandPalette, HEAT, fmtMoney, StatCard, ToneIco, FLflag, useTweaks, TweaksPanel, TweakSection, TweakRow, TweakSlider, TweakToggle, TweakRadio, TweakSelect, TweakText, TweakNumber, TweakColor, TweakButton, FoxDemo, KanbanDemo, WorkflowDemo, GreenlightDemo, CommandDemo, IntegrationDemo, SupportDemo, SecurityDemo, SidecarDemo, CortexDemo } = window as any;
 // app.jsx, shell: sidebar, topbar, routing, tweaks, palette
@@ -51,9 +52,21 @@ function App() {
   const [notif, setNotif] = useState(false);
   const [profile, setProfile] = useState(false);
   const [editProfile, setEditProfile] = useState(false);
+  const auth = useAuth();
   const [me, setMe] = useState(() => { try { return JSON.parse(localStorage.getItem("fl_me")) || null; } catch (e) { return null; } });
-  const meData = me || { name: "Jordan Reyes", title: "Owner", email: "jordan@reyesco.com", status: "available" };
-  const saveMe = (patch) => { const next = { ...meData, ...patch }; setMe(next); try { localStorage.setItem("fl_me", JSON.stringify(next)); } catch (e) {} };
+  // Real identity from the Cognito ID token claims when signed in; the editable
+  // mock persona ("Jordan Reyes" / localStorage fl_me) otherwise (mock mode).
+  const authMe = auth.isAuthenticated ? {
+    name: (auth.claims && (auth.claims.name || auth.claims.given_name)) || (auth.email ? auth.email.split("@")[0] : "Account"),
+    title: "Signed in",
+    email: auth.email || "",
+    status: (me && me.status) || "available",
+  } : null;
+  const meData = authMe || me || { name: "Jordan Reyes", title: "Owner", email: "jordan@reyesco.com", status: "available" };
+  // Never seed fl_me from authMe: claim-derived PII (real name/email) must not
+  // persist in localStorage past sign-out. Edits while authenticated only carry
+  // prior fl_me content + the patch (e.g. status), not the token claims.
+  const saveMe = (patch) => { const next = { ...(me || {}), ...patch }; setMe(next); try { localStorage.setItem("fl_me", JSON.stringify(next)); } catch (e) {} };
   const STATUS = { available: ["Available", "var(--green)"], busy: ["Busy", "var(--rose)"], away: ["Away", "var(--amber)"] };
   const feed = useStore((s) => s.feed);
   const [onb, setOnb] = useState(() => { try { if (/[?&]onboard=1/.test(location.search)) { localStorage.removeItem("fl_onboarded"); localStorage.removeItem("fl_toured"); return true; } return !localStorage.getItem("fl_onboarded"); } catch (e) { return true; } });
@@ -274,7 +287,7 @@ function App() {
                     </div>
                   </div>
                   <div style={{ borderTop: "1px solid var(--line)", padding: 6 }}>
-                    <a className="pm-item" href="Home.html" style={{ color: "var(--rose)", textDecoration: "none" }}><Icon name="arrowRight" size={16} /><span>Sign out</span></a>
+                    <a className="pm-item" href="Home.html" onClick={(e) => { if (auth.isAuthenticated) { e.preventDefault(); try { localStorage.removeItem("fl_me"); } catch (err) {} auth.signOut(); } }} style={{ color: "var(--rose)", textDecoration: "none" }}><Icon name="arrowRight" size={16} /><span>Sign out</span></a>
                   </div>
                 </div>
               </>
