@@ -35,7 +35,7 @@ tests: U=unit · I=integration · S=smoke · E=e2e(Playwright) · X=isolation �
 | 4 | Agent Plane (Managed Agents, roster, vaults, worker) | ✅* | orchestrator | ✓ | ✓ | · | · | · | self ✓ |
 | 5 | Control Plane (autonomy, Greenlight, traces, kill switch) | ✅ | orchestrator | ✓ | ✓ | · | · | · | self ✓ |
 | 6 | Conversational Layer (front door, slots, agentic RAG+cites) | ✅ | bg-agent | ✓ | ✓ | · | · | · | cross ✓ |
-| 7 | Dashboard Engine (view-spec, generate, render, save/edit) | ⬜ | — | · | · | · | · | · | — |
+| 7 | Dashboard Engine (view-spec, generate, render, save/edit) | 🟡 | orch+agent | ✓ | · | · | ? | · | self ✓ (core) |
 | 8 | Cortex / ML (per-tenant models, train, registry, retrain) | ⬜ | — | · | · | · | · | · | — |
 | 9 | App, Auth & API (Cognito, FastAPI/Fargate, ALB, web) | ⬜ | — | · | · | · | · | · | — |
 | 10 | Acquisition, Signup & Provisioning (landing, Stripe, auto-provision) | ⬜ | — | · | · | · | · | · | — |
@@ -131,7 +131,14 @@ tests: U=unit · I=integration · S=smoke · E=e2e(Playwright) · X=isolation �
   safe, no network/secrets, both invariants verified in source + tests. 33 new tests; full suite 114
   passed / 2 skipped. Committed + pushed. Flagged: `session.py` action-routing regexes are an offline
   stand-in to be superseded by the coordinator's tool selection in Phase 9.
-- **Next** — Phase 7 (dashboard engine): view-spec JSON schema (shared/, spec-not-code), build_view
-  tool (validate + reject-and-retry), trusted Vega-Lite renderer (web/), save/edit over saved_views.
+- **Cycle 9 (Phase 7 core)** — `shared/schemas/view_spec.schema.json` (strict spec-not-code: catalog
+  types kpi/chart/table, Vega-Lite only, Cube-member pattern, additionalProperties:false) +
+  `shared/view_spec.py` (schema + real-member validation), `agents/tools/build_view.py`
+  (generate→validate→reject-and-retry, never returns unvalidated), `api/views.py` (SavedViews
+  save/version/refine-NL/edit, never persists invalid). 13 tests; full suite 127 passed / 2 skipped.
+  Committed + pushed. Dispatched **background agent** for the trusted Vega-Lite renderer in `web/`
+  (`scripts/briefs/07_dashboard_renderer.md`).
+- **Next** — integrate the renderer (build + Playwright), then Phase 8 (Cortex/ML): per-tenant
+  propensity model, train, registry, champion/challenger gate, run_model tool, scheduled retrain.
   (Aurora/Redis/S3 IaC + `db/schema.sql` with FORCE'd RLS + the two-tenant isolation proof
   incl. a vector query).
