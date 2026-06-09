@@ -19,6 +19,7 @@ import DashboardDemo from "./dashboard/Demo";
 import GreenlightQueue from "./api/GreenlightQueue";
 import ChatDock from "./api/ChatDock";
 import DashboardView from "./api/DashboardView";
+import SignupFlow from "./signup/SignupFlow";
 
 // Demo/wiring seams reachable via ?view=. The normal SPA shell renders otherwise.
 const search = window.location.search;
@@ -35,6 +36,8 @@ function Root() {
       return <ChatDock />;
     case "dashboard":
       return <DashboardView />;
+    case "signup":
+      return <SignupFlow />;
     default:
       return <App />;
   }

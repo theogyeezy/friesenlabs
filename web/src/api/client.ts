@@ -101,6 +101,70 @@ export interface ActionResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Signup funnel wire types (public, pre-auth: no bearer token, no tenant_id).
+//
+// These endpoints run before an account has a tenant, so requests carry NO
+// Authorization header and NO tenant_id. The server mints the tenant only after
+// payment provisions the instance; the client never names it.
+// ---------------------------------------------------------------------------
+
+/** State machine the signup funnel walks through, server-driven. */
+export type SignupState =
+  | "created"
+  | "email_verified"
+  | "phone_verified"
+  | "paid"
+  | "provisioning"
+  | "active";
+
+/** Body for POST /signup. Carries no tenant_id (none exists yet). */
+export interface SignupBody {
+  email: string;
+  phone: string;
+}
+
+/** Response from POST /signup. */
+export interface SignupResponse {
+  account_id: string;
+  state: SignupState;
+}
+
+/** Body for POST /signup/{account_id}/verify-email. */
+export interface VerifyEmailBody {
+  token: string;
+}
+
+export interface VerifyEmailResponse {
+  state: SignupState;
+  email_verified: boolean;
+}
+
+/** Body for POST /signup/{account_id}/verify-phone. */
+export interface VerifyPhoneBody {
+  code: string;
+}
+
+export interface VerifyPhoneResponse {
+  state: SignupState;
+  phone_verified: boolean;
+}
+
+/** Body for POST /signup/{account_id}/checkout. */
+export interface CheckoutBody {
+  plan: string;
+}
+
+export interface CheckoutResponse {
+  checkout_id: string;
+  stripe_customer_id: string;
+}
+
+/** Response from GET /signup/{account_id}: the current funnel state. */
+export interface GetSignupResponse {
+  state: SignupState;
+}
+
+// ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
@@ -241,6 +305,21 @@ function cannedChat(_message: string): ChatResponse {
   };
 }
 
+// A single in-flight mock signup. The mock walks the state machine forward:
+// created -> email_verified -> phone_verified -> paid -> provisioning -> active.
+// We store NO password (the form never sends one and the client never logs it);
+// we keep only what the API contract carries. There is no tenant_id here, by
+// construction: the funnel mints a tenant server-side only after provisioning.
+interface MockSignup {
+  account_id: string;
+  state: SignupState;
+  email_verified: boolean;
+  phone_verified: boolean;
+  // How many GET /signup polls remain before flipping provisioning -> active,
+  // so the UI shows a real "provisioning..." step instead of an instant jump.
+  provisioningPollsLeft: number;
+}
+
 // ---------------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------------
@@ -265,6 +344,7 @@ export class ApiClient {
   // Mutable in-memory mock stores so decide/save behave statefully in tests.
   private mockApprovals: Approval[] | null = null;
   private mockViews: SavedViewRow[] | null = null;
+  private mockSignup: MockSignup | null = null;
 
   constructor(config: ApiClientConfig = {}) {
     this.baseURL = (config.baseURL ?? "").replace(/\/$/, "");
@@ -297,6 +377,28 @@ export class ApiClient {
       headers: this.headers(),
       // Bodies never include tenant_id (the trust rule); callers cannot inject it
       // because the typed body shapes have no such field.
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    if (!res.ok) {
+      let detail = res.statusText;
+      try {
+        const j = (await res.json()) as { detail?: string };
+        if (j && typeof j.detail === "string") detail = j.detail;
+      } catch {
+        // non-JSON error body; keep statusText
+      }
+      throw new ApiError(res.status, detail);
+    }
+    return (await res.json()) as T;
+  }
+
+  // Pre-auth request: no Authorization header at all (the signup funnel runs
+  // before any tenant or token exists). Still never sends a tenant_id; the typed
+  // body shapes have no such field.
+  private async requestPublic<T>(method: string, path: string, body?: unknown): Promise<T> {
+    const res = await this.fetchImpl(`${this.baseURL}${path}`, {
+      method,
+      headers: { "Content-Type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     if (!res.ok) {
@@ -419,6 +521,100 @@ export class ApiClient {
       return { status: "executed", decision: "auto", detail: "", approval: null, result: { ok: true } };
     }
     return this.request<ActionResponse>("POST", "/actions", body);
+  }
+
+  // --- signup funnel (public, pre-auth) -------------------------------------
+  //
+  // None of these attach a bearer token (the account has no tenant yet) and none
+  // send a tenant_id. The mock walks the state machine forward deterministically
+  // so Playwright can drive the whole funnel offline.
+
+  /** POST /signup: create the pending account from {email, phone}. */
+  async signup(body: SignupBody): Promise<SignupResponse> {
+    if (this.mock) {
+      this.mockSignup = {
+        account_id: "acct_mock_001",
+        state: "created",
+        email_verified: false,
+        phone_verified: false,
+        provisioningPollsLeft: 2,
+      };
+      return { account_id: this.mockSignup.account_id, state: this.mockSignup.state };
+    }
+    // Pre-auth: send without a bearer token. Body carries email/phone only.
+    return this.requestPublic<SignupResponse>("POST", "/signup", body);
+  }
+
+  /** POST /signup/{id}/verify-email: confirm the email token. */
+  async verifyEmail(accountId: string, body: VerifyEmailBody): Promise<VerifyEmailResponse> {
+    if (this.mock) {
+      const s = this.requireMockSignup(accountId);
+      s.email_verified = true;
+      s.state = "email_verified";
+      return { state: s.state, email_verified: true };
+    }
+    return this.requestPublic<VerifyEmailResponse>(
+      "POST",
+      `/signup/${encodeURIComponent(accountId)}/verify-email`,
+      body,
+    );
+  }
+
+  /** POST /signup/{id}/verify-phone: confirm the SMS code. */
+  async verifyPhone(accountId: string, body: VerifyPhoneBody): Promise<VerifyPhoneResponse> {
+    if (this.mock) {
+      const s = this.requireMockSignup(accountId);
+      s.phone_verified = true;
+      s.state = "phone_verified";
+      return { state: s.state, phone_verified: true };
+    }
+    return this.requestPublic<VerifyPhoneResponse>(
+      "POST",
+      `/signup/${encodeURIComponent(accountId)}/verify-phone`,
+      body,
+    );
+  }
+
+  /** POST /signup/{id}/checkout: start Stripe checkout for the chosen plan. */
+  async checkout(accountId: string, body: CheckoutBody): Promise<CheckoutResponse> {
+    if (this.mock) {
+      const s = this.requireMockSignup(accountId);
+      // Payment "succeeds" in the mock; provisioning kicks off server-side.
+      s.state = "provisioning";
+      s.provisioningPollsLeft = 2;
+      return { checkout_id: "cs_mock_001", stripe_customer_id: "cus_mock_001" };
+    }
+    return this.requestPublic<CheckoutResponse>(
+      "POST",
+      `/signup/${encodeURIComponent(accountId)}/checkout`,
+      body,
+    );
+  }
+
+  /** GET /signup/{id}: poll the funnel state until it reaches "active". */
+  async getSignup(accountId: string): Promise<GetSignupResponse> {
+    if (this.mock) {
+      const s = this.requireMockSignup(accountId);
+      if (s.state === "provisioning") {
+        if (s.provisioningPollsLeft > 0) {
+          s.provisioningPollsLeft -= 1;
+        } else {
+          s.state = "active";
+        }
+      }
+      return { state: s.state };
+    }
+    return this.requestPublic<GetSignupResponse>(
+      "GET",
+      `/signup/${encodeURIComponent(accountId)}`,
+    );
+  }
+
+  private requireMockSignup(accountId: string): MockSignup {
+    if (!this.mockSignup || this.mockSignup.account_id !== accountId) {
+      throw new ApiError(404, "no such signup");
+    }
+    return this.mockSignup;
   }
 }
 

@@ -144,10 +144,77 @@ the DOM or executes for the invalid spec.
   - `?view=dashboard` (`DashboardView.tsx`): loads a saved view via `getView`,
     renders it through the trusted `SpecRenderer`, and persists edits via
     `saveView`.
+  - `?view=signup` (`signup/SignupFlow.tsx`): the marketing to provisioned
+    funnel (see below).
+
+The client also exposes the public, pre-auth signup methods `signup`,
+`verifyEmail`, `verifyPhone`, `checkout`, and `getSignup`. These run before an
+account has a tenant, so they attach **no** bearer token and (like every other
+method) **never** send a `tenant_id`. Their mock fixtures walk the funnel state
+machine (`created -> email_verified -> phone_verified -> paid -> provisioning ->
+active`) so the whole flow runs offline.
 
 `e2e/greenlight.spec.ts` exercises the queue in mock mode (reasoning + value
 render, approve removes the item, edited draft approves with edits, and no
 token/payload leaks into the DOM).
+
+## Signup funnel + analytics
+
+`src/signup/SignupFlow.tsx` is the multi-step funnel reachable at `?view=signup`:
+account form (email, password with an in-memory strength meter, phone) → email
+verify → phone OTP → plan + explicit price consent ("You'll be charged $X/mo")
+→ provisioning poll → success.
+
+- The **password never leaves the browser.** The signup API contract carries only
+  `{email, phone}`; the password lives in component state, is never sent, never
+  logged, and never passed to analytics. The strength meter reads only derived
+  signal (length/variety) in memory.
+- The email token and SMS code go only to their verify endpoints and are never
+  rendered back, stored, or captured.
+- `e2e/signup.spec.ts` walks the funnel to `active` in mock mode, asserts the
+  price consent shows before the pay action, and asserts no password / token /
+  OTP / `tenant_id` leaks into the DOM or into any analytics call.
+
+`src/analytics/posthog.ts` is a thin, **injectable** PostHog wrapper.
+
+- The project key is read **only** from the environment
+  (`VITE_POSTHOG_KEY`); there is no key literal in the source.
+- It is a **hard no-op in mock/test mode** and whenever no key is present, so
+  Playwright and local previews make zero analytics network calls.
+- It captures the funnel events `landing_view`, `signup_started`,
+  `email_verified`, `phone_verified`, `payment_submitted`, `payment_succeeded`,
+  `instance_provisioned`, `first_login`. Revenue is captured **server-side** on
+  the Stripe webhook, so the client never emits a `$`-amount on
+  `payment_succeeded`.
+- Session replay is initialized with `session_recording.maskAllInputs: true`, so
+  passwords, OTP codes, emails, and phone numbers never reach a recording. A
+  defensive `sanitize()` also strips `tenant_id` / `password` / `token` / `code`
+  from any capture payload.
+
+### `/ph` first-party reverse proxy
+
+In production, analytics ingestion is routed through a **first-party reverse
+proxy** so the browser never contacts a third-party analytics domain directly
+(this dodges ad-blockers and keeps all traffic same-origin). The wrapper sets
+PostHog's `api_host` (and `ui_host`) to the same-origin path **`/ph`**, read from
+`VITE_POSTHOG_HOST` (default `/ph`).
+
+Wire the edge so requests under `/ph/*` are rewritten and forwarded to PostHog
+server-side. For example, with a CloudFront / nginx style rule:
+
+```
+# Browser  -> https://app.uplift.example/ph/*   (same origin, no 3rd-party domain)
+# Proxy    -> https://us.i.posthog.com/*         (strip the /ph prefix; static
+#                                                  assets -> us-assets.i.posthog.com)
+location /ph/ {
+  proxy_pass https://us.i.posthog.com/;   # adjust region host as needed
+  proxy_set_header Host us.i.posthog.com;
+}
+```
+
+No PostHog key lives in this config or anywhere in the repo; the key is supplied
+to the browser bundle only via the `VITE_POSTHOG_KEY` build env, and ingestion is
+authenticated by that key, not by the proxy.
 
 ## Notes
 
