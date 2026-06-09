@@ -39,7 +39,7 @@ tests: U=unit · I=integration · S=smoke · E=e2e(Playwright) · X=isolation �
 | 8 | Cortex / ML (per-tenant models, train, registry, retrain) | ✅* | orchestrator | ✓ | · | · | · | · | self ✓ |
 | 9 | App, Auth & API (Cognito, FastAPI/Fargate, ALB, web) | ✅ | orch+agent | ✓ | ✓ | · | ✓ | ✓ | cross ✓ |
 | 10 | Acquisition, Signup & Provisioning (landing, Stripe, auto-provision) | ✅* | orchestrator | ✓ | · | · | · | ✓ | self ✓ |
-| 11 | Cost, Guardrails & Observability (budgets, caps, CloudWatch, OTEL) | ⬜ | — | · | · | · | · | · | — |
+| 11 | Cost, Guardrails & Observability (budgets, caps, CloudWatch, OTEL) | ✅* | orchestrator | ✓ | · | · | · | · | self ✓ |
 | 12 | IaC, CI/CD & Launch (Terraform/CDK, pipelines, smoke+isolation) | ⬜ | — | · | · | · | · | · | — |
 | FE | Frontend: convert ~45 JSX → React+TS app in `web/` | ✅ | bg-agent | · | · | ✓ | ✓ | · | cross ✓ (fixed) |
 
@@ -188,7 +188,15 @@ tests: U=unit · I=integration · S=smoke · E=e2e(Playwright) · X=isolation �
   mid-failure parks provisioning_failed + tears down the orphan workspace), `funnel.py` (PostHog,
   server-side revenue). 7 tests proving every anti-accidental-charge guarantee. Full suite 157 passed /
   2 skipped; smoke green. Committed + pushed. Live Stripe/Cognito/Anthropic-Admin/Resend BLOCKED: needs Nick.
-- **Next** — Phase 11 (cost/guardrails/observability): inference levers (tiering/caching/batch),
-  AWS Budgets + 90% Deny action, per-workspace caps, cost tags, CloudWatch alarms, OTEL/ADOT tracing.
+- **Cycle 15 (Phase 11 cost/guardrails/observability)** — `shared/cost.py` (unit-economics model:
+  70/25/5 tiering, prompt-caching -90%, Batch -50% offline-only, $0.08/active-session-hour stacking on
+  parallel threads) + `shared/COST.md` playbook. IaC: `modules/guardrails` (AWS Budget + 90% Deny
+  action + us-east-1 billing alarm + cost tags), `modules/observability` (CloudWatch alarms for ALB
+  5xx/p95 latency, Aurora ACU, Redis evictions, worker workers_polling<1, + SNS topic). 6 cost tests;
+  full suite 163 passed / 2 skipped; terraform validate + smoke green. Committed + pushed. Live
+  budgets/alarms BLOCKED: needs Nick.
+- **Next** — Phase 12 (IaC/CI-CD/launch): dev/staging/prod config, GitHub Actions CI (ruff/pytest +
+  terraform validate + web build + Playwright + isolation gate), trunk branching doc, demo script;
+  then the final Definition-of-Done verification pass.
   (Aurora/Redis/S3 IaC + `db/schema.sql` with FORCE'd RLS + the two-tenant isolation proof
   incl. a vector query).

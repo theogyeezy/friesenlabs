@@ -116,6 +116,17 @@ module "cortex" {
   project = var.project
 }
 
+# --- Phase 11: cost guardrails + observability ---
+module "guardrails" {
+  source  = "./modules/guardrails"
+  project = var.project
+}
+
+module "observability" {
+  source  = "./modules/observability"
+  project = var.project
+}
+
 # --- Phase 4: self-hosted tool-execution worker ---
 module "worker" {
   source             = "./modules/worker"
