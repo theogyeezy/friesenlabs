@@ -295,3 +295,17 @@ tests: U=unit · I=integration · S=smoke · E=e2e(Playwright) · X=isolation �
     terraform validate + plan + smoke + web all green.
   - **Flagged, not blocking:** Redis AUTH token (L10), Pg-store SET LOCAL/pooling (L3), cross-tenant FK
     nuance (L11), batch_embed real job (L6), LightGBM/XGBoost candidates (L7) — tracked, mostly needs-Nick.
+
+---
+
+# Two-lane sprint logs (2026-06-09 →)
+
+Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its own section below.
+
+## Lane Nick (infra / live-ops) — log
+- 2026-06-09 — Lane contract landed: ownership map in CONTRIBUTING.md, `infra/REQUESTS.md` handoff
+  queue created, TODO chunk prompts patched (infra steps → REQUESTS.md), CLAUDE.md constraint #1
+  lane-scoped. Machine prep: venv green (195 passed / 4 skipped), push verified via diffusion23.
+
+## Lane Matt (app code) — log
+- _(no entries yet)_

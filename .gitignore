@@ -50,3 +50,6 @@ docs/uplift-infra-design.txt
 # terraform backend config (contains account-id bucket name) - keep out of the public repo
 infra/backend.hcl
 infra/prod.auto.tfvars
+
+# Claude Code per-machine settings (permissions allowlists are machine-specific)
+.claude/settings.local.json
