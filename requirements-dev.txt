@@ -4,4 +4,5 @@ boto3>=1.34
 anthropic>=0.40
 psycopg2-binary>=2.9
 pglast>=7.0          # libpg_query — static SQL grammar + RLS-contract tests (no DB needed)
+jsonschema>=4.20     # view-spec validation (Phase 7: spec-not-code)
 # api / agents add their own runtime deps in per-package requirements as phases land
