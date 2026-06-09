@@ -177,7 +177,10 @@ function AuthCallback() {
   );
 }
 
-const isAuthCallback = window.location.pathname === "/auth/callback";
+// Tolerate a trailing slash: Amplify Hosting 301s extensionless paths to the
+// slashed form (/auth/callback?code= -> /auth/callback/?code=), preserving the
+// query. A strict equality check here would skip the exchange entirely.
+const isAuthCallback = /^\/auth\/callback\/?$/.test(window.location.pathname);
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
