@@ -78,6 +78,23 @@ class PgApprovalStore:
         # connection beyond minconn on putconn), avoiding TCP/auth churn under concurrent load.
         self._pool = psycopg2.pool.ThreadedConnectionPool(pool_max, pool_max, dsn)
 
+    def _getconn(self):
+        """Check out a pooled connection, waiting briefly if the pool is momentarily exhausted.
+
+        psycopg2's pool raises rather than blocks when all connections are out; under a burst wider
+        than the pool (the anyio threadpool can exceed pool_max) we'd otherwise 500. Wait up to a few
+        seconds for a peer's short tenant-scoped txn to release one, then give up.
+        """
+        import time  # noqa: PLC0415
+        deadline = time.monotonic() + 10.0
+        while True:
+            try:
+                return self._pool.getconn()
+            except self._psycopg2.pool.PoolError as exc:
+                if "exhausted" not in str(exc) or time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.005)
+
     @contextmanager
     def _tx(self, tenant_id):
         """Yield a RealDict cursor inside a single tenant-scoped transaction.
@@ -86,7 +103,7 @@ class PgApprovalStore:
         success / rolls back on error, and always returns the connection to the pool. The per-op
         connection is never shared across threads (checked out for the duration of the txn).
         """
-        conn = self._pool.getconn()
+        conn = self._getconn()
         try:
             cur = conn.cursor(cursor_factory=self._cursor_factory)
             cur.execute("SET LOCAL app.current_tenant = %s", (str(tenant_id),))

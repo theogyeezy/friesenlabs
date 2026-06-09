@@ -57,16 +57,29 @@ class PgSavedViewStore:
         import psycopg2  # noqa: PLC0415 — guarded
         import psycopg2.pool  # noqa: PLC0415
         from psycopg2.extras import Json, RealDictCursor  # noqa: PLC0415
+        self._psycopg2 = psycopg2
         self._Json = Json
         self._cursor_factory = RealDictCursor
         pool_max = int(os.environ.get("UPLIFT_DB_POOL_MAX", "10"))
         # min == max: fixed-size pool retains returned connections (avoids TCP/auth churn under load).
         self._pool = psycopg2.pool.ThreadedConnectionPool(pool_max, pool_max, dsn)
 
+    def _getconn(self):
+        """Check out a pooled connection, waiting briefly if exhausted (see PgApprovalStore._getconn)."""
+        import time  # noqa: PLC0415
+        deadline = time.monotonic() + 10.0
+        while True:
+            try:
+                return self._pool.getconn()
+            except self._psycopg2.pool.PoolError as exc:
+                if "exhausted" not in str(exc) or time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.005)
+
     @contextmanager
     def _tx(self, tenant_id):
         """Yield a RealDict cursor inside a single tenant-scoped transaction (see PgApprovalStore._tx)."""
-        conn = self._pool.getconn()
+        conn = self._getconn()
         try:
             cur = conn.cursor(cursor_factory=self._cursor_factory)
             cur.execute("SET LOCAL app.current_tenant = %s", (str(tenant_id),))

@@ -71,7 +71,8 @@ def app_dsn():
 
 
 def _spec(view_id: str) -> dict:
-    return {"view_id": view_id, "title": view_id, "semantic_refs": [],
+    # semantic_refs must be non-empty per shared/schemas/view_spec.schema.json (SavedViews.save validates).
+    return {"view_id": view_id, "title": view_id, "semantic_refs": ["Deals.count"],
             "layout": [{"type": "kpi", "metric": "Deals.count"}], "version": 1}
 
 
