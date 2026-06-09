@@ -306,6 +306,12 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
 - 2026-06-09 — Lane contract landed: ownership map in CONTRIBUTING.md, `infra/REQUESTS.md` handoff
   queue created, TODO chunk prompts patched (infra steps → REQUESTS.md), CLAUDE.md constraint #1
   lane-scoped. Machine prep: venv green (195 passed / 4 skipped), push verified via diffusion23.
+- 2026-06-09 — Baseline plan captured + triaged (`infra/RUNBOOK.md`): 14 adds = exactly the
+  unapplied cube/worker/observability modules ✓; alb/api_service/api_cdn/web_hosting confirmed in
+  state (TODO "reconcile ALB/API/CloudFront" checked off — premise was stale). **NOT clean:** the
+  plan would destroy the live Amplify app (`github_access_token` absent from machine-local
+  `prod.auto.tfvars`) and strip the budget notification (`notify_email` unset). Both parked —
+  needs Matt (PAT + budget email/limit). Apply discipline: no full apply; pure-add `-target` only.
 
 ## Lane Matt (app code) — log
 - _(no entries yet)_

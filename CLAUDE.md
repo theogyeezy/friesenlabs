@@ -30,10 +30,13 @@ app shell → real RLS-scoped tenant rows. Unauth `/api/*` → 401; `/chat` → 
   needs Anthropic creds); provisioning clients (`api/prod_deps.py` `_Stub`/`_Noop`, verify hardcoded off
   — needs Stripe/Resend/Admin creds); the cube/worker/observability/provisioning-Lambda/cortex modules
   (authored, unapplied).
-- ✅ **State reconciled:** out-of-band SG rules imported, budget untainted, ECR `uplift-api` back to
-  **IMMUTABLE** (push new image versions as new tags, not `:latest` overwrites). Full plan: 0
-  change/destroy to live resources; only the unapplied modules show as adds. Live var values load from
-  gitignored `infra/prod.auto.tfvars`.
+- ⚠️ **State reconciled, but the baseline plan is NOT clean (2026-06-09, `infra/RUNBOOK.md`):**
+  out-of-band SG rules imported, budget untainted, ECR `uplift-api` back to **IMMUTABLE** (push new
+  image versions as new tags, not `:latest` overwrites). Live var values load from gitignored
+  `infra/prod.auto.tfvars` — and a plan run without `github_access_token`/`notify_email` set there
+  **plans to DESTROY the live Amplify app** and strip the budget notification. Until those values are
+  restored and the plan re-verified clean: no full `terraform apply`; pure-add `-target` applies only
+  (the unapplied cube/worker/observability modules are the only intentional adds).
 - **Ops:** state in **S3** (`uplift-tfstate-*`, KMS) — init `terraform init -backend-config=backend.hcl`
   (gitignored). API image (arm64): `docker build --platform linux/arm64`. DB migrate
   `python -m api.migrate`; tenant seed `scripts/seed_demo_tenant.py` — both as one-off Fargate tasks.
