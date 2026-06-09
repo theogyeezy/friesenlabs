@@ -115,6 +115,18 @@ CREATE TABLE IF NOT EXISTS traces (
     created_at timestamptz NOT NULL DEFAULT now()
 );
 
+-- ---------------------------------------------------------------------------
+-- ingest_cursor — per-tenant, per-source incremental high-water mark (Phase 2)
+-- Tenant-scoped + RLS like everything else (the ingestion worker connects as crm_app).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS ingest_cursor (
+    tenant_id    uuid NOT NULL,
+    source       text NOT NULL,
+    cursor_value text,
+    updated_at   timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, source)
+);
+
 -- ===========================================================================
 -- ROW LEVEL SECURITY — apply the identical pattern to every tenant-scoped table.
 -- The DO block keeps it DRY and guarantees no table is missed (and never without FORCE).
@@ -124,7 +136,7 @@ DECLARE
     t text;
     tenant_tables text[] := ARRAY[
         'documents', 'companies', 'contacts', 'deals', 'activities',
-        'saved_views', 'approvals', 'traces'
+        'saved_views', 'approvals', 'traces', 'ingest_cursor'
     ];
 BEGIN
     FOREACH t IN ARRAY tenant_tables LOOP
@@ -150,3 +162,4 @@ ALTER TABLE activities  ENABLE ROW LEVEL SECURITY; ALTER TABLE activities  FORCE
 ALTER TABLE saved_views ENABLE ROW LEVEL SECURITY; ALTER TABLE saved_views FORCE ROW LEVEL SECURITY;
 ALTER TABLE approvals   ENABLE ROW LEVEL SECURITY; ALTER TABLE approvals   FORCE ROW LEVEL SECURITY;
 ALTER TABLE traces      ENABLE ROW LEVEL SECURITY; ALTER TABLE traces      FORCE ROW LEVEL SECURITY;
+ALTER TABLE ingest_cursor ENABLE ROW LEVEL SECURITY; ALTER TABLE ingest_cursor FORCE ROW LEVEL SECURITY;

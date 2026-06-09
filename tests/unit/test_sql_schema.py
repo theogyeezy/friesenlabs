@@ -16,7 +16,7 @@ ROLES = os.path.join(DB_DIR, "roles.sql")
 
 TENANT_TABLES = [
     "documents", "companies", "contacts", "deals",
-    "activities", "saved_views", "approvals", "traces",
+    "activities", "saved_views", "approvals", "traces", "ingest_cursor",
 ]
 
 
