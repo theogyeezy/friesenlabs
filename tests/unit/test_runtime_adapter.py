@@ -1,8 +1,23 @@
-"""Unit: the runtime adapter is swappable and the real MA impl never touches the network on build."""
+"""Unit: the runtime adapter is swappable and the real MA impl never touches the network — tests
+exercise ManagedAgentsRuntime against a mocked anthropic client only (live shapes stay VERIFY-flagged).
+"""
+import itertools
+from types import SimpleNamespace
+from unittest import mock
+
 import pytest
 
 from agents import runtime as rt
-from agents.runtime import AgentRuntime, FakeRuntime, ManagedAgentsRuntime, get_runtime
+from agents.coordinator import COORDINATOR
+from agents.roster import SCOUT
+from agents.runtime import (
+    AGENT_TOOLSET,
+    AgentRuntime,
+    FakeRuntime,
+    ManagedAgentsRuntime,
+    get_runtime,
+)
+from shared.config import MA_BETA_HEADER
 
 
 @pytest.mark.unit
@@ -15,19 +30,10 @@ def test_factory_defaults_to_fake():
 @pytest.mark.unit
 def test_factory_managed_builds_without_network():
     # Constructing the real runtime must NOT touch Anthropic or require creds.
-    r = get_runtime({"runtime": "managed", "api_key": "unused"})
+    r = get_runtime({"runtime": "managed", "api_key": "unused", "environment_id": "env_persisted"})
     assert isinstance(r, ManagedAgentsRuntime)
     assert r._client is None  # client is lazy
-
-
-@pytest.mark.unit
-def test_managed_methods_are_blocked_until_verified():
-    r = ManagedAgentsRuntime(api_key="unused")
-    # Every live endpoint refuses to run (no accidental live Anthropic calls).
-    with pytest.raises(NotImplementedError):
-        r.create_environment("uplift-vpc")
-    with pytest.raises(NotImplementedError):
-        r.create_session("coord", "tenant")
+    assert r._environment_id == "env_persisted"  # persisted per-tenant env id flows through
 
 
 @pytest.mark.unit
@@ -41,3 +47,225 @@ def test_hard_limits_constants():
     assert rt.DELEGATION_DEPTH == 1
     assert rt.MAX_AGENTS_PER_ROSTER == 20
     assert rt.MAX_CONCURRENT_THREADS == 25
+
+
+# ---------------------------------------------------------------- mocked MA client helpers
+def _ev(**kw):
+    return SimpleNamespace(**kw)
+
+
+class _FakeStream:
+    """Stands in for client.beta.sessions.events.stream(...) — a context manager over events."""
+
+    def __init__(self, events):
+        self._events = list(events)
+
+    def __enter__(self):
+        return iter(self._events)
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _mock_client(stream_events=()):
+    client = mock.MagicMock(name="anthropic_client")
+    counters = {"agent": itertools.count(1), "sess": itertools.count(1)}
+    client.beta.environments.create.return_value = SimpleNamespace(id="env_live_1")
+    client.beta.agents.create.side_effect = lambda **kw: SimpleNamespace(
+        id=f"agent_live_{next(counters['agent'])}", version=1
+    )
+    client.beta.vaults.create.return_value = SimpleNamespace(id="vault_live_1")
+    client.beta.sessions.create.side_effect = lambda **kw: SimpleNamespace(
+        id=f"sess_live_{next(counters['sess'])}", status="idle"
+    )
+    client.beta.sessions.events.stream.return_value = _FakeStream(stream_events)
+    client.beta.sessions.events.send.return_value = None
+    return client
+
+
+def _managed(stream_events=()) -> ManagedAgentsRuntime:
+    r = ManagedAgentsRuntime(api_key="test-key")
+    r._client = _mock_client(stream_events)  # injected — no anthropic import, no network
+    return r
+
+
+_TURN_EVENTS = [
+    _ev(type="session.thread_created", agent_name="scout", session_thread_id="th_1"),
+    _ev(type="agent.message", content=[_ev(type="text", text="Here are your leads.")]),
+    _ev(type="session.status_idle", stop_reason=_ev(type="end_turn")),
+]
+
+
+# ---------------------------------------------------------------- create_* return ids
+@pytest.mark.unit
+def test_managed_creates_return_ids():
+    r = _managed()
+    assert r.create_environment("uplift-vpc") == "env_live_1"
+    assert r.create_agent(SCOUT) == "agent_live_1"
+    coord_id = r.create_coordinator(COORDINATOR, ["agent_live_1"])
+    assert coord_id == "agent_live_2"
+    assert r.create_vault("Tenant A", external_user_id="user-1") == "vault_live_1"
+
+    # The self-hosted env config + coordinator multiagent shape went over the wire.
+    env_kwargs = r._client.beta.environments.create.call_args.kwargs
+    assert env_kwargs["config"] == {"type": "self_hosted"}
+    coord_kwargs = r._client.beta.agents.create.call_args.kwargs
+    assert coord_kwargs["multiagent"] == {"type": "coordinator", "agents": ["agent_live_1"]}
+
+
+@pytest.mark.unit
+def test_managed_serializes_tools_via_to_spec():
+    r = _managed()
+    r.create_agent(SCOUT)
+    tools = r._client.beta.agents.create.call_args.kwargs["tools"]
+    # Built-in toolset first, then each named tool serialized via Tool.to_spec().
+    assert tools[0] == {"type": AGENT_TOOLSET}
+    customs = tools[1:]
+    assert [t["name"] for t in customs] == SCOUT.tools
+    for t in customs:
+        assert t["type"] == "custom"
+        assert t["description"]
+        assert t["input_schema"]["type"] == "object"
+
+
+# ---------------------------------------------------------------- hard limits enforced live
+@pytest.mark.unit
+def test_managed_roster_cap_enforced():
+    r = _managed()
+    too_many = [f"agent_{i}" for i in range(rt.MAX_AGENTS_PER_ROSTER + 1)]
+    with pytest.raises(ValueError, match="exceeds the MA limit of 20"):
+        r.create_coordinator(COORDINATOR, too_many)
+    r._client.beta.agents.create.assert_not_called()  # rejected before any live call
+
+
+@pytest.mark.unit
+def test_managed_delegation_depth_enforced():
+    r = _managed()
+    coord_id = r.create_coordinator(COORDINATOR, ["agent_x"])
+    with pytest.raises(ValueError, match="depth is 1"):
+        r.create_coordinator(COORDINATOR, [coord_id])  # a coordinator on a roster = depth 2
+
+
+@pytest.mark.unit
+def test_managed_concurrent_session_cap_enforced():
+    r = _managed()
+    r.create_environment("uplift-vpc")
+    for i in range(rt.MAX_CONCURRENT_THREADS):
+        r.create_session("coord_1", tenant_id=f"tenant-{i}")
+    with pytest.raises(RuntimeError, match="concurrent-thread limit is 25"):
+        r.create_session("coord_1", tenant_id="tenant-overflow")
+
+
+# ---------------------------------------------------------------- session metadata + env gating
+@pytest.mark.unit
+def test_managed_session_requires_environment():
+    r = _managed()
+    with pytest.raises(RuntimeError, match="environment_id"):
+        r.create_session("coord_1", tenant_id="tenant-a")
+    r._client.beta.sessions.create.assert_not_called()
+
+
+@pytest.mark.unit
+def test_managed_session_carries_tenant_and_vault_metadata():
+    r = _managed()
+    r.create_environment("uplift-vpc")
+    s = r.create_session("coord_1", tenant_id="tenant-a", vault_id="vault_live_1")
+    # The Session object matches FakeRuntime's metadata contract (worker RLS binding reads it).
+    assert s.tenant_id == "tenant-a"
+    assert s.metadata == {"tenant_id": "tenant-a", "vault_id": "vault_live_1"}
+    # And the wire call carried tenant + vault into MA session metadata / vault_ids.
+    kwargs = r._client.beta.sessions.create.call_args.kwargs
+    assert kwargs["metadata"] == {"tenant_id": "tenant-a", "vault_id": "vault_live_1"}
+    assert kwargs["vault_ids"] == ["vault_live_1"]
+    assert kwargs["environment_id"] == "env_live_1"
+    assert kwargs["agent"] == "coord_1"
+
+
+# ---------------------------------------------------------------- send_message stream flow
+@pytest.mark.unit
+def test_managed_send_message_returns_fake_compatible_shape():
+    r = _managed(stream_events=_TURN_EVENTS)
+    r.create_environment("uplift-vpc")
+    session = r.create_session("coord_1", tenant_id="tenant-a")
+    out = r.send_message(session, "find me leads")
+
+    # FakeRuntime's shape ({session_id, tenant_id, delegations, answer}) + pending approvals.
+    fake = FakeRuntime()
+    fake_keys = set(fake.send_message(fake.create_session("c", "t"), "x"))
+    assert set(out) == fake_keys | {"pending_approvals"}
+    assert out["session_id"] == session.id
+    assert out["tenant_id"] == "tenant-a"
+    assert out["delegations"] == ["scout"]
+    assert out["answer"] == "Here are your leads."
+    assert out["pending_approvals"] == []
+
+    # The real event-stream flow: stream opened FIRST, then the user.message sent.
+    send_kwargs = r._client.beta.sessions.events.send.call_args.kwargs
+    assert send_kwargs["events"] == [
+        {"type": "user.message", "content": [{"type": "text", "text": "find me leads"}]}
+    ]
+    assert send_kwargs["session_id"] == session.id
+
+
+@pytest.mark.unit
+def test_managed_send_message_surfaces_custom_tool_calls_as_pending():
+    events = [
+        _ev(
+            type="agent.custom_tool_use",
+            id="sevt_1",
+            name="send_email",
+            input={"to": "x@y.co"},
+        ),
+        _ev(type="session.status_idle", stop_reason=_ev(type="requires_action")),
+    ]
+    r = _managed(stream_events=events)
+    r.create_environment("uplift-vpc")
+    session = r.create_session("coord_1", tenant_id="tenant-a")
+    out = r.send_message(session, "email the lead")
+    assert out["pending_approvals"] == [
+        {
+            "status": "pending",
+            "tool": "send_email",
+            "input": {"to": "x@y.co"},
+            "custom_tool_use_id": "sevt_1",
+        }
+    ]
+
+
+@pytest.mark.unit
+def test_managed_send_message_raises_on_terminated():
+    events = [
+        _ev(type="session.error", error="boom", message=None),
+        _ev(type="session.status_terminated"),
+    ]
+    r = _managed(stream_events=events)
+    r.create_environment("uplift-vpc")
+    session = r.create_session("coord_1", tenant_id="tenant-a")
+    with pytest.raises(RuntimeError, match="terminated"):
+        r.send_message(session, "hello")
+
+
+# ---------------------------------------------------------------- beta header on every call
+@pytest.mark.unit
+def test_managed_beta_header_present_on_every_call():
+    r = _managed(stream_events=_TURN_EVENTS)
+    r.create_environment("uplift-vpc")
+    agent_id = r.create_agent(SCOUT)
+    coord_id = r.create_coordinator(COORDINATOR, [agent_id])
+    r.create_vault("Tenant A", external_user_id="user-1")
+    session = r.create_session(coord_id, tenant_id="tenant-a", vault_id="vault_live_1")
+    r.send_message(session, "go")
+
+    c = r._client
+    surfaces = [
+        c.beta.environments.create,
+        c.beta.agents.create,
+        c.beta.vaults.create,
+        c.beta.sessions.create,
+        c.beta.sessions.events.stream,
+        c.beta.sessions.events.send,
+    ]
+    calls = [call for m in surfaces for call in m.call_args_list]
+    assert len(calls) >= 7  # env + 2 agents + vault + session + stream + send
+    for call in calls:
+        assert call.kwargs["extra_headers"]["anthropic-beta"] == MA_BETA_HEADER
