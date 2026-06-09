@@ -1,7 +1,8 @@
 # CLAUDE.md — Uplift build context
 
-This file orients any agent working in this repo. Keep it (and `README.md` + `BUILD_STATUS.md`)
-current on every commit.
+This file orients any agent working in this repo. **On every commit/push, update all of the living
+docs that the change touches — `README.md`, `CLAUDE.md`, `BUILD_STATUS.md`, and `TODO.md` — so they
+never drift from reality.**
 
 ## What this is
 Uplift: a multi-tenant agentic CRM. Hybrid architecture — **agent plane** on Claude Managed
@@ -80,4 +81,6 @@ them on clone+trust. Don't commit secrets to it.
   cursor) so RLS applies; the API binds the tenant from the verified claim per request.
 - `AWS_REGION=us-east-1`, `PROJECT=uplift`. MA beta header on every Anthropic call:
   `anthropic-beta: managed-agents-2026-04-01`.
-- Commit + push to `main`; keep `README.md` + `CLAUDE.md` + `BUILD_STATUS.md` current every commit.
+- Commit + push to `main`; on every commit keep the living docs current —
+  `README.md` + `CLAUDE.md` + `BUILD_STATUS.md` + `TODO.md` (update whichever the change affects;
+  e.g. check off / add `TODO.md` items, refresh the live/demo/not-live status).
