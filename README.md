@@ -21,28 +21,38 @@ Tenant isolation is **defense-in-depth**: microVM/session → credential vault �
 ## Repo layout
 
 ```
-infra/      # Terraform (VPC, Aurora, ECS, Cognito, budgets) — authored + validated, not applied
-api/        # FastAPI control plane (auth, Greenlight, view CRUD)
+infra/      # Terraform (VPC, Aurora, ECS/Fargate, Cognito, ALB, budgets, Step Functions) — validated, not applied
+api/        # FastAPI control plane: trust-rule auth, Greenlight/approvals, view CRUD, the action gate,
+            #   signup + Stripe webhook routes; control/ = autonomy L0–L3, compliance, traces, kill switch
 agents/     # agent + coordinator definitions AS CODE
-  runtime.py  #   swappable agent-runtime adapter (Managed Agents today)
+  runtime.py  #   swappable agent-runtime adapter (Managed Agents today, behind the seam)
   roster/     #   scout, nadia, margo, ledger, echo, pip, critic
-  tools/      #   query_cube, search_rag, read_crm, draft_email, run_model
-worker/     # self-hosted tool-execution worker (ECS Fargate)
-ingest/     # connectors + chunk + embed pipeline (Titan → pgvector)
-semantic/   # Cube schema (cubes, metrics, security context)
-ml/         # Cortex: per-tenant training, registry, retrain
-web/        # React + TypeScript app: chat dock + dashboard renderer + Greenlight UI
-shared/     # schemas (view-spec JSON schema, event types), config
+  tools/      #   query_cube, search_rag, read_crm, draft_email, build_view, run_model (+ always_ask sends)
+worker/     # self-hosted tool-execution worker (ECS Fargate; env-key only)
+ingest/     # connectors + chunk + embed pipeline (Titan → pgvector), incremental cursor
+semantic/   # Cube schema (cubes, metrics) + the tenant security context
+conv/       # conversational layer: slot resolution, agentic RAG + citations, analytics, session facade
+ml/         # Cortex: per-tenant training, registry, champion/challenger gate, retrain
+signup/     # acquisition: accounts, Stripe payment, idempotent rollback-safe provisioning, funnel
+web/        # React + TypeScript app: chat dock + dashboard renderer + Greenlight UI + signup funnel
+shared/     # view-spec JSON schema, config, cost model
+db/         # schema.sql (FORCE'd RLS) + roles.sql (crm_app non-owner)
 tests/      # unit + integration (pytest)
-scripts/    # smoke_all.sh, isolation_test.py, per-feature smokes
+scripts/    # smoke_all.sh, isolation_test.py, demo.sh, per-feature smokes, briefs/
 docs/       # spec PDFs (gitignored — confidential, kept local only)
 ```
 
 ## Build status
 
-See **[BUILD_STATUS.md](./BUILD_STATUS.md)** for the per-phase / per-feature map (done /
-in-progress / blocked) with test + review status. Build proceeds in dependency order
-(Phase 0 → 12). The full ordered manual is the Build Guide (kept local in `docs/`, not published).
+**All 13 phases (0–12) + the frontend are implemented and green** — see
+**[BUILD_STATUS.md](./BUILD_STATUS.md)** for the per-phase / per-feature map with test + review status.
+Everything that can be built and tested offline is done; the only remaining work is the
+`BLOCKED: needs Nick` list (live cloud `apply`, credentials, and verifying the beta APIs). The full
+ordered manual is the Build Guide (kept local in `docs/`, not published).
+
+CI (`.github/workflows/ci.yml`) runs on every push/PR to **`main`** (the trunk): pytest + isolation
+gate, `terraform fmt`/`validate`, and the web build + typecheck + Playwright. See
+[CONTRIBUTING.md](./CONTRIBUTING.md) for the branching model.
 
 ## Safety constraints (in force)
 
