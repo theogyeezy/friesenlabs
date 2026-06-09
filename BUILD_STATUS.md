@@ -29,7 +29,7 @@ tests: U=unit · I=integration · S=smoke · E=e2e(Playwright) · X=isolation �
 |---|-------|--------|-------|---|---|---|---|---|--------|
 | — | Foundation (scaffold, harness, BUILD_STATUS) | ✅ | orchestrator | ✓ | · | ✓ | · | · | self ✓ |
 | 0 | AWS Foundation (IAM, VPC, SGs, secrets, ECR, baseline) | ✅* | orchestrator | · | · | · | · | · | self ✓ |
-| 1 | Data Plane (Aurora+pgvector, RLS, schema, S3, Redis) | ⬜ | — | · | · | · | · | · | — |
+| 1 | Data Plane (Aurora+pgvector, RLS, schema, S3, Redis) | 🟡 | orchestrator | · | · | · | · | · | — |
 | 2 | Ingestion & Embeddings (connectors, chunk, Titan, pipeline) | ⬜ | — | · | · | · | · | · | — |
 | 3 | Semantic Layer (Cube deploy, metrics, tenant security ctx) | ⬜ | — | · | · | · | · | · | — |
 | 4 | Agent Plane (Managed Agents, roster, vaults, worker) | ⬜ | — | · | · | · | · | · | — |
@@ -41,7 +41,7 @@ tests: U=unit · I=integration · S=smoke · E=e2e(Playwright) · X=isolation �
 | 10 | Acquisition, Signup & Provisioning (landing, Stripe, auto-provision) | ⬜ | — | · | · | · | · | · | — |
 | 11 | Cost, Guardrails & Observability (budgets, caps, CloudWatch, OTEL) | ⬜ | — | · | · | · | · | · | — |
 | 12 | IaC, CI/CD & Launch (Terraform/CDK, pipelines, smoke+isolation) | ⬜ | — | · | · | · | · | · | — |
-| FE | Frontend: convert ~50 JSX → React+TS app in `web/` | ⬜ | — | · | · | · | · | · | — |
+| FE | Frontend: convert ~50 JSX → React+TS app in `web/` | 🟡 | bg-agent | · | · | · | ? | · | — |
 
 `✅*` = code complete + `terraform validate`-clean; **apply BLOCKED: needs Nick** (cost/irreversible).
 
@@ -55,7 +55,13 @@ tests: U=unit · I=integration · S=smoke · E=e2e(Playwright) · X=isolation �
 
 ## Cycle log
 - **Cycle 1** — repo scaffold (monorepo layout per Build Guide §Step 4), Python venv +
-  pytest harness, Playwright config, `scripts/` (smoke_all, isolation_test stub), root
-  README + CLAUDE.md, `.gitignore`/`.stignore` (secrets + confidential PDFs excluded).
-  Began Phase 0 Terraform authoring. Frontend identified (~50 JSX in `Friesen Labs/`),
-  queued for React+TS conversion.
+  pytest harness, `scripts/` (smoke_all, isolation_test), root README + CLAUDE.md,
+  `.gitignore`/`.stignore` (secrets + confidential PDFs excluded). **Phase 0 complete**:
+  `infra/` Terraform (baseline + vpc + security + iam + secrets + ecr), `terraform validate`
+  clean, `pytest` 3 passed, smoke_all pass. Committed + pushed to `prod`.
+  Dispatched **background agent** to convert the prototype → Vite React+TS in `web/`
+  (brief: `scripts/briefs/FE_01_react_ts.md`). Queued **Phase 1** data-plane brief
+  (`scripts/briefs/01_data_plane.md`).
+- **Next** — integrate FE agent output (build + Playwright smoke), then Phase 1 data plane
+  (Aurora/Redis/S3 IaC + `db/schema.sql` with FORCE'd RLS + the two-tenant isolation proof
+  incl. a vector query).
