@@ -48,13 +48,19 @@ docs/       # spec PDFs (gitignored — confidential, kept local only)
 **[BUILD_STATUS.md](./BUILD_STATUS.md)** for the per-phase / per-feature map with test + review status.
 Everything that can be built and tested offline is done, and a final adversarial audit pass is merged.
 
-**Live deployment — the backend is up end-to-end:** `browser → Amplify (Vite SPA) → CloudFront → ALB
-→ arm64 Fargate API → Aurora` (RLS) with real Cognito JWKS auth (verified: `/api/healthz` 200,
-`/api/approvals` 401). Applied to AWS account 186052668426 (us-east-1) under a $200 budget alarm;
-Terraform state in S3 (KMS). **Not yet real:** the AI/agent plane (no Anthropic Managed Agents creds)
-and a Cognito login flow in the web UI (the SPA runs in mock/demo mode until a user can get a JWT —
-the real API is live at `/api`). Tear down with `cd infra && terraform destroy`. See BUILD_STATUS.md
-for the live map and the remaining `BLOCKED: needs Nick` items.
+### Live deployment status — live / demo / not live
+
+| State | Component | Why | Unblocked by |
+|-------|-----------|-----|--------------|
+| ✅ **Live & working** | Amplify → CloudFront → ALB → arm64 Fargate API → Aurora (FORCE'd RLS); Cognito JWKS auth | deployed + **verified** (`/api/healthz` 200, `/api/approvals` 401) | — |
+| 🟡 **Demo / mock** | Web UI (landing, dashboards, Greenlight, chat) | renders on sample data — no login flow to get a JWT yet (`VITE_API_MOCK=1`) | Cognito login flow |
+| ⛔ **Not live** | AI / agent plane (chat, tools) | `runtime.py` stub, `/chat` 503, noop executor | Anthropic Managed Agents creds |
+| ⛔ **Not live** | cube/worker, observability, provisioning (Stripe/Resend), cortex | authored, not applied / stubbed | deploy + Stripe/Resend/Admin creds |
+| ⚠️ **Live but drifted** | ALB / api_service / api_cdn / IAM / SG rules | created out-of-band during deploy, not in TF state; ECR is MUTABLE | `terraform import` + reconcile |
+
+Applied to AWS account 186052668426 (us-east-1) under a $200 budget alarm; Terraform state in S3 (KMS).
+The full granular, prioritized work list (119 items, P0→P3) and the critical path to a fully-real
+product (login flow first) live in **[TODO.md](./TODO.md)**. Tear down with `cd infra && terraform destroy`.
 
 CI (`.github/workflows/ci.yml`) runs on every push/PR to **`main`** (the trunk): pytest + a real
 Postgres+pgvector isolation gate, `terraform fmt`/`validate`, and the web build + typecheck +
