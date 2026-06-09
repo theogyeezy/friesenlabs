@@ -34,7 +34,7 @@ tests: U=unit · I=integration · S=smoke · E=e2e(Playwright) · X=isolation �
 | 3 | Semantic Layer (Cube deploy, metrics, tenant security ctx) | ✅* | orchestrator | ✓ | · | ✓ | · | ✓ | self ✓ |
 | 4 | Agent Plane (Managed Agents, roster, vaults, worker) | ✅* | orchestrator | ✓ | ✓ | · | · | · | self ✓ |
 | 5 | Control Plane (autonomy, Greenlight, traces, kill switch) | ✅ | orchestrator | ✓ | ✓ | · | · | · | self ✓ |
-| 6 | Conversational Layer (front door, slots, agentic RAG+cites) | ⬜ | — | · | · | · | · | · | — |
+| 6 | Conversational Layer (front door, slots, agentic RAG+cites) | ✅ | bg-agent | ✓ | ✓ | · | · | · | cross ✓ |
 | 7 | Dashboard Engine (view-spec, generate, render, save/edit) | ⬜ | — | · | · | · | · | · | — |
 | 8 | Cortex / ML (per-tenant models, train, registry, retrain) | ⬜ | — | · | · | · | · | · | — |
 | 9 | App, Auth & API (Cognito, FastAPI/Fargate, ALB, web) | ⬜ | — | · | · | · | · | · | — |
@@ -122,7 +122,16 @@ tests: U=unit · I=integration · S=smoke · E=e2e(Playwright) · X=isolation �
   global). Tests: 27 unit (autonomy/gate/greenlight/killswitch/compliance) + integration proving a
   Phase 4 send_email tool routes into the control-plane queue without sending. Full suite 81 passed /
   2 skipped; smoke_all green. Committed + pushed.
-- **Next** — Phase 6 (conversational layer): omnichannel front door (one MA session per conversation),
-  query understanding/rewrite, slot-resolver layer, agentic RAG + citations.
+- **Cycle 8 (Phase 6 conversational layer)** — background agent built `conv/`: `slots.py` (NL→governed
+  IDs; date phrases via injected `today`; >1 match → Disambiguation, auto-pick only at confidence
+  ≥0.85 — never silently guesses), `rag.py` (hybrid retrieval → synthesize → `assemble_citations`:
+  every grounded claim carries a source_ref that exists in the retrieved set; uncited claims dropped/
+  flagged, never grounded), `analytics.py`, `session.py` (Conversation facade over FakeRuntime; action
+  utterances route to Phase 4 tools → Phase 5 Greenlight without sending). Independent review: import-
+  safe, no network/secrets, both invariants verified in source + tests. 33 new tests; full suite 114
+  passed / 2 skipped. Committed + pushed. Flagged: `session.py` action-routing regexes are an offline
+  stand-in to be superseded by the coordinator's tool selection in Phase 9.
+- **Next** — Phase 7 (dashboard engine): view-spec JSON schema (shared/, spec-not-code), build_view
+  tool (validate + reject-and-retry), trusted Vega-Lite renderer (web/), save/edit over saved_views.
   (Aurora/Redis/S3 IaC + `db/schema.sql` with FORCE'd RLS + the two-tenant isolation proof
   incl. a vector query).
