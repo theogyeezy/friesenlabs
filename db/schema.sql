@@ -145,6 +145,44 @@ CREATE TABLE IF NOT EXISTS tenant_workspaces (
     created_at     timestamptz NOT NULL DEFAULT now()
 );
 
+-- ---------------------------------------------------------------------------
+-- accounts — signup/provisioning lifecycle rows (Build Guide Phase 10, Steps 52-55).
+-- RLS-EXEMPT (pre-tenant): rows exist before a tenant_id is provisioned; access is restricted to
+-- crm_app DML via GRANTs, not RLS
+-- A signup row is born with tenant_id NULL (it is minted at provisioning, Step 55), so the
+-- tenant_isolation policy cannot apply — this table is deliberately NOT in the tenant_tables
+-- array below. The GRANT request lives in infra/REQUESTS.md REQ-002 (db/roles.sql is Lane Nick's).
+-- meta jsonb carries account-flow state (cognito_sub, verified flags, stripe_customer_id, the
+-- app-level meta dict under 'account') plus the SMS OTP record under 'otp' (signup/store_pg.py
+-- merges jsonb atomically so the two writers never clobber each other).
+-- NOTE: declared BEFORE the RLS DO block (the block executes when reached; keeping every CREATE
+-- TABLE above it preserves the fresh-load ordering contract psql ON_ERROR_STOP=1 relies on).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS accounts (
+    id         uuid PRIMARY KEY,
+    email      text UNIQUE,
+    phone      text,
+    status     text,            -- signup.accounts.State value (created .. active)
+    plan       text,
+    tenant_id  uuid,            -- NULL until provisioning mints it (pre-tenant by design)
+    meta       jsonb NOT NULL DEFAULT '{}',
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- ---------------------------------------------------------------------------
+-- stripe_events — webhook idempotency ledger (TODO P1: idempotency across restarts/tasks).
+-- RLS-EXEMPT (pre-tenant): rows exist before a tenant_id is provisioned; access is restricted to
+-- crm_app DML via GRANTs, not RLS
+-- Keyed by the Stripe event id: INSERT .. ON CONFLICT (event_id) DO NOTHING is the atomic
+-- "claim" — a re-delivered event that fails to insert was already handled by some task.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS stripe_events (
+    event_id   text PRIMARY KEY,
+    account_id uuid,
+    handled_at timestamptz NOT NULL DEFAULT now()
+);
+
 -- ===========================================================================
 -- ROW LEVEL SECURITY — apply the identical pattern to every tenant-scoped table.
 -- The DO block keeps it DRY and guarantees no table is missed (and never without FORCE).

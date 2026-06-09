@@ -15,6 +15,14 @@ MA_BETA_HEADER = "managed-agents-2026-04-01"
 EMBEDDING_DIM = 1024
 
 
+def _int_env(name: str, default: int) -> int:
+    """Parse an int env var, falling back to the default on junk (import must never crash)."""
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
 @dataclass(frozen=True)
 class Config:
     aws_region: str = os.environ.get("AWS_REGION", "us-east-1")
@@ -28,6 +36,18 @@ class Config:
     )
     # Non-owner role used by the app so Postgres RLS actually applies (Build Guide red box).
     db_app_role: str = os.environ.get("DB_APP_ROLE", "uplift_app")
+    # --- Signup verification (Phase 10, signup/tokens.py) ---
+    # Secrets Manager REFERENCE name for the HMAC signing secret (never the value itself); the
+    # caller resolves it and INJECTS the bytes into EmailTokenService / OtpService.
+    signup_token_secret: str = os.environ.get(
+        "SIGNUP_TOKEN_SECRET", "uplift/signup-token-secret"
+    )
+    # Plain tunables (safe defaults; no secrets).
+    signup_email_token_ttl_s: int = _int_env("SIGNUP_EMAIL_TOKEN_TTL_S", 900)   # 15 min
+    signup_otp_ttl_s: int = _int_env("SIGNUP_OTP_TTL_S", 600)                   # 10 min
+    signup_otp_max_attempts: int = _int_env("SIGNUP_OTP_MAX_ATTEMPTS", 5)
+    signup_otp_max_sends: int = _int_env("SIGNUP_OTP_MAX_SENDS", 5)
+    signup_otp_send_window_s: int = _int_env("SIGNUP_OTP_SEND_WINDOW_S", 3600)  # 1 h
 
 
 def load() -> Config:
