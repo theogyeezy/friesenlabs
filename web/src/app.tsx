@@ -1,0 +1,368 @@
+// @ts-nocheck
+import React from "react";
+import "./globals";
+const { useState, useEffect, useRef, useMemo, useCallback, useLayoutEffect, useReducer, useContext, useImperativeHandle, useId } = React;
+const { Icon, Logo, FL_DATA, FLStore, useStore, askClaude, bizContext, confettiBurst, XPBadge, useCountUp, CountUp, AreaChart, Sparkline, LoadBars, Donut, SlideOver, CommandPalette, HEAT, fmtMoney, StatCard, ToneIco, FLflag, useTweaks, TweaksPanel, TweakSection, TweakRow, TweakSlider, TweakToggle, TweakRadio, TweakSelect, TweakText, TweakNumber, TweakColor, TweakButton, FoxDemo, KanbanDemo, WorkflowDemo, GreenlightDemo, CommandDemo, IntegrationDemo, SupportDemo, SecurityDemo, SidecarDemo, CortexDemo } = window as any;
+// app.jsx, shell: sidebar, topbar, routing, tweaks, palette
+
+const ACCENTS = [
+  { id: "indigo", name: "Indigo", h: 277 },
+  { id: "blue",   name: "Blue",   h: 248 },
+  { id: "teal",   name: "Teal",   h: 192 },
+  { id: "green",  name: "Green",  h: 152 },
+  { id: "terra",  name: "Terra",  h: 38  },
+];
+
+const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+  "accent": "indigo",
+  "dark": false,
+  "density": "regular"
+}/*EDITMODE-END*/;
+
+const ComingSoon = ({ title, icon }) => (
+  <div className="screen screen-anim" style={{ display: "grid", placeItems: "center", minHeight: "60vh" }}>
+    <div style={{ textAlign: "center", maxWidth: 380 }}>
+      <div style={{ width: 60, height: 60, borderRadius: 16, background: "var(--accent-soft)", color: "var(--accent-ink)", display: "grid", placeItems: "center", margin: "0 auto 18px" }}>
+        <Icon name={icon} size={28} />
+      </div>
+      <h2 style={{ fontSize: 21, fontWeight: 720, letterSpacing: "-.02em" }}>{title}</h2>
+      <p style={{ color: "var(--ink-3)", fontSize: 14, marginTop: 8, lineHeight: 1.55 }}>
+        This space is wired up in the full product. For this prototype, explore the <b style={{ color: "var(--ink)" }}>Command Center</b> and <b style={{ color: "var(--ink)" }}>Uplift</b>.
+      </p>
+    </div>
+  </div>
+);
+
+function App() {
+  const { STAGES, NAV, NAV_CRM, NAV_AGENTS, NAV_CONNECT, NAV2, FEED_LIVE } = window.FL_DATA;
+  const agents = useStore((s) => s.agents);
+  const pendingCount = useStore((s) => s.greenlight.filter((i) => i.status === "pending").length);
+  const gamifyOn = useStore((s) => s.gamifyOn);
+  const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
+  const [route, setRoute] = useState("dashboard");
+  const [collapsed, setCollapsed] = useState(false);
+  const [cmdk, setCmdk] = useState(false);
+  const [deal, setDeal] = useState(null);
+  const [chat, setChat] = useState(false);
+  const [mnav, setMnav] = useState(false);
+  const [market, setMarket] = useState(false);
+  const [intake, setIntake] = useState(false);
+  const [notif, setNotif] = useState(false);
+  const [profile, setProfile] = useState(false);
+  const [editProfile, setEditProfile] = useState(false);
+  const [me, setMe] = useState(() => { try { return JSON.parse(localStorage.getItem("fl_me")) || null; } catch (e) { return null; } });
+  const meData = me || { name: "Jordan Reyes", title: "Owner", email: "jordan@reyesco.com", status: "available" };
+  const saveMe = (patch) => { const next = { ...meData, ...patch }; setMe(next); try { localStorage.setItem("fl_me", JSON.stringify(next)); } catch (e) {} };
+  const STATUS = { available: ["Available", "var(--green)"], busy: ["Busy", "var(--rose)"], away: ["Away", "var(--amber)"] };
+  const feed = useStore((s) => s.feed);
+  const [onb, setOnb] = useState(() => { try { if (/[?&]onboard=1/.test(location.search)) { localStorage.removeItem("fl_onboarded"); localStorage.removeItem("fl_toured"); return true; } return !localStorage.getItem("fl_onboarded"); } catch (e) { return true; } });
+  const [tour, setTour] = useState(false);
+  const finishOnb = () => { try { localStorage.setItem("fl_onboarded", "1"); } catch (e) {} setOnb(false); try { if (!localStorage.getItem("fl_toured")) setTour(true); } catch (e) { setTour(true); } };
+  const finishTour = () => { try { localStorage.setItem("fl_toured", "1"); } catch (e) {} setTour(false); };
+
+  // apply tweaks to :root
+  useEffect(() => {
+    const root = document.documentElement;
+    const acc = ACCENTS.find((a) => a.id === t.accent) || ACCENTS[0];
+    root.style.setProperty("--accent-h", acc.h);
+    root.setAttribute("data-theme", t.dark ? "dark" : "light");
+    root.setAttribute("data-density", t.density);
+  }, [t.accent, t.dark, t.density]);
+
+  // ⌘K
+  useEffect(() => {
+    const k = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); setCmdk((v) => !v); }
+    };
+    window.addEventListener("keydown", k);
+    return () => window.removeEventListener("keydown", k);
+  }, []);
+
+  // agents keep working: stream live activity into the shared feed
+  const secMode = useStore((s) => s.security.mode);
+  const agentPaused = useStore((s) => s.security.agentPaused);
+  useEffect(() => {
+    const iv = setInterval(() => {
+      const st = FLStore.getState();
+      if (st.security.mode === "paused") return; // master kill switch halts autonomous activity
+      const pool = FEED_LIVE.filter((e) => !st.security.agentPaused[e.agent]);
+      if (pool.length === 0) return;
+      const ev = pool[Math.floor(Math.random() * pool.length)];
+      FLStore.pushFeed({ ...ev });
+    }, 6000);
+    return () => clearInterval(iv);
+  }, []);
+
+  const routeMeta = {
+    dashboard: { h1: "Command Center", p: "Your agents, your pipeline, your morning at a glance" },
+    crm:       { h1: "Uplift", p: "Deals worked autonomously, with you in the loop" },
+    sell:      { h1: "Sell", p: "Your streaks, goals, quests and leaderboard" },
+    frontline: { h1: "Frontline", p: "Your autonomous support desk" },
+    workflows: { h1: "Workflows", p: "Automations your agents run" },
+    approvals: { h1: "Greenlight", p: "Every agent action waiting on your sign-off" },
+    agents:    { h1: "Agents", p: "Your always-on team" },
+    reports:   { h1: "Reports", p: "Performance & outcomes" },
+    sidecar:   { h1: "Sidecar", p: "Your agents, on top of the tools you already use" },
+    cortex:    { h1: "Cortex", p: "Your private, compounding intelligence" },
+    integrations: { h1: "Switchboard", p: "Connect the products your business runs on" },
+    security:  { h1: "Security", p: "Your guardrails, kill switches & audit trail" },
+    settings:  { h1: "Settings", p: "Workspace & team" },
+  };
+  const meta = routeMeta[route] || { h1: route, p: "" };
+
+  const navTo = (r) => { if (r === "marketplace") { setMarket(true); setMnav(false); return; } setRoute(r); setMnav(false); document.querySelector(".viewport") && (document.querySelector(".viewport").scrollTop = 0); };
+
+  return (
+    <div className={"app" + (collapsed ? " nav-collapsed" : "") + (mnav ? " nav-open" : "")}>
+      <div className="nav-scrim" onClick={() => setMnav(false)} />
+      {/* sidebar */}
+      <aside className="sidebar">
+        <button className="collapse-btn" onClick={() => setCollapsed((c) => !c)}><Icon name="chevL" size={13} sw={2.4} /></button>
+        <a className="brand" href="Home.html" style={{ textDecoration: "none", color: "inherit" }} title="Back to home">
+          <div className="brand-mark"><Logo size={20} /></div>
+          <div className="brand-name"><b>Friesen Labs</b><span>agentic ops</span></div>
+        </a>
+
+        <div className="nav-scroll">
+        <button className="intake-nav-btn" onClick={() => setIntake(true)}>
+          <span className="intake-nav-plus"><Icon name="plus" size={16} sw={2.6} /></span>
+          <span style={{ flex: 1, textAlign: "left" }}>Intake</span>
+          <span className="intake-nav-hint">log anything</span>
+        </button>
+        <div className="nav-section-label">Workspace</div>
+        <nav className="nav">
+          {NAV.filter((n) => n.id !== "sell" || gamifyOn).map((n) => {
+            const badge = n.id === "approvals" ? (pendingCount || null) : n.badge;
+            return (
+              <button key={n.id} className={"nav-item" + (route === n.id ? " active" : "")} onClick={() => navTo(n.id)}>
+                <span className="nav-ico"><Icon name={n.icon} size={18} /></span>
+                <span className="nav-label">{n.label}</span>
+                {badge && <span className={"nav-badge" + (n.badgeAmber ? " amber" : "")}>{badge}</span>}
+              </button>
+            );
+          })}
+        </nav>
+
+        <div className="nav-section-label">Uplift CRM</div>
+        <nav className="nav">
+          {NAV_CRM.map((n) => {
+            const badge = n.badge;
+            return (
+              <button key={n.id} className={"nav-item" + (route === n.id ? " active" : "")} onClick={() => navTo(n.id)}>
+                <span className="nav-ico"><Icon name={n.icon} size={18} /></span>
+                <span className="nav-label">{n.label}</span>
+                {badge && <span className={"nav-badge" + (n.badgeAmber ? " amber" : "")}>{badge}</span>}
+              </button>
+            );
+          })}
+        </nav>
+
+        <div className="nav-section-label">Agents &amp; intelligence</div>
+        <nav className="nav">
+          {NAV_AGENTS.map((n) => (
+            <button key={n.id} className={"nav-item" + (route === n.id ? " active" : "")} onClick={() => navTo(n.id)}>
+              <span className="nav-ico"><Icon name={n.icon} size={18} /></span>
+              <span className="nav-label">{n.label}</span>
+            </button>
+          ))}
+        </nav>
+
+        <div className="nav-section-label">Connect your stack</div>
+        <nav className="nav">
+          {NAV_CONNECT.map((n) => (
+            <button key={n.id} className={"nav-item" + (route === n.id ? " active" : "")} onClick={() => navTo(n.id)}>
+              <span className="nav-ico"><Icon name={n.icon} size={18} /></span>
+              <span className="nav-label">{n.label}</span>
+            </button>
+          ))}
+        </nav>
+
+        <div className="nav-section-label">Insights &amp; admin</div>
+        <nav className="nav">
+          {NAV2.map((n) => (
+            <button key={n.id} className={"nav-item" + (route === n.id ? " active" : "")} onClick={() => navTo(n.id)}>
+              <span className="nav-ico"><Icon name={n.icon} size={18} /></span>
+              <span className="nav-label">{n.label}</span>
+            </button>
+          ))}
+        </nav>
+        </div>
+
+        <div className="agent-rail">
+          <div className="agent-rail-head"><span className="live-dot" />5 agents online</div>
+          <div className="agent-rail-body">
+            {Object.values(agents).slice(0, 3).map((a) => (
+              <div className="mini-agent" key={a.id}>
+                <div className="avatar" style={{ background: a.color }}>{a.init}</div>
+                <div className="mini-agent-info"><b>{a.name}</b><span>{a.role}</span></div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </aside>
+
+      {/* main */}
+      <div className="main">
+        <header className="topbar">
+          <button className="icon-btn mobile-only" onClick={() => setMnav((v) => !v)}><Icon name="menu" size={20} /></button>
+          <div className="topbar-title"><h1>{meta.h1}</h1><p>{meta.p}</p></div>
+          <div className="topbar-spacer" />
+          {(gamifyOn && (route === "crm" || route === "agents" || route === "sell")) && <XPBadge />}
+          <button className="search-trigger" onClick={() => setCmdk(true)}>
+            <Icon name="search" size={16} />
+            <span>Search or ask…</span>
+            <span className="kbd">⌘K</span>
+          </button>
+          <button className="btn btn-soft" onClick={() => setChat(true)}><Icon name="spark" size={16} /><span>Ask agents</span></button>
+          <div style={{ position: "relative" }}>
+            <button className="icon-btn" onClick={() => setNotif((v) => !v)}><Icon name="bell" size={19} />{feed.length > 0 && <span className="dot" />}</button>
+            {notif && (
+              <>
+                <div style={{ position: "fixed", inset: 0, zIndex: 40 }} onClick={() => setNotif(false)} />
+                <div style={{ position: "absolute", top: 46, right: 0, width: 320, maxHeight: 380, overflowY: "auto", background: "var(--surface)", border: "1px solid var(--line)", borderRadius: "var(--r-md)", boxShadow: "var(--shadow-xl)", zIndex: 41, animation: "feed-in .2s both" }}>
+                  <div style={{ padding: "12px 15px", borderBottom: "1px solid var(--line)", fontSize: 13, fontWeight: 700 }}>Notifications</div>
+                  {feed.slice(0, 8).map((f, i) => (
+                    <div key={f._k || i} style={{ display: "flex", gap: 10, padding: "11px 15px", borderBottom: "1px solid var(--line-2)" }}>
+                      <span style={{ width: 7, height: 7, borderRadius: 99, background: agents[f.agent] ? agents[f.agent].color : "var(--accent)", marginTop: 5, flexShrink: 0 }} />
+                      <div><p style={{ fontSize: 12.5, lineHeight: 1.45 }} dangerouslySetInnerHTML={{ __html: f.html }} /><span style={{ fontSize: 11, color: "var(--ink-4)", fontFamily: "var(--mono)" }}>{f.meta}</span></div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+          <button className="icon-btn" onClick={() => setTweak("dark", !t.dark)}><Icon name={t.dark ? "sun" : "layers"} size={19} /></button>
+          <div style={{ position: "relative" }}>
+            <button className="user-chip" onClick={() => setProfile((v) => !v)}>
+              <div style={{ position: "relative" }}>
+                <div className="avatar" style={{ background: "linear-gradient(145deg, var(--accent), var(--accent-press))" }}>{meData.name.split(" ").map((w) => w[0]).slice(0, 2).join("")}</div>
+                <span style={{ position: "absolute", right: -1, bottom: -1, width: 11, height: 11, borderRadius: 99, background: STATUS[meData.status][1], border: "2px solid var(--bg)" }} />
+              </div>
+              <div className="ucol"><b>{meData.name}</b><span>{meData.title}</span></div>
+              <Icon name="chevDown" size={15} style={{ color: "var(--ink-3)" }} />
+            </button>
+            {profile && (
+              <>
+                <div style={{ position: "fixed", inset: 0, zIndex: 40 }} onClick={() => setProfile(false)} />
+                <div style={{ position: "absolute", top: 50, right: 0, width: 270, background: "var(--surface)", border: "1px solid var(--line)", borderRadius: "var(--r-md)", boxShadow: "var(--shadow-xl)", zIndex: 41, overflow: "hidden", animation: "feed-in .18s both" }}>
+                  <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--line)", display: "flex", alignItems: "center", gap: 11 }}>
+                    <div className="avatar" style={{ background: "linear-gradient(145deg, var(--accent), var(--accent-press))", width: 40, height: 40, fontSize: 14 }}>{meData.name.split(" ").map((w) => w[0]).slice(0, 2).join("")}</div>
+                    <div style={{ minWidth: 0, flex: 1 }}><b style={{ fontSize: 14, fontWeight: 700, display: "block" }}>{meData.name}</b><span style={{ fontSize: 12, color: "var(--ink-3)" }}>{meData.email}</span></div>
+                    <button className="icon-btn" style={{ width: 28, height: 28 }} title="Edit profile" onClick={() => { setEditProfile(true); setProfile(false); }}><Icon name="note" size={15} /></button>
+                  </div>
+                  <div style={{ padding: "10px 12px", borderBottom: "1px solid var(--line)" }}>
+                    <div style={{ fontSize: 10.5, fontWeight: 650, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--ink-4)", marginBottom: 7 }}>Status</div>
+                    <div className="seg" style={{ width: "100%" }}>
+                      {Object.entries(STATUS).map(([k, [label, col]]) => (
+                        <button key={k} className={meData.status === k ? "active" : ""} style={{ flex: 1, justifyContent: "center", gap: 5 }} onClick={() => saveMe({ status: k })}><span style={{ width: 7, height: 7, borderRadius: 99, background: col }} />{label}</button>
+                      ))}
+                    </div>
+                  </div>
+                  <div style={{ padding: 6 }}>
+                    {[["building", "Workspace settings", "settings"], ["users", "Manage team", "settings"], ["shield", "Security", "security"], ["trend", "Plan & billing", "settings"]].map(([ic, label, r]) => (
+                      <button key={label} className="pm-item" onClick={() => { navTo(r); setProfile(false); }}>
+                        <Icon name={ic} size={16} style={{ color: "var(--ink-3)" }} /><span>{label}</span>
+                      </button>
+                    ))}
+                    <button className="pm-item" onClick={() => { setProfile(false); setCmdk(true); }}>
+                      <Icon name="search" size={16} style={{ color: "var(--ink-3)" }} /><span style={{ flex: 1 }}>Command palette</span><span className="kbd">⌘K</span>
+                    </button>
+                    <div className="pm-row">
+                      <Icon name="sun" size={16} style={{ color: "var(--ink-3)" }} /><span style={{ flex: 1 }}>Dark mode</span>
+                      <div className={"tog" + (t.dark ? " on" : "")} onClick={() => setTweak("dark", !t.dark)} />
+                    </div>
+                  </div>
+                  <div style={{ borderTop: "1px solid var(--line)", padding: 6 }}>
+                    <a className="pm-item" href="Home.html" style={{ color: "var(--rose)", textDecoration: "none" }}><Icon name="arrowRight" size={16} /><span>Sign out</span></a>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        </header>
+
+        {(secMode === "paused" || secMode === "semi" || Object.values(agentPaused).some(Boolean)) && (
+          <div onClick={() => navTo("security")} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 16px", cursor: "pointer",
+            background: secMode === "paused" ? "var(--rose-soft)" : "var(--amber-soft)",
+            color: secMode === "paused" ? "oklch(0.48 0.14 18)" : "oklch(0.5 0.12 60)",
+            borderBottom: "1px solid var(--line)", fontSize: 12.5, fontWeight: 600 }}>
+            <Icon name={secMode === "paused" ? "pause" : "shield"} size={15} />
+            {secMode === "paused" ? "Kill switch engaged, all agents are stopped." : secMode === "semi" ? "Agents are in analyze-only mode, nothing runs without your approval." : "Some agents are paused."}
+            <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 4, opacity: .8 }}>Manage in Security<Icon name="arrowRight" size={13} sw={2.2} /></span>
+          </div>
+        )}
+
+        <div className="viewport">
+          {route === "dashboard" && <Dashboard agents={agents} onNavigate={navTo} />}
+          {route === "crm" && <CRM agents={agents} onOpen={setDeal} onNavigate={navTo} />}
+          {route === "contacts" && <Contacts agents={agents} onNavigate={navTo} onOpenDeal={setDeal} />}
+          {route === "billing" && <Billing agents={agents} onNavigate={navTo} />}
+          {route === "calendar" && <Calendar agents={agents} onNavigate={navTo} />}
+          {route === "reviews" && <Reviews agents={agents} onNavigate={navTo} />}
+          {route === "templates" && <Templates agents={agents} onNavigate={navTo} />}
+          {route === "email" && <Email agents={agents} onNavigate={navTo} />}
+          {route === "sell" && <Sell agents={agents} gamifyOn={gamifyOn} onNavigate={navTo} onOpenDeal={(d) => { navTo("crm"); setDeal(d); }} />}
+          {route === "frontline" && <Frontline agents={agents} />}
+          {route === "workflows" && <WorkflowBuilder agents={agents} />}
+          {route === "approvals" && <Greenlight agents={agents} />}
+          {route === "agents" && <AgentsConsole agents={agents} />}
+          {route === "sidecar" && <Sidecar agents={agents} onNavigate={navTo} />}
+          {route === "cortex" && <Cortex agents={agents} onNavigate={navTo} />}
+          {route === "knowledge" && <Knowledge agents={agents} onNavigate={navTo} />}
+          {route === "integrations" && <IntegrationHub agents={agents} onNavigate={navTo} />}
+          {route === "reports" && <Reports agents={agents} />}
+          {route === "security" && <Security agents={agents} />}
+          {route === "settings" && <Settings agents={agents} onNavigate={navTo} />}
+        </div>
+      </div>
+
+      <SlideOver deal={deal} agents={agents} stages={STAGES} onClose={() => setDeal(null)} />
+      <AgentChat open={chat} agents={agents} onClose={() => setChat(false)} />
+      <CommandPalette open={cmdk} onClose={() => setCmdk(false)} onNavigate={navTo} onChat={() => setChat(true)} onSetup={() => setOnb(true)} onTour={() => setTour(true)} />
+      {onb && <Onboarding agents={agents} onDone={finishOnb} />}
+      {tour && !onb && <ProductTour onNavigate={navTo} onClose={finishTour} />}
+      <AgentMarket open={market} onClose={() => setMarket(false)} />
+      <IntakeModal open={intake} onClose={() => setIntake(false)} onNavigate={navTo} onOpenDeal={(d) => setDeal(d)} />
+      {editProfile && (
+        <div className="cmdk-scrim show" onClick={() => setEditProfile(false)} style={{ alignItems: "center", paddingTop: 0 }}>
+          <div className="cmdk" style={{ maxWidth: 420 }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ padding: "18px 20px", borderBottom: "1px solid var(--line)", display: "flex", alignItems: "center", gap: 11 }}>
+              <div className="avatar" style={{ background: "linear-gradient(145deg, var(--accent), var(--accent-press))", width: 36, height: 36, fontSize: 13 }}>{meData.name.split(" ").map((w) => w[0]).slice(0, 2).join("")}</div>
+              <b style={{ fontSize: 16, fontWeight: 720, flex: 1 }}>Edit your profile</b>
+              <button className="icon-btn" onClick={() => setEditProfile(false)}><Icon name="x" size={18} /></button>
+            </div>
+            <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 13 }}>
+              <div className="wf-field"><label>Name</label><input value={meData.name} onChange={(e) => saveMe({ name: e.target.value })} /></div>
+              <div className="wf-field"><label>Title</label><input value={meData.title} onChange={(e) => saveMe({ title: e.target.value })} /></div>
+              <div className="wf-field"><label>Email</label><input value={meData.email} onChange={(e) => saveMe({ email: e.target.value })} /></div>
+              <button className="btn btn-primary" onClick={() => setEditProfile(false)}><Icon name="check" size={16} sw={2.2} />Done</button>
+              <p style={{ fontSize: 11.5, color: "var(--ink-4)", textAlign: "center" }}>Saved to this workspace.</p>
+            </div>
+          </div>
+        </div>
+      )}
+      {route === "reports" && <DataAssistant surface="reports" onNavigate={navTo} />}
+      {route === "dashboard" && <DataAssistant surface="dashboard" onNavigate={navTo} />}
+
+      {/* tweaks */}
+      <TweaksPanel>
+        <TweakSection label="Brand accent" />
+        <div style={{ display: "flex", gap: 9, padding: "2px 2px 6px" }}>
+          {ACCENTS.map((a) => (
+            <button key={a.id} title={a.name} onClick={() => setTweak("accent", a.id)}
+              style={{ width: 30, height: 30, borderRadius: 9, background: `oklch(0.56 0.17 ${a.h})`,
+                boxShadow: t.accent === a.id ? "0 0 0 2px var(--surface), 0 0 0 4px oklch(0.56 0.17 " + a.h + ")" : "var(--shadow-sm)",
+                transition: "box-shadow .15s" }} />
+          ))}
+        </div>
+        <TweakSection label="Appearance" />
+        <TweakToggle label="Dark mode" value={t.dark} onChange={(v) => setTweak("dark", v)} />
+        <TweakRadio label="Density" value={t.density} options={["compact", "regular", "comfy"]} onChange={(v) => setTweak("density", v)} />
+      </TweaksPanel>
+    </div>
+  );
+}
+
+
+
+export default App;
