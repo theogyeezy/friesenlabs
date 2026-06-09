@@ -8,8 +8,11 @@ terraform {
     }
   }
 
-  # State backend is configured at apply time (S3 + DynamoDB lock).
-  # Left empty so `terraform init -backend=false` + `validate` works without live creds.
+  # Remote state in S3 with native S3 locking (use_lockfile, no DynamoDB needed). Partial config:
+  # the bucket/key/region live in infra/backend.hcl (gitignored — keeps the account-id bucket name
+  # out of this public repo). Init with: terraform init -backend-config=backend.hcl
+  # CI uses `terraform init -backend=false` so it skips the backend entirely.
+  backend "s3" {}
 }
 
 provider "aws" {

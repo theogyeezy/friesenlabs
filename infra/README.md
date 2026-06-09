@@ -15,13 +15,30 @@ build (cost/irreversible; that's Nick's call with live creds).
 
 Later phases add Aurora, Redis, ECS services, Cognito, ALB, budgets.
 
+## Remote state (S3 backend)
+State lives in S3 (`uplift-tfstate-*`, versioned + KMS-encrypted, S3-native locking). The bucket/key
+are in `infra/backend.hcl` (gitignored — keeps the account-id bucket name out of this public repo).
+Init against it with:
+```bash
+cd infra
+terraform init -backend-config=backend.hcl
+```
+A new clone needs its own `backend.hcl` (ask Nick) — or run `init -backend=false` for validate-only.
+
 ## Validate (no creds needed)
 ```bash
 cd infra
 terraform fmt -check -recursive
-terraform init -backend=false
+terraform init -backend=false    # skips the S3 backend
 terraform validate
 ```
+
+## Web hosting (Amplify, Vite SPA)
+`modules/web_hosting` is an Amplify Hosting app for `web/` (git-connected: push to `main` → auto
+build + deploy via CloudFront + TLS). It is **only created when a GitHub token is supplied** —
+`terraform apply -var="github_access_token=<PAT with repo scope>"`. Without it, no web hosting is
+created. The site builds with `VITE_API_MOCK=1` (working demo) until you set `web_api_base_url` to the
+deployed API. Output `web_app_url` is the live URL.
 
 ## Apply (BLOCKED: needs Nick)
 Configure the S3+DynamoDB backend, supply a real `*.tfvars`, `terraform plan`, review, then apply

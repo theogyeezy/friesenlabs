@@ -122,6 +122,15 @@ module "provisioning" {
   project = var.project
 }
 
+# --- Web hosting: Amplify (Vite SPA). Only created when a GitHub token is supplied. ---
+module "web_hosting" {
+  count               = var.github_access_token != "" ? 1 : 0
+  source              = "./modules/web_hosting"
+  project             = var.project
+  github_access_token = var.github_access_token
+  api_base_url        = var.web_api_base_url
+}
+
 # --- Phase 11: cost guardrails + observability ---
 module "guardrails" {
   source       = "./modules/guardrails"

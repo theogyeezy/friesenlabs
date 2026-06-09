@@ -56,3 +56,8 @@ output "alb_dns_name" {
 output "api_service_name" {
   value = module.api_service.service_name
 }
+
+output "web_app_url" {
+  description = "Live Amplify URL for the hosted web app (null until web hosting is enabled with a GitHub token)."
+  value       = length(module.web_hosting) > 0 ? module.web_hosting[0].branch_url : null
+}
