@@ -3,13 +3,17 @@
 // TRUST RULE: this client NEVER sends tenant_id. The server derives the tenant
 // solely from the verified JWT claim (api.auth.current_tenant); a tenant_id in a
 // request body or header is forbidden by construction. The client only attaches
-// the bearer token it is handed via config, which is read from the environment,
-// never hardcoded.
+// the bearer token its `getToken` callback hands it per request — the Cognito
+// ID token from the auth layer (api/auth.py requires token_use=id), never a
+// literal in the source.
 //
 // MOCK MODE: when configured with `mock: true` (the default for tests, driven by
 // VITE_API_MOCK), every method resolves from canned fixtures and performs NO
 // network I/O, so Playwright runs fully offline. Production flips mock->real and
-// injects { baseURL, token }; no other code changes.
+// injects { baseURL, getToken, refreshAuth }; no other code changes.
+
+import { fetchWithAuthRetry } from "../auth/core.js";
+import { getValidIdToken, isAuthConfigured, localSignOut, refreshAuthForRetry } from "../auth/cognito";
 
 // ---------------------------------------------------------------------------
 // Wire types (mirror api/app.py request/response shapes)
@@ -171,8 +175,26 @@ export interface GetSignupResponse {
 export interface ApiClientConfig {
   /** Base URL of the control plane, e.g. "https://api.uplift.example". */
   baseURL?: string;
-  /** Bearer token. Read from config/env only; never hardcoded. */
-  token?: string;
+  /**
+   * Returns the bearer token to attach — the Cognito ID token (api/auth.py
+   * rejects access tokens). Called PER REQUEST, so a refreshed token is always
+   * picked up even though defaultClient() is a long-lived singleton. May be
+   * async (the auth layer refreshes proactively near expiry). Absent or
+   * empty => no Authorization header.
+   */
+  getToken?: () => string | null | Promise<string | null>;
+  /**
+   * Called once when an authenticated request comes back 401. Should attempt
+   * a token refresh and resolve true when a retry is worthwhile. Absent => no
+   * retry; the 401 surfaces as an ApiError.
+   */
+  refreshAuth?: () => Promise<boolean>;
+  /**
+   * Called when a 401 survives the refresh+retry path (the refresh SUCCEEDED
+   * but the API still rejects — dead/desynced session). Should drop the local
+   * session so the UI flips to signed-out instead of refresh-churning forever.
+   */
+  onAuthRejected?: () => void;
   /** When true, resolve from fixtures and never hit the network. */
   mock?: boolean;
   /** Injected fetch (defaults to window.fetch). Lets tests stub if ever needed. */
@@ -181,19 +203,27 @@ export interface ApiClientConfig {
 
 /**
  * Resolve config from the Vite environment. VITE_API_MOCK enables mock mode;
- * it defaults ON when unset so tests and local previews run offline. The token
- * and base URL come from the environment, never a literal in the source.
+ * it defaults ON when unset so tests and local previews run offline. In real
+ * mode with Cognito configured, the token callbacks wire to the auth layer:
+ * the ID token is read (and refreshed) per request, never snapshotted into
+ * the client. In mock/unconfigured builds no callback is wired, so the auth
+ * layer stays fully inert.
  */
 export function configFromEnv(): ApiClientConfig {
   const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {};
   const mockFlag = env.VITE_API_MOCK;
   // Mock unless explicitly disabled with "0" / "false".
   const mock = mockFlag === undefined ? true : !(mockFlag === "0" || mockFlag === "false");
-  return {
+  const config: ApiClientConfig = {
     baseURL: env.VITE_API_BASE_URL ?? "",
-    token: env.VITE_API_TOKEN ?? "",
     mock,
   };
+  if (!mock && isAuthConfigured()) {
+    config.getToken = () => getValidIdToken();
+    config.refreshAuth = () => refreshAuthForRetry();
+    config.onAuthRejected = () => localSignOut();
+  }
+  return config;
 }
 
 // ---------------------------------------------------------------------------
@@ -337,7 +367,9 @@ export class ApiError extends Error {
 
 export class ApiClient {
   private baseURL: string;
-  private token: string;
+  private getToken?: ApiClientConfig["getToken"];
+  private refreshAuth?: ApiClientConfig["refreshAuth"];
+  private onAuthRejected?: ApiClientConfig["onAuthRejected"];
   private mock: boolean;
   private fetchImpl: typeof fetch;
 
@@ -348,7 +380,9 @@ export class ApiClient {
 
   constructor(config: ApiClientConfig = {}) {
     this.baseURL = (config.baseURL ?? "").replace(/\/$/, "");
-    this.token = config.token ?? "";
+    this.getToken = config.getToken;
+    this.refreshAuth = config.refreshAuth;
+    this.onAuthRejected = config.onAuthRejected;
     this.mock = config.mock ?? false;
     this.fetchImpl =
       config.fetchImpl ??
@@ -363,22 +397,35 @@ export class ApiClient {
 
   // --- internal request helper (real mode only) -----------------------------
 
-  private headers(): Record<string, string> {
+  private async headers(): Promise<Record<string, string>> {
     const h: Record<string, string> = { "Content-Type": "application/json" };
-    // Attach ONLY the bearer token. Never a tenant_id header. The server derives
+    // Attach ONLY the bearer token (the Cognito ID token, read per request via
+    // the getToken callback). Never a tenant_id header. The server derives
     // tenant from the verified token.
-    if (this.token) h["Authorization"] = `Bearer ${this.token}`;
+    const token = this.getToken ? await this.getToken() : "";
+    if (token) h["Authorization"] = `Bearer ${token}`;
     return h;
   }
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const res = await this.fetchImpl(`${this.baseURL}${path}`, {
-      method,
-      headers: this.headers(),
-      // Bodies never include tenant_id (the trust rule); callers cannot inject it
-      // because the typed body shapes have no such field.
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
+    const doFetch = async () =>
+      this.fetchImpl(`${this.baseURL}${path}`, {
+        method,
+        // Headers are rebuilt per attempt so a retry carries a refreshed token.
+        headers: await this.headers(),
+        // Bodies never include tenant_id (the trust rule); callers cannot inject it
+        // because the typed body shapes have no such field.
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+    // On a 401: one refresh attempt (refreshAuth), then one retry. A second
+    // 401 falls through to the ApiError below and surfaces as signed-out.
+    const res = await fetchWithAuthRetry(doFetch, this.refreshAuth);
+    if (res.status === 401 && this.onAuthRejected) {
+      // The refresh either failed (already signed out locally) or succeeded yet
+      // the API still rejects — a dead session either way. Drop it so the UI
+      // flips to signed-out instead of refresh-churning on every request.
+      this.onAuthRejected();
+    }
     if (!res.ok) {
       let detail = res.statusText;
       try {

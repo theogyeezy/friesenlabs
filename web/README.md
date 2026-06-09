@@ -53,16 +53,22 @@ npm run preview
 
 Serves the built `dist/` on http://localhost:4173.
 
-## Test (Playwright smoke)
+## Test
 
 ```bash
-npm run test:e2e
+npm test        # unit tests (node --test, zero deps): the auth core
+npm run test:e2e  # Playwright e2e (mock mode, fully offline)
 ```
 
-This builds the app, starts `vite preview` headless, loads `/`, and asserts the
-app shell mounts (the `#root` has rendered content, the sidebar is visible, the
-default "Command Center" screen renders, and there are no page errors). Browser
-binaries install on first run with:
+`npm test` runs `test/*.test.mjs` under Node's built-in `node:test` runner (the
+same zero-dependency pattern as `semantic/test/`) against the pure auth helpers
+in `src/auth/core.js` — PKCE challenge shape, state validation, token-storage
+round-trip, JWT payload decode, and the 401-refresh-retry policy.
+
+`npm run test:e2e` builds the app, starts `vite preview` headless, loads `/`,
+and asserts the app shell mounts (the `#root` has rendered content, the sidebar
+is visible, the default "Command Center" screen renders, and there are no page
+errors). Browser binaries install on first run with:
 
 ```bash
 npx playwright install chromium
@@ -82,12 +88,16 @@ web/
     store.tsx           shared store + useStore hook
     icons.tsx           icon set + logo
     ai.tsx              simulated, typed Managed AI helper (window.claude stub)
+    auth/               Cognito Hosted UI login: core.js (pure PKCE/JWT/storage
+                        helpers), cognito.ts (redirect/exchange/refresh/logout),
+                        AuthContext.tsx (useAuth provider)
     styles.css          app styles (warm-tech aesthetic)
     landing.css         marketing-site styles
     screens/            ~40 screen + helper modules (charts, panels, gamify,
                         tweaks-panel, and every product screen)
   public/               static images served at the root
   e2e/                  Playwright smoke test
+  test/                 node --test unit tests (auth core)
   playwright.config.ts
   CONVERSION_NOTES.md   how the global-sharing prototype was converted, and the
                         list of @ts-nocheck files to tighten later
@@ -122,17 +132,22 @@ the DOM or executes for the invalid spec.
 
 `src/api/` wires the app to the FastAPI control plane (`api/app.py`).
 
-- `client.ts` is the typed client. It takes an injectable `baseURL` + `token`
-  and exposes `listApprovals`, `decideApproval`, `listViews`, `getView`,
-  `saveView`, `chat`, and `runAction`. The token is read from config
-  (`VITE_API_TOKEN`), never hardcoded, and attached only as
-  `Authorization: Bearer <token>`. The client NEVER sends `tenant_id`: the server
-  derives the tenant from the verified token (the trust rule), and no request
-  body shape carries a tenant field.
+- `client.ts` is the typed client. It takes an injectable `baseURL` plus a
+  `getToken` callback and exposes `listApprovals`, `decideApproval`,
+  `listViews`, `getView`, `saveView`, `chat`, and `runAction`. The bearer is the
+  **Cognito ID token** (the API rejects access tokens — `api/auth.py` checks
+  `token_use=id` and `aud=client_id`), read per request from the auth layer
+  (`src/auth/`), never hardcoded and never snapshotted into the singleton. It is
+  attached only as `Authorization: Bearer <token>`. On a 401 the client makes
+  one refresh attempt (`refreshAuth`) and retries once; a second 401 surfaces as
+  an `ApiError` and the UI treats the session as signed out. The client NEVER
+  sends `tenant_id`: the server derives the tenant from the verified token (the
+  trust rule), and no request body shape carries a tenant field.
 - Mock mode is the default (`VITE_API_MOCK` unset, or anything other than `0` /
   `false`). In mock mode every method resolves from in-memory fixtures and makes
   no network call, so Playwright runs fully offline. Production is a config flip:
-  set `VITE_API_MOCK=0`, `VITE_API_BASE_URL`, and `VITE_API_TOKEN`.
+  set `VITE_API_MOCK=0`, `VITE_API_BASE_URL`, and the `VITE_COGNITO_*` vars
+  (see "Auth" below).
 - The wired surfaces mount via the same `?view=` seam as the dashboard demo and
   do not touch the converted (`@ts-nocheck`) shell:
   - `?view=greenlight` (`GreenlightQueue.tsx`): the approval queue. Each pending
@@ -157,6 +172,47 @@ active`) so the whole flow runs offline.
 `e2e/greenlight.spec.ts` exercises the queue in mock mode (reasoning + value
 render, approve removes the item, edited draft approves with edits, and no
 token/payload leaks into the DOM).
+
+## Auth (Cognito Hosted UI, PKCE)
+
+`src/auth/` is the hand-rolled login flow — authorization code + PKCE (S256)
+against the Cognito Hosted UI, with **no** auth SDK (no `aws-amplify`, no
+`oidc-client-ts`):
+
+- `core.js` — pure, dependency-free helpers (PKCE pair, state, JWT payload
+  decode, token/PKCE storage, the 401-refresh-retry policy). Plain ESM JS so
+  `node --test` unit-tests it directly (`npm test`) without a build step.
+- `cognito.ts` — the browser wiring: `signIn()` (stash verifier+state in
+  sessionStorage, redirect to `/oauth2/authorize`), `handleCallback()`
+  (validate state, exchange the code at `/oauth2/token`, one-shot so
+  StrictMode can't burn the single-use code), `refreshTokens()`
+  (`grant_type=refresh_token`, single-flight), `signOut()` (clear + Hosted UI
+  `/logout`). Tokens persist in localStorage under one key
+  (`uplift_auth_tokens`; the XSS tradeoff is documented at the constant).
+- `AuthContext.tsx` — `useAuth()` exposes `{isAuthenticated, idToken, claims,
+  email, tenantId, signIn, signOut}`. Claims are a base64 decode for display
+  only (the API verifies signatures). The provider auto-refreshes when the ID
+  token is within 5 minutes of expiry; a failed refresh signs out locally
+  (no redirect loop).
+
+Routing: `main.tsx` handles `location.pathname === "/auth/callback"` (the
+Amplify SPA rewrite and `vite preview` both serve index.html there), exchanges
+the code, then `history.replaceState`s back to `/`.
+
+The sign-in gate is active only when **Cognito is configured AND mock mode is
+off** (`VITE_COGNITO_DOMAIN` nonempty + `VITE_API_MOCK=0`): signed-out visitors
+get the marketing landing (`screens/landing.tsx`) with its Sign in controls
+wired to the Hosted UI; signed-in users get the shell with their real email in
+the topbar chip. Otherwise — local dev, unit tests, Playwright — the entire
+auth layer is inert (zero listeners, zero network) and the app behaves exactly
+as the historical mock build.
+
+Env contract (provided at Amplify build time, see
+`infra/modules/web_hosting/main.tf`): `VITE_COGNITO_DOMAIN` (bare Hosted UI
+host, no scheme), `VITE_COGNITO_CLIENT_ID` (public client, no secret),
+`VITE_COGNITO_REGION`. Redirect URI is `{origin}/auth/callback`; logout URI is
+`{origin}/` (both registered in `infra/variables.tf`). There is no
+`VITE_API_TOKEN` anymore.
 
 ## Signup funnel + analytics
 

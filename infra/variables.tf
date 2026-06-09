@@ -64,3 +64,21 @@ variable "api_desired_count" {
   type        = number
   default     = 2
 }
+
+variable "web_callback_urls" {
+  description = "OAuth redirect URIs for the SPA (Hosted UI -> app). Public URLs, not secrets."
+  type        = list(string)
+  default = [
+    "https://main.d224yxym1ehrim.amplifyapp.com/auth/callback",
+    "http://localhost:5173/auth/callback",
+  ]
+}
+
+variable "web_logout_urls" {
+  description = "Allowed sign-out redirect URIs for the SPA."
+  type        = list(string)
+  default = [
+    "https://main.d224yxym1ehrim.amplifyapp.com/",
+    "http://localhost:5173/",
+  ]
+}
