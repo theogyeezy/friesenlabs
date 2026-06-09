@@ -7,7 +7,7 @@ variable "vpc_id" { type = string }
 
 resource "aws_security_group" "alb" {
   name        = "${var.project}-alb"
-  description = "ALB — the only public tier"
+  description = "ALB, the only public tier"
   vpc_id      = var.vpc_id
   tags        = { Name = "${var.project}-alb" }
 }
