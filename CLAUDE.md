@@ -1,8 +1,11 @@
 # CLAUDE.md — Uplift build context
 
-This file orients any agent working in this repo. **On every commit/push, update all of the living
-docs that the change touches — `README.md`, `CLAUDE.md`, `BUILD_STATUS.md`, and `TODO.md` — so they
-never drift from reality.**
+This file orients any agent working in this repo. **On every commit/push, update the living docs
+that the change touches — so they never drift from reality — under the two-lane ownership rules
+(`CONTRIBUTING.md` § Two-lane contract): `CLAUDE.md` + `README.md` are LANE NICK single-writer;
+`TODO.md` — check off only your own lane's sections, never reflow the other lane's lines;
+`BUILD_STATUS.md` — write only your own lane's log section. Living-doc edits are the final,
+smallest commit of a PR, after a rebase on `origin/main`.**
 
 ## What this is
 Uplift: a multi-tenant agentic CRM. Hybrid architecture — **agent plane** on Claude Managed
@@ -56,8 +59,11 @@ them on clone+trust. Don't commit secrets to it.
 - **Review every feature** (self + cross) and record the outcome in `BUILD_STATUS.md`.
 
 ## Hard constraints (do not violate)
-1. **No live cloud creation.** Author + `terraform validate` IaC; never `terraform apply`, never
-   create live AWS resources or Anthropic workspaces. Mark such steps `BLOCKED: needs Nick`.
+1. **Live cloud mutation is LANE NICK only** (see the two-lane contract in `CONTRIBUTING.md`).
+   LANE MATT (app code) never runs `terraform apply` and never creates live AWS resources or
+   Anthropic workspaces — author + `terraform validate` only; mark such steps `BLOCKED: Lane Nick`.
+   LANE NICK plans freely and applies only from merged `main`, after a reviewed plan that shows no
+   unintended change/destroy to live resources.
 2. **Draft-only.** No tool that sends a real email/SMS/CRM write may run against real data —
    gate every send behind a Greenlight stub.
 3. **Secrets never in the repo.** Secrets Manager / env refs only; respect `.gitignore` + `.stignore`.
@@ -91,6 +97,7 @@ them on clone+trust. Don't commit secrets to it.
   cursor) so RLS applies; the API binds the tenant from the verified claim per request.
 - `AWS_REGION=us-east-1`, `PROJECT=uplift`. MA beta header on every Anthropic call:
   `anthropic-beta: managed-agents-2026-04-01`.
-- Commit + push to `main`; on every commit keep the living docs current —
+- Commit via short-lived lane PRs (`feat/nick-*` / `feat/matt-*`), squash-merge to `main`; on every
+  commit keep the living docs current per the lane ownership rules —
   `README.md` + `CLAUDE.md` + `BUILD_STATUS.md` + `TODO.md` (update whichever the change affects;
   e.g. check off / add `TODO.md` items, refresh the live/demo/not-live status).
