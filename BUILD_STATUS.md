@@ -32,7 +32,7 @@ tests: U=unit · I=integration · S=smoke · E=e2e(Playwright) · X=isolation �
 | 1 | Data Plane (Aurora+pgvector, RLS, schema, S3, Redis) | ✅* | orchestrator | ✓ | ✓skip | ✓ | · | ✓skip | self ✓ |
 | 2 | Ingestion & Embeddings (connectors, chunk, Titan, pipeline) | ✅ | bg-agent | ✓ | ✓skip | · | · | · | cross ✓ |
 | 3 | Semantic Layer (Cube deploy, metrics, tenant security ctx) | ✅* | orchestrator | ✓ | · | ✓ | · | ✓ | self ✓ |
-| 4 | Agent Plane (Managed Agents, roster, vaults, worker) | ⬜ | — | · | · | · | · | · | — |
+| 4 | Agent Plane (Managed Agents, roster, vaults, worker) | ✅* | orchestrator | ✓ | ✓ | · | · | · | self ✓ |
 | 5 | Control Plane (autonomy, Greenlight, traces, kill switch) | ⬜ | — | · | · | · | · | · | — |
 | 6 | Conversational Layer (front door, slots, agentic RAG+cites) | ⬜ | — | · | · | · | · | · | — |
 | 7 | Dashboard Engine (view-spec, generate, render, save/edit) | ⬜ | — | · | · | · | · | · | — |
@@ -56,6 +56,9 @@ tests: U=unit · I=integration · S=smoke · E=e2e(Playwright) · X=isolation �
   delivery channel, and the SCP denying CloudTrail/Config disablement. Account-level baseline
   (CloudTrail + S3 block-public-access) IS authored in `infra/modules/baseline`.
 - IAM Identity Center (SSO) Admins permission set — console/SSO-stack step, not in this Terraform.
+- **Live Anthropic (Phase 4)** — create environment / agents / coordinator / vaults / sessions, run the
+  worker against the real queue. All authored behind `agents/runtime.py` + flagged "verify" (MA beta);
+  `ManagedAgentsRuntime` methods raise until creds+verify. BLOCKED: needs Nick (org key, env key, beta).
 
 ## Follow-ups (non-blocking cleanups)
 - **`ingest_cursor` table** — `ingest.pipeline.PgCursorStore` creates a per-tenant cursor side-table
@@ -101,8 +104,16 @@ tests: U=unit · I=integration · S=smoke · E=e2e(Playwright) · X=isolation �
   6 Node tests green. IaC: shared ECS cluster (`modules/ecs`) + Cube Fargate service (`modules/cube`,
   crm_app creds via Secrets Manager, internal-only), `terraform validate` clean. smoke_all green.
   Committed + pushed.
-- **Next** — Phase 4 (agent plane): `agents/runtime.py` swappable adapter (Managed Agents behind it),
-  roster (scout/nadia/margo/ledger/echo/pip/critic) + tools (query_cube/search_rag/read_crm/
-  draft_email/run_model), the self-hosted worker. Verify-flag all MA endpoints (beta).
+- **Cycle 6 (Phase 4 agent plane)** — `agents/runtime.py` swappable adapter (FakeRuntime drives tests;
+  ManagedAgentsRuntime real-shape but blocked until verify; `get_runtime` factory; hard limits encoded).
+  Roster of 7 specialists + opus coordinator as code (native model tiering). Tools: `base.py` Policy
+  seam (auto vs always_ask) + ToolContext binding `app.current_tenant`; read-only (search_rag/query_cube/
+  read_crm) + side-effecting (draft_email auto; send_email/update_deal/issue_quote always_ask →
+  Greenlight proposal, never executed). `worker/worker.py` scaffold (env-key only, lazy anthropic,
+  import-safe). IaC: `modules/worker` Fargate + env-key/cube/db secrets. Tests: 15 new (adapter/roster/
+  tool-policy/session), full suite 53 passed / 2 skipped; smoke_all green; terraform validate clean.
+  Committed + pushed. Live Anthropic provisioning BLOCKED: needs Nick.
+- **Next** — Phase 5 (control plane): autonomy levels, Greenlight queue (real, over `approvals`),
+  traces, compliance, kill switch.
   (Aurora/Redis/S3 IaC + `db/schema.sql` with FORCE'd RLS + the two-tenant isolation proof
   incl. a vector query).
