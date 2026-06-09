@@ -28,6 +28,13 @@ class FakeConversation:
         return FakeTurn()
 
 
+def _line_chart_patcher(spec, instruction):
+    patched = {**spec}
+    patched["layout"] = [{"type": "chart", "encoding": "vega-lite", "spec": {"mark": "line"},
+                          "query": {"measures": ["Deals.count"]}}]
+    return patched
+
+
 def _client(level=Level.L1):
     executed = []
     deps = ApiDeps(
@@ -35,6 +42,7 @@ def _client(level=Level.L1):
         conversation_factory=FakeConversation,
         autonomy_config=AutonomyConfig(default_level=level, thresholds=Thresholds(max_auto_value=1000)),
         executor=lambda a: executed.append(a) or {"ran": True},
+        view_patcher=_line_chart_patcher,
     )
     return TestClient(create_app(deps)), executed
 
@@ -57,6 +65,19 @@ def test_invalid_view_rejected_422():
     client, _ = _client()
     bad = {"view_id": "v1", "title": "x", "semantic_refs": [], "layout": []}  # empty refs/layout
     assert client.post("/views", json={"spec": bad}, headers=H).status_code == 422
+
+
+@pytest.mark.integration
+def test_view_refine_patches_and_versions():
+    client, _ = _client()
+    spec = {"view_id": "v1", "title": "Pipeline", "semantic_refs": ["Deals.count"],
+            "layout": [{"type": "kpi", "metric": "Deals.count"}]}
+    client.post("/views", json={"spec": spec}, headers=H)
+    r = client.post("/views/v1/refine", json={"instruction": "make it a line chart"}, headers=H)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["version"] == 2
+    assert body["spec_json"]["layout"][0]["spec"]["mark"] == "line"
 
 
 @pytest.mark.integration

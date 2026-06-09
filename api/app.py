@@ -35,6 +35,8 @@ class ApiDeps:
     executor: Callable[[Action], Any]                   # performs an approved/auto action
     killswitch: KillSwitch = field(default_factory=KillSwitch)
     trace_store: TraceStore = field(default_factory=InMemoryTraceStore)
+    view_patcher: Callable[[dict, str], dict] | None = None  # NL refine: (spec, instruction) -> spec
+    signup: Any = None                                  # optional SignupDeps (mounts public routes)
 
 
 # --- request bodies (note: NONE carry tenant_id — the trust rule forbids it) ---
@@ -111,8 +113,15 @@ def create_app(deps: ApiDeps) -> FastAPI:
 
     @app.post("/views/{view_id}/refine")
     def refine_view(view_id: str, body: RefineBody, claims: TenantClaims = Depends(current_tenant)):
-        # The model patcher is part of the conversation/runtime; here refine echoes via saved_views.
-        raise HTTPException(status_code=501, detail="NL refine wired via the agent runtime (verify)")
+        if deps.view_patcher is None:
+            raise HTTPException(status_code=501, detail="NL refine needs a view_patcher (agent runtime)")
+        if deps.saved_views.get(claims.tenant_id, view_id) is None:
+            raise HTTPException(status_code=404, detail="no such view")
+        try:
+            return deps.saved_views.refine_nl(claims.tenant_id, view_id, body.instruction,
+                                              deps.view_patcher, created_by=claims.sub)
+        except Exception as e:  # validation error on the patched spec -> 422
+            raise HTTPException(status_code=422, detail=str(e))
 
     @app.post("/chat")
     def chat(body: ChatBody, claims: TenantClaims = Depends(current_tenant)):
@@ -135,5 +144,10 @@ def create_app(deps: ApiDeps) -> FastAPI:
         result = ActionGate().run(action, ctx)
         return {"status": result.status, "decision": result.decision.value, "detail": result.detail,
                 "approval": result.approval, "result": result.result}
+
+    # Public, pre-tenant signup + Stripe webhook routes (optional).
+    if deps.signup is not None:
+        from api.signup_routes import mount_signup
+        mount_signup(app, deps.signup)
 
     return app
