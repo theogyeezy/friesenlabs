@@ -34,7 +34,11 @@ resource "aws_lb_target_group" "api" {
   }
 }
 
+locals { has_cert = var.certificate_arn != "" }
+
+# With a cert: terminate TLS at the ALB (443 forward) + redirect 80 -> 443.
 resource "aws_lb_listener" "https" {
+  count             = local.has_cert ? 1 : 0
   load_balancer_arn = aws_lb.this.arn
   port              = 443
   protocol          = "HTTPS"
@@ -47,8 +51,8 @@ resource "aws_lb_listener" "https" {
   }
 }
 
-# Redirect HTTP -> HTTPS.
 resource "aws_lb_listener" "http_redirect" {
+  count             = local.has_cert ? 1 : 0
   load_balancer_arn = aws_lb.this.arn
   port              = 80
   protocol          = "HTTP"
@@ -60,6 +64,20 @@ resource "aws_lb_listener" "http_redirect" {
       protocol    = "HTTPS"
       status_code = "HTTP_301"
     }
+  }
+}
+
+# No cert (no domain yet): forward HTTP:80 directly to the API. TLS is terminated upstream by Amplify,
+# which proxies /api/* to this ALB over HTTP. Swap to the HTTPS listeners once a domain + ACM cert exist.
+resource "aws_lb_listener" "http_forward" {
+  count             = local.has_cert ? 0 : 1
+  load_balancer_arn = aws_lb.this.arn
+  port              = 80
+  protocol          = "HTTP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.api.arn
   }
 }
 

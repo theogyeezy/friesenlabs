@@ -26,12 +26,43 @@ resource "aws_iam_role_policy_attachment" "ecs_execution_managed" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
+data "aws_caller_identity" "current" {}
+data "aws_region" "current" {}
+
+# Secrets the tasks read: project secrets (uplift/*) + the RDS-managed Aurora master (rds!*).
+locals {
+  secret_arns = [
+    "arn:aws:secretsmanager:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:secret:uplift/*",
+    "arn:aws:secretsmanager:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:secret:rds!*",
+  ]
+}
+
+# Execution role needs GetSecretValue to inject DB_USER/DB_PASS into the container at launch.
+resource "aws_iam_role_policy" "ecs_execution_secrets" {
+  name = "read-secrets"
+  role = aws_iam_role.ecs_task_execution.id
+  policy = jsonencode({
+    Version   = "2012-10-17"
+    Statement = [{ Effect = "Allow", Action = ["secretsmanager:GetSecretValue"], Resource = local.secret_arns }]
+  })
+}
+
 # Per-service task roles (permissions attached as each service's phase lands).
 resource "aws_iam_role" "task" {
   for_each           = toset(["api", "cube", "worker"])
   name               = "${var.project}-${each.key}-task"
   assume_role_policy = data.aws_iam_policy_document.ecs_assume.json
   tags               = { Service = each.key }
+}
+
+# The api task role reads secrets at runtime (migrate reads the master + crm secrets via boto3).
+resource "aws_iam_role_policy" "api_task_secrets" {
+  name = "read-secrets"
+  role = aws_iam_role.task["api"].id
+  policy = jsonencode({
+    Version   = "2012-10-17"
+    Statement = [{ Effect = "Allow", Action = ["secretsmanager:GetSecretValue"], Resource = local.secret_arns }]
+  })
 }
 
 output "ecs_task_execution_role_arn" { value = aws_iam_role.ecs_task_execution.arn }

@@ -16,8 +16,11 @@ BEGIN
     END IF;
 END $$;
 
--- Defense in depth: crm_app must NOT be able to bypass RLS.
-ALTER ROLE crm_app NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
+-- Defense in depth: crm_app must NOT be able to bypass RLS. A plain login role is already
+-- NOSUPERUSER + NOBYPASSRLS by default (only superusers bypass RLS), and on managed Postgres
+-- (Aurora/RDS) the master is NOT a true SUPERUSER so it cannot set those attributes — so we only
+-- assert the ones the master CAN set. (crm_app stays non-superuser, non-bypass.)
+ALTER ROLE crm_app NOCREATEDB NOCREATEROLE;
 
 GRANT USAGE ON SCHEMA public TO crm_app;
 

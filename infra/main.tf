@@ -108,6 +108,10 @@ module "api_service" {
   anthropic_api_key_secret_arn = module.secrets.anthropic_api_key_secret_arn
   cognito_user_pool_id         = module.auth.user_pool_id
   cognito_client_id            = module.auth.user_pool_client_id
+  image                        = var.api_image
+  aurora_endpoint              = module.data.cluster_endpoint
+  aurora_master_secret_arn     = module.data.master_user_secret_arn
+  desired_count                = var.api_desired_count
 }
 
 # --- Phase 8: Cortex scheduled retrain ---
@@ -123,12 +127,20 @@ module "provisioning" {
 }
 
 # --- Web hosting: Amplify (Vite SPA). Only created when a GitHub token is supplied. ---
+# CloudFront HTTPS edge in front of the API ALB (so Amplify can proxy /api/* to a valid HTTPS target).
+module "api_cdn" {
+  source  = "./modules/api_cdn"
+  project = var.project
+  alb_dns = module.alb.alb_dns_name
+}
+
 module "web_hosting" {
   count               = var.github_access_token != "" ? 1 : 0
   source              = "./modules/web_hosting"
   project             = var.project
   github_access_token = var.github_access_token
   api_base_url        = var.web_api_base_url
+  api_cdn_domain      = module.api_cdn.domain
 }
 
 # --- Phase 11: cost guardrails + observability ---

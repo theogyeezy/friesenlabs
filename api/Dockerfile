@@ -18,6 +18,8 @@ COPY agents/ ./agents/
 COPY conv/ ./conv/
 COPY signup/ ./signup/
 COPY ml/ ./ml/
+# db/ holds schema.sql + roles.sql, used by `python -m api.migrate`
+COPY db/ ./db/
 
 # Non-root.
 RUN useradd --create-home --uid 10001 appuser

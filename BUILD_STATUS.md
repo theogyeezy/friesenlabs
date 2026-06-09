@@ -19,14 +19,18 @@ Multi-tenant agentic CRM with a Moveworks-style conversational front door.
 Hybrid architecture: **agent plane** = Claude Managed Agents (beta, behind a swappable
 adapter); **everything else** = AWS (data plane, control plane, app, ML).
 
-> ### 🟢 LIVE (partial) — applied to AWS account 186052668426 (us-east-1), ~$5/day
-> The foundation + data plane + auth tier is **applied and running** (63 resources): VPC/NAT/subnets/SGs,
-> IAM, Secrets, ECR, S3, **Aurora Serverless v2** (`uplift-aurora`), **Redis** (`uplift-redis`),
-> Cognito, CloudTrail, Step Functions, ECS cluster. A **$200 budget alarm** (`uplift-200-ceiling`) is
-> armed (notify-only). **Excluded** (needs a TLS cert + pushed ECR images): the ALB + api/cube/worker
-> Fargate services. **State is LOCAL** at `infra/terraform.tfstate` (gitignored) — back it up or move to
-> an S3 backend before relying on it. To tear down: `cd infra && terraform destroy` (targeted to the
-> applied modules).
+> ### 🟢 LIVE end-to-end — applied to AWS account 186052668426 (us-east-1)
+> The backend is **live and verified**: `browser → Amplify (Vite SPA) → CloudFront → ALB (HTTP) →
+> arm64 Fargate API → Aurora` (FORCE'd RLS) with **real Cognito JWKS auth** enforced. Checks:
+> `/api/healthz` → 200, `/api/approvals` (no token) → 401. Live pieces: VPC/NAT/SGs, IAM, Secrets, ECR,
+> S3, **Aurora** (`uplift-aurora`, schema migrated), **Redis**, Cognito, CloudTrail, Step Functions,
+> ECS cluster, **ALB + arm64 Fargate API service (1 task)**, **CloudFront API edge**
+> (`d1vw20lc120dpa.cloudfront.net`), **Amplify Hosting** (`main.d224yxym1ehrim.amplifyapp.com`, `/api`
+> proxy). **$200 budget alarm** armed. **State in S3** (`uplift-tfstate-*`, KMS).
+>
+> **Not yet real:** the **AI/agent plane** (no Anthropic Managed Agents creds — `runtime.py` stub) and
+> a **Cognito login flow** in the web UI (so the SPA runs in mock/demo mode until a user can obtain a
+> JWT). To tear down: `cd infra && terraform destroy`. Known SG-rule state drift — see CLAUDE.md.
 
 Source of truth: `docs/uplift-build-guide.pdf` (Build Guide, Phases 0–12) and the
 Architecture Design doc. Build in **dependency order**, not feature order.

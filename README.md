@@ -48,12 +48,13 @@ docs/       # spec PDFs (gitignored — confidential, kept local only)
 **[BUILD_STATUS.md](./BUILD_STATUS.md)** for the per-phase / per-feature map with test + review status.
 Everything that can be built and tested offline is done, and a final adversarial audit pass is merged.
 
-**Live deployment (partial):** the foundation + data plane + auth tier is **applied to AWS** (account
-186052668426, us-east-1, ~63 resources: Aurora, Redis, VPC/NAT, Cognito, ECR, S3, CloudTrail, Step
-Functions, ECS cluster) under a $200 budget alarm. The ALB + Fargate app tier is **not** applied yet
-(needs a TLS cert + pushed container images). State is local at `infra/terraform.tfstate`; tear down
-with `cd infra && terraform destroy`. See BUILD_STATUS.md for the live map and the remaining
-`BLOCKED: needs Nick` items.
+**Live deployment — the backend is up end-to-end:** `browser → Amplify (Vite SPA) → CloudFront → ALB
+→ arm64 Fargate API → Aurora` (RLS) with real Cognito JWKS auth (verified: `/api/healthz` 200,
+`/api/approvals` 401). Applied to AWS account 186052668426 (us-east-1) under a $200 budget alarm;
+Terraform state in S3 (KMS). **Not yet real:** the AI/agent plane (no Anthropic Managed Agents creds)
+and a Cognito login flow in the web UI (the SPA runs in mock/demo mode until a user can get a JWT —
+the real API is live at `/api`). Tear down with `cd infra && terraform destroy`. See BUILD_STATUS.md
+for the live map and the remaining `BLOCKED: needs Nick` items.
 
 CI (`.github/workflows/ci.yml`) runs on every push/PR to **`main`** (the trunk): pytest + a real
 Postgres+pgvector isolation gate, `terraform fmt`/`validate`, and the web build + typecheck +
