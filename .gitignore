@@ -1,0 +1,45 @@
+# --- Secrets & local env (NEVER commit) ---
+.env
+.env.*
+*.pem
+*.key
+secrets/
+**/secrets.auto.tfvars
+*.tfvars
+!example.tfvars
+
+# --- Python ---
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Node / web ---
+node_modules/
+web/dist/
+web/.next/
+web/out/
+web/node_modules/
+*.tsbuildinfo
+playwright-report/
+test-results/
+.playwright/
+
+# --- Terraform ---
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+.terraform.lock.hcl
+
+# --- Worker logs / scratch ---
+logs/*.log
+.DS_Store
+
+# --- Confidential spec docs (kept local only — never publish) ---
+docs/*.pdf
+docs/uplift-build-guide.txt
+docs/uplift-infra-design.txt

@@ -1,0 +1,14 @@
+# Syncthing ignore (parity with .gitignore for anything that must not sync)
+.env
+.env.*
+*.pem
+*.key
+secrets/
+*.tfvars
+.venv/
+node_modules/
+.terraform/
+*.tfstate*
+logs/*.log
+.DS_Store
+docs/*.pdf

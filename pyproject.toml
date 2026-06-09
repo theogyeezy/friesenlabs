@@ -1,0 +1,19 @@
+[project]
+name = "uplift"
+version = "0.0.1"
+description = "Uplift — multi-tenant agentic CRM"
+requires-python = ">=3.13"
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "api/tests"]
+python_files = ["test_*.py"]
+markers = [
+    "unit: pure module logic, no external services",
+    "integration: crosses one seam (db/api/agent/connector) — may skip if service absent",
+    "isolation: multi-tenant isolation checks",
+]
+addopts = "-ra -q"
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
