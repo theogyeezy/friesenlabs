@@ -65,3 +65,4 @@ resource "aws_lb_listener" "http_redirect" {
 
 output "alb_dns_name" { value = aws_lb.this.dns_name }
 output "target_group_arn" { value = aws_lb_target_group.api.arn }
+output "arn_suffix" { value = aws_lb.this.arn_suffix }

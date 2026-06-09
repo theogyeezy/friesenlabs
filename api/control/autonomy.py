@@ -42,7 +42,11 @@ def resolve(config: AutonomyConfig, agent: str | None, tenant_id: str) -> Level:
 
 
 def _under_thresholds(action: Action, th: Thresholds) -> bool:
-    if action.value_at_stake is not None and action.value_at_stake >= th.max_auto_value:
+    # Conservative: a side-effecting action with NO declared value-at-stake cannot be judged "under"
+    # an L2 threshold — require approval rather than auto-executing a value-less side effect.
+    if action.value_at_stake is None:
+        return False
+    if action.value_at_stake >= th.max_auto_value:
         return False
     if action.discount is not None and action.discount >= th.max_discount:
         return False

@@ -5,6 +5,14 @@ from shared import cost
 
 
 @pytest.mark.unit
+def test_tier_prices_match_spec_table():
+    # Build Guide pricing (Appendix B): haiku 1/5, sonnet 3/15, opus 5/25 ($/MTok in,out).
+    assert cost.TIER_PRICES["haiku"] == (1.00, 5.00)
+    assert cost.TIER_PRICES["sonnet"] == (3.00, 15.00)
+    assert cost.TIER_PRICES["opus"] == (5.00, 25.00)
+
+
+@pytest.mark.unit
 def test_mix_must_sum_to_one():
     with pytest.raises(ValueError):
         cost.estimate(input_tokens=1000, output_tokens=1000, mix={"haiku": 0.5})

@@ -26,7 +26,7 @@ class ProvisionResult:
 
 class Provisioner:
     def __init__(self, *, store, mint_tenant_id, db, anthropic_admin, secrets, cognito, cube, resend,
-                 agent_plane=None):
+                 agent_plane=None, funnel=None):
         self.store = store
         self.mint_tenant_id = mint_tenant_id      # injected (deterministic in tests)
         self.db = db
@@ -36,6 +36,7 @@ class Provisioner:
         self.cube = cube
         self.resend = resend
         self.agent_plane = agent_plane            # builds env+agents+coordinator in the workspace
+        self.funnel = funnel                      # optional signup.funnel.Funnel; None = no-op
 
     def provision(self, account: Account) -> ProvisionResult:
         # Guard: provisioning is only valid after payment, and is idempotent if already done.
@@ -43,6 +44,10 @@ class Provisioner:
             return ProvisionResult(True, account.tenant_id, steps_done=["already_active"])
         if account.state not in (State.PAID, State.PROVISIONING, State.PROVISIONING_FAILED):
             raise ValueError(f"cannot provision from state {account.state.value} (must be PAID)")
+        # L2: defense-in-depth — never provision an unverified account even if it somehow reached
+        # PAID. VERIFY BEFORE PAY is enforced upstream; this is the belt-and-suspenders check.
+        if not account.fully_verified:
+            raise ValueError("cannot provision: account is not fully verified (email + phone)")
 
         account.state = State.PROVISIONING
         self.store.update(account)
@@ -86,6 +91,12 @@ class Provisioner:
             account.state = State.ACTIVE
             self.store.update(account)
             done.append("welcome")
+
+            # H7: server-side funnel — record the instance as provisioned and group the user
+            # under their tenant. Optional/injected — None is a no-op (offline tests).
+            if self.funnel is not None:
+                self.funnel.capture(account.id, "instance_provisioned", tenant_id=tenant_id)
+                self.funnel.group_tenant(account.id, tenant_id)
 
             return ProvisionResult(True, tenant_id, steps_done=done)
 

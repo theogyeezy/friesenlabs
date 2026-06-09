@@ -41,13 +41,16 @@ def build_app():
     else:
         greenlight = Greenlight()
         saved_views = SavedViews()
+    from api.prod_deps import build_signup_deps
     deps = ApiDeps(
         verifier=_verifier(),
         greenlight=greenlight,
         saved_views=saved_views,
+        # /chat returns 503 (not 500) until a real conversation backend (agent runtime) is wired.
         conversation_factory=lambda tenant_id: None,  # TODO(prod): real conv.session.Conversation
         autonomy_config=AutonomyConfig(),
         executor=lambda action: {"status": "noop"},   # TODO(prod): real tool executor via the worker
+        signup=build_signup_deps(),                    # mounts /signup, /verify-*, /checkout, /webhooks/stripe
     )
     return create_app(deps)
 

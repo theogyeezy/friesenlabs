@@ -1,11 +1,19 @@
 # Uplift — Build Status
 
-> ## ✅ BUILD COMPLETE — all 13 phases (0–12) + frontend implemented, tested, and pushed.
-> Everything buildable offline is green: **pytest 163 passed / 2 skipped** (the 2 skips are
-> live-DB integration tests), **smoke_all** pass, **terraform validate** clean (18 modules),
-> **web** typecheck + build + Playwright (5) pass, isolation harness green. Every step that
-> needs live cloud / Anthropic / Stripe is explicitly **`BLOCKED: needs Nick`** below — nothing
-> was applied, spent, or sent. No secrets or the confidential spec are tracked in this public repo.
+> ## ✅ BUILD COMPLETE + AUDITED — all 13 phases (0–12) + frontend, plus Sections A/D and a final audit pass.
+> Everything buildable offline is green: **pytest 193 passed / 2 skipped** (the 2 skips run for real in
+> CI against a live Postgres+pgvector service), **smoke_all** pass, **terraform validate** clean
+> (19 modules) **and `terraform plan` against the live AWS account is clean (92 to add, 0 change/destroy)**,
+> **web** typecheck + build + Playwright (7) pass, isolation gate real (fails in CI without a DB).
+> Every step that needs live cloud / Anthropic / Stripe is explicitly **`BLOCKED: needs Nick`** below —
+> nothing was applied, spent, or sent. No secrets or the confidential spec are tracked in this public repo.
+>
+> **As-shipped caveats (honest):** the production ASGI app mounts the signup/webhook routes but its
+> chat + tool-executor backends and the Stripe/Cognito/Resend clients are clearly-stubbed pending live
+> creds (BLOCKED: needs Nick) — they fail loudly (503 / "not configured"), they do not fake success.
+> An 8-agent adversarial audit (Cycle 17) found + fixed a client-trusted-flag auth bypass on `/actions`,
+> a Step Functions ARN bug (caught by `terraform plan`), a 3× cost-model price error, and ~20 more;
+> remaining items are live-cloud (needs Nick).
 
 Multi-tenant agentic CRM with a Moveworks-style conversational front door.
 Hybrid architecture: **agent plane** = Claude Managed Agents (beta, behind a swappable
@@ -237,3 +245,27 @@ tests: U=unit · I=integration · S=smoke · E=e2e(Playwright) · X=isolation �
   buildable offline.
   (Aurora/Redis/S3 IaC + `db/schema.sql` with FORCE'd RLS + the two-tenant isolation proof
   incl. a vector query).
+- **Cycle 17 (final audit, AWS logged in)** — ran `terraform plan` against the LIVE AWS account
+  (read-only; **not** applied): clean **92 to add / 0 change / 0 destroy**, after fixing a Step
+  Functions ARN bug `validate` couldn't catch. An 8-agent adversarial audit (`uplift-final-audit`
+  workflow) swept every phase vs the Build Guide; fixes landed (3 parallel agents + orchestrator):
+  - **H1/H2 (security):** `/actions` trusted a client `side_effecting` flag → a forged flag bypassed
+    Greenlight + compliance. Now derived from a **trusted server-side tool registry**
+    (`agents/tools/registry.py`); body cannot set it. Unknown tool → 400.
+  - **H3/H5/M-reg:** `run_model` + `build_view` were orphaned → added to the registry + the scout roster.
+  - **H6:** prod ASGI now **mounts** the signup/Stripe-webhook routes (`api/prod_deps.py`, stub clients
+    flagged needs-Nick); **M1:** `/chat` returns 503 (not 500) when unconfigured.
+  - **H8/M5:** CI isolation gate was a no-op → CI now runs a real **Postgres+pgvector service**, loads
+    the schema, and runs the two DB integration tests for real; `UPLIFT_REQUIRE_DB=1` makes the gate
+    fail without a DB; added a smoke job.
+  - **H9:** cost model Opus price was 3× the spec → corrected (+ absolute-price test).
+  - **H4:** saved-view validation can now resolve per-tenant Cube members (no silent skip).
+  - **H10 (IaC leg):** ADOT/OTEL sidecars added to api/worker/cube task defs (trace verify = needs Nick).
+  - **signup hardening:** input validation, webhook unknown-account no-op (M6), verify-ordering (L4),
+    provision re-asserts verify-before-pay (L2), server-side PostHog funnel wired (H7).
+  - **guardrails wiring** (M2/M3/M4): ALB `arn_suffix` output, notify-email/Deny-action vars, worker
+    `workers_polling` PutMetricData; **L1:** L2 won't auto-execute a value-less side effect; demo.sh init.
+  - **Doc drift (D1):** counts/trunk/claims corrected here. Full suite **193 passed / 2 skipped**;
+    terraform validate + plan + smoke + web all green.
+  - **Flagged, not blocking:** Redis AUTH token (L10), Pg-store SET LOCAL/pooling (L3), cross-tenant FK
+    nuance (L11), batch_embed real job (L6), LightGBM/XGBoost candidates (L7) — tracked, mostly needs-Nick.

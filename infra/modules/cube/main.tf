@@ -19,6 +19,12 @@ resource "aws_cloudwatch_log_group" "cube" {
   retention_in_days = 30
 }
 
+# ADOT (AWS Distro for OpenTelemetry) collector sidecar log group — see the sidecar container below.
+resource "aws_cloudwatch_log_group" "cube_otel" {
+  name              = "/ecs/${var.project}-cube-otel"
+  retention_in_days = 30
+}
+
 resource "aws_ecs_task_definition" "cube" {
   family                   = "${var.project}-cube"
   requires_compatibilities = ["FARGATE"]
@@ -53,6 +59,22 @@ resource "aws_ecs_task_definition" "cube" {
           "awslogs-group"         = aws_cloudwatch_log_group.cube.name
           "awslogs-region"        = var.region
           "awslogs-stream-prefix" = "cube"
+        }
+      }
+    },
+    # ADOT collector sidecar (H10, offline IaC leg): receives OTLP spans from the cube container and
+    # exports them to X-Ray. The task role needs xray:PutTraceSegments at apply.
+    # NOTE: full end-to-end X-Ray trace verification needs apply (BLOCKED: needs Nick).
+    {
+      name      = "aws-otel-collector"
+      image     = "public.ecr.aws/aws-observability/aws-otel-collector:latest"
+      essential = false
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.cube_otel.name
+          "awslogs-region"        = var.region
+          "awslogs-stream-prefix" = "otel"
         }
       }
     }

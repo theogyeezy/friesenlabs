@@ -9,8 +9,15 @@ Runnable now:
   - Otherwise it reports the data plane isn't up yet and exits 0 (nothing to isolate).
 Once Phase 1 lands, point UPLIFT_DB_URL at the app role and this becomes a hard gate.
 
+CI hard-gate: set UPLIFT_REQUIRE_DB=1 to turn the graceful "PENDING" skip into a FAILURE.
+In CI a real Postgres is provisioned and the gate MUST run — if no DB is reachable (or
+UPLIFT_DB_URL is unset / psycopg2 missing) the gate would otherwise silently pass and never
+gate. With the flag set, those conditions exit non-zero. Locally/dev (flag unset) the skip stays
+graceful so the harness is still runnable without a DB.
+
 Usage:
   UPLIFT_DB_URL=postgresql://uplift_app:***@host:5432/uplift python scripts/isolation_test.py
+  UPLIFT_REQUIRE_DB=1 UPLIFT_DB_URL=... python scripts/isolation_test.py   # CI hard gate
 """
 from __future__ import annotations
 
@@ -19,9 +26,16 @@ import sys
 import uuid
 
 DB_URL = os.environ.get("UPLIFT_DB_URL")
+REQUIRE_DB = os.environ.get("UPLIFT_REQUIRE_DB") == "1"
 
 
 def _pending(msg: str) -> int:
+    # In CI (UPLIFT_REQUIRE_DB=1) there is no excuse for "no DB to test": a missing/unreachable
+    # data plane means the gate can't prove isolation, so FAIL instead of the clean skip.
+    if REQUIRE_DB:
+        print(f"[isolation] FAIL — UPLIFT_REQUIRE_DB=1 but {msg}")
+        print("[isolation] a real Postgres must be reachable in CI for the isolation gate to run.")
+        return 1
     print(f"[isolation] PENDING — {msg}")
     print("[isolation] no data plane to test yet; exiting clean (set UPLIFT_DB_URL once Phase 1 lands).")
     return 0

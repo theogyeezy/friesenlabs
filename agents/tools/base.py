@@ -55,6 +55,13 @@ class Tool(abc.ABC):
     description: str
     input_schema: dict
     policy: Policy = Policy.AUTO
+    # Comms channel for the compliance validator (None = not a comms send). Server-side truth: the
+    # action gate derives side_effecting/channel from the tool class, NEVER from the request body.
+    channel: str | None = None
+
+    @property
+    def is_side_effecting(self) -> bool:
+        return self.policy is Policy.ALWAYS_ASK
 
     def to_spec(self) -> dict:
         """The MA custom-tool definition shape."""

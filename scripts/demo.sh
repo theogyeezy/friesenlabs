@@ -21,7 +21,7 @@ step "3/5 multi-tenant isolation gate"
 $PY scripts/isolation_test.py || fail=1
 
 step "4/5 terraform validate"
-( cd infra && terraform fmt -check -recursive && terraform validate ) || fail=1
+( cd infra && terraform fmt -check -recursive && terraform init -backend=false && terraform validate ) || fail=1
 
 step "5/5 web build + typecheck + e2e"
 if [ -d web/node_modules ]; then

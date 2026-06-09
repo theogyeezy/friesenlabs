@@ -26,6 +26,7 @@ class DraftEmail(Tool):
 
 class SendEmail(Tool):
     name = "send_email"
+    channel = "email"  # so the compliance validator applies CAN-SPAM
     description = "Send an email. Requires human approval (Greenlight)."
     input_schema = {
         "type": "object",

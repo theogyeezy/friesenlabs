@@ -10,6 +10,29 @@ on:
 jobs:
   python:
     runs-on: ubuntu-latest
+    # Real Postgres+pgvector so the DB integration tests (test_rls_isolation.py,
+    # test_ingest_pgvector.py) actually RUN and the multi-tenant isolation gate is real
+    # (no longer a no-op PENDING skip — see UPLIFT_REQUIRE_DB below).
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: uplift
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      PGHOST: localhost
+      PGPORT: "5432"
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: uplift
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -19,13 +42,40 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt ruff
+      - name: Install psql client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+      - name: Load schema + roles into Postgres
+        # Order matters: schema.sql FIRST (creates the vector ext + tables + FORCE'd RLS), then
+        # roles.sql (creates the NON-OWNER crm_app login + grants), then set its password for CI.
+        run: |
+          psql -v ON_ERROR_STOP=1 -f db/schema.sql
+          psql -v ON_ERROR_STOP=1 -f db/roles.sql
+          psql -v ON_ERROR_STOP=1 -c "ALTER ROLE crm_app PASSWORD 'ci'"
       - name: Lint (advisory)
         continue-on-error: true
         run: ruff check .
       - name: Unit + integration tests
+        # UPLIFT_TEST_DB_URL = owner DSN (loads/owns schema); UPLIFT_DB_URL = NON-OWNER crm_app DSN
+        # so RLS is actually exercised. These make the two DB integration tests run instead of skip.
+        # 127.0.0.1 (not localhost) so psycopg2 uses IPv4 — the service publishes on IPv4 and
+        # `localhost` can resolve to ::1 first, which is why the DB tests silently skipped before.
+        env:
+          UPLIFT_TEST_DB_URL: postgresql://postgres:postgres@127.0.0.1:5432/uplift
+          UPLIFT_DB_URL: postgresql://crm_app:ci@127.0.0.1:5432/uplift
         run: pytest -q
       - name: Multi-tenant isolation gate
-        run: python scripts/isolation_test.py
+        # UPLIFT_REQUIRE_DB=1 makes the gate FAIL (non-zero) if no DB is reachable, instead of the
+        # graceful PENDING skip — so the gate truly gates in CI. Runs as the non-owner crm_app role.
+        # Re-assert crm_app's password first: the RLS integration test resets it, so make the gate
+        # self-contained.
+        env:
+          UPLIFT_DB_URL: postgresql://crm_app:ci@127.0.0.1:5432/uplift
+          UPLIFT_REQUIRE_DB: "1"
+        run: |
+          psql -v ON_ERROR_STOP=1 -c "ALTER ROLE crm_app PASSWORD 'ci'"
+          python scripts/isolation_test.py
 
   terraform:
     runs-on: ubuntu-latest
@@ -59,3 +109,22 @@ jobs:
         run: |
           npx playwright install --with-deps chromium
           npx playwright test
+
+  smoke:
+    runs-on: ubuntu-latest
+    # Roll-up smoke (scripts/smoke_all.sh). Needs Node 20 for the semantic/Cube security tests
+    # (node --check + node --test under semantic/) AND Python for the foundation/data-plane smokes.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+      - name: Smoke (all features)
+        run: bash scripts/smoke_all.sh

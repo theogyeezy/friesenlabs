@@ -28,7 +28,7 @@ class AgentSpec:
 
 
 # The agent_toolset_20260401 built-in is implied for every agent; we list custom tool names here.
-SCOUT = AgentSpec("scout", HAIKU, "You are the lead-research specialist. Enrich and score leads using the tenant's corpus and metrics.", ["search_rag", "query_cube", "read_crm"])
+SCOUT = AgentSpec("scout", HAIKU, "You are the lead-research specialist. Enrich and score leads using the tenant's corpus and metrics; score conversion propensity with run_model and surface findings as a saved view with build_view.", ["search_rag", "query_cube", "read_crm", "run_model", "build_view"])
 NADIA = AgentSpec("nadia", SONNET, "You draft outreach. Personalize from the tenant's data; never send — drafts route to a human.", ["search_rag", "read_crm", "draft_email"])
 MARGO = AgentSpec("margo", SONNET, "You handle quoting. Propose quotes grounded in deal data; issuing requires approval.", ["read_crm", "query_cube", "issue_quote"])
 LEDGER = AgentSpec("ledger", SONNET, "You handle ops and CRM mutations. All mutations route through Greenlight.", ["read_crm", "update_deal"])

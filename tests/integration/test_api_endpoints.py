@@ -110,7 +110,34 @@ def test_action_pends_under_l1():
 @pytest.mark.integration
 def test_action_blocked_by_compliance():
     client, executed = _client(level=Level.L3)
-    body = {"name": "send_email", "side_effecting": True, "channel": "email", "payload": {"body": "no unsub"}}
+    body = {"name": "send_email", "payload": {"body": "no unsub"}}
     r = client.post("/actions", json=body, headers=H).json()
     assert r["status"] == "blocked"
     assert executed == []
+
+
+@pytest.mark.integration
+def test_forged_side_effecting_flag_cannot_bypass_greenlight():
+    # SECURITY (H1): a client forging side_effecting:false on send_email must NOT auto-execute.
+    client, executed = _client(level=Level.L1)
+    body = {"name": "send_email", "side_effecting": False, "channel": None,
+            "payload": {"body": "hi unsubscribe"}}
+    r = client.post("/actions", json=body, headers=H).json()
+    assert r["status"] == "pending_approval"   # derived from the registry, not the body
+    assert executed == []                       # never sent
+
+
+@pytest.mark.integration
+def test_unknown_tool_rejected():
+    client, _ = _client(level=Level.L3)
+    assert client.post("/actions", json={"name": "rm_-rf"}, headers=H).status_code == 400
+
+
+@pytest.mark.integration
+def test_chat_503_when_backend_unconfigured():
+    from api.app import ApiDeps, create_app
+    deps = ApiDeps(verifier=FakeVerifier(), greenlight=Greenlight(), saved_views=SavedViews(),
+                   conversation_factory=lambda t: None, autonomy_config=AutonomyConfig(),
+                   executor=lambda a: None)
+    c = TestClient(create_app(deps))
+    assert c.post("/chat", json={"message": "hi"}, headers=H).status_code == 503
