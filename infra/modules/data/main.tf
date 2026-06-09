@@ -30,7 +30,11 @@ resource "aws_rds_cluster" "this" {
     max_capacity = 16
   }
 
-  skip_final_snapshot = true
+  # Durability: holds real tenant data, so protect against accidental loss.
+  backup_retention_period   = 7
+  deletion_protection       = true
+  skip_final_snapshot       = false
+  final_snapshot_identifier = "${var.project}-aurora-final"
 }
 
 resource "aws_rds_cluster_instance" "this" {

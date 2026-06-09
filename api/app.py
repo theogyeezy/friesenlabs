@@ -83,20 +83,25 @@ def create_app(deps: ApiDeps) -> FastAPI:
 
     @app.post("/approvals/{approval_id}/decide")
     def decide_approval(approval_id: str, body: DecideBody, claims: TenantClaims = Depends(current_tenant)):
-        # Bind the tenant so RLS scopes the read/write (no-op for the in-memory store).
-        deps.greenlight.store.bind_tenant(claims.tenant_id)
-        rec = deps.greenlight.store.get(approval_id)
+        # Read tenant-scoped (RLS via the verified claim); re-check post-read as defense in depth.
+        rec = deps.greenlight.store.get(claims.tenant_id, approval_id)
         if rec is None or str(rec["tenant_id"]) != str(claims.tenant_id):
             raise HTTPException(status_code=404, detail="no such approval")  # tenant-scoped
         try:
-            return deps.greenlight.decide(approval_id, body.decision, edits=body.edits,
+            return deps.greenlight.decide(claims.tenant_id, approval_id, body.decision, edits=body.edits,
                                           deny_message=body.deny_message, decided_by=claims.sub)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
 
     @app.get("/views")
     def list_views(claims: TenantClaims = Depends(current_tenant)):
-        return {"views": deps.saved_views.store.list(claims.tenant_id)}
+        views = deps.saved_views.store.list(claims.tenant_id)
+        # Defense in depth: never return a row whose tenant_id isn't the verified request tenant
+        # (RLS already scopes the read; this re-check makes a silent leak fail loud, not propagate).
+        for v in views:
+            if str(v["tenant_id"]) != str(claims.tenant_id):
+                raise HTTPException(status_code=500, detail="tenant isolation violation")
+        return {"views": views}
 
     @app.get("/views/{view_id}")
     def get_view(view_id: str, claims: TenantClaims = Depends(current_tenant)):

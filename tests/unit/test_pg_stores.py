@@ -1,11 +1,15 @@
-"""Unit: the Aurora-backed stores SET app.current_tenant before every query (RLS holds).
+"""Unit: the Aurora-backed stores SET LOCAL app.current_tenant before every query (RLS holds).
 
-Uses a fake psycopg2 connection (no DB) to prove the binding + the target table for each operation —
-the security-critical guarantee. Real CRUD is covered by the skip-integration test below.
+Uses a fake psycopg2 connection pool (no DB) to prove the per-op tenant bind + the target table for
+each operation — the security-critical guarantee. The real stores check a connection out of a
+ThreadedConnectionPool and run each op in one transaction that begins with
+`SET LOCAL app.current_tenant` (auto-resets at COMMIT/ROLLBACK), so the GUC can never leak across the
+pooled connection. Real CRUD + the concurrency proof are covered by the skip-integration tests.
 """
 import pytest
 
 import psycopg2
+import psycopg2.pool
 
 from api.control.greenlight import Greenlight, PgApprovalStore
 from api.views import PgSavedViewStore, SavedViews
@@ -33,8 +37,8 @@ class FakeCursor:
 
 
 class FakeConn:
-    def __init__(self, one=None):
-        self.log: list = []
+    def __init__(self, log, one=None):
+        self.log = log
         self._one = one or {"id": "uuid-1"}
 
     def cursor(self, cursor_factory=None):
@@ -43,16 +47,36 @@ class FakeConn:
     def commit(self):
         pass
 
+    def rollback(self):
+        pass
+
+
+class FakePool:
+    """Stands in for psycopg2.pool.ThreadedConnectionPool — hands out a single shared FakeConn so the
+    test can inspect every statement issued (order matters: the per-op SET LOCAL must come first)."""
+
+    def __init__(self, minconn, maxconn, dsn):
+        self.log: list = []
+        self._conn = FakeConn(self.log)
+
+    def getconn(self):
+        return self._conn
+
+    def putconn(self, conn):
+        pass
+
 
 @pytest.fixture
 def patched(monkeypatch):
-    conn = FakeConn()
-    monkeypatch.setattr(psycopg2, "connect", lambda dsn: conn)
-    return conn
+    pool = FakePool(1, 10, None)
+    monkeypatch.setattr(
+        psycopg2.pool, "ThreadedConnectionPool", lambda minc, maxc, dsn: pool
+    )
+    return pool
 
 
-def _sql(conn):
-    return [s for s, _ in conn.log]
+def _sql(pool):
+    return [s for s, _ in pool.log]
 
 
 @pytest.mark.unit
@@ -60,20 +84,20 @@ def test_approval_store_binds_tenant_before_each_op(patched):
     store = PgApprovalStore("postgresql://crm_app@h/db")
     store.insert({"tenant_id": "A", "proposed_action": {"action": "send_email"}, "agent": "nadia",
                   "reasoning": "r", "value_at_stake": 1, "status": "pending"})
-    store.bind_tenant("A")
-    store.get("uuid-1")
+    store.get("A", "uuid-1")
     store.list_pending("A")
-    store.update("uuid-1", {"status": "approved", "proposed_action": {"x": 1}})
+    store.update("A", "uuid-1", {"status": "approved", "proposed_action": {"x": 1}})
 
     sql = _sql(patched)
-    # Every data statement is preceded by a tenant bind.
-    assert any("SET app.current_tenant" in s for s in sql)
+    # Every op binds the tenant with SET LOCAL (auto-resets at txn end — can't leak across the pool).
+    assert any("SET LOCAL app.current_tenant" in s for s in sql)
+    assert not any(s.startswith("SET app.current_tenant") for s in sql)  # never the session-level set
     assert any("INSERT INTO approvals" in s for s in sql)
     assert any("SELECT * FROM approvals WHERE id" in s for s in sql)
     assert any("status = 'pending'" in s for s in sql)
     assert any("UPDATE approvals SET" in s for s in sql)
     # First statement issued in insert() is the tenant bind, not the write.
-    assert sql[0].startswith("SET app.current_tenant")
+    assert sql[0].startswith("SET LOCAL app.current_tenant")
 
 
 @pytest.mark.unit
@@ -84,7 +108,8 @@ def test_saved_view_store_binds_tenant(patched):
     store.latest("A", "v1")
     store.list("A")
     sql = _sql(patched)
-    assert sql[0].startswith("SET app.current_tenant")
+    assert sql[0].startswith("SET LOCAL app.current_tenant")
+    assert not any(s.startswith("SET app.current_tenant") for s in sql)
     assert any("INSERT INTO saved_views" in s for s in sql)
     assert any("SELECT * FROM saved_views WHERE view_id" in s for s in sql)
     assert any("DISTINCT ON (view_id)" in s for s in sql)
