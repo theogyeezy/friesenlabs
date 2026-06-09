@@ -1,5 +1,12 @@
 # Uplift — Build Status
 
+> ## ✅ BUILD COMPLETE — all 13 phases (0–12) + frontend implemented, tested, and pushed.
+> Everything buildable offline is green: **pytest 163 passed / 2 skipped** (the 2 skips are
+> live-DB integration tests), **smoke_all** pass, **terraform validate** clean (18 modules),
+> **web** typecheck + build + Playwright (5) pass, isolation harness green. Every step that
+> needs live cloud / Anthropic / Stripe is explicitly **`BLOCKED: needs Nick`** below — nothing
+> was applied, spent, or sent. No secrets or the confidential spec are tracked in this public repo.
+
 Multi-tenant agentic CRM with a Moveworks-style conversational front door.
 Hybrid architecture: **agent plane** = Claude Managed Agents (beta, behind a swappable
 adapter); **everything else** = AWS (data plane, control plane, app, ML).
