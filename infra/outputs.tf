@@ -24,3 +24,15 @@ output "security_group_ids" {
 output "ecr_repository_urls" {
   value = module.ecr.repository_urls
 }
+
+output "aurora_cluster_endpoint" {
+  value = module.data.cluster_endpoint
+}
+
+output "redis_primary_endpoint" {
+  value = module.redis.primary_endpoint
+}
+
+output "s3_bucket_names" {
+  value = module.s3.bucket_names
+}

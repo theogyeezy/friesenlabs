@@ -42,26 +42,40 @@ def main() -> int:
 
     tenant_a = str(uuid.uuid4())
     tenant_b = str(uuid.uuid4())
+    vec = "[" + ",".join(["0.1"] * 1024) + "]"
     failures: list[str] = []
     with conn:
         with conn.cursor() as cur:
-            # Set RLS GUC to tenant A; we must NOT see tenant B rows.
-            cur.execute("SET app.tenant_id = %s", (tenant_a,))
+            # GUC name MUST match the policy in db/schema.sql: app.current_tenant.
+            cur.execute("SET app.current_tenant = %s", (tenant_a,))
             cur.execute(
-                "INSERT INTO documents (tenant_id, source, content) VALUES (%s,'test','a-secret')",
-                (tenant_a,),
+                "INSERT INTO documents (tenant_id, source, content, embedding) "
+                "VALUES (%s,'test','a-secret',%s)",
+                (tenant_a, vec),
             )
-            cur.execute("SET app.tenant_id = %s", (tenant_b,))
+            cur.execute("SET app.current_tenant = %s", (tenant_b,))
             cur.execute(
-                "INSERT INTO documents (tenant_id, source, content) VALUES (%s,'test','b-secret')",
-                (tenant_b,),
+                "INSERT INTO documents (tenant_id, source, content, embedding) "
+                "VALUES (%s,'test','b-secret',%s)",
+                (tenant_b, vec),
             )
             # As tenant A, count rows — RLS should hide tenant B's.
-            cur.execute("SET app.tenant_id = %s", (tenant_a,))
+            cur.execute("SET app.current_tenant = %s", (tenant_a,))
             cur.execute("SELECT count(*) FROM documents WHERE content='b-secret'")
             leaked = cur.fetchone()[0]
             if leaked != 0:
                 failures.append(f"tenant A saw {leaked} of tenant B's rows — RLS NOT enforced")
+            # As tenant A, a vector ANN query must never surface tenant B's row.
+            try:
+                cur.execute("SET hnsw.iterative_scan = 'relaxed_order'")
+            except Exception:  # noqa: BLE001 — setting may not exist on older pgvector
+                conn.rollback()
+                cur.execute("SET app.current_tenant = %s", (tenant_a,))
+            cur.execute(
+                "SELECT content FROM documents ORDER BY embedding <=> %s::vector LIMIT 50", (vec,)
+            )
+            if any(r[0] == "b-secret" for r in cur.fetchall()):
+                failures.append("vector query returned tenant B's row — RLS NOT enforced on ANN")
             # And cannot UPDATE across tenants.
             cur.execute("UPDATE documents SET content='hacked' WHERE content='b-secret'")
             if cur.rowcount != 0:

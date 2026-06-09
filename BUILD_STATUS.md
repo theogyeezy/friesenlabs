@@ -29,7 +29,7 @@ tests: U=unit · I=integration · S=smoke · E=e2e(Playwright) · X=isolation �
 |---|-------|--------|-------|---|---|---|---|---|--------|
 | — | Foundation (scaffold, harness, BUILD_STATUS) | ✅ | orchestrator | ✓ | · | ✓ | · | · | self ✓ |
 | 0 | AWS Foundation (IAM, VPC, SGs, secrets, ECR, baseline) | ✅* | orchestrator | · | · | · | · | · | self ✓ |
-| 1 | Data Plane (Aurora+pgvector, RLS, schema, S3, Redis) | 🟡 | orchestrator | · | · | · | · | · | — |
+| 1 | Data Plane (Aurora+pgvector, RLS, schema, S3, Redis) | ✅* | orchestrator | ✓ | ✓skip | ✓ | · | ✓skip | self ✓ |
 | 2 | Ingestion & Embeddings (connectors, chunk, Titan, pipeline) | ⬜ | — | · | · | · | · | · | — |
 | 3 | Semantic Layer (Cube deploy, metrics, tenant security ctx) | ⬜ | — | · | · | · | · | · | — |
 | 4 | Agent Plane (Managed Agents, roster, vaults, worker) | ⬜ | — | · | · | · | · | · | — |
@@ -48,6 +48,10 @@ tests: U=unit · I=integration · S=smoke · E=e2e(Playwright) · X=isolation �
 ## Blocked — needs Nick (creds / cost / external accounts)
 *(populated as we hit live-cloud steps; nothing executed against real AWS by design)*
 - `terraform apply` for all of `infra/` — authored + `validate`-clean, but never applied (cost/irreversible).
+  Now includes Phase 1: Aurora Serverless v2 (`modules/data`), ElastiCache Valkey (`modules/redis`),
+  S3 datalake+uploads (`modules/s3`).
+- **Apply `db/schema.sql` + `db/roles.sql`** to the live cluster, then set `crm_app` password from
+  Secrets Manager — needs the cluster (Nick). Until then the live RLS integration test skips.
 - **Org-level Phase 0 items** authored-as-notes only (need an AWS Org context): AWS Config recorder +
   delivery channel, and the SCP denying CloudTrail/Config disablement. Account-level baseline
   (CloudTrail + S3 block-public-access) IS authored in `infra/modules/baseline`.
@@ -69,6 +73,14 @@ tests: U=unit · I=integration · S=smoke · E=e2e(Playwright) · X=isolation �
   (`playwright.config.ts` used `process` without `@types/node`). Fixed by adding `@types/node`;
   `tsc --noEmit` now clean. All 42 prototype files carry `// @ts-nocheck` (see
   `web/CONVERSION_NOTES.md`) — type-tightening is a tracked follow-up. Committed + pushed.
-- **Next** — Phase 1 data plane
+- **Cycle 3 (Phase 1 data plane)** — `db/schema.sql` (documents+pgvector HNSW, contacts, companies,
+  deals, activities, saved_views, approvals, traces) with `ENABLE`+`FORCE` RLS + `tenant_isolation`
+  policy on all 8 tables; `db/roles.sql` (`crm_app` NOSUPERUSER/NOBYPASSRLS login). Terraform
+  `modules/{data,redis,s3}` wired + `validate` clean. Tests: 13 static SQL tests (libpg_query parse +
+  FORCE-RLS assertions) pass; two-tenant RLS integration test (row + vector ANN + update) written,
+  skips cleanly with no local DB; `isolation_test.py` reconciled to `app.current_tenant` GUC + vector
+  query. `pytest` 16 passed / 1 skipped; smoke_all pass. Committed + pushed.
+- **Next** — Phase 2 (ingestion & embeddings): connector pattern (HubSpot first), chunking, Titan V2
+  embeddings → pgvector, incremental cursor pipeline.
   (Aurora/Redis/S3 IaC + `db/schema.sql` with FORCE'd RLS + the two-tenant isolation proof
   incl. a vector query).

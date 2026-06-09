@@ -38,3 +38,23 @@ module "ecr" {
   project = var.project
   repos   = var.ecr_repos
 }
+
+# --- Phase 1: data plane ---
+module "data" {
+  source               = "./modules/data"
+  project              = var.project
+  private_subnet_ids   = module.vpc.private_subnet_ids
+  db_security_group_id = module.security.sg_db
+}
+
+module "redis" {
+  source                  = "./modules/redis"
+  project                 = var.project
+  private_subnet_ids      = module.vpc.private_subnet_ids
+  redis_security_group_id = module.security.sg_redis
+}
+
+module "s3" {
+  source  = "./modules/s3"
+  project = var.project
+}
