@@ -142,6 +142,23 @@ def assemble_citations(
     return citations, dropped
 
 
+def make_synthesizer(kind: str = "extractive", **kwargs: Any) -> Synthesizer | None:
+    """Optional synthesizer factory for callers wiring a `RagContext` (mirrors `get_runtime`).
+
+    - "extractive" (default) returns None, so `answer()` keeps using `_default_synthesize` —
+      offline behavior is unchanged and nothing here needs network or creds.
+    - "anthropic" returns the real Sonnet-backed `conv.synthesizer.AnthropicSynthesizer`
+      (lazy import; construction never touches the network — the SDK client builds on first use).
+    """
+    if kind == "anthropic":
+        from .synthesizer import AnthropicSynthesizer  # noqa: PLC0415 — keep rag import-light
+
+        return AnthropicSynthesizer(**kwargs)
+    if kind == "extractive":
+        return None
+    raise ValueError(f"unknown synthesizer kind: {kind!r}")
+
+
 def _default_synthesize(question: str, chunks: list[dict]) -> dict:
     """Fallback synthesizer when none is injected: a trivially-grounded extractive answer that cites
     every retrieved chunk. Deterministic; offline. Never used when a synthesizer is provided."""
