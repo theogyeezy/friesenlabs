@@ -29,12 +29,16 @@ resource "aws_budgets_budget" "monthly" {
   limit_unit   = "USD"
   time_unit    = "MONTHLY"
 
-  notification {
-    comparison_operator        = "GREATER_THAN"
-    threshold                  = 80
-    threshold_type             = "PERCENTAGE"
-    notification_type          = "ACTUAL"
-    subscriber_email_addresses = var.notify_email != "" ? [var.notify_email] : []
+  # AWS rejects a notification with an empty subscriber list, so only emit it when an email is set.
+  dynamic "notification" {
+    for_each = var.notify_email != "" ? [1] : []
+    content {
+      comparison_operator        = "GREATER_THAN"
+      threshold                  = 80
+      threshold_type             = "PERCENTAGE"
+      notification_type          = "ACTUAL"
+      subscriber_email_addresses = [var.notify_email]
+    }
   }
 }
 
