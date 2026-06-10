@@ -222,7 +222,7 @@ function CapabilityRadar() {
   const fPath = radarPath(VS_AXES.map((a) => a.f), R, cx, cy);
   const gPath = radarPath(VS_AXES.map((a) => a.g), R, cx, cy);
   return (
-    <div className="vs-radar" ref={ref}>
+    <div className="vs-radar tilt3d" data-tilt="7" ref={ref}>
       <svg viewBox="-72 -8 404 272" role="img" aria-label="Friesen vs GoHighLevel capability radar">
         {[0.25, 0.5, 0.75, 1].map((g) => (
           <polygon key={g} className="rad-grid" points={VS_AXES.map((_, i) => { const a = (Math.PI * 2 * i) / n - Math.PI / 2; return `${cx + R * g * Math.cos(a)},${cy + R * g * Math.sin(a)}`; }).join(" ")} />
@@ -669,6 +669,32 @@ function useMagnetic() {
   }, []);
 }
 
+// Cursor-driven 3D tilt for any `.tilt3d` element — the cinematic centerpiece. Desktop + non-
+// reduced-motion only; on touch/phones it's a no-op so the mobile layout stays flat and fast.
+function useTilt3d() {
+  useEffect(() => {
+    if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    if (window.matchMedia && !window.matchMedia("(hover: hover)").matches) return;
+    const els = Array.from(document.querySelectorAll(".lp .tilt3d"));
+    const move = (e) => {
+      const el = e.currentTarget, r = el.getBoundingClientRect();
+      const px = (e.clientX - r.left) / r.width - 0.5, py = (e.clientY - r.top) / r.height - 0.5;
+      const max = +(el.dataset.tilt || 9);
+      el.style.setProperty("--ry", (px * max).toFixed(2) + "deg");
+      el.style.setProperty("--rx", (-py * max).toFixed(2) + "deg");
+      el.style.setProperty("--gx", (px * 100 + 50).toFixed(1) + "%");
+      el.style.setProperty("--gy", (py * 100 + 50).toFixed(1) + "%");
+      el.classList.add("tilting");
+    };
+    const leave = (e) => { const el = e.currentTarget; el.classList.remove("tilting"); el.style.setProperty("--rx", "0deg"); el.style.setProperty("--ry", "0deg"); };
+    els.forEach((el) => { el.addEventListener("mousemove", move); el.addEventListener("mouseleave", leave); });
+    return () => els.forEach((el) => { el.removeEventListener("mousemove", move); el.removeEventListener("mouseleave", leave); });
+  }, []);
+}
+
+// Fixed film-grain overlay — cinematic texture across the whole page.
+function Grain() { return <div className="lp-grain" aria-hidden="true" />; }
+
 // Section anchors shared by the desktop nav + the mobile menu.
 const NAV_LINKS = [
   ["products", "Products"], ["demos", "See it work"], ["compare", "vs GHL"],
@@ -804,6 +830,7 @@ function Landing({ onSignIn = () => {} } = {}) {
   }, []);
   useReveal();
   useMagnetic();
+  useTilt3d();
   const [demoTab, setDemoTab] = useState("agents");
   const [plan, setPlan] = useState("keepcrm");
   const [sel, setSel] = useState({ command: true, agents: true, workflows: true, greenlight: true, integration: true });
@@ -846,7 +873,8 @@ function Landing({ onSignIn = () => {} } = {}) {
   const activeDemo = LP_DEMOS.find((d) => d.id === demoTab);
 
   return (
-    <div className="lp">
+    <div className="lp lp-cinematic">
+      <Grain />
       <ScrollProgress />
       {/* nav */}
       <nav className="lp-nav">
@@ -889,6 +917,8 @@ function Landing({ onSignIn = () => {} } = {}) {
       {/* hero */}
       <section className="lp-hero">
         <div className="lp-aurora" aria-hidden="true"><span /><span /><span /></div>
+        <div className="lp-grid3d" aria-hidden="true"><div className="lp-grid3d-floor" /></div>
+        <div className="lp-vignette" aria-hidden="true" />
         <div className="lp-wrap lp-hero-grid">
           <div>
             <span className="lp-pill"><span className="live-dot" style={{ width: 6, height: 6 }} />Meet your AI back office</span>
@@ -901,8 +931,11 @@ function Landing({ onSignIn = () => {} } = {}) {
             <div className="lp-hero-note"><Icon name="link" size={15} /><span>Already have a CRM? <b style={{ color: "var(--ink)" }}>Keep it</b>, we plug right into HubSpot, Salesforce &amp; more.</span></div>
             <HeroRoster />
           </div>
-          <div className="lp-demo-stage" style={{ gridTemplateColumns: "1fr", minHeight: 0, boxShadow: "var(--shadow-xl)" }}>
-            <div className="lp-demo-canvas" style={{ borderRight: "none" }}><FoxDemo /></div>
+          <div className="lp-hero-3d">
+            <div className="lp-demo-stage tilt3d" data-tilt="11" style={{ gridTemplateColumns: "1fr", minHeight: 0 }}>
+              <div className="tilt3d-glare" aria-hidden="true" />
+              <div className="lp-demo-canvas" style={{ borderRight: "none" }}><FoxDemo /></div>
+            </div>
           </div>
         </div>
         <div className="lp-proof-marquee" aria-hidden="true">
