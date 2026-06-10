@@ -736,3 +736,10 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   live** (200 over the `*.friesenlabs.com` cert, correct landing title). Remaining domain work is
   the ALB TLS cutover for `api.friesenlabs.com` only (RUNBOOK sequence / hourly sweep — pre-reqs
   all satisfied).
+- 2026-06-10 — **ALB TLS cutover CONFIRMED DONE + verified (Matt's session):** the hourly sweep
+  had already executed the RUNBOOK sequence once the cert went ISSUED. Live verification: ALB 443
+  serves the real `friesenlabs.com` cert (CN match, exp 2026-12-24) with the 403-default
+  origin-verify gate (direct no-header curl → 403); api_cdn origin = `api.friesenlabs.com`
+  https-only:443 (edge /healthz 200; SPA /api/healthz 200 via friesenlabs.com); :80 is a redirect
+  listener, SG-scoped off the public internet. No 301 loop. api_cdn retained per the Lane Ship
+  RECOMMEND-AGAINST. Follow-on hardening still open: drop the :80 SG rule (#211), CF min-TLS (#257).

@@ -62,8 +62,10 @@ app shell → real RLS-scoped tenant rows. Unauth `/api/*` → 401; **`/chat` is
   held the CNAMEs. That app + its association were deleted, the uplift-web association re-created,
   and Route53 apex/www repointed to the new Amplify CloudFront target — association **AVAILABLE**;
   **https://friesenlabs.com is LIVE + verified** (apex+www 200 over the `*.friesenlabs.com` cert,
-  correct landing page). Remaining: the ALB TLS cutover for `api.friesenlabs.com` (RUNBOOK
-  sequence; the hourly sweep auto-runs it on ISSUED).
+  correct landing page). The **ALB TLS cutover is DONE too** (sweep-executed, verified in
+  Matt's session): ALB 443 serves the real cert with the 403-default origin-verify gate,
+  api_cdn origin is `api.friesenlabs.com` https-only:443, :80 is redirect-only (SG-scoped),
+  edge + SPA `/api` healthz 200. api_cdn stays (RECOMMEND-AGAINST retiring — Lane Ship note).
 - ✅ **Signup/provisioning go-live DONE:** `api_signup_env` + `signup_real_deps` flipped; Stripe/Resend/
   Anthropic-admin/webhook secrets present on the API task; the real provisioning clients are wired (no
   `_Stub`/`_Noop`). Worker deployed (env-key present). (SNS email sub CONFIRMED.)
