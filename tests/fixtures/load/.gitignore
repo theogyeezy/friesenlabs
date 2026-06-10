@@ -1,0 +1,6 @@
+# The load tier (~2000 companies / 6000 contacts / 3000 deals → ~19MB JSON) is a performance
+# fixture, NOT a committed artifact. It is deterministic — regenerate on demand:
+#   python scripts/generate_test_packs.py --tier load
+# Keep this dir tracked (via README.md + this file) but ignore the generated data.
+dataset.json
+dataset.sql
