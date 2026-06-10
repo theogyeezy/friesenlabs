@@ -105,6 +105,23 @@ resource "aws_iam_role_policy" "api_task_xray" {
   })
 }
 
+# The worker's workers_polling heartbeat (worker/worker.py emit_polling_metric) — the datapoint
+# the worker_absent alarm watches. PutMetricData takes no resource ARNs; the namespace condition
+# is the only scoping CloudWatch supports, pinned to exactly the alarm's namespace.
+resource "aws_iam_role_policy" "worker_task_metrics" {
+  name = "put-heartbeat-metric"
+  role = aws_iam_role.task["worker"].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Action    = ["cloudwatch:PutMetricData"]
+      Resource  = "*"
+      Condition = { StringEquals = { "cloudwatch:namespace" = "Uplift/Agents" } }
+    }]
+  })
+}
+
 # REQ-005: the api task starts provisioning executions — scoped to exactly ONE machine ARN.
 variable "provisioning_sfn_arn" {
   type    = string
