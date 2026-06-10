@@ -20,6 +20,10 @@ variable "image" {
 }
 variable "db_secret_arn" { type = string }
 variable "anthropic_api_key_secret_arn" { type = string }
+variable "cube_api_secret_arn" {
+  type    = string
+  default = "" # api_cube_env: inject CUBEJS_API_SECRET_VALUE so cube_client_from_env() goes live
+}
 variable "env_id_secret_arn" {
   type    = string
   default = ""
@@ -162,6 +166,11 @@ resource "aws_ecs_task_definition" "api" {
         var.api_anthropic_env ? [
           { name = "ANTHROPIC_API_KEY", valueFrom = var.anthropic_api_key_secret_arn },
           { name = "UPLIFT_ENV_ID", valueFrom = var.env_id_secret_arn },
+        ] : [],
+        # Cube REST signing secret (the SAME value the cube service reads as CUBEJS_API_SECRET) —
+        # turns cube_client_from_env() live in the API (agents' query_cube + future views data).
+        var.cube_api_secret_arn != "" ? [
+          { name = "CUBEJS_API_SECRET_VALUE", valueFrom = var.cube_api_secret_arn },
         ] : [],
         # REQ-003: signup/provisioning plane — API task ONLY; never the worker.
         var.api_signup_env && var.posthog_key_arn != "" ? [
