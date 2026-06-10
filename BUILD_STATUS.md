@@ -718,3 +718,16 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   (poller trail in CloudWatch), desired_count=2 codified, ensure() pinning constraint documented,
   Node-24 actions forced ahead of the 6/16 flip. (4) api_cdn retirement: RECOMMEND AGAINST (TODO
   note) — it stamps X-Origin-Verify + carries the WAF; Amplify proxy can't add headers.
+- 2026-06-10 — **Domain root-cause + fix (user-directed, Matt's session):** "site cannot be
+  reached" on friesenlabs.com diagnosed live. Findings: the Squarespace **NS cutover is DONE**
+  (whois + SOA show the 4 awsdns servers) and the wildcard ACM cert is **ISSUED** — the
+  PENDING_VALIDATION status in the docs was stale. The real blocker: **CORRECTION to Cycle 14** —
+  the "foreign CloudFront distro" claiming friesenlabs.com (djvyqxdhlili4) was NOT external; it
+  was this account's own **stale us-east-2 Amplify app** `friesenlabs` (d1zq690gmmatpq, repo
+  theogyeezy/friesenlabs branch `prod`, created 2026-05-31, serving 404) holding an AVAILABLE
+  domain association — invisible to us-east-1-only scans. Actions: deleted that app's domain
+  association, then (user-directed) the app itself; deleted the FAILED uplift-web association and
+  re-created it (apex+www → `main`); Route53 apex A-alias + www CNAME repointed to the newly
+  minted Amplify CloudFront target (dz0mzuwjm2p3n). Association in AWAITING_APP_CNAME →
+  propagating at write time; a retry loop watches it to AVAILABLE. With the cert ISSUED, the ALB
+  TLS cutover (RUNBOOK) is now executable — nothing remains owner-gated for the domain.

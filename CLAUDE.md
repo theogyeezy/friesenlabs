@@ -55,14 +55,19 @@ app shell → real RLS-scoped tenant rows. Unauth `/api/*` → 401; **`/chat` is
   live.** A RAG-embed IAM gap (`bedrock:InvokeModel` on Titan, missing from the api+worker roles) was
   caught by the verify and FIXED live. Grounding plumbing is green (no-uncited-claim invariant holds);
   a positive citation just needs a seeded tenant corpus (see `TODO.md`).
-- 🟙 **Domain:** friesenlabs.com bought (Squarespace); Route53 zone + wildcard ACM applied,
-  PENDING_VALIDATION until the registrar NS cutover; ALB TLS cutover follows (RUNBOOK sequence).
+- 🟙 **Domain:** friesenlabs.com on Route53 — the Squarespace NS cutover is **DONE** and the
+  wildcard ACM cert is **ISSUED** (confirmed 2026-06-10). The apex+www Amplify domain association
+  initially FAILED (CNAMEAlreadyExists): a stale us-east-2 Amplify app ("friesenlabs", branch
+  `prod`, served 404 — same dangling `djvyqxdhlili4` CloudFront target as the deleted rogue zone)
+  held the CNAMEs. That app + its association were deleted, the uplift-web association re-created,
+  and Route53 apex/www repointed to the new Amplify CloudFront target — verification propagating.
+  ALB TLS cutover is now unblocked (RUNBOOK sequence; the hourly sweep auto-runs it on ISSUED).
 - ✅ **Signup/provisioning go-live DONE:** `api_signup_env` + `signup_real_deps` flipped; Stripe/Resend/
   Anthropic-admin/webhook secrets present on the API task; the real provisioning clients are wired (no
   `_Stub`/`_Noop`). Worker deployed (env-key present). (SNS email sub CONFIRMED.)
-- ⛔ **Still gated on the account owner:** delegate `friesenlabs.com` NS to the 4 Route53 nameservers
-  → cert validates → ALB TLS cutover (sequence in RUNBOOK; an hourly Lane-Nick sweep watches the cert
-  and auto-runs it, then repoints `og:image` + canonical to the real domain).
+- ✅ **NS delegation DONE (2026-06-10):** `friesenlabs.com` NS point at the 4 Route53 nameservers
+  and the cert is ISSUED — the ALB TLS cutover is executable (sequence in RUNBOOK; the hourly
+  Lane-Nick sweep auto-runs it, then repoints `og:image` + canonical to the real domain).
 - **Ops:** state in S3 (KMS); machine-local `infra/prod.auto.tfvars` carries the live values +
   go-live flags — full applies allowed only against a re-verified clean plan; targeted applies
   are the norm. One-off tasks run via the `uplift-migrate-oneoff` task-def family. Runbook:
@@ -74,10 +79,10 @@ app shell → real RLS-scoped tenant rows. Unauth `/api/*` → 401; **`/chat` is
   limit) + access logging + HSTS + PriceClass_100; Cognito deletion-protection + admin-create-only +
   7-day refresh; AWS provider pin `~> 6.49`; ECS deployment circuit breakers (auto-rollback); ECR
   lifecycle policies; Aurora pg-log retention 30d; CI permissions block; `.stignore` parity. TODO.md
-  swept (25 done items checked off + a Lane-Nick completion-status block). Of the four owner-gated
-  remainders, **three are now satisfied** (env-key → worker live 2/2; Stripe webhook secret +
-  Anthropic admin key → signup go-live done). The **one left is yours**: delegate Squarespace NS
-  → the 4 Route53 nameservers → the ALB TLS cutover (a sweep watches the cert and auto-runs it).
+  swept (25 done items checked off + a Lane-Nick completion-status block). **All four owner-gated
+  remainders are now satisfied** (env-key → worker live 2/2; Stripe webhook secret + Anthropic
+  admin key → signup go-live done; Squarespace NS delegated 2026-06-10 → cert ISSUED → TLS
+  cutover executable via the sweep).
 **Tooling:** `.claude/settings.json` enables the official-marketplace plugins so collaborators inherit
 them on clone+trust. Don't commit secrets to it.
 
