@@ -549,7 +549,7 @@ function BookModal({ onClose }) {
   const [day, setDay] = useState("Tue 3"); const [slot, setSlot] = useState("10:30"); const [done, setDone] = useState(false);
   return (
     <div className="lp-modal-scrim" onClick={onClose}>
-      <div className="lp-modal" onClick={(e) => e.stopPropagation()}>
+      <div className="lp-modal" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
         <div className="lp-modal-head">
           <div className="lp-prod-ico" style={{ background: "var(--accent-soft)", color: "var(--accent-ink)", marginBottom: 0 }}><LpIcon name="calendar" size={20} /></div>
           <div style={{ flex: 1 }}><h3 style={{ fontSize: 19, fontWeight: 730, letterSpacing: "-.02em" }}>{done ? "You're booked!" : "Book a call"}</h3><p style={{ fontSize: 13, color: "var(--ink-3)", marginTop: 2 }}>{done ? "Check your inbox for the invite." : "15 minutes with a product specialist."}</p></div>
@@ -579,7 +579,7 @@ function EmailModal({ onClose }) {
   const [done, setDone] = useState(false);
   return (
     <div className="lp-modal-scrim" onClick={onClose}>
-      <div className="lp-modal" onClick={(e) => e.stopPropagation()}>
+      <div className="lp-modal" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
         <div className="lp-modal-head">
           <div className="lp-prod-ico" style={{ background: "var(--rose-soft)", color: "oklch(0.48 0.14 18)", marginBottom: 0 }}><LpIcon name="mail" size={20} /></div>
           <div style={{ flex: 1 }}><h3 style={{ fontSize: 19, fontWeight: 730, letterSpacing: "-.02em" }}>{done ? "Message sent" : "Email us"}</h3><p style={{ fontSize: 13, color: "var(--ink-3)", marginTop: 2 }}>{done ? "We'll reply within a few hours." : "Tell us about your business."}</p></div>
@@ -605,7 +605,7 @@ function DonateModal({ onClose }) {
   const [amt, setAmt] = useState(25); const [done, setDone] = useState(false);
   return (
     <div className="lp-modal-scrim" onClick={onClose}>
-      <div className="lp-modal" onClick={(e) => e.stopPropagation()}>
+      <div className="lp-modal" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
         <div className="lp-modal-head">
           <div className="lp-prod-ico" style={{ background: "var(--accent-soft)", color: "var(--accent-ink)", marginBottom: 0 }}><LpIcon name="spark" size={20} /></div>
           <div style={{ flex: 1 }}><h3 style={{ fontSize: 19, fontWeight: 730, letterSpacing: "-.02em" }}>{done ? "Thank you 💛" : "Support the mission"}</h3><p style={{ fontSize: 13, color: "var(--ink-3)", marginTop: 2 }}>{done ? "Your gift helps a small business get started." : "Help put agentic tools in more small businesses."}</p></div>
@@ -1000,6 +1000,11 @@ function Landing({ onSignIn = () => {} } = {}) {
   }, []);
   useReveal();
   useHeroParallax();
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") { setModal(null); setPaper(null); setDoc(null); } };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   useMagnetic();
   useTilt3d();
   const [demoTab, setDemoTab] = useState("agents");
@@ -1597,7 +1602,7 @@ function Landing({ onSignIn = () => {} } = {}) {
       {modal === "provision" && <ProvisionModal selected={selectedMods} byo={byo} onClose={() => setModal(null)} />}
       {modal === "statement" && (
         <div className="lp-modal-scrim" onClick={() => setModal(null)} style={{ alignItems: "flex-start", overflowY: "auto", padding: "5vh 16px" }}>
-          <div className="lp-paper" onClick={(e) => e.stopPropagation()}>
+          <div className="lp-paper" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
             <button className="icon-btn" aria-label="Close" style={{ position: "absolute", top: 16, right: 16 }} onClick={() => setModal(null)}><LpIcon name="x" size={18} /></button>
             <div className="lp-paper-tag">Company Statement</div>
             <h1 className="lp-paper-title">Friesen Labs</h1>
@@ -1625,7 +1630,7 @@ function Landing({ onSignIn = () => {} } = {}) {
       )}
       {paper && (
         <div className="lp-modal-scrim" onClick={() => setPaper(null)} style={{ alignItems: "flex-start", overflowY: "auto", padding: "5vh 16px" }}>
-          <div className="lp-paper" onClick={(e) => e.stopPropagation()}>
+          <div className="lp-paper" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
             <button className="icon-btn" aria-label="Close" style={{ position: "absolute", top: 16, right: 16 }} onClick={() => setPaper(null)}><LpIcon name="x" size={18} /></button>
             <div className="lp-paper-tag">{paper.tag} · Friesen Labs Foundation</div>
             <h1 className="lp-paper-title">{paper.title}</h1>
@@ -1657,7 +1662,7 @@ function Landing({ onSignIn = () => {} } = {}) {
       )}
       {doc && (
         <div className="lp-modal-scrim" onClick={() => setDoc(null)}>
-          <div className="lp-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="lp-modal" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
             <div className="lp-modal-head">
               <div className="lp-prod-ico" style={{ background: "var(--accent-soft)", color: "var(--accent-ink)", marginBottom: 0 }}><LpIcon name="doc" size={20} /></div>
               <div style={{ flex: 1 }}><h3 style={{ fontSize: 19, fontWeight: 730, letterSpacing: "-.02em" }}>{doc}</h3><p style={{ fontSize: 13, color: "var(--ink-3)", marginTop: 2 }}>Friesen Labs nonprofit disclosures</p></div>
