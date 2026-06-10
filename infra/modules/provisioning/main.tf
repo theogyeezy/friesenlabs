@@ -31,9 +31,11 @@ resource "aws_iam_role_policy" "sfn_invoke" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect   = "Allow"
-      Action   = ["lambda:InvokeFunction"]
-      Resource = var.provisioning_lambda_arn != "" ? var.provisioning_lambda_arn : "*"
+      Effect = "Allow"
+      Action = ["lambda:InvokeFunction"]
+      # Never "*": with no real Lambda yet, grant against the same placeholder ARN the SFN
+      # definition uses — a non-existent function, so the grant is inert until the ARN is real.
+      Resource = local.lambda
     }]
   })
 }

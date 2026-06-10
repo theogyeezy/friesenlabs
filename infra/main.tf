@@ -26,6 +26,11 @@ module "security" {
 module "iam" {
   source  = "./modules/iam"
   project = var.project
+  # TODO Sec/P2 206: the api task role's runtime reads are exactly migrate's two secrets.
+  api_task_secret_arns = compact([
+    module.secrets.crm_app_db_secret_arn,
+    module.data.master_user_secret_arn,
+  ])
   # REQ-003: exact platform-secret ARNs for the execution role (listed, not a wildcard widen).
   extra_execution_secret_arns = [
     data.aws_secretsmanager_secret.platform_stripe.arn,
