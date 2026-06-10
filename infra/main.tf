@@ -128,7 +128,7 @@ module "alb" {
   origin_verify_secret  = module.secrets.origin_verify_value
   enforce_origin_verify = var.alb_enforce_origin_verify
   # The VALIDATED arn (empty until delegated + ISSUED) — issuance is a hard ordering gate.
-  certificate_arn     = (var.alb_tls && var.domain_name != "") ? module.dns[0].validated_certificate_arn : ""
+  certificate_arn     = var.alb_tls ? try(module.dns[0].validated_certificate_arn, "") : ""
   retire_http_forward = var.alb_retire_http_forward
 }
 
@@ -234,7 +234,7 @@ module "web_hosting" {
   project             = var.project
   github_access_token = var.github_access_token
   custom_domain       = var.web_custom_domain
-  zone_id             = var.domain_name != "" ? module.dns[0].zone_id : ""
+  zone_id             = try(module.dns[0].zone_id, "")
   api_base_url        = var.web_api_base_url
   api_cdn_domain      = module.api_cdn.domain
   cognito_domain      = module.auth.hosted_ui_domain
