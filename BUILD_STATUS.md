@@ -335,6 +335,17 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   both DONE in REQUESTS.md. Edge /healthz 200 after. TODO Sec/P0 188 checked.
 
 ## Lane Matt (app code) — log
+- 2026-06-09 — **Cycle 3 (real wiring + frontend honesty, 5 PRs + 1 fix-PR):** #34 real provisioning
+  deps end-to-end behind a NEW `SIGNUP_REAL_DEPS` master switch (adversarial review caught 2 HIGHs:
+  the real-adapter guards rode env vars the live task already injects (COGNITO_USER_POOL_ID, DB_*) —
+  a bare image deploy would have flipped live Cognito/Aurora signup on; now fail-closed + regression-
+  tested; atomic webhook claim w/ release-on-failure) · #33+#38 web real-mode shell, honest
+  loading/empty/error states, ?apimock seam deleted from prod bundles · #32 persistent tenant-scoped
+  Cortex registry (S3+LocalFs) · #31 Anthropic view-spec generator (validate+retry). REQ-003 filed
+  (Stripe/Resend/webhook-secret/admin-key/SIGNUP_REAL_DEPS task wiring). Suite 344→399 / 4 skip.
+  Cycle-4 queue: cortex+spec-gen asgi/worker wiring, Cube JWT mint, ingestion scheduler entrypoint +
+  per-tenant connector creds, lambda_handler + SFN trigger, requirements lock + refresh rotation +
+  demo-affordance strip.
 - 2026-06-09 — **Cycle 2 (asgi integration + provisioning foundations, 4 PRs + 1 fix, all reviewed PASS):**
   #28 real `conversation_factory` + tool executor (/chat end-to-end on the runtime seam; tenant↔env
   binding fixed; REQ-001 filed) · #27 signup tokens + Pg account/event/OTP stores (+`accounts`/
