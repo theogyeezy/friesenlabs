@@ -37,6 +37,7 @@ import {
   type MoveStageBody,
   type MoveStageResponse,
   type SaveViewBody,
+  type RefineViewBody,
   type SavedViewRow,
   type SignupResponse,
   type SignupState,
@@ -552,6 +553,29 @@ export class MockApi {
     };
     this.views.push(row);
     return { ...row };
+  }
+
+  // Mock NL refine ("ask for a chart"): stands in for the agent's view_patcher.
+  // Deterministic so demos/tests are stable — recognizes a couple of common
+  // chart asks (line vs bar) and otherwise just re-versions the spec with the
+  // instruction recorded as the new source_prompt. The real route runs the
+  // agent; this never claims to.
+  refineView(viewId: string, body: RefineViewBody): SavedViewRow {
+    const existing = this.views.filter((r) => r.view_id === viewId);
+    if (!existing.length) throw new ApiError(404, "no such view");
+    const latest = existing.reduce((a, b) => (b.version > a.version ? b : a));
+    const spec = JSON.parse(JSON.stringify(latest.spec_json)) as Record<string, unknown>;
+    const want = body.instruction.toLowerCase();
+    const mark = want.includes("line") ? "line" : want.includes("bar") ? "bar" : null;
+    if (mark && Array.isArray(spec.layout)) {
+      for (const block of spec.layout as Array<Record<string, unknown>>) {
+        if (block.type === "chart" && block.spec && typeof block.spec === "object") {
+          (block.spec as Record<string, unknown>).mark = mark;
+        }
+      }
+    }
+    spec.source_prompt = body.instruction;
+    return this.saveView({ spec, source_prompt: body.instruction });
   }
 
   chat(message: string): ChatResponse {

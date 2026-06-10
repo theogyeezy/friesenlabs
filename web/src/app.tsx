@@ -22,6 +22,7 @@ import PipelineBoard from "./api/PipelineBoard";
 import ContactsDirectory from "./api/ContactsDirectory";
 import AgentsRoster from "./api/AgentsRoster";
 import WorkflowsView from "./api/WorkflowsView";
+import ReportsView from "./api/ReportsView";
 const { useState, useEffect, useRef, useMemo, useCallback, useLayoutEffect, useReducer, useContext, useImperativeHandle, useId } = React;
 const { Icon, Logo, FL_DATA, FLStore, useStore, askClaude, bizContext, confettiBurst, XPBadge, useCountUp, CountUp, AreaChart, Sparkline, LoadBars, Donut, SlideOver, CommandPalette, HEAT, fmtMoney, StatCard, ToneIco, FLflag, useTweaks, TweaksPanel, TweakSection, TweakRow, TweakSlider, TweakToggle, TweakRadio, TweakSelect, TweakText, TweakNumber, TweakColor, TweakButton, FoxDemo, KanbanDemo, WorkflowDemo, GreenlightDemo, CommandDemo, IntegrationDemo, SupportDemo, SecurityDemo, SidecarDemo, CortexDemo } = window as any;
 // app.jsx, shell: sidebar, topbar, routing, tweaks, palette
@@ -429,9 +430,16 @@ function App() {
                   executions, read-only) — never the FLStore drag-and-drop
                   builder prototype. */}
               {route === "workflows" && <WorkflowsView onOpenGreenlight={() => navTo("approvals")} />}
+              {/* Reports is LIVE in real mode: the saved-views gallery from
+                  GET /views, each rendered through the trusted dashboard
+                  SpecRenderer; "ask for a chart" rides the existing /views/{id}
+                  /refine NL route (honest "not live yet" until the agent runtime
+                  is wired) — never the FLStore Reports prototype + DataAssistant
+                  overlay. */}
+              {route === "reports" && <ReportsView />}
               {route === "approvals" && <GreenlightQueue />}
               {route === "integrations" && <IntegrationsPanel />}
-              {route !== "dashboard" && route !== "crm" && route !== "contacts" && route !== "agents" && route !== "workflows" && route !== "approvals" && route !== "integrations" && (
+              {route !== "dashboard" && route !== "crm" && route !== "contacts" && route !== "agents" && route !== "workflows" && route !== "reports" && route !== "approvals" && route !== "integrations" && (
                 <ComingSoon title={meta.h1} icon={navIconFor(route)} />
               )}
             </>

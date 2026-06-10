@@ -109,9 +109,10 @@ test("real mode: non-API routes render the honest 'isn't live yet' panel, not th
   await expect(page.getByTestId("coming-soon")).toBeVisible({ timeout: 15_000 });
   await expect(page.getByTestId("coming-soon")).toContainText("isn’t live yet");
 
-  // Reports -> ComingSoon panel too (no prototype Reports screen, no
-  // DataAssistant overlay).
-  await page.locator(".nav-item", { hasText: "Reports" }).click();
+  // Templates -> ComingSoon panel (an FLStore prototype screen in mock mode).
+  // (Reports is no longer here: it mounts the API-wired ReportsView in real
+  // mode — the saved-views gallery + spec renderer — covered in reports.spec.ts.)
+  await page.locator(".nav-item", { hasText: "Templates" }).click();
   await expect(page.getByTestId("coming-soon")).toBeVisible({ timeout: 15_000 });
 
   // Marketplace routes to the panel instead of the prototype agent catalog.
