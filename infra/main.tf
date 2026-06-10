@@ -144,6 +144,7 @@ module "api_service" {
   signup_token_secret_arn        = module.secrets.signup_token_secret_arn
   anthropic_admin_key_secret_arn = module.secrets.anthropic_admin_key_secret_arn
   provisioning_sfn_arn           = var.api_provisioning_sfn ? module.provisioning.state_machine_arn : ""
+  cube_endpoint                  = var.cube_endpoint
   cognito_user_pool_id           = module.auth.user_pool_id
   cognito_client_id              = module.auth.user_pool_client_id
   image                          = var.api_image
