@@ -575,3 +575,13 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   "Receive CloudWatch billing alerts" account preference is OFF and console-only — optional 1-click
   for Matt; budgets do not need it. Step 9 live proof landed: post-merge main push ran
   live-signup-e2e against Stripe TEST mode → SUCCESS (main fully green).
+- 2026-06-10 — **Cycle 11 (step 3 root-cause, #147 — user-approved cross-lane):** live MA session
+  forensics (per-thread events) proved the worker DOES resolve delegated read_crm calls with REAL
+  Aurora data (the critic's bash input literally contained the Meridian negotiation amounts,
+  284000 first). TWO defects wedged the surface: (1) `agents/runtime.py` granted every agent the
+  built-in `agent_toolset_20260401` that NOTHING serves → first native call (critic's bash) blocks
+  the session at requires_action forever — toolset grant removed (also keeps model-driven bash out
+  of the creds-laden worker env); (2) `api/asgi.py` built a NEW Conversation → NEW MA session per
+  /chat request, orphaning worker-resolved reports — per-tenant Conversation cache added (per-tenant
+  send lock, rebuild-once on terminated). Suite green. Live remediation after roll: agents.update
+  to strip the toolset from the existing live agents.

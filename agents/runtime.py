@@ -49,8 +49,12 @@ def _is_stream_drop(exc: BaseException) -> bool:
         return False
     return isinstance(exc, APIConnectionError)
 
-# The MA built-in toolset id implied for every agent (versioned, static resource).
-# VERIFY: toolset version string against the live managed-agents-2026-04-01 surface.
+# The MA built-in toolset id (versioned, static resource). DELIBERATELY NOT GRANTED to any
+# agent (live finding 2026-06-10, #147): nothing in this deployment serves native toolset calls
+# — the self-hosted worker serves ONLY registry custom tools — so a granted toolset lets the
+# model emit e.g. `bash` and wedge the session at requires_action forever. It would also run
+# model-driven bash inside the creds-laden worker container (DB creds + env key in env). Grant
+# it again only when a dedicated sandbox serves it.
 AGENT_TOOLSET = "agent_toolset_20260401"
 
 
@@ -165,10 +169,12 @@ class ManagedAgentsRuntime(AgentRuntime):
     @staticmethod
     def _tool_specs(spec: Any) -> list[dict]:
         """AgentSpec.tools name-strings -> MA tool definitions via the trusted registry +
-        Tool.to_spec(). The built-in agent toolset is implied for every agent (roster contract)."""
+        Tool.to_spec(). CUSTOM TOOLS ONLY — the built-in agent toolset is deliberately NOT
+        granted (see the AGENT_TOOLSET note above: nothing serves native calls, and a granted
+        toolset wedges sessions at requires_action the first time the model reaches for bash)."""
         from .tools import registry  # noqa: PLC0415 — lazy: keep module import cheap
 
-        tools: list[dict] = [{"type": AGENT_TOOLSET}]
+        tools: list[dict] = []
         tools.extend(registry.resolve(name).to_spec() for name in (getattr(spec, "tools", None) or []))
         return tools
 

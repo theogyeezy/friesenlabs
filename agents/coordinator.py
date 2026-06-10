@@ -15,7 +15,7 @@ COORDINATOR = AgentSpec(
         "quoting to margo, follow-ups to echo, support to pip, ops to ledger, and always run the "
         "critic before responding."
     ),
-    tools=[],  # the built-in agent_toolset is implied; specialists carry the custom tools
+    tools=[],  # custom tools only — the built-in agent_toolset is NOT granted (#147); specialists carry the custom tools
 )
 
 
