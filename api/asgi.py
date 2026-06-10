@@ -41,10 +41,11 @@ from api.control.types import Action
 from api.deals_routes import DealsDeps
 from api.pg_clients import PgCrmClient, PgRagClient
 from api.views import PgSavedViewStore, SavedViews
+from api.workflows_routes import WorkflowsDeps
 from conv.session import Conversation
 from conv.synthesizer import AnthropicSynthesizer
 from ml.registry import registry_from_env
-from shared.config import ENV_ANTHROPIC_API_KEY, dsn_from_env
+from shared.config import ENV_ANTHROPIC_API_KEY, dsn_from_env, load
 
 
 def _verifier() -> JwtVerifier:
@@ -262,6 +263,12 @@ def build_app():
         # workspace_store is None when the DSN is unconfigured, so the route answers its
         # honest 503 (never an invented crew state).
         agents=AgentsDeps(workspace_store=workspace_store),
+        # /workflows (the real Workflows tab) reads the provisioning machine ARN from
+        # Config (PROVISIONING_SFN_ARN, REQ-005 — un-injected on the live task today, so
+        # the route answers its honest not-configured shape). The boto3 client is lazy
+        # (request path only); the api task role's missing read perms degrade to the
+        # honest pending-IAM shape until REQ-009 (see api/workflows_routes.py).
+        workflows=WorkflowsDeps(state_machine_arn=load().provisioning_sfn_arn or None),
     )
     return create_app(deps)
 

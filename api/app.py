@@ -27,6 +27,7 @@ from api.contacts_routes import ContactsDeps
 from api.deals_routes import DealsDeps
 from api.integrations_routes import IntegrationsDeps, build_integrations_deps
 from api.views import SavedViews
+from api.workflows_routes import WorkflowsDeps
 
 
 @dataclass
@@ -62,6 +63,12 @@ class ApiDeps:
     # pool; api/asgi.py is the ONLY real wiring (the same PgWorkspaceStore instance the /chat
     # factory + signup provisioning ride). Pass None to skip mounting the route entirely.
     agents: AgentsDeps | None = field(default_factory=AgentsDeps)
+    # /workflows deps (the real Workflows tab — the provisioning machine made visible).
+    # Same inert-default contract: the all-None stub mounts the route answering the honest
+    # not-configured shape (static diagram, executions_available: false) and constructing
+    # deps never builds a boto3 client; api/asgi.py is the ONLY real wiring
+    # (Config.provisioning_sfn_arn). Pass None to skip mounting the route entirely.
+    workflows: WorkflowsDeps | None = field(default_factory=WorkflowsDeps)
 
 
 # --- request bodies (note: NONE carry tenant_id — the trust rule forbids it) ---
@@ -226,6 +233,14 @@ def create_app(deps: ApiDeps) -> FastAPI:
     if deps.agents is not None:
         from api.agents_routes import mount_agents
         mount_agents(app, deps.agents, current_tenant)
+
+    # Authed per-tenant workflows view (the real Workflows tab). Claims-bound, READ-ONLY:
+    # the step diagram is the OWNED provisioning semantics (never a live Describe), and the
+    # executions read degrades to an honest "pending IAM grant / not configured" 200 — the
+    # api task role holds states:StartExecution only until REQ-009 (see workflows_routes).
+    if deps.workflows is not None:
+        from api.workflows_routes import mount_workflows
+        mount_workflows(app, deps.workflows, current_tenant)
 
     # Public, pre-tenant signup + Stripe webhook routes (optional).
     if deps.signup is not None:

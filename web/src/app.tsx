@@ -21,6 +21,7 @@ import IntegrationsPanel from "./api/IntegrationsPanel";
 import PipelineBoard from "./api/PipelineBoard";
 import ContactsDirectory from "./api/ContactsDirectory";
 import AgentsRoster from "./api/AgentsRoster";
+import WorkflowsView from "./api/WorkflowsView";
 const { useState, useEffect, useRef, useMemo, useCallback, useLayoutEffect, useReducer, useContext, useImperativeHandle, useId } = React;
 const { Icon, Logo, FL_DATA, FLStore, useStore, askClaude, bizContext, confettiBurst, XPBadge, useCountUp, CountUp, AreaChart, Sparkline, LoadBars, Donut, SlideOver, CommandPalette, HEAT, fmtMoney, StatCard, ToneIco, FLflag, useTweaks, TweaksPanel, TweakSection, TweakRow, TweakSlider, TweakToggle, TweakRadio, TweakSelect, TweakText, TweakNumber, TweakColor, TweakButton, FoxDemo, KanbanDemo, WorkflowDemo, GreenlightDemo, CommandDemo, IntegrationDemo, SupportDemo, SecurityDemo, SidecarDemo, CortexDemo } = window as any;
 // app.jsx, shell: sidebar, topbar, routing, tweaks, palette
@@ -423,9 +424,14 @@ function App() {
                   (owned roster + trusted tool policies + truncated provisioned
                   ids) — never the FLStore prototype console. */}
               {route === "agents" && <AgentsRoster onOpenGreenlight={() => navTo("approvals")} />}
+              {/* Workflows is LIVE in real mode: the provisioning machine made
+                  visible from GET /workflows (the OWNED 5-step diagram + recent
+                  executions, read-only) — never the FLStore drag-and-drop
+                  builder prototype. */}
+              {route === "workflows" && <WorkflowsView onOpenGreenlight={() => navTo("approvals")} />}
               {route === "approvals" && <GreenlightQueue />}
               {route === "integrations" && <IntegrationsPanel />}
-              {route !== "dashboard" && route !== "crm" && route !== "contacts" && route !== "agents" && route !== "approvals" && route !== "integrations" && (
+              {route !== "dashboard" && route !== "crm" && route !== "contacts" && route !== "agents" && route !== "workflows" && route !== "approvals" && route !== "integrations" && (
                 <ComingSoon title={meta.h1} icon={navIconFor(route)} />
               )}
             </>
