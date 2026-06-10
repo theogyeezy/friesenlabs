@@ -352,3 +352,24 @@ Rules:
           # ALLOW_REAL_SENDS: never set here — the draft-gate is part of what the e2e proves.
   ```
 - **Done when:** the job is green on `main` with the two `STRIPE_TEST_*` GitHub secrets populated from the Stripe TEST-mode dashboard (test-mode key + a test-mode webhook signing secret; the run creates only test-mode objects — a throwaway $1/mo product+price unless `STRIPE_TEST_PRICE_ID` is supplied); with the secrets absent the job (and any local run) reports the file's tests as SKIPPED, never failed; the offline pytest job is unchanged.
+
+### REQ-009: api-task IAM Step Functions READ (`states:ListExecutions`) scoped to the provisioning state machine
+- **Status:** PENDING — the api task role today carries `states:StartExecution` ONLY (REQ-005); no read action exists. Until this lands, `GET /workflows` serves the static diagram and degrades the run feed to an honest `200 {executions_available: false, reason: "pending IAM grant (REQ-009)"}` (verified: AccessDenied is caught and never surfaced). Applying this flips the feed live with NO app redeploy.
+- **Requested by:** Lane Product @feat/prod-workflows (PR "feat(workflows-tab): real provisioning-machine view — owned SFN diagram + recent executions")
+- **Needed for:** the real Workflows tab (`api/workflows_routes.py`): `GET /workflows` lists the provisioning machine's recent executions (name + status + start/stop timestamps ONLY — `list_executions`, capped at 20). NO `DescribeStateMachine`, NO `DescribeExecution`, NO `Get*ExecutionHistory`: execution input/output stays unreadable by design, and the static step diagram is OWNED code (never a live Describe). So the read surface is exactly one action.
+- **Env/secret names** (must already exist in shared/config.py): `PROVISIONING_SFN_ARN` (the machine ARN; already wired into the api task by REQ-005 for StartExecution and read by `WorkflowsDeps` in `api/asgi.py`). No NEW env — the route lights up purely on the IAM grant below.
+- **Spec:**
+  ```hcl
+  # API-TASK IAM: read-only list of executions on EXACTLY the provisioning machine — never
+  # states:* broadly, and never a Describe/History action (those would expose execution
+  # input/output + the raw ASL with Lambda ARNs). ListExecutions is account-id-bearing in its
+  # response (executionArn/stateMachineArn) but the route strips every ARN server-side before
+  # serialization (proven in tests/integration/test_api_workflows.py).
+  statement {
+    actions   = ["states:ListExecutions"]
+    resources = [var.provisioning_sfn_arn]  # the uplift-provisioning stateMachine ARN (REQ-005)
+  }
+  # Note: ListExecutions is authorized on the STATE MACHINE arn (arn:aws:states:…:stateMachine:…),
+  # NOT an execution arn — the existing PROVISIONING_SFN_ARN is the correct resource as-is.
+  ```
+- **Done when:** `terraform validate` green; the api task role policy lists `states:ListExecutions` scoped to exactly the provisioning stateMachine ARN (and `StartExecution` from REQ-005 is unchanged; no Describe/History action appears on any role); against the live API, an authed `GET /workflows` returns `executions_available: true` with a `recent_executions` array (name/status/timestamps only — no `arn:` fragment, no account id in the body), and with the grant absent the same call still returns `200` with `executions_available: false, reason: "pending IAM grant (REQ-009)"`.
