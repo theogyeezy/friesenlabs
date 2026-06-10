@@ -314,6 +314,14 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   needs Matt (PAT + budget email/limit). Apply discipline: no full apply; pure-add `-target` only.
 
 ## Lane Matt (app code) — log
+- 2026-06-09 — **Cycle 2 (asgi integration + provisioning foundations, 4 PRs + 1 fix, all reviewed PASS):**
+  #28 real `conversation_factory` + tool executor (/chat end-to-end on the runtime seam; tenant↔env
+  binding fixed; REQ-001 filed) · #27 signup tokens + Pg account/event/OTP stores (+`accounts`/
+  `stripe_events` RLS-EXEMPT tables; REQ-002 filed) · #26 Stripe + Cognito admin adapters · #25
+  draft-gated Resend/SNS senders + Anthropic Admin client · #29 fix: cross-PR auto-merge orphaned
+  Config fields (combined-main check caught it; per-branch suites were green). Suite 249→344 / 4 skip.
+  Cycle-3 queue: prod_deps real wiring + verification flow, stub-id guard, cognito confirm()
+  tightening, Frontend P1, Cortex registry, build_view generator.
 - 2026-06-09 — **Cycle 1 (AI plane, 4 parallel module PRs, all adversarially reviewed PASS):**
   #22 `tenant_workspaces` + `WorkspaceStore` (RLS FORCE'd, PgApprovalStore pattern) · #21
   `ManagedAgentsRuntime` implemented (env/agent/coordinator/session/vault + event-stream
