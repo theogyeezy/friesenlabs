@@ -189,3 +189,18 @@ def stripe_price_ids() -> dict[str, str]:
 def load() -> Config:
     """Return the active configuration."""
     return Config()
+
+
+# --- Live agent-plane verify env-var NAMES (scripts/verify_agent_plane.py — TODO AI/P1).
+# --- NEW deliberate names (deploy invariance: new behavior never keys off env the live tasks
+# --- already inject). All-unset = the script runs in offline PLAN mode and makes ZERO live
+# --- calls; the API/worker tasks never read these.
+ENV_UPLIFT_LIVE_VERIFY = "UPLIFT_LIVE_VERIFY"          # exactly "true"/"1" -> live mode
+ENV_UPLIFT_VERIFY_TENANT_ID = "UPLIFT_VERIFY_TENANT_ID"  # the TEST tenant uuid (operator-supplied)
+# exactly "true"/"1" -> the script MAY provision (create real Anthropic agents + a coordinator
+# in the existing MA environment) when the tenant has no workspace row yet. Off by default so a
+# fat-fingered tenant id can never silently create live resources.
+ENV_UPLIFT_VERIFY_ALLOW_PROVISION = "UPLIFT_VERIFY_ALLOW_PROVISION"
+# Optional draft recipient for the Greenlight leg (default: a documented example.com address —
+# the draft gate means nothing sends either way).
+ENV_UPLIFT_VERIFY_EMAIL_TO = "UPLIFT_VERIFY_EMAIL_TO"
