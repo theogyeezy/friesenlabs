@@ -41,15 +41,17 @@ resource "aws_ecs_task_definition" "cube" {
   container_definitions = jsonencode([
     {
       name         = "cube"
-      image        = "cubejs/cube:latest" # pin a digest before apply (verify)
+      image        = "cubejs/cube:latest@sha256:3e3715ccad21ba7914203c5a0e1c011f829200738d77ed9cb4012f67caa05ee4" # linux/amd64, pinned 2026-06-09
       essential    = true
       portMappings = [{ containerPort = 4000, protocol = "tcp" }]
       environment = [
         { name = "CUBEJS_DB_TYPE", value = "postgres" },
         { name = "CUBEJS_DB_HOST", value = var.aurora_endpoint },
         { name = "CUBEJS_DB_NAME", value = "uplift" },
-        { name = "CUBEJS_CACHE_AND_QUEUE_DRIVER", value = "redis" },
-        { name = "CUBEJS_REDIS_URL", value = "redis://${var.redis_endpoint}:6379" },
+        # Cube 1.x removed the redis driver (live log: "Only 'cubestore' or 'memory' are
+        # supported ... passed: redis" -> /readyz 500). memory = correct for a single task;
+        # move to a Cube Store sidecar when pre-aggregations land.
+        { name = "CUBEJS_CACHE_AND_QUEUE_DRIVER", value = "memory" },
       ]
       secrets = [
         # crm_app DB credentials (non-owner role so Postgres RLS applies) + the JWT signing secret.

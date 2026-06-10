@@ -124,3 +124,21 @@ variable "log_retention_days" {
   default     = 30 # the single retention knob for all uplift log groups (TODO 213)
   description = "CloudWatch retention for every uplift service log group."
 }
+
+variable "worker_deployed" {
+  type        = bool
+  default     = false # flip with the worker service deploy (gates the worker_absent alarm)
+  description = "True once uplift-worker runs; enables the workers_polling-zero alarm."
+}
+
+variable "domain_name" {
+  type        = string
+  default     = "" # set in prod.auto.tfvars (friesenlabs.com)
+  description = "Apex domain for the Route53 zone + ACM cert."
+}
+
+variable "dns_delegated" {
+  type        = bool
+  default     = false # flip AFTER Squarespace nameservers point at the Route53 zone
+  description = "Registrar NS records point at the zone; unblocks cert validation waits."
+}

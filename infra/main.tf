@@ -189,13 +189,24 @@ module "guardrails" {
   notify_email = var.notify_email
   # Empty default leaves the Deny-at-90% budget action un-created (validate-clean); set at apply.
   budgets_action_execution_role_arn = var.budgets_action_execution_role_arn
+  alarms_topic_arn                  = module.observability.alarms_topic_arn
 }
 
 module "observability" {
-  source         = "./modules/observability"
-  project        = var.project
-  notify_email   = var.notify_email
-  alb_arn_suffix = module.alb.arn_suffix
+  source          = "./modules/observability"
+  project         = var.project
+  notify_email    = var.notify_email
+  alb_arn_suffix  = module.alb.arn_suffix
+  worker_deployed = var.worker_deployed
+}
+
+# Real domain (friesenlabs.com on Squarespace registrar): zone + cert; ALB TLS cutover follows
+# once var.dns_delegated is flipped and the cert is ISSUED.
+module "dns" {
+  count       = var.domain_name != "" ? 1 : 0
+  source      = "./modules/dns"
+  domain_name = var.domain_name
+  delegated   = var.dns_delegated
 }
 
 # --- Phase 4: self-hosted tool-execution worker ---

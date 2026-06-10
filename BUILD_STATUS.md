@@ -386,6 +386,28 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   remainder either cost-gated (143 NAT endpoints ~$35/mo, 214 GuardDuty ~cost), task-rolling
   (212 ECS Exec — defer to a maintenance window), or authored-pending-window (204 rotation).
   Lane loop dropping to long-sleep cadence: fetch/REQUESTS/PR checks only until new inputs land.
+- 2026-06-09 — BIG UNBLOCK (user supplied: Amplify PAT via gh token, notify_email, cube/worker
+  cost go-ahead, domain friesenlabs.com @ Squarespace): baseline plan now CLEAN (0 destroys —
+  Amplify hazard gone); budget notification live (subscriber confirmed via direct CLI after a
+  terraform/Budgets-API consistency quirk); 4 alarms + SNS live (subscription PendingConfirmation
+  — user must click); cube-api-secret minted. Cycle-11 PR: cube digest pin (amd64), worker_absent
+  gated on worker_deployed, billing alarm wired to the alarms topic, new dns module (Route53 zone
+  + wildcard ACM cert for friesenlabs.com; validation waits gated on dns_delegated).
+- 2026-06-09 — Cycle 11 applies: friesenlabs.com Route53 zone + wildcard ACM live (PENDING_VALIDATION
+  until the Squarespace NS cutover — 4 NS handed to user); billing alarm wired to the alarms topic
+  (verified); cube service deployed 1/1 STEADY STATE (digest-pinned, minted secret). Live :4000 probe
+  caught the missing sg_api self-ingress rule (timeout) — fix PR'd. Cloud Map service discovery noted
+  as the remaining cube gap. SNS email sub still PendingConfirmation (user).
+- 2026-06-09 — Cube VERIFIED: /readyz 200 from in-VPC probe (SG self-rule #58 + memory driver #59
+  — Cube 1.x removed redis, caught from live logs). TODO 127 DONE. Cycle-11 batch check-off:
+  baseline 122/190 DONE (clean plan), budget 195 DONE, alarms 194/129 DONE (sub pending user
+  click), domain 131 IN PROGRESS (cert pending NS cutover). Next: cycle 12 MA env creation
+  (org key in SM).
+- 2026-06-09 — CYCLE 12, AI-plane unlock: MA shapes VERIFIED (claude-api skill — runtime.py's
+  assumptions all real, incl. managed-agents-2026-04-01 + multiagent coordinator); live
+  create_environment → env_012JvqRKUZzUDeH3Gse6TBgZ in uplift/env-id; api_anthropic_env flipped
+  → task-def rev 4 (zero downtime; ANTHROPIC_API_KEY + UPLIFT_ENV_ID live on the API task, env-key
+  provably absent). /chat 503→401-unauth. PARKED: uplift/env-key = Console-only click (user).
 
 ## Lane Matt (app code) — log
 - 2026-06-09 — **Cycle 3 (real wiring + frontend honesty, 5 PRs + 1 fix-PR):** #34 real provisioning

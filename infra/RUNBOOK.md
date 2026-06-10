@@ -124,6 +124,21 @@ ROLLBACK: flip `alb_enforce_origin_verify=false`, `apply -target=module.alb` (in
   `signup_real_deps=true` — the master switch. ALLOW_REAL_SENDS stays false throughout.
 - Edge /healthz 200 after apply.
 
+## AI-plane gate flipped — 2026-06-09 (cycle 12)
+
+- MA SDK shapes verified against the claude-api skill docs (header + all client.beta namespaces
+  match agents/runtime.py's VERIFY-flagged assumptions; coordinator = top-level multiagent field).
+- Live: `client.beta.environments.create(name="uplift-prod", config={"type":"self_hosted"})` →
+  **env_012JvqRKUZzUDeH3Gse6TBgZ**, stored in uplift/env-id (idempotent: lists+reuses by name).
+- `api_anthropic_env=true` (tfvars) → api_service targeted apply: task-def rev 4, zero-downtime
+  roll (healthz 200 throughout), secrets = [DB_USER, DB_PASS, ANTHROPIC_API_KEY, UPLIFT_ENV_ID].
+- /chat: was bare 503, now 401 for unauth (reaches the auth layer); authed behavior needs a JWT
+  probe + the conversation_factory wiring (Lane Matt).
+- **PARKED — uplift/env-key:** the MA environment key is generated in the CONSOLE only
+  (platform.claude.com → environment uplift-prod → "Generate environment key"; sk-ant-oat01-…).
+  User click required; value then goes into uplift/env-key (CLI put). Worker deploy stays blocked
+  on it (+ the cost note).
+
 ### Apply discipline (until the baseline is clean)
 1. No full `terraform apply`.
 2. Pure-add module deploys go via `terraform apply -target=module.<cube|worker|observability> baseline-style plan first`.

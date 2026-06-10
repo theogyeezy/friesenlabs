@@ -30,6 +30,26 @@ ENV_DB_HOST, ENV_DB_NAME, ENV_DB_PORT = "DB_HOST", "DB_NAME", "DB_PORT"
 ENV_CORTEX_S3_BUCKET = "CORTEX_S3_BUCKET"  # S3 bucket holding serialized tenant models (prod)
 ENV_CORTEX_S3_PREFIX = "CORTEX_S3_PREFIX"  # key prefix in that bucket (empty -> cortex/registry)
 ENV_CORTEX_LOCAL_DIR = "CORTEX_LOCAL_DIR"  # local-filesystem registry root — dev/tests fallback
+# Cube REST auth (agents/tools/cube_client.py). The RESOLVED HS256 signing-secret VALUE — the same
+# secret the Cube service itself reads as CUBEJS_API_SECRET (infra/modules/cube, SM
+# uplift/cube-api-secret); LANE NICK wires it into the task-def `secrets` block under THIS name.
+# A NEW deliberate name on purpose: per-request Cube-JWT minting must never key off env the live
+# API task already injects (deploy invariance) — unset = no JWT can be minted, the client degrades
+# to its 'unconfigured' result and nothing touches the network. Never the SM reference.
+ENV_CUBEJS_API_SECRET_VALUE = "CUBEJS_API_SECRET_VALUE"
+
+# --- Ingestion-plane env-var NAMES (ingest/run_sync.py — the EventBridge→Fargate one-off entry,
+# --- infra/REQUESTS.md REQ-004). These are NEW, deliberate names: the live API task already
+# --- injects DB_*/COGNITO_*/AWS_REGION for OTHER features, so the scheduler's real adapters key
+# --- ONLY off the master switch below (deploy invariance — same rationale as SIGNUP_REAL_DEPS).
+# --- Safe default everywhere is "unset" = offline stubs; run_sync stays runnable with no AWS/DB.
+ENV_INGEST_REAL_STORES = "INGEST_REAL_STORES"  # exactly "true"/"1" -> real Pg stores + Titan embed
+ENV_INGEST_TENANTS = "INGEST_TENANTS"          # comma-separated tenant ids consumed by --all
+ENV_INGEST_RAW_BUCKET = "INGEST_RAW_BUCKET"    # S3 raw-lake bucket (unset = in-memory raw sink)
+# Titan V2 BATCH embeddings (ingest/embed.py batch_embed) — both must be set or batch_embed
+# falls back to synchronous per-text embed (the safe, incremental-sync behavior).
+ENV_INGEST_BATCH_S3_BUCKET = "INGEST_BATCH_S3_BUCKET"  # JSONL input/output bucket for batch jobs
+ENV_BEDROCK_BATCH_ROLE_ARN = "BEDROCK_BATCH_ROLE_ARN"  # roleArn for create_model_invocation_job
 
 
 def dsn_from_env() -> str | None:

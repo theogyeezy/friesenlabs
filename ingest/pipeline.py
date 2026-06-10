@@ -23,8 +23,9 @@ asserted on upsert — no cross-tenant mixing.
 from __future__ import annotations
 
 import hashlib
+from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Callable, Iterable, Protocol, runtime_checkable
+from typing import Callable, Protocol, runtime_checkable
 
 from . import EMBEDDING_DIM
 from .chunk import Chunk, chunk_record
@@ -212,32 +213,94 @@ class InMemoryStructuredSink:
 # --------------------------------------------------------------------------- #
 # psycopg2-backed impls — GUARDED. psycopg2 is imported only when constructed.
 # Importing this module does NOT import psycopg2 or connect anywhere.
+#
+# SECURITY (closes the CLAUDE.md follow-up): these stores previously held ONE
+# shared connection with a session-level `SET app.current_tenant` — the exact
+# pattern behind the request-path cross-tenant leak. They now copy the FIXED
+# `PgApprovalStore` pattern (api/control/greenlight.py): every operation checks
+# a connection out of a thread-safe pool (or a per-op conn factory) and runs in
+# ONE transaction that begins with `SET LOCAL app.current_tenant = %s`, so the
+# GUC auto-resets at COMMIT/ROLLBACK and can never leak across operations or
+# threads. NEVER a shared connection or a session-level SET.
 # --------------------------------------------------------------------------- #
-class PgDocumentStore:
-    """Postgres/pgvector-backed DocumentStore.
+class _PgPooledStore:
+    """Shared plumbing: pooled per-op connection + `SET LOCAL` tenant-bound txn.
 
-    The content hash is persisted in `documents.content` is NOT enough on its own,
-    so we co-locate the hash in the ref_id-keyed row by storing it alongside — but
-    the schema has no hash column, so we derive the stored hash from the persisted
-    content at read time (sha256(content)). That keeps us schema-compatible with
-    db/schema.sql while still enabling skip-if-unchanged.
-
-    Requires a DSN; only then does it import psycopg2 and connect. The cursor MUST
-    set app.current_tenant before any documents access (RLS).
+    Construct with EITHER a `dsn` (a fixed-size ThreadedConnectionPool is built;
+    psycopg2 imported lazily) OR a `conn_factory` (zero-arg callable returning a
+    DB-API connection per operation; its `close()` runs when the op finishes).
     """
 
-    def __init__(self, dsn: str):
-        import psycopg2  # noqa: PLC0415 — guarded: only on construction
+    def __init__(self, dsn: str | None = None, *,
+                 conn_factory: Callable[[], object] | None = None):
+        if (dsn is None) == (conn_factory is None):
+            raise ValueError("provide exactly one of dsn or conn_factory")
+        self._conn_factory = conn_factory
+        self._pool = None
+        self._psycopg2 = None
+        if dsn is not None:
+            import os  # noqa: PLC0415 — lazy with psycopg2 below
 
-        self._psycopg2 = psycopg2
-        self._conn = psycopg2.connect(dsn)
+            import psycopg2  # noqa: PLC0415 — guarded: only on construction
+            import psycopg2.pool  # noqa: PLC0415
 
-    def _set_tenant(self, cur, tenant_id):
-        cur.execute("SET app.current_tenant = %s", (str(tenant_id),))
+            self._psycopg2 = psycopg2
+            pool_max = int(os.environ.get("UPLIFT_DB_POOL_MAX", "4"))
+            # min == max: a fixed-size pool RETAINS returned connections
+            # (psycopg2 closes any conn beyond minconn on putconn).
+            self._pool = psycopg2.pool.ThreadedConnectionPool(pool_max, pool_max, dsn)
+
+    def _getconn(self):
+        if self._pool is None:
+            return self._conn_factory()
+        import time  # noqa: PLC0415
+        deadline = time.monotonic() + 10.0
+        while True:
+            try:
+                return self._pool.getconn()
+            except self._psycopg2.pool.PoolError as exc:
+                if "exhausted" not in str(exc) or time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.005)
+
+    def _putconn(self, conn) -> None:
+        if self._pool is None:
+            close = getattr(conn, "close", None)
+            if close is not None:
+                close()
+        else:
+            self._pool.putconn(conn)
+
+    @contextmanager
+    def _tx(self, tenant_id):
+        """Yield a cursor inside ONE tenant-scoped transaction.
+
+        Begins with `SET LOCAL app.current_tenant` (auto-resets at COMMIT/ROLLBACK),
+        commits on success / rolls back on error, and always returns the connection.
+        """
+        conn = self._getconn()
+        try:
+            cur = conn.cursor()
+            cur.execute("SET LOCAL app.current_tenant = %s", (str(tenant_id),))
+            yield cur
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            self._putconn(conn)
+
+
+class PgDocumentStore(_PgPooledStore):
+    """Postgres/pgvector-backed DocumentStore (pooled per-op conn + SET LOCAL).
+
+    The schema has no hash column, so the stored hash is derived from the
+    persisted content at read time (sha256(content)). That keeps us
+    schema-compatible with db/schema.sql while still enabling skip-if-unchanged.
+    """
 
     def get_content_hash(self, tenant_id, source, ref_id):
-        with self._conn.cursor() as cur:
-            self._set_tenant(cur, tenant_id)
+        with self._tx(tenant_id) as cur:
             cur.execute(
                 "SELECT content FROM documents "
                 "WHERE tenant_id=%s AND source=%s AND ref_id=%s",
@@ -250,8 +313,7 @@ class PgDocumentStore:
 
     def upsert(self, tenant_id, source, ref_id, content, embedding, content_hash):
         vec = "[" + ",".join(str(float(x)) for x in embedding) + "]"
-        with self._conn.cursor() as cur:
-            self._set_tenant(cur, tenant_id)
+        with self._tx(tenant_id) as cur:
             cur.execute(
                 "INSERT INTO documents (tenant_id, source, ref_id, content, embedding) "
                 "VALUES (%s,%s,%s,%s,%s::vector) "
@@ -259,27 +321,18 @@ class PgDocumentStore:
                 "DO UPDATE SET content=EXCLUDED.content, embedding=EXCLUDED.embedding",
                 (str(tenant_id), source, ref_id, content, vec),
             )
-        self._conn.commit()
 
 
-class PgCursorStore:
-    """Cursor store over the `ingest_cursor` table (defined in db/schema.sql, tenant-scoped + RLS).
+class PgCursorStore(_PgPooledStore):
+    """Cursor store over `ingest_cursor` (db/schema.sql, tenant-scoped + RLS).
 
-    Connects as the non-owner crm_app role and SETs app.current_tenant before every access, so RLS
-    applies to the cursor table too. The table is owned by db/schema.sql (no self-create here).
+    Connects as the non-owner crm_app role; every get/set runs in its own
+    `SET LOCAL`-bound transaction so RLS applies to the cursor table too.
+    The table is owned by db/schema.sql (no self-create here).
     """
 
-    def __init__(self, dsn: str):
-        import psycopg2  # noqa: PLC0415 — guarded
-
-        self._conn = psycopg2.connect(dsn)
-
-    def _set_tenant(self, cur, tenant_id):
-        cur.execute("SET app.current_tenant = %s", (str(tenant_id),))
-
     def get(self, tenant_id, source):
-        with self._conn.cursor() as cur:
-            self._set_tenant(cur, tenant_id)
+        with self._tx(tenant_id) as cur:
             cur.execute(
                 "SELECT cursor_value FROM ingest_cursor WHERE tenant_id=%s AND source=%s",
                 (str(tenant_id), source),
@@ -288,12 +341,10 @@ class PgCursorStore:
         return row[0] if row else None
 
     def set(self, tenant_id, source, cursor):
-        with self._conn.cursor() as cur:
-            self._set_tenant(cur, tenant_id)
+        with self._tx(tenant_id) as cur:
             cur.execute(
                 "INSERT INTO ingest_cursor (tenant_id, source, cursor_value) VALUES (%s,%s,%s) "
                 "ON CONFLICT (tenant_id, source) DO UPDATE SET cursor_value=EXCLUDED.cursor_value, "
                 "updated_at=now()",
                 (str(tenant_id), source, cursor),
             )
-        self._conn.commit()

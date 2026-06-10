@@ -110,6 +110,19 @@ resource "aws_security_group_rule" "api_egress" {
 }
 
 output "sg_alb" { value = aws_security_group.alb.id }
+# Cube runs in sg_api alongside the api/worker tasks, but SGs do NOT allow intra-group traffic
+# without a self-referencing rule — without this, api/worker -> cube :4000 times out (probed live
+# 2026-06-09 from a one-off task: URLError timeout).
+resource "aws_security_group_rule" "cube_from_api_self" {
+  type                     = "ingress"
+  security_group_id        = aws_security_group.api.id
+  protocol                 = "tcp"
+  from_port                = 4000
+  to_port                  = 4000
+  source_security_group_id = aws_security_group.api.id
+  description              = "api/worker to cube :4000 (intra-sg self rule)"
+}
+
 output "sg_api" { value = aws_security_group.api.id }
 output "sg_db" { value = aws_security_group.db.id }
 output "sg_redis" { value = aws_security_group.redis.id }

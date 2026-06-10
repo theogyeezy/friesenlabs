@@ -13,6 +13,10 @@ variable "notify_email" {
   type    = string
   default = "" # set before apply
 }
+variable "alarms_topic_arn" {
+  type    = string
+  default = "" # the observability SNS topic — gives the billing alarm a real action
+}
 variable "deny_target_role_arns" {
   type    = list(string)
   default = []
@@ -71,6 +75,7 @@ resource "aws_budgets_budget_action" "deny_at_90" {
 
 # CloudWatch billing alarm — MUST live in us-east-1 (lags ~6h; notify only).
 resource "aws_cloudwatch_metric_alarm" "billing" {
+  alarm_actions       = var.alarms_topic_arn != "" ? [var.alarms_topic_arn] : []
   alarm_name          = "${var.project}-billing"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 1

@@ -31,6 +31,87 @@ class SecretProvider(Protocol):
     def get_secret(self, ref: str) -> str: ...
 
 
+# --------------------------------------------------------------------------- #
+# Per-tenant vaulted credentials (TODO INT/P1 "Per-tenant connector credential
+# capture + storage in Secrets Manager").
+# --------------------------------------------------------------------------- #
+# The per-tenant secret naming convention: one Secrets Manager secret per
+# (tenant, source) pair. Connectors resolve THIS name first; the shared
+# single-token fallback is deprecated (see ingest/connectors/hubspot.py).
+PER_TENANT_SECRET_TEMPLATE = "uplift/{tenant_id}/{source}"
+
+
+def tenant_secret_ref(tenant_id: str, source: str) -> str:
+    """The per-tenant Secrets Manager name for a connector credential.
+
+    e.g. tenant_secret_ref("1111-...", "hubspot") -> "uplift/1111-.../hubspot".
+    `tenant_id` arrives from the caller that already verified it (THE TRUST
+    RULE) — this is a pure name formatter, not an authorization seam.
+    """
+    return PER_TENANT_SECRET_TEMPLATE.format(tenant_id=tenant_id, source=source)
+
+
+class SecretNotFoundError(KeyError):
+    """The named secret does not exist in the vault (distinct from access errors).
+
+    Connectors use this to distinguish "no per-tenant secret provisioned yet"
+    (fall back to the deprecated shared ref) from a real provider failure.
+    """
+
+
+class Boto3SecretProvider:
+    """Real Secrets Manager-backed SecretProvider.
+
+    Lazy: boto3 is imported only on the first `get_secret` call when no client
+    was injected — importing this module (or constructing the provider) never
+    needs AWS. Tests inject a fake `client` with `get_secret_value`.
+
+    A missing secret raises :class:`SecretNotFoundError`; every other client
+    error propagates untouched (an access/throttle error must NOT be silently
+    treated as "not provisioned").
+    """
+
+    def __init__(self, *, region: str | None = None, client: Any = None) -> None:
+        self._region = region
+        self._client = client  # injected fake in tests; lazily built otherwise
+
+    def _sm(self) -> Any:
+        if self._client is None:
+            import os  # noqa: PLC0415 — lazy with boto3 below
+
+            import boto3  # noqa: PLC0415 — lazy: import-safe module (no AWS at import)
+
+            region = self._region or os.environ.get("AWS_REGION", "us-east-1")
+            self._client = boto3.client("secretsmanager", region_name=region)
+        return self._client
+
+    @staticmethod
+    def _is_not_found(exc: Exception) -> bool:
+        # botocore ClientError carries the code in .response; injected fakes may
+        # just name their exception class after the AWS error code.
+        code = ""
+        response = getattr(exc, "response", None)
+        if isinstance(response, dict):
+            code = (response.get("Error") or {}).get("Code", "")
+        return code == "ResourceNotFoundException" or (
+            exc.__class__.__name__ == "ResourceNotFoundException"
+        )
+
+    def get_secret(self, ref: str) -> str:
+        client = self._sm()
+        try:
+            resp = client.get_secret_value(SecretId=ref)
+        except Exception as exc:  # noqa: BLE001 — narrowed immediately below
+            if self._is_not_found(exc):
+                raise SecretNotFoundError(ref) from exc
+            raise
+        value = resp.get("SecretString")
+        if value is None:
+            blob = resp.get("SecretBinary") or b""
+            value = blob.decode("utf-8") if isinstance(blob, (bytes, bytearray)) else str(blob)
+        return value
+
+
 @runtime_checkable
 class RawSink(Protocol):
     """The raw lake (S3 in prod). Stores untouched source JSON keyed for replay."""

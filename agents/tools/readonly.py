@@ -4,6 +4,8 @@ Each uses injected clients from ToolContext and runs only after bind_tenant() (R
 """
 from __future__ import annotations
 
+from typing import Any
+
 from .base import Policy, Tool, ToolContext
 
 
@@ -27,11 +29,32 @@ class QueryCube(Tool):
     }
     policy = Policy.AUTO
 
+    def __init__(self, cube_client: Any = None) -> None:
+        # Optional injected default Cube client (agents/tools/cube_client.CubeClient — mints the
+        # per-request tenant JWT from the verified claim). The registry's no-arg `resolve()` keeps
+        # it None; a per-call ctx.cube always wins over the constructor default.
+        self._cube_client = cube_client
+
     def _execute(self, ctx: ToolContext, *, measures=None, dimensions=None) -> dict:
         query = {"measures": measures or [], "dimensions": dimensions or []}
         # Cube client carries the tenant security context; never write a tenant filter by hand.
-        rows = ctx.cube.load(tenant_id=ctx.tenant_id, query=query) if ctx.cube else []
-        return {"query": query, "rows": rows}
+        cube = ctx.cube if ctx.cube is not None else self._cube_client
+        if cube is None:
+            return {"query": query, "rows": []}
+        result = cube.load(tenant_id=ctx.tenant_id, query=query)
+        if isinstance(result, dict) and "rows" in result:
+            # CubeClient shape: {"status", "rows", ...} — surface non-ok degradations
+            # ('unconfigured'/'error') so the agent sees WHY rows are empty, never a silent [].
+            out = {"query": query, "rows": result.get("rows") or []}
+            status = result.get("status")
+            if status and status != "ok":
+                out["cube_status"] = status
+                detail = result.get("error") or result.get("detail")
+                if detail:
+                    out["detail"] = detail
+            return out
+        # Plain-client shape (tests/fakes): load() returned the rows themselves.
+        return {"query": query, "rows": result}
 
 
 class ReadCrm(Tool):
