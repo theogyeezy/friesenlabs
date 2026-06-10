@@ -36,6 +36,7 @@ from api.auth import CognitoJwtVerifier, JwtVerifier
 from api.control.autonomy import AutonomyConfig
 from api.control.greenlight import Greenlight, PgApprovalStore
 from api.control.types import Action
+from api.deals_routes import DealsDeps
 from api.pg_clients import PgCrmClient, PgRagClient
 from api.views import PgSavedViewStore, SavedViews
 from conv.session import Conversation
@@ -248,6 +249,10 @@ def build_app():
         # mounts /signup, /verify-*, /checkout, /webhooks/stripe; provisioning persists the
         # tenant's Managed Agents ids into tenant_workspaces when the DB is configured.
         signup=build_signup_deps(workspace_store=workspace_store),
+        # /deals (the real Pipeline board) rides the SAME PgCrmClient instance the executor +
+        # /chat tool clients use — one pool, one SET LOCAL discipline. crm is None when the
+        # DSN is unconfigured, so the routes answer their honest 503s.
+        deals=DealsDeps(crm=crm),
     )
     return create_app(deps)
 

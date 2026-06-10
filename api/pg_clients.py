@@ -61,6 +61,50 @@ def _dict_rows(cur) -> list[dict]:
     return [dict(zip(columns, r)) for r in rows]
 
 
+def _as_str(value: Any) -> str | None:
+    """uuid.UUID / str -> str (JSON-stable ids); None stays None."""
+    return None if value is None else str(value)
+
+
+def _as_float(value: Any) -> float | None:
+    """numeric/Decimal -> float for the wire; None stays None."""
+    return None if value is None else float(value)
+
+
+def _as_iso(value: Any) -> str | None:
+    """datetime -> ISO 8601 string; pass through strings; None stays None."""
+    if value is None:
+        return None
+    iso = getattr(value, "isoformat", None)
+    return iso() if callable(iso) else str(value)
+
+
+def _normalize_deal_row(row: dict) -> dict:
+    """One board/detail deal row, JSON-stable (uuids -> str, Decimal -> float, ts -> ISO).
+
+    `tenant_id` is kept (stringified) so the route can run the defense-in-depth re-check the
+    other live surfaces do; the route strips it before the row leaves the API.
+    """
+    out = {
+        "id": _as_str(row.get("id")),
+        "tenant_id": _as_str(row.get("tenant_id")),
+        "title": row.get("title"),
+        "stage": row.get("stage"),
+        "amount": _as_float(row.get("amount")),
+        "currency": row.get("currency"),
+        "company_id": _as_str(row.get("company_id")),
+        "contact_id": _as_str(row.get("contact_id")),
+        "company_name": row.get("company_name"),
+        "created_at": _as_iso(row.get("created_at")),
+    }
+    # Detail-only display fields ride along when the query selected them.
+    if "contact_name" in row:
+        out["contact_name"] = row.get("contact_name")
+    if "contact_email" in row:
+        out["contact_email"] = row.get("contact_email")
+    return out
+
+
 class _PgTenantClient:
     """Shared connection plumbing — the `PgApprovalStore` pattern (pool + per-op SET LOCAL txn).
 
@@ -268,6 +312,66 @@ class PgCrmClient(_PgTenantClient):
         filters = {k: v for k, v in {"kind": kind, "contact_id": contact_id,
                                      "deal_id": deal_id}.items() if v is not None}
         return self.read(tenant_id=tenant_id, entity="activities", filters=filters, limit=limit)
+
+    # ----------------------------------------------------------------- deals board reads
+    # Fixed-SQL reads for api/deals_routes.py (the Pipeline board). Column lists are
+    # HAND-WRITTEN (the allow-list discipline: identifiers never come from input), every value
+    # is a bind param, and tenancy is RLS-only — the joins carry no tenant filter because the
+    # tenant_isolation policies on deals/companies/contacts/activities scope BOTH sides of every
+    # join inside the per-op `SET LOCAL` transaction.
+
+    def list_deals_board(self, *, tenant_id: str, limit: int = MAX_LIMIT) -> list[dict]:
+        """All board rows for the tenant: deal columns + the joined company name.
+
+        Ordered newest-first; the route does the stage grouping/ordering (presentation concern).
+        """
+        n = _clamp_limit(limit, MAX_LIMIT)
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "SELECT d.id, d.tenant_id, d.title, d.stage, d.amount, d.currency, "
+                "d.company_id, d.contact_id, d.created_at, c.name AS company_name "
+                "FROM deals d LEFT JOIN companies c ON c.id = d.company_id "
+                "ORDER BY d.created_at DESC LIMIT %s",
+                (n,),
+            )
+            return [_normalize_deal_row(r) for r in _dict_rows(cur)]
+
+    def get_deal_board(self, *, tenant_id: str, deal_id: str) -> dict | None:
+        """One deal + its company/contact display fields. None when RLS yields no row
+        (missing OR another tenant's — indistinguishable by design)."""
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "SELECT d.id, d.tenant_id, d.title, d.stage, d.amount, d.currency, "
+                "d.company_id, d.contact_id, d.created_at, c.name AS company_name, "
+                "p.name AS contact_name, p.email AS contact_email "
+                "FROM deals d LEFT JOIN companies c ON c.id = d.company_id "
+                "LEFT JOIN contacts p ON p.id = d.contact_id "
+                "WHERE d.id = %s",
+                (str(deal_id),),
+            )
+            rows = _dict_rows(cur)
+        return _normalize_deal_row(rows[0]) if rows else None
+
+    def list_deal_activities(self, *, tenant_id: str, deal_id: str,
+                             limit: int = 20) -> list[dict]:
+        """Recent activities for one deal, newest first (RLS-scoped like everything else)."""
+        n = _clamp_limit(limit, 20)
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "SELECT id, kind, body, occurred_at FROM activities "
+                "WHERE deal_id = %s ORDER BY occurred_at DESC LIMIT %s",
+                (str(deal_id), n),
+            )
+            rows = _dict_rows(cur)
+        return [
+            {
+                "id": _as_str(r.get("id")),
+                "kind": r.get("kind"),
+                "body": r.get("body"),
+                "occurred_at": _as_iso(r.get("occurred_at")),
+            }
+            for r in rows
+        ]
 
     # ----------------------------------------------------------------- ToolContext adapter
     def binding(self) -> "TenantBoundCrm":

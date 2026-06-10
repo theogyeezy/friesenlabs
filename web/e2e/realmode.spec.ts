@@ -101,8 +101,10 @@ test("real mode: non-API routes render the honest 'isn't live yet' panel, not th
   await page.goto("/");
   await expect(page.getByTestId("dashboard-view")).toBeVisible({ timeout: 15_000 });
 
-  // Pipeline (the FLStore CRM prototype in mock mode) -> ComingSoon panel.
-  await page.locator(".nav-item", { hasText: "Pipeline" }).click();
+  // Contacts (an FLStore prototype screen in mock mode) -> ComingSoon panel.
+  // (Pipeline is no longer here: it mounts the API-wired PipelineBoard in real
+  // mode — covered in pipeline.spec.ts.)
+  await page.locator(".nav-item", { hasText: "Contacts" }).click();
   await expect(page.getByTestId("coming-soon")).toBeVisible({ timeout: 15_000 });
   await expect(page.getByTestId("coming-soon")).toContainText("isn’t live yet");
 

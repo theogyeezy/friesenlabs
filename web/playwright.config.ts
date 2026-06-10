@@ -10,8 +10,8 @@ import { defineConfig, devices } from "@playwright/test";
 //   :4174  REAL build (VITE_API_MOCK=0 baked at BUILD time). Exactly what a
 //          production deploy ships — there is no runtime URL seam to flip
 //          modes (the old `?apimock=0` param was removed as a prod honesty
-//          fix). realmode.spec.ts + integrations.spec.ts run here fully
-//          offline, stubbing the API with page.route. Cognito env vars are
+//          fix). realmode.spec.ts + integrations.spec.ts + pipeline.spec.ts
+//          run here fully offline, stubbing the API with page.route. Cognito env vars are
 //          absent, so auth stays inert and the sign-in gate is open.
 //   :4175  AUTH build (VITE_API_MOCK=0 + Cognito env baked at BUILD time, with
 //          a .invalid Hosted UI domain that can never resolve). auth.spec.ts
@@ -31,12 +31,12 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      testIgnore: [/realmode\.spec\.ts/, /integrations\.spec\.ts/, /auth\.spec\.ts/, /conversion\.spec\.ts/],
+      testIgnore: [/realmode\.spec\.ts/, /integrations\.spec\.ts/, /pipeline\.spec\.ts/, /auth\.spec\.ts/, /conversion\.spec\.ts/],
       use: { ...devices["Desktop Chrome"], baseURL: "http://localhost:4173" },
     },
     {
       name: "chromium-real",
-      testMatch: /(realmode|integrations)\.spec\.ts/,
+      testMatch: /(realmode|integrations|pipeline)\.spec\.ts/,
       use: { ...devices["Desktop Chrome"], baseURL: "http://localhost:4174" },
     },
     {

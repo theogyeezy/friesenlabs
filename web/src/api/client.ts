@@ -105,6 +105,77 @@ export interface ActionResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Deals / pipeline wire types (mirror api/deals_routes.py shapes).
+// ---------------------------------------------------------------------------
+
+/** One deal card on the pipeline board (GET /deals). No tenant_id — the API
+ * strips it; the client never needs it. */
+export interface DealCard {
+  id: string;
+  title: string | null;
+  stage: string;
+  amount: number | null;
+  currency: string | null;
+  company_id: string | null;
+  contact_id: string | null;
+  company_name: string | null;
+  created_at: string | null;
+}
+
+/** One ordered stage column: canonical stages first (kept even when empty so
+ * the board has a stable spine), then any extra stages found in the data. */
+export interface DealStageGroup {
+  stage: string;
+  label: string;
+  deals: DealCard[];
+  count: number;
+  total_amount: number;
+}
+
+export interface ListDealsResponse {
+  stages: DealStageGroup[];
+  total: number;
+  stage_order: string[];
+}
+
+/** Detail rows carry the joined contact display fields too. */
+export interface DealDetail extends DealCard {
+  contact_name?: string | null;
+  contact_email?: string | null;
+}
+
+export interface DealActivity {
+  id: string | null;
+  kind: string | null;
+  body: string | null;
+  occurred_at: string | null;
+}
+
+export interface DealDetailResponse {
+  deal: DealDetail;
+  activities: DealActivity[];
+}
+
+/** Body for POST /deals/{id}/move-stage. Note: carries no tenant_id. */
+export interface MoveStageBody {
+  to_stage: string;
+}
+
+/**
+ * The HONEST move-stage response: the move did NOT happen. The server landed a
+ * Greenlight proposal (`approval_id`) and the deal stays in `from_stage` until
+ * a human approves — surfaces must keep showing the current stage.
+ */
+export interface MoveStageResponse {
+  queued: boolean;
+  approval_id: number | string | null;
+  status: string;
+  from_stage: string;
+  to_stage: string;
+  detail: string;
+}
+
+// ---------------------------------------------------------------------------
 // Integrations wire types (mirror api/integrations_routes.py shapes).
 // ---------------------------------------------------------------------------
 
@@ -559,6 +630,43 @@ export class ApiClient {
       return (await this.mockApi()).runAction(body);
     }
     return this.request<ActionResponse>("POST", "/actions", body);
+  }
+
+  // --- deals / pipeline (authed) ----------------------------------------------
+
+  /** GET /deals: the board — deals grouped into ordered stage columns. */
+  async listDeals(): Promise<ListDealsResponse> {
+    if (this.mock) {
+      return (await this.mockApi()).listDeals();
+    }
+    return this.request<ListDealsResponse>("GET", "/deals");
+  }
+
+  /** GET /deals/{id}: one deal + its recent activities (the detail drawer). */
+  async getDeal(dealId: string): Promise<DealDetailResponse> {
+    if (this.mock) {
+      return (await this.mockApi()).getDeal(dealId);
+    }
+    return this.request<DealDetailResponse>("GET", `/deals/${encodeURIComponent(dealId)}`);
+  }
+
+  /**
+   * POST /deals/{id}/move-stage: proposes the move through Greenlight — the
+   * deal is NOT moved. The body carries to_stage ONLY (no tenant_id — the
+   * trust rule); a {queued: true} response means a human still has to approve,
+   * so callers must keep rendering the CURRENT stage. Errors: 503 data plane
+   * unconfigured, 404 no such deal, 409 same stage / move blocked, 422 empty
+   * stage — surfaced as ApiError for the caller to map honestly.
+   */
+  async moveDealStage(dealId: string, body: MoveStageBody): Promise<MoveStageResponse> {
+    if (this.mock) {
+      return (await this.mockApi()).moveDealStage(dealId, body);
+    }
+    return this.request<MoveStageResponse>(
+      "POST",
+      `/deals/${encodeURIComponent(dealId)}/move-stage`,
+      body,
+    );
   }
 
   // --- integrations (authed) -------------------------------------------------
