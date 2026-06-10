@@ -24,14 +24,18 @@ JWKS auth. **Browser-verified end-to-end:** sign-in gate → Hosted UI (PKCE) �
 app shell → real RLS-scoped tenant rows. Unauth `/api/*` → 401; `/chat` → graceful 503 (AI parked).
 - ✅ **Login:** Cognito Hosted UI + PKCE in `web/src/auth/`; demo creds in `uplift/demo-user`.
 - ✅ **Landing (2026-06-10):** cinematic, **3D, mobile-first** GHL-style marketing page —
-  a live WebGL shader backdrop (custom GLSL fbm light field, reacts to scroll + cursor) the whole
-  page sits in; interactive hero agent roster + cursor-tilt 3D demo panel + receding perspective
+  a dramatic DARK cinematic hero with a lazy-loaded **three.js** glowing 3D agent constellation
+  (points + links, bloom, mouse + device-tilt parallax); a live WebGL shader backdrop (custom GLSL
+  fbm light field) the whole page sits in; interactive hero agent roster + cursor-tilt 3D demo panel + receding perspective
   grid floor + film grain + vignette; animated Friesen-vs-GoHighLevel capability radar (3D-tilt) + lens
   comparison; live ROI calculator; scroll-progress bar; hamburger nav + slide-in menu + sticky
   mobile CTA + back-to-top; closing CTA band; founder photos restored (optimized 7MB→32KB, bundled
   assets) + Matt's bio corrected (currently at ServiceNow). The backdrop is raw WebGL (~+4KB, not three.js — the right tool for an atmosphere; rendered at
   0.55x, tab-paused); the rest of the 3D/grain is pure CSS. All of it
-  disables on touch/reduced-motion. Browser-verified desktop + 390px mobile. SNS alarm email
+  disables on touch/reduced-motion. All cinematic effects (field, constellation,
+  dark hero, grain) run on mobile too — only cursor-tilt is desktop-only; reduced-motion disables
+  all. three.js is code-split (175KB gz lazy chunk — never blocks first paint). Browser-verified
+  desktop + 390px mobile. SNS alarm email
   CONFIRMED (alarms page the owner). Amplify edge cache: HTML `no-store` + hashed assets
   `immutable`, so web deploys appear instantly.
 - ✅ **Live since 2026-06-09 (Lane Nick cycles 1-15):** Aurora hardening (retention 7, deletion
