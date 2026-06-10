@@ -79,6 +79,24 @@ def _as_iso(value: Any) -> str | None:
     return iso() if callable(iso) else str(value)
 
 
+def _escape_ilike(q: str) -> str:
+    r"""Escape the LIKE metacharacters (\, %, _) in a user-supplied search term and wrap it
+    for a contains-match. The result is ALWAYS passed as a bind parameter with an explicit
+    `ESCAPE '\'` clause — a `%`/`_` in the query is matched literally, never as a wildcard,
+    so a search term cannot smuggle pattern syntax into the scan."""
+    escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+def _clamp_offset(offset: Any, *, max_offset: int = 100_000) -> int:
+    """Pagination offset: junk -> 0, negatives -> 0, runaway -> capped (bound, never trusted)."""
+    try:
+        n = int(offset)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(n, max_offset))
+
+
 def _normalize_deal_row(row: dict) -> dict:
     """One board/detail deal row, JSON-stable (uuids -> str, Decimal -> float, ts -> ISO).
 
@@ -102,6 +120,42 @@ def _normalize_deal_row(row: dict) -> dict:
         out["contact_name"] = row.get("contact_name")
     if "contact_email" in row:
         out["contact_email"] = row.get("contact_email")
+    return out
+
+
+def _normalize_contact_row(row: dict) -> dict:
+    """One directory contact row, JSON-stable. `tenant_id` is kept (stringified) for the
+    route's defense-in-depth re-check; the route strips it before the row leaves the API.
+
+    `title` is always None: the contacts schema carries no title column yet — the wire shape
+    names it now (the api/app.py /me `name` pattern) so the UI shape stays stable when the
+    column lands, without ever inventing a value."""
+    return {
+        "id": _as_str(row.get("id")),
+        "tenant_id": _as_str(row.get("tenant_id")),
+        "name": row.get("name"),
+        "title": None,
+        "email": row.get("email"),
+        "phone": row.get("phone"),
+        "company_id": _as_str(row.get("company_id")),
+        "company_name": row.get("company_name"),
+        "created_at": _as_iso(row.get("created_at")),
+        "last_activity_at": _as_iso(row.get("last_activity_at")),
+    }
+
+
+def _normalize_company_row(row: dict) -> dict:
+    """One directory company row, JSON-stable (counts -> int when present)."""
+    out = {
+        "id": _as_str(row.get("id")),
+        "tenant_id": _as_str(row.get("tenant_id")),
+        "name": row.get("name"),
+        "domain": row.get("domain"),
+        "created_at": _as_iso(row.get("created_at")),
+    }
+    for key in ("contact_count", "open_deal_count"):
+        if key in row:
+            out[key] = int(row[key]) if row.get(key) is not None else 0
     return out
 
 
@@ -372,6 +426,150 @@ class PgCrmClient(_PgTenantClient):
             }
             for r in rows
         ]
+
+    # ----------------------------------------------------------------- contacts directory reads
+    # Fixed-SQL reads for api/contacts_routes.py (the Contacts & Companies directory).
+    # Same discipline as the deals-board reads above: HAND-WRITTEN column lists, every value a
+    # bind param, tenancy RLS-only (the joins and the count/last-activity subqueries carry no
+    # tenant filter — the tenant_isolation policies scope every table inside the per-op
+    # `SET LOCAL` transaction). Search terms are ILIKE bind params run through _escape_ilike
+    # with an explicit ESCAPE clause, so user `%`/`_` match literally. The stage literals in
+    # the open-deal predicates are hand-written SQL, never input.
+
+    def list_contacts_directory(self, *, tenant_id: str, q: str | None = None,
+                                limit: int = DEFAULT_CRM_LIMIT, offset: int = 0) -> list[dict]:
+        """Directory page of contacts: contact columns + the joined company name + the
+        newest activity timestamp. `q` (optional) is a contains-match over name/email."""
+        n = _clamp_limit(limit, DEFAULT_CRM_LIMIT)
+        off = _clamp_offset(offset)
+        base = (
+            "SELECT c.id, c.tenant_id, c.name, c.email, c.phone, c.company_id, c.created_at, "
+            "co.name AS company_name, "
+            "(SELECT max(a.occurred_at) FROM activities a WHERE a.contact_id = c.id) "
+            "AS last_activity_at "
+            "FROM contacts c LEFT JOIN companies co ON co.id = c.company_id "
+        )
+        tail = "ORDER BY c.created_at DESC LIMIT %s OFFSET %s"
+        with self._tx(tenant_id) as cur:
+            if q:
+                pat = _escape_ilike(q)
+                cur.execute(
+                    base + "WHERE (c.name ILIKE %s ESCAPE '\\' OR c.email ILIKE %s ESCAPE '\\') "
+                    + tail,
+                    (pat, pat, n, off),
+                )
+            else:
+                cur.execute(base + tail, (n, off))
+            return [_normalize_contact_row(r) for r in _dict_rows(cur)]
+
+    def get_contact_directory(self, *, tenant_id: str, contact_id: str) -> dict | None:
+        """One contact + company/last-activity display fields. None when RLS yields no row
+        (missing OR another tenant's — indistinguishable by design)."""
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "SELECT c.id, c.tenant_id, c.name, c.email, c.phone, c.company_id, "
+                "c.created_at, co.name AS company_name, "
+                "(SELECT max(a.occurred_at) FROM activities a WHERE a.contact_id = c.id) "
+                "AS last_activity_at "
+                "FROM contacts c LEFT JOIN companies co ON co.id = c.company_id "
+                "WHERE c.id = %s",
+                (str(contact_id),),
+            )
+            rows = _dict_rows(cur)
+        return _normalize_contact_row(rows[0]) if rows else None
+
+    def list_contact_activities(self, *, tenant_id: str, contact_id: str,
+                                limit: int = 20) -> list[dict]:
+        """Recent activities for one contact, newest first (RLS-scoped like everything else)."""
+        n = _clamp_limit(limit, 20)
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "SELECT id, kind, body, occurred_at FROM activities "
+                "WHERE contact_id = %s ORDER BY occurred_at DESC LIMIT %s",
+                (str(contact_id), n),
+            )
+            rows = _dict_rows(cur)
+        return [
+            {
+                "id": _as_str(r.get("id")),
+                "kind": r.get("kind"),
+                "body": r.get("body"),
+                "occurred_at": _as_iso(r.get("occurred_at")),
+            }
+            for r in rows
+        ]
+
+    def list_company_open_deals(self, *, tenant_id: str, company_id: str,
+                                limit: int = DEFAULT_CRM_LIMIT) -> list[dict]:
+        """A company's OPEN deals (not closed_won/closed_lost — hand-written stage literals),
+        newest first. Ties the directory into the Pipeline board's data."""
+        n = _clamp_limit(limit, DEFAULT_CRM_LIMIT)
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "SELECT d.id, d.tenant_id, d.title, d.stage, d.amount, d.currency, "
+                "d.company_id, d.contact_id, d.created_at "
+                "FROM deals d WHERE d.company_id = %s "
+                "AND d.stage NOT IN ('closed_won', 'closed_lost') "
+                "ORDER BY d.created_at DESC LIMIT %s",
+                (str(company_id), n),
+            )
+            return [_normalize_deal_row(r) for r in _dict_rows(cur)]
+
+    def list_companies_directory(self, *, tenant_id: str, q: str | None = None,
+                                 limit: int = DEFAULT_CRM_LIMIT, offset: int = 0) -> list[dict]:
+        """Directory page of companies with contact + open-deal counts (RLS scopes the count
+        subqueries too). `q` (optional) is a contains-match over name/domain."""
+        n = _clamp_limit(limit, DEFAULT_CRM_LIMIT)
+        off = _clamp_offset(offset)
+        base = (
+            "SELECT co.id, co.tenant_id, co.name, co.domain, co.created_at, "
+            "(SELECT count(*) FROM contacts c WHERE c.company_id = co.id) AS contact_count, "
+            "(SELECT count(*) FROM deals d WHERE d.company_id = co.id "
+            "AND d.stage NOT IN ('closed_won', 'closed_lost')) AS open_deal_count "
+            "FROM companies co "
+        )
+        tail = "ORDER BY co.created_at DESC LIMIT %s OFFSET %s"
+        with self._tx(tenant_id) as cur:
+            if q:
+                pat = _escape_ilike(q)
+                cur.execute(
+                    base + "WHERE (co.name ILIKE %s ESCAPE '\\' OR co.domain ILIKE %s "
+                    "ESCAPE '\\') " + tail,
+                    (pat, pat, n, off),
+                )
+            else:
+                cur.execute(base + tail, (n, off))
+            return [_normalize_company_row(r) for r in _dict_rows(cur)]
+
+    def get_company_directory(self, *, tenant_id: str, company_id: str) -> dict | None:
+        """One company + its contact/open-deal counts. None when RLS yields no row."""
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "SELECT co.id, co.tenant_id, co.name, co.domain, co.created_at, "
+                "(SELECT count(*) FROM contacts c WHERE c.company_id = co.id) AS contact_count, "
+                "(SELECT count(*) FROM deals d WHERE d.company_id = co.id "
+                "AND d.stage NOT IN ('closed_won', 'closed_lost')) AS open_deal_count "
+                "FROM companies co WHERE co.id = %s",
+                (str(company_id),),
+            )
+            rows = _dict_rows(cur)
+        return _normalize_company_row(rows[0]) if rows else None
+
+    def list_company_contacts(self, *, tenant_id: str, company_id: str,
+                              limit: int = DEFAULT_CRM_LIMIT) -> list[dict]:
+        """One company's contacts, newest first (no company join — the caller has the company)."""
+        n = _clamp_limit(limit, DEFAULT_CRM_LIMIT)
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "SELECT c.id, c.tenant_id, c.name, c.email, c.phone, c.company_id, "
+                "c.created_at, "
+                "(SELECT max(a.occurred_at) FROM activities a WHERE a.contact_id = c.id) "
+                "AS last_activity_at "
+                "FROM contacts c WHERE c.company_id = %s "
+                "ORDER BY c.created_at DESC LIMIT %s",
+                (str(company_id), n),
+            )
+            return [_normalize_contact_row(r) for r in _dict_rows(cur)]
 
     # ----------------------------------------------------------------- ToolContext adapter
     def binding(self) -> "TenantBoundCrm":

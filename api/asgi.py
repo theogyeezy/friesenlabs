@@ -35,6 +35,7 @@ from api.app import ApiDeps, create_app
 from api.auth import CognitoJwtVerifier, JwtVerifier
 from api.control.autonomy import AutonomyConfig
 from api.control.greenlight import Greenlight, PgApprovalStore
+from api.contacts_routes import ContactsDeps
 from api.control.types import Action
 from api.deals_routes import DealsDeps
 from api.pg_clients import PgCrmClient, PgRagClient
@@ -253,6 +254,8 @@ def build_app():
         # /chat tool clients use — one pool, one SET LOCAL discipline. crm is None when the
         # DSN is unconfigured, so the routes answer their honest 503s.
         deals=DealsDeps(crm=crm),
+        # /contacts + /companies (the real Contacts directory) — the same single PgCrmClient.
+        contacts=ContactsDeps(crm=crm),
     )
     return create_app(deps)
 

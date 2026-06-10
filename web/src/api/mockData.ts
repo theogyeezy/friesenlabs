@@ -16,13 +16,20 @@ import {
   type ActionResponse,
   type Approval,
   type ChatResponse,
+  type CompanyDetailResponse,
+  type CompanyRow,
+  type ContactDetailResponse,
+  type ContactRow,
   type DealCard,
   type DealDetailResponse,
   type DealStageGroup,
   type DecideBody,
+  type DirectoryListParams,
   type Integration,
   type IntegrationCredentialsBody,
   type IntegrationSyncResponse,
+  type ListCompaniesResponse,
+  type ListContactsResponse,
   type ListDealsResponse,
   type ListIntegrationsResponse,
   type MoveStageBody,
@@ -181,6 +188,75 @@ function seedDeals(): DealCard[] {
   ];
 }
 
+// Mirrors api/contacts_routes.py shapes. company_ids line up with seedDeals so
+// the contact drawer's "open deals" seam shows the same canned pipeline.
+function seedContacts(): ContactRow[] {
+  return [
+    {
+      id: "c0000000-0000-0000-0000-000000000001",
+      name: "Dana Whitfield",
+      title: null,
+      email: "dana@birchwoodcap.example",
+      phone: "+1 512 555 0150",
+      company_id: "c-1",
+      company_name: "Birchwood Capital",
+      created_at: "2026-05-20T00:00:00+00:00",
+      last_activity_at: "2026-06-05T00:00:00+00:00",
+    },
+    {
+      id: "c0000000-0000-0000-0000-000000000002",
+      name: "Priya Raman",
+      title: null,
+      email: "priya@halcyonlogistics.example",
+      phone: "+1 737 555 0188",
+      company_id: "c-2",
+      company_name: "Halcyon Logistics",
+      created_at: "2026-05-22T00:00:00+00:00",
+      last_activity_at: "2026-06-03T00:00:00+00:00",
+    },
+    {
+      id: "c0000000-0000-0000-0000-000000000003",
+      name: "Marcus Oyelaran",
+      title: null,
+      email: "marcus@mesaverde.example",
+      phone: null,
+      company_id: "c-3",
+      company_name: "Mesa Verde Health",
+      created_at: "2026-05-25T00:00:00+00:00",
+      last_activity_at: null,
+    },
+  ];
+}
+
+function seedCompanies(): CompanyRow[] {
+  return [
+    {
+      id: "c-1",
+      name: "Birchwood Capital",
+      domain: "birchwoodcap.example",
+      created_at: "2026-05-01T00:00:00+00:00",
+      contact_count: 1,
+      open_deal_count: 1,
+    },
+    {
+      id: "c-2",
+      name: "Halcyon Logistics",
+      domain: "halcyonlogistics.example",
+      created_at: "2026-05-02T00:00:00+00:00",
+      contact_count: 1,
+      open_deal_count: 1,
+    },
+    {
+      id: "c-3",
+      name: "Mesa Verde Health",
+      domain: "mesaverde.example",
+      created_at: "2026-05-03T00:00:00+00:00",
+      contact_count: 1,
+      open_deal_count: 1,
+    },
+  ];
+}
+
 function cannedChat(_message: string): ChatResponse {
   return {
     answer:
@@ -231,6 +307,8 @@ export class MockApi {
   private approvals: Approval[] = seedApprovals();
   private views: SavedViewRow[] = seedViews();
   private deals: DealCard[] = seedDeals();
+  private contacts: ContactRow[] = seedContacts();
+  private companies: CompanyRow[] = seedCompanies();
   private signupState: MockSignup | null = null;
   private integrations: Integration[] = seedIntegrations();
   // Names with a "vaulted" credential. The token VALUE is never retained —
@@ -382,6 +460,109 @@ export class MockApi {
       from_stage: d.stage,
       to_stage: to,
       detail: `queued for approval in Greenlight — the deal stays in '${d.stage}' until a human approves`,
+    };
+  }
+
+  // --- contacts / companies directory ------------------------------------------
+
+  listContacts(params: DirectoryListParams = {}): ListContactsResponse {
+    const q = (params.q ?? "").trim().toLowerCase();
+    const limit = Math.max(1, Math.min(params.limit ?? 50, 200));
+    const offset = Math.max(0, params.offset ?? 0);
+    const filtered = this.contacts.filter(
+      (c) =>
+        !q ||
+        (c.name ?? "").toLowerCase().includes(q) ||
+        (c.email ?? "").toLowerCase().includes(q),
+    );
+    const page = filtered.slice(offset, offset + limit).map((c) => ({ ...c }));
+    return {
+      contacts: page,
+      count: page.length,
+      has_more: offset + limit < filtered.length,
+      limit,
+      offset,
+      q: q || null,
+    };
+  }
+
+  getContact(contactId: string): ContactDetailResponse {
+    const c = this.contacts.find((row) => row.id === contactId);
+    if (!c) throw new ApiError(404, "no such contact");
+    const open = this.deals.filter(
+      (d) => d.company_id === c.company_id && d.stage !== "closed_won" && d.stage !== "closed_lost",
+    );
+    return {
+      contact: { ...c },
+      activities: c.last_activity_at
+        ? [
+            {
+              id: "act-1",
+              kind: "call",
+              body: "Walked through the security review; they want the RLS docs.",
+              occurred_at: c.last_activity_at,
+            },
+            {
+              id: "act-2",
+              kind: "email",
+              body: "Sent the revised order form (net-45 -> net-30).",
+              occurred_at: "2026-06-04T00:00:00+00:00",
+            },
+          ]
+        : [],
+      company_deals: open.map((d) => ({
+        id: d.id,
+        title: d.title,
+        stage: d.stage,
+        amount: d.amount,
+        currency: d.currency,
+        company_id: d.company_id,
+        contact_id: d.contact_id,
+        created_at: d.created_at,
+      })),
+    };
+  }
+
+  listCompanies(params: DirectoryListParams = {}): ListCompaniesResponse {
+    const q = (params.q ?? "").trim().toLowerCase();
+    const limit = Math.max(1, Math.min(params.limit ?? 50, 200));
+    const offset = Math.max(0, params.offset ?? 0);
+    const filtered = this.companies.filter(
+      (c) =>
+        !q ||
+        (c.name ?? "").toLowerCase().includes(q) ||
+        (c.domain ?? "").toLowerCase().includes(q),
+    );
+    const page = filtered.slice(offset, offset + limit).map((c) => ({ ...c }));
+    return {
+      companies: page,
+      count: page.length,
+      has_more: offset + limit < filtered.length,
+      limit,
+      offset,
+      q: q || null,
+    };
+  }
+
+  getCompany(companyId: string): CompanyDetailResponse {
+    const c = this.companies.find((row) => row.id === companyId);
+    if (!c) throw new ApiError(404, "no such company");
+    const open = this.deals.filter(
+      (d) => d.company_id === c.id && d.stage !== "closed_won" && d.stage !== "closed_lost",
+    );
+    return {
+      company: { ...c },
+      contacts: this.contacts.filter((p) => p.company_id === c.id).map((p) => ({ ...p })),
+      deals: open.map((d) => ({
+        id: d.id,
+        title: d.title,
+        stage: d.stage,
+        amount: d.amount,
+        currency: d.currency,
+        company_id: d.company_id,
+        contact_id: d.contact_id,
+        created_at: d.created_at,
+      })),
     };
   }
 

@@ -22,6 +22,7 @@ from api.control.greenlight import Greenlight
 from api.control.killswitch import KillSwitch
 from api.control.traces import InMemoryTraceStore, TraceStore
 from api.control.types import Action
+from api.contacts_routes import ContactsDeps
 from api.deals_routes import DealsDeps
 from api.integrations_routes import IntegrationsDeps, build_integrations_deps
 from api.views import SavedViews
@@ -50,6 +51,11 @@ class ApiDeps:
     # tools use (one pool, the dsn_from_env guard the /approvals//views stores ride). Pass None
     # to skip mounting the routes entirely.
     deals: DealsDeps | None = field(default_factory=DealsDeps)
+    # /contacts + /companies deps (the real Contacts directory). Same inert-default contract
+    # as `deals`: the all-None stub mounts honest-503 routes and constructing deps never opens
+    # a DB pool; api/asgi.py is the ONLY real wiring (the same PgCrmClient instance). Pass None
+    # to skip mounting the routes entirely.
+    contacts: ContactsDeps | None = field(default_factory=ContactsDeps)
 
 
 # --- request bodies (note: NONE carry tenant_id — the trust rule forbids it) ---
@@ -199,6 +205,13 @@ def create_app(deps: ApiDeps) -> FastAPI:
     if deps.deals is not None:
         from api.deals_routes import mount_deals
         mount_deals(app, deps.deals, current_tenant, gate_deps=deps)
+
+    # Authed per-tenant contacts/companies directory (the real Contacts tab). Claims-bound,
+    # READ-ONLY this cycle (no gate deps — CRM writes arrive with a later update_contact tool
+    # through the gate). Unconfigured deps answer honest 503s, never invented rows.
+    if deps.contacts is not None:
+        from api.contacts_routes import mount_contacts
+        mount_contacts(app, deps.contacts, current_tenant)
 
     # Public, pre-tenant signup + Stripe webhook routes (optional).
     if deps.signup is not None:

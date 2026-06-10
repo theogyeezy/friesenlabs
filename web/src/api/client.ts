@@ -176,6 +176,96 @@ export interface MoveStageResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Contacts / companies directory wire types (mirror api/contacts_routes.py).
+// READ-ONLY this cycle: there are no write methods — CRM writes arrive with a
+// later update_contact tool through the Greenlight gate.
+// ---------------------------------------------------------------------------
+
+/** One directory contact row (GET /contacts). No tenant_id — the API strips
+ * it. `title` is always null today: the schema carries no title column yet;
+ * the API names it so this shape stays stable when it lands. */
+export interface ContactRow {
+  id: string;
+  name: string | null;
+  title: string | null;
+  email: string | null;
+  phone: string | null;
+  company_id: string | null;
+  company_name: string | null;
+  created_at: string | null;
+  /** Newest activity timestamp across the contact's logged activities. */
+  last_activity_at: string | null;
+}
+
+export interface ListContactsResponse {
+  contacts: ContactRow[];
+  count: number;
+  has_more: boolean;
+  limit: number;
+  offset: number;
+  q: string | null;
+}
+
+export interface ContactActivity {
+  id: string | null;
+  kind: string | null;
+  body: string | null;
+  occurred_at: string | null;
+}
+
+/** A company's OPEN deal riding on contact/company detail (the Pipeline seam). */
+export interface CompanyDeal {
+  id: string;
+  title: string | null;
+  stage: string;
+  amount: number | null;
+  currency: string | null;
+  company_id: string | null;
+  contact_id: string | null;
+  created_at: string | null;
+}
+
+export interface ContactDetailResponse {
+  contact: ContactRow;
+  activities: ContactActivity[];
+  /** The contact's company's open deals — links toward the Pipeline board. */
+  company_deals: CompanyDeal[];
+}
+
+/** One directory company row with contact + open-deal counts. */
+export interface CompanyRow {
+  id: string;
+  name: string | null;
+  domain: string | null;
+  created_at: string | null;
+  contact_count: number;
+  open_deal_count: number;
+}
+
+export interface ListCompaniesResponse {
+  companies: CompanyRow[];
+  count: number;
+  has_more: boolean;
+  limit: number;
+  offset: number;
+  q: string | null;
+}
+
+export interface CompanyDetailResponse {
+  company: CompanyRow;
+  contacts: ContactRow[];
+  deals: CompanyDeal[];
+}
+
+/** Query params for the directory lists. Carries NO tenant_id (the trust
+ * rule); q is server-capped at 200 chars (422 beyond). */
+export interface DirectoryListParams {
+  q?: string;
+  limit?: number;
+  offset?: number;
+}
+
+// ---------------------------------------------------------------------------
 // Integrations wire types (mirror api/integrations_routes.py shapes).
 // ---------------------------------------------------------------------------
 
@@ -666,6 +756,60 @@ export class ApiClient {
       "POST",
       `/deals/${encodeURIComponent(dealId)}/move-stage`,
       body,
+    );
+  }
+
+  // --- contacts / companies directory (authed, read-only) ---------------------
+
+  /** Build the directory query string. Values are URL-encoded; tenant_id can
+   * never appear (the typed params shape has no such field). */
+  private directoryQuery(params: DirectoryListParams = {}): string {
+    const qs = new URLSearchParams();
+    if (params.q !== undefined && params.q !== "") qs.set("q", params.q);
+    if (params.limit !== undefined) qs.set("limit", String(params.limit));
+    if (params.offset !== undefined) qs.set("offset", String(params.offset));
+    const s = qs.toString();
+    return s ? `?${s}` : "";
+  }
+
+  /** GET /contacts: the paginated, searchable contact directory. */
+  async listContacts(params: DirectoryListParams = {}): Promise<ListContactsResponse> {
+    if (this.mock) {
+      return (await this.mockApi()).listContacts(params);
+    }
+    return this.request<ListContactsResponse>("GET", `/contacts${this.directoryQuery(params)}`);
+  }
+
+  /** GET /contacts/{id}: one contact + activities + the company's open deals. */
+  async getContact(contactId: string): Promise<ContactDetailResponse> {
+    if (this.mock) {
+      return (await this.mockApi()).getContact(contactId);
+    }
+    return this.request<ContactDetailResponse>(
+      "GET",
+      `/contacts/${encodeURIComponent(contactId)}`,
+    );
+  }
+
+  /** GET /companies: the company directory with contact + open-deal counts. */
+  async listCompanies(params: DirectoryListParams = {}): Promise<ListCompaniesResponse> {
+    if (this.mock) {
+      return (await this.mockApi()).listCompanies(params);
+    }
+    return this.request<ListCompaniesResponse>(
+      "GET",
+      `/companies${this.directoryQuery(params)}`,
+    );
+  }
+
+  /** GET /companies/{id}: one company + its contacts + its open deals. */
+  async getCompany(companyId: string): Promise<CompanyDetailResponse> {
+    if (this.mock) {
+      return (await this.mockApi()).getCompany(companyId);
+    }
+    return this.request<CompanyDetailResponse>(
+      "GET",
+      `/companies/${encodeURIComponent(companyId)}`,
     );
   }
 
