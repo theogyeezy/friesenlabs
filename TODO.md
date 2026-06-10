@@ -17,7 +17,8 @@ code-split to ~247KB first-load, generated og:image).
 The unchecked remainder, by category:
 - **Owner-gated (only the account owner can act):** the MA environment key `uplift/env-key`
   (Anthropic Console "Generate environment key" — no SDK mint; unblocks the worker deploy + its SG
-  egress); the friesenlabs.com **NS cutover** at Squarespace (unblocks ACM validation → ALB TLS
+  egress); ~~the friesenlabs.com **NS cutover** at Squarespace~~ ✅ **DONE 2026-06-10** (NS
+  delegated, wildcard ACM ISSUED — unblocks the ALB TLS
   cutover → CF→ALB https origin → drop the :80 rule → retire api_cdn → CF min-TLS 1.2 — TODO **Lane Ship 2026-06-10: RECOMMEND AGAINST retiring** — the api_cdn distribution is what stamps X-Origin-Verify and carries the WAF; Amplify's /api proxy cannot add custom headers, so retirement would 403 all API traffic or force dropping origin-verify. Revisit only with a replacement header-stamping/WAF design.
   131/166/210/211/226/227/231); the **Stripe webhook secret** + **Anthropic admin key** (signup
   go-live). All wired; each goes live the moment its value/click lands.
