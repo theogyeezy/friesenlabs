@@ -72,7 +72,7 @@ const LP_PRODUCTS = [
     features: [["One-tap approve", "Approve or decline from anywhere"], ["Inline editing", "Tweak the agent's draft before it sends"], ["Bulk approve", "Clear the routine queue in one go"], ["Policy & spend limits", "Auto-approve under your thresholds"]] },
   { id: "agents", name: "Agents", cat: "Workforce", icon: "spark", tone: "indigo", blurb: "Build agents in a visual Studio, give them skills, set their autonomy.",
     long: "Hire ready-made agents or build your own in a visual Studio: name them, give them composable skills, ground them on your knowledge, and set exactly how much they can do.",
-    features: [["Agent Studio", "A delightful visual builder with a live preview"], ["Skill marketplace", "Composable capabilities you mix, build & share"], ["Autonomy & guardrails", "Suggest-only to fully autonomous, with limits"], ["Managed runtime", "Optimized, hosted, nothing to set up"]] },
+    features: [["Agent Studio", "Build an agent and watch it work in a live preview before you ship it"], ["Skill marketplace", "Composable capabilities you mix, build & share"], ["Autonomy & guardrails", "Suggest-only to fully autonomous, with limits"], ["Managed runtime", "Optimized, hosted, nothing to set up"]] },
   { id: "integration", name: "Switchboard", cat: "Connect", icon: "plug", tone: "green", blurb: "Plug into HubSpot, Stripe, Gmail and 18+ tools you already use.",
     long: "Connect the tools you already run on. Your CRM becomes the system of record and agents read & write to it directly.",
     features: [["18+ connectors", "CRM, email, calendar, payments, support"], ["System of record", "Your CRM stays the source of truth"], ["Two-way sync", "Nothing lives in two places"], ["Write-back", "Approved actions push back to your tools"]] },
@@ -84,9 +84,9 @@ const LP_PRODUCTS = [
     features: [["Hosted knowledge bases", "We host & index your docs, private to your instance"], ["RAG out of the box", "Chunked, embedded and searchable automatically"], ["Grounds everything", "Context for Uplift, Frontline, Workflows & agents"], ["Test retrieval", "Ask a base a question and see exactly what it returns"]] },
   { id: "cortex", name: "Cortex", cat: "Intelligence", icon: "network", tone: "amber", blurb: "Knowledge-grounded intelligence, with optional plugins to compound and train private models.",
     long: "The intelligence layer for your agents. Knowledge grounding is included, your agents answer from your own knowledge bases. Add the Flywheel and Fine-tuning plugins to compound on every decision and train private models on your own data, the moat no competitor can copy.",
-    features: [["Knowledge (included)", "Agents ground every answer on your hosted knowledge"], ["Flywheel plugin", "Every prediction becomes an outcome that retrains the model, compounding over time"], ["Fine-tuning plugin", "Turn your data into a private model that runs on your hardware"], ["Data gravity", "Your decision history can't be exported or rebuilt elsewhere"]] },
+    features: [["Knowledge (included)", "Agents ground every answer on your hosted knowledge"], ["Flywheel plugin", "Every prediction becomes an outcome that retrains the model, compounding over time"], ["Fine-tuning plugin", "Turn your data into a private model that runs on your hardware"], ["Data gravity", "Every decision your agents make sharpens a model only you own, a head start no competitor can copy"]] },
   { id: "security", name: "Security & Control", cat: "Trust", icon: "shield", tone: "indigo", blurb: "A kill switch, guardrails, approvals and a full audit trail, included free.",
-    long: "Total peace of mind. One switch flips every agent between Live, Analyze-only and a full Kill switch, backed by guardrails, role permissions, anomaly monitoring and an audit log.",
+    long: "One switch flips every agent between Live, Analyze-only and a full Kill switch, backed by guardrails, role permissions, anomaly monitoring and an audit log.",
     features: [["Kill switch", "One tap stops every agent instantly"], ["Granular guardrails", "Spend caps, PII redaction, bulk limits, two-person approval"], ["Roles & access", "2FA, SSO, IP allowlist, session limits"], ["Audit & monitoring", "Every action logged, anomalies auto-paused"]] },
 ];
 const LP_TONE = {
@@ -109,7 +109,7 @@ const LP_ROI = [
   { num: "~pennies", b: "Per task, not $25/hr", p: "Agents work for a fraction of the cost of the manual hours they replace." },
   { num: "24/7", b: "Never clocks out", p: "Agents work nights, weekends and holidays, your pipeline keeps moving while you rest." },
 ];
-const LP_ENABLE_OWNER = ["Grow without growing payroll or overhead", "Stay in control and sign off on anything risky in Greenlight", "See the whole business at a glance in Command Center", "Put saved time and money straight back into growth"];
+const LP_ENABLE_OWNER = ["Grow without growing payroll or overhead", "Stay in control and sign off on anything risky in Greenlight", "Open Command Center and see exactly what your agents did overnight", "Put saved time and money straight back into growth"];
 const LP_ENABLE_TEAM = ["Agents take the busywork, data entry, follow-ups, ticket triage", "Your people focus on relationships, judgment and closing", "Everyone gets an agent teammate, not a pink slip", "Level up your team's output without burning them out"];
 const LP_RESEARCH = [
   { tag: "Agents", date: "May 2026", readTime: "9 min", title: "Guardrails that small businesses actually trust",
@@ -150,7 +150,7 @@ const LP_RESEARCH = [
     ] },
 ];
 const LP_DEMOS = [
-  { id: "command", tab: "Command Center", cat: "Command Center", title: "Your whole business at a glance", desc: "Watch your agents work in real time, see what needs you, and track the numbers that matter, all in one calm morning view.", bullets: ["Live agent activity feed", "Animated metrics & pipeline", "Approvals surface right here"], Demo: () => <CommandDemo /> },
+  { id: "command", tab: "Command Center", cat: "Command Center", title: "See your whole business in one morning view", desc: "Watch your agents work in real time, see what needs you, and track the numbers that matter, all in one calm morning view.", bullets: ["Live agent activity feed", "Animated metrics & pipeline", "Approvals surface right here"], Demo: () => <CommandDemo /> },
   { id: "agents", tab: "Agents", cat: "Agents", title: "Agents that actually do the work", desc: "Give each agent a name, a face and a job. They research, write, send and book, around the clock, and hand the judgment calls to you.", bullets: ["Name & re-skin any agent", "Set autonomy from suggest-only to fully autonomous", "Guardrails keep them on-policy"], Demo: () => <FoxDemo /> },
   { id: "uplift", tab: "Uplift CRM", cat: "Uplift", title: "A pipeline that moves itself", desc: "Drag a deal and the assigned agent picks up the next step. Or keep your current CRM, the agents work inside it just the same.", bullets: ["Drag-and-drop kanban", "An agent on every deal", "Bring your own CRM"], Demo: () => <KanbanDemo /> },
   { id: "frontline", tab: "Frontline", cat: "Frontline", title: "Support that handles itself", desc: "Pip answers the routine questions the moment they land, order status, hours, bookings, and only routes the tricky, sensitive ones to you.", bullets: ["Watch tickets auto-deflect live", "One inbox for every channel", "Refunds & returns route to a human"], Demo: () => <SupportDemo /> },
@@ -158,7 +158,7 @@ const LP_DEMOS = [
   { id: "greenlight", tab: "Greenlight", cat: "Greenlight", title: "You stay in control", desc: "Nothing risky happens without you. Review the agent's draft, edit it, and approve with one tap, or let the routine stuff run itself.", bullets: ["One-tap approve or decline", "Edit the draft inline", "Set spend & policy limits"], Demo: () => <GreenlightDemo /> },
   { id: "integration", tab: "Switchboard", cat: "Switchboard", title: "Plug into your whole stack", desc: "Connect the tools you already run on. Your agents read and write to each, and your CRM can stay the system of record.", bullets: ["18+ connectors", "Two-way sync & write-back", "Bring your own CRM"], Demo: () => <IntegrationDemo /> },
   { id: "sidecar", tab: "Sidecar", cat: "Sidecar", title: "Keep your stack. Add the agents.", desc: "Connect your tools in Switchboard and Sidecar's agents go to work on top of them, enriching, drafting and advancing deals, surfacing everything they do inside Friesen.", bullets: ["Works on your connected tools", "Powered by Switchboard", "Same guardrails everywhere"], Demo: () => <SidecarDemo /> },
-  { id: "security", tab: "Security", cat: "Security & Control", title: "You're always in control", desc: "Flip every agent between Live, Analyze-only and a full Kill switch in one tap, and toggle the guardrails that keep them on-policy. Peace of mind, built in.", bullets: ["One-tap kill switch", "Granular guardrails", "Included free in every plan"], Demo: () => <SecurityDemo /> },
+  { id: "security", tab: "Security", cat: "Security & Control", title: "You're always in control", desc: "Flip every agent between Live, Analyze-only and a full Kill switch in one tap, and toggle the guardrails that keep them on-policy. Stop everything the moment you need to.", bullets: ["One-tap kill switch", "Granular guardrails", "Included free in every plan"], Demo: () => <SecurityDemo /> },
   { id: "cortex", tab: "Cortex", cat: "Cortex", title: "Intelligence that compounds.", desc: "Cortex grounds your agents on your data, trains private models, and gets sharper with every decision they make. Run a cycle and watch the accuracy climb.", bullets: ["Private models on your data", "Grounded on your knowledge", "Compounds into a moat"], Demo: () => <CortexDemo /> },
 ];
 const LP_MODULES = [
@@ -184,13 +184,13 @@ const LP_TESTIMONIALS = [
   { name: "Aisha Rahman", role: "Owner, Lantern Bakehouse", init: "LB", color: "oklch(0.66 0.14 50)", metric: "11 hrs/week saved", quote: "Margo quotes every catering inquiry before I've had my coffee. I just glance, approve, and it's sent. It feels like I hired a whole sales team." },
   { name: "Gus Hartley", role: "Owner, Riverside Plumbing", init: "RP", color: "oklch(0.62 0.13 152)", metric: "73% tickets deflected", quote: "Pip answers the 'are you open?' and 'where's my tech?' questions instantly. My phone stopped ringing off the hook and my customers are happier." },
   { name: "Priya Nair", role: "Founder, Cedar Street Yoga", init: "CS", color: "oklch(0.56 0.17 277)", metric: "2× more bookings", quote: "It books discovery calls while I'm teaching. I never lose a lead to a slow reply anymore, the agents just handle it and ask me before anything important." },
-  { name: "Owen Reyes", role: "Owner, Sundial Landscaping", init: "SL", color: "oklch(0.66 0.12 235)", metric: "$42k influenced", quote: "I kept my old CRM and dropped Sidecar on top. Same tools, but now there's an agent in the corner telling me exactly who to call next. Wild." },
+  { name: "Owen Reyes", role: "Owner, Sundial Landscaping", init: "SL", color: "oklch(0.62 0.13 152)", metric: "$42k influenced", quote: "I kept my old CRM and dropped Sidecar on top. Same tools, but now there's an agent in the corner telling me exactly who to call next. Wild." },
   { name: "Dana Okafor", role: "Birch & Co. Roasters", init: "BC", color: "oklch(0.62 0.15 18)", metric: "Live in a day", quote: "I was terrified of 'AI' breaking something. The kill switch and approvals meant I could let it run a little more each week. Now I trust it completely." },
-  { name: "Marcus Liu", role: "Tidewater Dental", init: "TD", color: "oklch(0.6 0.15 200)", metric: "9 hrs/week saved", quote: "Friesen does the follow-ups I always meant to do and never did. The pipeline basically moves itself while I'm chairside." },
+  { name: "Marcus Liu", role: "Tidewater Dental", init: "TD", color: "oklch(0.7 0.14 65)", metric: "9 hrs/week saved", quote: "Friesen does the follow-ups I always meant to do and never did. The pipeline basically moves itself while I'm chairside." },
 ];
 const LP_FOUNDERS = [
   { id: "matt", name: "Matt Yee", title: "Tinkerer of things",
-    bio: "Rocket scientist turned AI/ML engineer, Matt has spent his career solving problems most people consider impossible. He managed satellite fleet operations for Amazon Kuiper's low-earth orbit constellation and built moonshot technology at Google X, bringing an aerospace-grade approach to designing agentic AI systems, LLM-powered copilots, and defense-grade cloud infrastructure. Today he's at ServiceNow, one of the leading AI autonomous companies, bringing agentic workflows to life for some of the largest enterprises in the world. Along the way, Matt was part of the New York Mets organization as a bullpen catcher and a catcher with the Cosmic Baseball organization, fueling his belief that the best AI doesn't just automate tasks, it unlocks human potential. He holds an active TS/SCI clearance, has led engineering teams of 30+, and is a Stanford University alumnus based in Austin, Texas.",
+    bio: "Rocket scientist turned AI/ML engineer, Matt has spent his career solving problems most people consider impossible. He managed satellite fleet operations for Amazon Kuiper's low-earth orbit constellation and built moonshot technology at Google X, bringing an aerospace-grade approach to designing agentic AI systems, LLM-powered copilots, and defense-grade cloud infrastructure. Today he's at ServiceNow, one of the leading AI autonomous companies, bringing agentic workflows to life for some of the largest enterprises in the world. Along the way, Matt was part of the New York Mets organization as a bullpen catcher and a catcher with the Cosmic Baseball organization, fueling his belief that the best AI doesn't just automate tasks, it gives people back the hours to do the work only they can do. He holds an active TS/SCI clearance, has led engineering teams of 30+, and is a Stanford University alumnus based in Austin, Texas.",
     linkedin: "https://www.linkedin.com/in/mattyee92/", instagram: "https://www.instagram.com/themattyee/" },
   { id: "nick", name: "Nick Friesen", title: "Machine Learning enthusiast",
     bio: "Nick doesn't wait for the future, he builds it. A self-taught machine learning engineer and serial founder, Nick has spent his career turning bold ideas into reality, from scaling photography businesses that redefine first impressions to training identity-preserving AI image models at Fibb AI that make photorealistic human likeness indistinguishable from the real thing. Today, Nick is pushing the boundaries of what AI can do, applying machine learning and agentic systems to some of the most fascinating frontiers imaginable: dog aging, piano composition, cinema, and personal context memory. He's a North Dakota State University alumnus based in Austin, Texas.",
@@ -331,7 +331,7 @@ function VsSection() {
 const LP_NICE = [
   { id: "ads", tab: "Advertising Hubs", icon: "megaphone", tone: "rose",
     title: "Every ad account, one honest dashboard",
-    desc: "Pull Meta, Instagram, Google, YouTube and TikTok spend into one place. See true blended ROAS, what's working, and what to cut, without ten tabs.",
+    desc: "Pull Meta, Instagram, Google, YouTube and TikTok spend into one view. See true blended ROAS, what's working, and what to cut, without ten tabs.",
     bullets: ["Blended ROAS & cost-per-result across every platform", "Agents flag underperformers and draft new creative", "Budget pacing so you never overspend by Friday"] },
   { id: "traffic", tab: "Traffic", icon: "gauge", tone: "indigo",
     title: "Know exactly what your site visitors do",
@@ -871,7 +871,6 @@ function ScrollProgress() {
 function FinalCta({ onBook }) {
   return (
     <section className="lp-finalcta">
-      <div className="lp-aurora" aria-hidden="true"><span /><span /><span /></div>
       <div className="lp-wrap">
         <div className="lp-eyebrow" style={{ color: "color-mix(in oklch, var(--accent) 55%, #fff)" }}>Your agents are waiting</div>
         <h2 className="fc-h">Stop doing the busywork.<br />Put a crew on it tonight.</h2>
@@ -1021,8 +1020,6 @@ function Landing({ onSignIn = () => {} } = {}) {
 
   return (
     <div className="lp lp-cinematic">
-      <WebGLBackdrop />
-      <Grain />
       <ScrollProgress />
       {/* nav */}
       <nav className="lp-nav">
@@ -1067,9 +1064,6 @@ function Landing({ onSignIn = () => {} } = {}) {
 
       {/* hero */}
       <section className="lp-hero">
-        <div className="lp-aurora" aria-hidden="true"><span /><span /><span /></div>
-        <div className="lp-grid3d" aria-hidden="true"><div className="lp-grid3d-floor" /></div>
-        <div className="lp-vignette" aria-hidden="true" />
         <div className="lp-wrap lp-hero-grid">
           <div>
             <span className="lp-pill"><span className="live-dot" style={{ width: 6, height: 6 }} />Meet your AI back office</span>
