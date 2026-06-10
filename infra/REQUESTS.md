@@ -323,3 +323,32 @@ Rules:
   #    deliberate future REQ — do not flip it as part of this one.
   ```
 - **Done when:** `terraform validate` green; the api task role policy lists exactly the three actions above scoped to `uplift/*/hubspot*` (and the worker/ingest roles are unchanged); with `INTEGRATIONS_REAL_SECRETS=1` on the API task, `POST /integrations/hubspot/credentials` (authed) creates/updates `uplift/<that tenant>/hubspot` in Secrets Manager, `GET /integrations` flips that tenant's hubspot status to `connected`, and the next REQ-004 scheduled ingest run for that tenant resolves the per-tenant secret WITHOUT the deprecated shared-token fallback warning.
+
+### REQ-007: CI job for the gated live signup e2e (Stripe TEST mode) — `tests/integration/test_signup_live_e2e.py`
+- **Status:** OPEN
+- **Requested by:** Lane Matt @feat/matt-live-e2e-cube-dims-synth-refs (PR "feat(tests): gated live signup e2e + cube dimension_values + synthesizer ref normalization")
+- **Needed for:** TODO INT/P2 "gated live e2e" — continuously proving signup → email-token verify → OTP verify → Stripe TEST-mode Checkout → SIGNED webhook → idempotent provisioning to ACTIVE against real sandbox providers, instead of once by hand. The test file ships with this PR; it skips itself cleanly (every test) when the secrets below are absent, so the existing offline pytest job is untouched either way.
+- **Env/secret names** (must already exist in shared/config.py): n/a — the gates are TEST-HARNESS-ONLY env (`STRIPE_TEST_SECRET_KEY`, `STRIPE_TEST_WEBHOOK_SECRET`; optional `STRIPE_TEST_PRICE_ID` / `SIGNUP_E2E_COGNITO_POOL_ID` / `SIGNUP_E2E_RESEND_API_KEY`). Deliberately NOT in `shared/config.py`: no app code reads them and no live task may ever inject them (deploy invariance) — they exist only as GitHub Actions secrets fed to this one pytest invocation. `ALLOW_REAL_SENDS` stays UNSET (the module fails loudly if it is "true"; every sender in the harness is constructed draft-gated).
+- **Spec:**
+  ```yaml
+  # .github/workflows/ci.yml (Lane Nick's file) — a SEPARATE job so the offline suite never
+  # depends on repo secrets. Suggested triggers: push to main + a nightly cron; NOT fork PRs
+  # (GitHub withholds secrets there anyway — the file then skips every test cleanly).
+  live-signup-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.13" }
+      # the `stripe` lib lives in requirements-api.txt (it is NOT a dev dependency)
+      - run: pip install -r requirements-api.txt -r requirements-dev.txt
+      - run: python -m pytest tests/integration/test_signup_live_e2e.py -q
+        env:
+          STRIPE_TEST_SECRET_KEY: ${{ secrets.STRIPE_TEST_SECRET_KEY }}          # sk_test_… ONLY —
+          # the module hard-fails on a non-test-mode key (it must never touch live money)
+          STRIPE_TEST_WEBHOOK_SECRET: ${{ secrets.STRIPE_TEST_WEBHOOK_SECRET }}  # whsec_… (test mode)
+          # Optional sandbox seams (leave unset to keep those seams on the offline fakes):
+          # STRIPE_TEST_PRICE_ID / SIGNUP_E2E_COGNITO_POOL_ID / SIGNUP_E2E_RESEND_API_KEY
+          # ALLOW_REAL_SENDS: never set here — the draft-gate is part of what the e2e proves.
+  ```
+- **Done when:** the job is green on `main` with the two `STRIPE_TEST_*` GitHub secrets populated from the Stripe TEST-mode dashboard (test-mode key + a test-mode webhook signing secret; the run creates only test-mode objects — a throwaway $1/mo product+price unless `STRIPE_TEST_PRICE_ID` is supplied); with the secrets absent the job (and any local run) reports the file's tests as SKIPPED, never failed; the offline pytest job is unchanged.

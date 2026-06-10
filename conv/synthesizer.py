@@ -138,7 +138,12 @@ class AnthropicSynthesizer:
         if claims is None:
             return _default_synthesize(question, chunks)
 
-        retrieved = {c.get("ref") for c in chunks}
+        # Normalize refs via str() on BOTH sides of the filter: `_call_model` serializes every
+        # chunk ref as `str(ref)`, so a non-string retrieved ref (e.g. an int row id) and the
+        # model's echoed string form must compare equal — and a model emitting a raw JSON number
+        # ref is normalized the same way instead of being dropped on its type.
+        retrieved = {str(c.get("ref", "")) for c in chunks}
+        retrieved.discard("")  # a ref-less chunk can never be cited
         kept: list[dict] = []
         for claim in claims:
             if not isinstance(claim, dict):
@@ -151,8 +156,8 @@ class AnthropicSynthesizer:
             seen: set[str] = set()
             valid = [
                 r
-                for r in proposed
-                if isinstance(r, str) and r in retrieved and not (r in seen or seen.add(r))
+                for r in (str(p) for p in proposed if isinstance(p, (str, int)))
+                if r in retrieved and not (r in seen or seen.add(r))
             ]
             if valid:  # a claim with no surviving refs is dropped, not returned uncited
                 kept.append({"text": text, "source_refs": valid})
