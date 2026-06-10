@@ -40,14 +40,20 @@ class BuildView(Tool):
     }
     policy = Policy.AUTO
 
-    def __init__(self, generator: Any = None) -> None:
+    def __init__(self, generator: Any = None, cube_client: Any = None) -> None:
         # Optional injected default spec generator (an AnthropicSpecGenerator instance). The
         # registry's no-arg `resolve()` keeps it None — preserving the original raise path.
         self._generator = generator
+        # Optional injected default Cube client (agents/tools/cube_client.CubeClient) for the
+        # member catalog; a per-call ctx.cube always wins. None preserves the original behavior
+        # (no cube => empty member catalog => specs can't reference unverified members).
+        self._cube_client = cube_client
 
     def _execute(self, ctx: ToolContext, *, request: str) -> dict:
         # Catalog of real Cube members for this tenant (the model may reference only these).
-        allowed = set(ctx.cube.members(tenant_id=ctx.tenant_id)) if ctx.cube else set()
+        # The client mints a per-request tenant JWT from ctx.tenant_id (the verified claim).
+        cube = ctx.cube if ctx.cube is not None else self._cube_client
+        allowed = set(cube.members(tenant_id=ctx.tenant_id)) if cube else set()
         # The spec generator is an injected model call: per-call via ctx.extra, else the default.
         generate = ctx.extra.get("generate_spec") or self._generator
         if generate is None:
