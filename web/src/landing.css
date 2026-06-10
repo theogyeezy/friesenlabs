@@ -109,7 +109,7 @@ body.lp-body { overflow-y: auto; overflow-x: hidden; }
 /* mini kanban demo */
 .mk-board { flex: 1; display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
 .mk-col { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); padding: 10px; display: flex; flex-direction: column; gap: 8px; }
-.mk-col h5 { font-size: 11.5px; font-weight: 650; color: var(--ink-3); display: flex; align-items: center; gap: 6px; }
+.mk-col h4 { font-size: 11.5px; font-weight: 650; color: var(--ink-3); display: flex; align-items: center; gap: 6px; }
 .mk-card { background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 10px; cursor: grab; box-shadow: var(--shadow-sm); }
 .mk-card.drag { opacity: .4; }
 .mk-card b { font-size: 12.5px; font-weight: 650; display: block; }
@@ -121,7 +121,7 @@ body.lp-body { overflow-y: auto; overflow-x: hidden; }
 @media (max-width: 760px) { .lp-steps { grid-template-columns: 1fr; } }
 .lp-step { padding: 24px; }
 .lp-step .num { font-family: var(--mono); font-size: 13px; font-weight: 700; color: var(--accent); width: 34px; height: 34px; border-radius: 99px; border: 1.5px solid var(--accent-soft); display: grid; place-items: center; margin-bottom: 14px; }
-.lp-step h4 { font-size: 17px; font-weight: 700; letter-spacing: -.01em; }
+.lp-step h3 { font-size: 17px; font-weight: 700; letter-spacing: -.01em; }
 .lp-step p { font-size: 13.5px; color: var(--ink-2); line-height: 1.55; margin-top: 7px; }
 
 /* pricing / builder */
@@ -137,7 +137,7 @@ body.lp-body { overflow-y: auto; overflow-x: hidden; }
 .lp-mod .m-info { flex: 1; } .lp-mod .m-info b { font-size: 14.5px; font-weight: 680; display: block; } .lp-mod .m-info span { font-size: 12.5px; color: var(--ink-3); }
 .lp-mod .m-price { font-family: var(--mono); font-size: 13.5px; font-weight: 700; color: var(--ink-2); }
 .lp-summary { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--shadow-md); padding: 24px; position: sticky; top: 86px; }
-.lp-summary h4 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-3); font-weight: 650; }
+.lp-summary h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-3); font-weight: 650; }
 .lp-price { font-size: 46px; font-weight: 800; letter-spacing: -.04em; margin: 12px 0 2px; }
 .lp-price span { font-size: 16px; font-weight: 600; color: var(--ink-3); }
 .lp-summary-list { margin: 18px 0; display: flex; flex-direction: column; gap: 9px; border-top: 1px solid var(--line-2); padding-top: 16px; }
@@ -154,7 +154,7 @@ body.lp-body { overflow-y: auto; overflow-x: hidden; }
 .lp-footer { padding: 48px 0 32px; border-top: 1px solid var(--line); }
 .lp-foot-grid { display: grid; grid-template-columns: 1.2fr 2fr; gap: 40px; }
 .lp-foot-cols { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
-.lp-foot-col h5 { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-4); margin-bottom: 12px; }
+.lp-foot-col h4 { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-4); margin-bottom: 12px; }
 .lp-foot-col a { display: block; font-size: 13.5px; color: var(--ink-2); margin-bottom: 9px; cursor: pointer; text-decoration: none; transition: color .15s; }
 .lp-foot-col a:hover { color: var(--accent-ink); }
 .lp-foot-legal { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-top: 34px; padding-top: 22px; border-top: 1px solid var(--line); font-size: 12px; color: var(--ink-4); line-height: 1.5; }
@@ -186,7 +186,7 @@ textarea.lp-input { height: 92px; padding: 11px 13px; resize: none; }
 .lp-hiw-num { width: 46px; height: 46px; border-radius: 14px; display: grid; place-items: center; font-family: var(--mono); font-weight: 700; font-size: 15px; color: var(--accent-ink); background: var(--accent-softer); border: 1px solid color-mix(in oklch, var(--accent) 22%, var(--line)); flex-shrink: 0; }
 .lp-hiw-line { flex: 1; width: 2px; background: linear-gradient(var(--line), transparent); margin: 6px 0; min-height: 28px; }
 .lp-hiw-body { padding-bottom: 34px; }
-.lp-hiw-body h4 { font-size: 18px; font-weight: 700; letter-spacing: -.02em; }
+.lp-hiw-body h3 { font-size: 18px; font-weight: 700; letter-spacing: -.02em; }
 .lp-hiw-body p { font-size: 14.5px; color: var(--ink-2); line-height: 1.6; margin-top: 6px; max-width: 440px; }
 @media (max-width: 860px) { .lp-hiw { grid-template-columns: 1fr; gap: 30px; } .lp-hiw-rail { position: static; } }
 .lp-prov { width: min(540px, 100%); background: var(--surface); border-radius: var(--r-xl); box-shadow: var(--shadow-xl); padding: 36px; text-align: center; animation: onb-in .3s both; }
@@ -287,7 +287,7 @@ textarea.lp-input { height: 92px; padding: 11px 13px; resize: none; }
 .lp-layer { display: grid; grid-template-columns: 240px 1fr; gap: 22px; align-items: center; background: var(--surface); border: 1px solid var(--line); border-left: 4px solid var(--fc, var(--accent)); border-radius: var(--r-lg); padding: 20px 24px; box-shadow: var(--shadow-sm); transition: transform .2s cubic-bezier(.2,.7,.2,1), box-shadow .2s; }
 .lp-layer:hover { transform: translateX(3px); box-shadow: var(--shadow-md); }
 .lp-layer .ll-eyebrow { font-family: var(--mono); font-size: 10.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--fc, var(--accent-ink)); }
-.lp-layer h4 { font-size: 16px; font-weight: 720; letter-spacing: -.02em; margin-top: 4px; }
+.lp-layer h3 { font-size: 16px; font-weight: 720; letter-spacing: -.02em; margin-top: 4px; }
 .lp-layer .ll-desc { font-size: 12.5px; color: var(--ink-3); margin-top: 4px; line-height: 1.45; }
 .lp-layer-pills { display: flex; gap: 9px; flex-wrap: wrap; }
 .lp-pp { display: inline-flex; align-items: center; gap: 8px; padding: 7px 13px 7px 8px; border-radius: 99px; border: 1px solid var(--line); background: var(--surface-2); font-weight: 650; font-size: 13px; }
@@ -779,7 +779,7 @@ textarea.lp-input { height: 92px; padding: 11px 13px; resize: none; }
 }
 .lp .lp-testi:hover, .lp .lp-layer:hover, .lp .lp-nice-card:hover { box-shadow: 0 14px 40px -30px oklch(0.3 0.04 48 / .35) !important; transform: none; }
 /* serif titles on cards/products/modules */
-.lp .lp-testi blockquote, .lp .lp-layer h4, .lp .lp-nice-card h3, .lp .lp-prod-name, .lp .lp-mod-name { font-family: var(--display); letter-spacing: -0.01em; }
+.lp .lp-testi blockquote, .lp .lp-layer h3, .lp .lp-nice-card h3, .lp .lp-prod-name, .lp .lp-mod-name { font-family: var(--display); letter-spacing: -0.01em; }
 
 /* ============================================================
    Editorial propagation — product detail pages + pricing rows.
