@@ -96,4 +96,75 @@ resource "aws_cloudwatch_metric_alarm" "worker_absent" {
   treat_missing_data  = "breaching" # missing data here means no worker => alarm
 }
 
+# Live-stack dashboard (TODO Sec/P2): Container Insights is on but unsurfaced; this is the
+# single pane. Pure add — applyable via -target=...aws_cloudwatch_dashboard.main without
+# touching the (notify_email-parked) alarms/SNS above.
+resource "aws_cloudwatch_dashboard" "main" {
+  dashboard_name = "${var.project}-live"
+  dashboard_body = jsonencode({
+    widgets = [
+      {
+        type = "metric", x = 0, y = 0, width = 12, height = 6,
+        properties = {
+          title = "ALB — requests / 5xx", region = "us-east-1", stat = "Sum", period = 60,
+          metrics = [
+            ["AWS/ApplicationELB", "RequestCount", "LoadBalancer", var.alb_arn_suffix],
+            ["AWS/ApplicationELB", "HTTPCode_Target_5XX_Count", "LoadBalancer", var.alb_arn_suffix],
+            ["AWS/ApplicationELB", "HTTPCode_ELB_4XX_Count", "LoadBalancer", var.alb_arn_suffix]
+          ]
+        }
+      },
+      {
+        type = "metric", x = 12, y = 0, width = 12, height = 6,
+        properties = {
+          title = "ALB — target p95 latency", region = "us-east-1", period = 60,
+          metrics = [
+            ["AWS/ApplicationELB", "TargetResponseTime", "LoadBalancer", var.alb_arn_suffix, { stat = "p95" }]
+          ]
+        }
+      },
+      {
+        type = "metric", x = 0, y = 6, width = 12, height = 6,
+        properties = {
+          title = "API service — CPU / memory", region = "us-east-1", stat = "Average", period = 60,
+          metrics = [
+            ["AWS/ECS", "CPUUtilization", "ClusterName", "${var.project}-cluster", "ServiceName", "${var.project}-api"],
+            ["AWS/ECS", "MemoryUtilization", "ClusterName", "${var.project}-cluster", "ServiceName", "${var.project}-api"]
+          ]
+        }
+      },
+      {
+        type = "metric", x = 12, y = 6, width = 12, height = 6,
+        properties = {
+          title = "Aurora — ACU / connections", region = "us-east-1", stat = "Average", period = 60,
+          metrics = [
+            ["AWS/RDS", "ServerlessDatabaseCapacity", "DBClusterIdentifier", "${var.project}-aurora"],
+            ["AWS/RDS", "DatabaseConnections", "DBClusterIdentifier", "${var.project}-aurora"]
+          ]
+        }
+      },
+      {
+        type = "metric", x = 0, y = 12, width = 12, height = 6,
+        properties = {
+          title = "Redis — hits / misses / evictions", region = "us-east-1", stat = "Sum", period = 60,
+          metrics = [
+            ["AWS/ElastiCache", "CacheHits", "ReplicationGroupId", "${var.project}-redis"],
+            ["AWS/ElastiCache", "CacheMisses", "ReplicationGroupId", "${var.project}-redis"],
+            ["AWS/ElastiCache", "Evictions", "ReplicationGroupId", "${var.project}-redis"]
+          ]
+        }
+      },
+      {
+        type = "metric", x = 12, y = 12, width = 12, height = 6,
+        properties = {
+          title = "Worker — workers_polling (custom)", region = "us-east-1", stat = "Maximum", period = 60,
+          metrics = [
+            ["Uplift/Agents", "workers_polling"]
+          ]
+        }
+      }
+    ]
+  })
+}
+
 output "alarms_topic_arn" { value = aws_sns_topic.alarms.arn }

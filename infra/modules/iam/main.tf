@@ -70,5 +70,28 @@ resource "aws_iam_role_policy" "api_task_secrets" {
   })
 }
 
+# The api task runs an aws-otel-collector sidecar (essential=false) that exports OTLP spans to
+# X-Ray — without these the sidecar fails silently and tracing is dead (TODO Sec/P2). X-Ray write
+# actions do not support resource-level scoping; ssm:GetParameters covers ADOT config pulls.
+resource "aws_iam_role_policy" "api_task_xray" {
+  name = "xray-export"
+  role = aws_iam_role.task["api"].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["xray:PutTraceSegments", "xray:PutTelemetryRecords"]
+        Resource = "*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameters"]
+        Resource = "arn:aws:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/uplift/*"
+      }
+    ]
+  })
+}
+
 output "ecs_task_execution_role_arn" { value = aws_iam_role.ecs_task_execution.arn }
 output "task_role_arns" { value = { for k, r in aws_iam_role.task : k => r.arn } }
