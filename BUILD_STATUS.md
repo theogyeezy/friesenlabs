@@ -413,6 +413,9 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   task role (per-tenant hubspot secrets + Titan V2 InvokeModel + conditional raw-bucket write),
   EventBridge rate(1d) DISABLED by default with cluster-conditioned RunTask + service-conditioned
   PassRole. Plan = 8 pure adds at safe defaults; API/worker defs carry zero INGEST_* names.
+- 2026-06-09 — REQ-004 DONE @e67ca87 (#62): modules/ingest applied (8 pure adds), live-verified
+  — rule DISABLED rate(1d), task def command/env exact, role scoped (hubspot patterns + Titan V2
+  only). Go-live = ingest_tenants + ingest_schedule_enabled flip. Edge 200.
 
 ## Lane Matt (app code) — log
 - 2026-06-09 — **Cycle 3 (real wiring + frontend honesty, 5 PRs + 1 fix-PR):** #34 real provisioning
