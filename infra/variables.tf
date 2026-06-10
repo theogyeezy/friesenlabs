@@ -142,3 +142,33 @@ variable "dns_delegated" {
   default     = false # flip AFTER Squarespace nameservers point at the Route53 zone
   description = "Registrar NS records point at the zone; unblocks cert validation waits."
 }
+
+variable "ingest_tenants" {
+  type        = string
+  default     = "" # REQ-004: comma-separated tenant ids; "" = run_sync no-ops
+  description = "Tenants the nightly ingest run syncs."
+}
+
+variable "ingest_raw_bucket" {
+  type        = string
+  default     = "" # REQ-004: raw landing skipped (with a warning) while empty
+  description = "S3 bucket for the raw ingest landing zone."
+}
+
+variable "ingest_schedule_enabled" {
+  type        = bool
+  default     = false # REQ-004 go-live act: flips the EventBridge rule ENABLED
+  description = "Enable the nightly ingest schedule."
+}
+
+variable "bedrock_batch_role_arn" {
+  type        = string
+  default     = "" # REQ-004 (later): Bedrock batch-embed backfill ships as its own REQ
+  description = "Reserved for the Titan batch-embed backfill role."
+}
+
+variable "ingest_batch_s3_bucket" {
+  type        = string
+  default     = "" # REQ-004 (later): batch-embed JSONL I/O bucket
+  description = "Reserved for the Titan batch-embed backfill bucket."
+}
