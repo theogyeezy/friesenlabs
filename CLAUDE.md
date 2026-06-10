@@ -26,9 +26,10 @@ app shell → real RLS-scoped tenant rows. Unauth `/api/*` → 401; `/chat` → 
 - ✅ **Landing (2026-06-10):** cinematic, **3D, mobile-first** GHL-style marketing page —
   a DARK cinematic, fly-through-space experience — the whole page runs the dark theme and a
   lazy-loaded **three.js** persistent 3D agent-constellation tunnel the camera FLIES FORWARD through
-  as you scroll; sections themselves are DEPTH-positioned so scrolling dollies the camera THROUGH
-  them (each flies in from far → holds flat in focus at center → flies toward + past the viewer as
-  the next emerges; reverses on scroll-up) — all scroll-driven, identical on mobile; a live WebGL shader backdrop (custom GLSL
+  as you scroll; a FLY-THROUGH scroll where every section is a panel PINNED dead-center (position:fixed) that moves
+  only in Z — a scroll-spacer camera rushes each panel at you from the depth, holds it in focus,
+  then blasts it past the viewer as the next emerges from behind (galaxy in between; reverses on
+  scroll-up). No vertical-scroll feeling. Scroll-driven → identical on mobile; a live WebGL shader backdrop (custom GLSL
   fbm light field) the whole page sits in; interactive hero agent roster + cursor-tilt 3D demo panel + receding perspective
   grid floor + film grain + vignette; animated Friesen-vs-GoHighLevel capability radar (3D-tilt) + lens
   comparison; live ROI calculator; scroll-progress bar; hamburger nav + slide-in menu + sticky
