@@ -60,14 +60,18 @@ app shell → real RLS-scoped tenant rows. Unauth `/api/*` → 401; **`/chat` is
   initially FAILED (CNAMEAlreadyExists): a stale us-east-2 Amplify app ("friesenlabs", branch
   `prod`, served 404 — same dangling `djvyqxdhlili4` CloudFront target as the deleted rogue zone)
   held the CNAMEs. That app + its association were deleted, the uplift-web association re-created,
-  and Route53 apex/www repointed to the new Amplify CloudFront target — verification propagating.
-  ALB TLS cutover is now unblocked (RUNBOOK sequence; the hourly sweep auto-runs it on ISSUED).
+  and Route53 apex/www repointed to the new Amplify CloudFront target — association **AVAILABLE**;
+  **https://friesenlabs.com is LIVE + verified** (apex+www 200 over the `*.friesenlabs.com` cert,
+  correct landing page). The **ALB TLS cutover is DONE too** (sweep-executed, verified in
+  Matt's session): ALB 443 serves the real cert with the 403-default origin-verify gate,
+  api_cdn origin is `api.friesenlabs.com` https-only:443, :80 is redirect-only (SG-scoped),
+  edge + SPA `/api` healthz 200. api_cdn stays (RECOMMEND-AGAINST retiring — Lane Ship note).
 - ✅ **Signup/provisioning go-live DONE:** `api_signup_env` + `signup_real_deps` flipped; Stripe/Resend/
   Anthropic-admin/webhook secrets present on the API task; the real provisioning clients are wired (no
   `_Stub`/`_Noop`). Worker deployed (env-key present). (SNS email sub CONFIRMED.)
 - ✅ **NS delegation DONE (2026-06-10):** `friesenlabs.com` NS point at the 4 Route53 nameservers
-  and the cert is ISSUED — the ALB TLS cutover is executable (sequence in RUNBOOK; the hourly
-  Lane-Nick sweep auto-runs it, then repoints `og:image` + canonical to the real domain).
+  and the cert is ISSUED — the ALB TLS cutover was auto-run by the hourly Lane-Nick sweep and is
+  verified DONE (see the Domain bullet above; `og:image` + canonical repoint to the real domain).
 - **Ops:** state in S3 (KMS); machine-local `infra/prod.auto.tfvars` carries the live values +
   go-live flags — full applies allowed only against a re-verified clean plan; targeted applies
   are the norm. One-off tasks run via the `uplift-migrate-oneoff` task-def family. Runbook:
@@ -82,7 +86,7 @@ app shell → real RLS-scoped tenant rows. Unauth `/api/*` → 401; **`/chat` is
   swept (25 done items checked off + a Lane-Nick completion-status block). **All four owner-gated
   remainders are now satisfied** (env-key → worker live 2/2; Stripe webhook secret + Anthropic
   admin key → signup go-live done; Squarespace NS delegated 2026-06-10 → cert ISSUED → TLS
-  cutover executable via the sweep).
+  cutover executed by the sweep + verified).
 **Tooling:** `.claude/settings.json` enables the official-marketplace plugins so collaborators inherit
 them on clone+trust. Don't commit secrets to it.
 
