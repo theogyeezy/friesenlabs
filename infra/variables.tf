@@ -214,3 +214,9 @@ variable "worker_image" {
   default     = "" # the prebuilt uplift-worker ECR image (deploy still gated on env-key + worker module apply)
   description = "ECR image URI for the worker service."
 }
+
+variable "enable_crm_db_rotation" {
+  type        = bool
+  default     = false # TODO 204: flip + apply, then run the RUNBOOK controlled-rotation procedure
+  description = "Deploy the crm-app-db rotation Lambda (SAR) and attach the 30-day rotation."
+}

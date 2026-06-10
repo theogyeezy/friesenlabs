@@ -139,6 +139,39 @@ ROLLBACK: flip `alb_enforce_origin_verify=false`, `apply -target=module.alb` (in
   User click required; value then goes into uplift/env-key (CLI put). Worker deploy stays blocked
   on it (+ the cost note).
 
+## crm-app-db rotation procedure (TODO 204)
+
+Enable: `enable_crm_db_rotation=true` (tfvars) → targeted apply (SAR stack + rotation config,
+rotate_immediately=false). The secret VALUE must carry host/port/dbname/engine keys (the AWS
+rotation template requires them; added via CLI put — valueFrom :username::/:password:: unaffected).
+Controlled rotation window:
+1. `aws secretsmanager rotate-secret --secret-id uplift/crm-app-db`
+2. Wait `describe-secret` shows the new version AWSCURRENT (rotation steps ~30-60s).
+3. IMMEDIATELY `aws ecs update-service --cluster uplift-cluster --service uplift-api
+   --force-new-deployment` (+ cube the same way) — old tasks' pooled conns survive but their NEW
+   conns would fail auth; fresh tasks read the new AWSCURRENT.
+4. Verify: edge /healthz 200; a DB-backed route (401-auth path) healthy; cube /readyz 200.
+ROLLBACK: `update-secret-version-stage --move-to-version-id <AWSPREVIOUS id> --version-stage
+AWSCURRENT` then ALTER ROLE crm_app back via a one-off migrate task.
+
+## ALB TLS cutover sequence (execute when the friesenlabs.com cert is ISSUED)
+
+Pre-req: Squarespace NS → Route53 (user), `dns_delegated=true` applied, cert ISSUED.
+1. `certificate_arn = module.dns[0].certificate_arn` into module.alb (tfvars/wiring) → plan:
+   the module swaps http_forward → https(443, forward) + http_redirect(80→443). NOTE this
+   REPLACES the :80 listener (origin-verify rule rides on it — re-created by the same apply;
+   verify the rule lands on the new 443 listener config or re-author for 443).
+2. BEFORE applying: flip api_cdn origin to https-only port 443 CANNOT happen first (ALB has no
+   443 yet) — sequence: apply ALB listeners FIRST (CloudFront keeps talking :80 → redirect 301
+   loop risk! The 80-listener becomes redirect → CloudFront origin-protocol http would follow…
+   CloudFront does NOT follow origin redirects → 301s surface to clients = OUTAGE).
+   => SAFE ORDER: (a) add the 443 listener KEEPING 80-forward (temporary both-listeners state —
+   needs a small module tweak: has_cert branch must not destroy http_forward yet), (b) flip
+   api_cdn origin to https-only :443 + origin-verify header still sent, (c) wait Deployed +
+   verify, (d) remove the 80-forward (or convert to redirect), (e) point Route53 A/AAAA alias
+   api.friesenlabs.com → ALB, re-point Amplify /api proxy to https://api.friesenlabs.com,
+   (f) retire module.api_cdn + the CloudFront-prefix SG rule (TODO 210/211) once nothing hits it.
+   Each step its own targeted apply + edge health check. Author the module tweak when executing.
 ### Apply discipline (until the baseline is clean)
 1. No full `terraform apply`.
 2. Pure-add module deploys go via `terraform apply -target=module.<cube|worker|observability> baseline-style plan first`.

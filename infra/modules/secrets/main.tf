@@ -97,3 +97,49 @@ output "origin_verify_value" {
   value     = var.enable_origin_verify ? random_password.origin_verify[0].result : ""
   sensitive = true
 }
+
+# Rotation for the crm_app DB credential (TODO Sec/P2 204). The AWS-maintained single-user
+# PostgreSQL rotation Lambda via SAR; VPC'd so it reaches Aurora. rotate_immediately=false —
+# rotations run in a controlled window (RUNBOOK: rotate, then force-new-deployment the api so
+# fresh tasks read the new AWSCURRENT; existing pooled conns survive, old-task NEW conns would
+# 401 until the roll).
+variable "enable_crm_db_rotation" {
+  type    = bool
+  default = false
+}
+variable "rotation_subnet_ids" {
+  type    = list(string)
+  default = []
+}
+variable "rotation_security_group_id" {
+  type    = string
+  default = ""
+}
+
+data "aws_region" "current" {}
+
+resource "aws_serverlessapplicationrepository_cloudformation_stack" "crm_db_rotation" {
+  count            = var.enable_crm_db_rotation ? 1 : 0
+  name             = "${var.project}-crm-db-rotation"
+  application_id   = "arn:aws:serverlessrepo:us-east-1:297356227824:applications/SecretsManagerRDSPostgreSQLRotationSingleUser"
+  capabilities     = ["CAPABILITY_IAM", "CAPABILITY_RESOURCE_POLICY"]
+  semantic_version = "1.1.524"
+
+  parameters = {
+    endpoint            = "https://secretsmanager.${data.aws_region.current.region}.amazonaws.com"
+    functionName        = "${var.project}-crm-db-rotation"
+    vpcSubnetIds        = join(",", var.rotation_subnet_ids)
+    vpcSecurityGroupIds = var.rotation_security_group_id
+  }
+}
+
+resource "aws_secretsmanager_secret_rotation" "crm_app_db" {
+  count               = var.enable_crm_db_rotation ? 1 : 0
+  secret_id           = aws_secretsmanager_secret.crm_app_db.id
+  rotation_lambda_arn = aws_serverlessapplicationrepository_cloudformation_stack.crm_db_rotation[0].outputs["RotationLambdaARN"]
+  rotate_immediately  = false
+
+  rotation_rules {
+    automatically_after_days = 30
+  }
+}
