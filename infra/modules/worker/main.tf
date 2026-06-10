@@ -11,6 +11,24 @@ variable "security_group_id" { type = string }
 variable "execution_role_arn" { type = string }
 variable "task_role_arn" { type = string }
 variable "env_key_secret_arn" { type = string }
+variable "env_id_secret_arn" { type = string }
+variable "db_secret_arn" { type = string }
+variable "db_host" {
+  type    = string
+  default = ""
+}
+variable "db_name" {
+  type    = string
+  default = "uplift"
+}
+variable "db_port" {
+  type    = string
+  default = "5432"
+}
+variable "cube_endpoint" {
+  type    = string
+  default = "" # REQ-001: safe "" default so validate/plan stay green before cube is deployed
+}
 variable "image" {
   type    = string
   default = "" # set to the ECR worker image (uplift-worker) before apply
@@ -41,9 +59,21 @@ resource "aws_ecs_task_definition" "worker" {
       name      = "worker"
       image     = var.image != "" ? var.image : "${var.project}-worker:latest" # verify: real ECR URI
       essential = true
+      environment = [
+        # REQ-001: worker builds its tool clients from env in run().
+        { name = "CLOUDWATCH_METRICS", value = "1" },
+        { name = "CUBE_ENDPOINT", value = var.cube_endpoint },
+        { name = "DB_HOST", value = var.db_host },
+        { name = "DB_NAME", value = var.db_name },
+        { name = "DB_PORT", value = var.db_port },
+      ]
       secrets = [
-        # ONLY the environment key reaches the worker. The org API key must never be here.
+        # ONLY the environment key + id reach the worker. The org ANTHROPIC_API_KEY must never
+        # be here — this api/worker asymmetry IS the security boundary (REQ-001).
         { name = "UPLIFT_ENV_KEY", valueFrom = var.env_key_secret_arn },
+        { name = "UPLIFT_ENV_ID", valueFrom = var.env_id_secret_arn },
+        { name = "DB_USER", valueFrom = "${var.db_secret_arn}:username::" },
+        { name = "DB_PASS", valueFrom = "${var.db_secret_arn}:password::" },
       ]
       logConfiguration = {
         logDriver = "awslogs"

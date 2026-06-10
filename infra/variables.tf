@@ -82,3 +82,15 @@ variable "web_logout_urls" {
     "http://localhost:5173/",
   ]
 }
+
+variable "cube_endpoint" {
+  type        = string
+  default     = "" # REQ-001: set after the cube service is deployed (internal :4000 endpoint)
+  description = "Internal Cube API endpoint for the worker's query tool client."
+}
+
+variable "api_anthropic_env" {
+  type        = bool
+  default     = false # REQ-001 safety gate: flip ONLY after uplift/anthropic-api-key + uplift/env-id hold values
+  description = "Inject ANTHROPIC_API_KEY + UPLIFT_ENV_ID into the API task def (never the worker)."
+}
