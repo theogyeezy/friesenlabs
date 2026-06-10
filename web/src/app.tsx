@@ -6,8 +6,8 @@ import { useAuth } from "./auth/AuthContext";
 // API-wired surfaces (real mode). When the build runs against the real control
 // plane (VITE_API_MOCK=0), the API-backed surfaces — Command Center
 // (DashboardView), Pipeline (PipelineBoard), Contacts (ContactsDirectory),
-// Greenlight (GreenlightQueue), Ask agents (ChatDock), Switchboard
-// (IntegrationsPanel) — mount with honest loading/empty/error states. EVERY
+// Agents (AgentsRoster), Greenlight (GreenlightQueue), Ask agents (ChatDock),
+// Switchboard (IntegrationsPanel) — mount with honest loading/empty/error states. EVERY
 // other route renders an explicit "isn't live yet" panel in real mode: no
 // FLStore prototype screen, demo number, fake badge/feed/agent-rail, or
 // prototype overlay (palette, intake, marketplace, onboarding/tour) is
@@ -20,6 +20,7 @@ import ChatDock from "./api/ChatDock";
 import IntegrationsPanel from "./api/IntegrationsPanel";
 import PipelineBoard from "./api/PipelineBoard";
 import ContactsDirectory from "./api/ContactsDirectory";
+import AgentsRoster from "./api/AgentsRoster";
 const { useState, useEffect, useRef, useMemo, useCallback, useLayoutEffect, useReducer, useContext, useImperativeHandle, useId } = React;
 const { Icon, Logo, FL_DATA, FLStore, useStore, askClaude, bizContext, confettiBurst, XPBadge, useCountUp, CountUp, AreaChart, Sparkline, LoadBars, Donut, SlideOver, CommandPalette, HEAT, fmtMoney, StatCard, ToneIco, FLflag, useTweaks, TweaksPanel, TweakSection, TweakRow, TweakSlider, TweakToggle, TweakRadio, TweakSelect, TweakText, TweakNumber, TweakColor, TweakButton, FoxDemo, KanbanDemo, WorkflowDemo, GreenlightDemo, CommandDemo, IntegrationDemo, SupportDemo, SecurityDemo, SidecarDemo, CortexDemo } = window as any;
 // app.jsx, shell: sidebar, topbar, routing, tweaks, palette
@@ -50,7 +51,7 @@ const ComingSoon = ({ title, icon }) => (
       </div>
       <h2 style={{ fontSize: 21, fontWeight: 720, letterSpacing: "-.02em" }}>{title} isn&rsquo;t live yet</h2>
       <p style={{ color: "var(--ink-3)", fontSize: 14, marginTop: 8, lineHeight: 1.55 }}>
-        Uplift is rolling out surface by surface. <b style={{ color: "var(--ink)" }}>Command Center</b>, <b style={{ color: "var(--ink)" }}>Pipeline</b>, <b style={{ color: "var(--ink)" }}>Contacts</b>, <b style={{ color: "var(--ink)" }}>Greenlight</b>, <b style={{ color: "var(--ink)" }}>Ask agents</b> and <b style={{ color: "var(--ink)" }}>Switchboard</b> are live today; this area is still being built.
+        Uplift is rolling out surface by surface. <b style={{ color: "var(--ink)" }}>Command Center</b>, <b style={{ color: "var(--ink)" }}>Pipeline</b>, <b style={{ color: "var(--ink)" }}>Contacts</b>, <b style={{ color: "var(--ink)" }}>Agents</b>, <b style={{ color: "var(--ink)" }}>Greenlight</b>, <b style={{ color: "var(--ink)" }}>Ask agents</b> and <b style={{ color: "var(--ink)" }}>Switchboard</b> are live today; this area is still being built.
       </p>
     </div>
   </div>
@@ -418,9 +419,13 @@ function App() {
                   GET /contacts + /companies, read-only; open deals link to
                   the Pipeline board. */}
               {route === "contacts" && <ContactsDirectory onOpenPipeline={() => navTo("crm")} />}
+              {/* Agents is LIVE in real mode: the tenant's crew from GET /agents
+                  (owned roster + trusted tool policies + truncated provisioned
+                  ids) — never the FLStore prototype console. */}
+              {route === "agents" && <AgentsRoster onOpenGreenlight={() => navTo("approvals")} />}
               {route === "approvals" && <GreenlightQueue />}
               {route === "integrations" && <IntegrationsPanel />}
-              {route !== "dashboard" && route !== "crm" && route !== "contacts" && route !== "approvals" && route !== "integrations" && (
+              {route !== "dashboard" && route !== "crm" && route !== "contacts" && route !== "agents" && route !== "approvals" && route !== "integrations" && (
                 <ComingSoon title={meta.h1} icon={navIconFor(route)} />
               )}
             </>

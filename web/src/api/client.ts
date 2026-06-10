@@ -266,6 +266,50 @@ export interface DirectoryListParams {
 }
 
 // ---------------------------------------------------------------------------
+// Agent crew wire types (mirror api/agents_routes.py shapes). READ-ONLY: the
+// crew is defined by the owned roster + assembled by signup provisioning —
+// there is nothing to mutate from the client.
+// ---------------------------------------------------------------------------
+
+/** A tool's TRUSTED policy, straight from the server-side registry: "auto"
+ * tools run on their own (read-only), "always_ask" tools route every action
+ * through Greenlight for human sign-off. Never invented client-side. */
+export type ToolPolicy = "auto" | "always_ask";
+
+export interface CrewTool {
+  name: string;
+  policy: ToolPolicy;
+}
+
+/** One crew member from the owned roster definitions: display name, specialty
+ * label, the duty description (the agent's actual instruction), and its tools
+ * with trusted policies. */
+export interface CrewAgent {
+  name: string;
+  role: string;
+  description: string;
+  is_coordinator: boolean;
+  tools: CrewTool[];
+}
+
+/** The coordinator additionally carries the TRUNCATED provisioned id tail
+ * (last few chars for display — the API never sends the full MA id). */
+export interface CrewCoordinator extends CrewAgent {
+  id_tail: string | null;
+}
+
+export interface AgentCrewResponse {
+  /** True only when this tenant's Managed Agents crew exists live (a real
+   * tenant_workspaces row — not placeholders). False = assembles at signup. */
+  provisioned: boolean;
+  /** Last few chars of the provisioned environment id — never the full id. */
+  environment_id_tail: string | null;
+  coordinator: CrewCoordinator;
+  roster: CrewAgent[];
+  count: number;
+}
+
+// ---------------------------------------------------------------------------
 // Integrations wire types (mirror api/integrations_routes.py shapes).
 // ---------------------------------------------------------------------------
 
@@ -811,6 +855,18 @@ export class ApiClient {
       "GET",
       `/companies/${encodeURIComponent(companyId)}`,
     );
+  }
+
+  // --- agent crew (authed, read-only) ------------------------------------------
+
+  /** GET /agents: the tenant's crew — the 7 specialists + coordinator from the
+   * owned roster, each tool carrying its trusted policy (auto vs always_ask),
+   * plus the provisioned MA id tails (truncated; the full ids never arrive). */
+  async getAgentCrew(): Promise<AgentCrewResponse> {
+    if (this.mock) {
+      return (await this.mockApi()).getAgentCrew();
+    }
+    return this.request<AgentCrewResponse>("GET", "/agents");
   }
 
   // --- integrations (authed) -------------------------------------------------

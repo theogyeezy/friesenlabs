@@ -15,6 +15,7 @@ from typing import Any, Callable
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
 
+from api.agents_routes import AgentsDeps
 from api.auth import JwtVerifier, TenantClaims, make_current_tenant
 from api.control.autonomy import AutonomyConfig
 from api.control.gate import ActionGate, GateContext
@@ -56,6 +57,11 @@ class ApiDeps:
     # a DB pool; api/asgi.py is the ONLY real wiring (the same PgCrmClient instance). Pass None
     # to skip mounting the routes entirely.
     contacts: ContactsDeps | None = field(default_factory=ContactsDeps)
+    # /agents deps (the real Agents tab — the tenant's crew). Same inert-default contract:
+    # the all-None stub mounts an honest-503 route and constructing deps never opens a DB
+    # pool; api/asgi.py is the ONLY real wiring (the same PgWorkspaceStore instance the /chat
+    # factory + signup provisioning ride). Pass None to skip mounting the route entirely.
+    agents: AgentsDeps | None = field(default_factory=AgentsDeps)
 
 
 # --- request bodies (note: NONE carry tenant_id — the trust rule forbids it) ---
@@ -212,6 +218,14 @@ def create_app(deps: ApiDeps) -> FastAPI:
     if deps.contacts is not None:
         from api.contacts_routes import mount_contacts
         mount_contacts(app, deps.contacts, current_tenant)
+
+    # Authed per-tenant agent crew (the real Agents tab). Claims-bound, READ-ONLY: the roster
+    # comes from the owned definitions + the trusted tool registry; provisioned MA ids ride
+    # along TRUNCATED from the tenant's RLS-scoped row. Unconfigured deps answer an honest
+    # 503, never an invented crew state.
+    if deps.agents is not None:
+        from api.agents_routes import mount_agents
+        mount_agents(app, deps.agents, current_tenant)
 
     # Public, pre-tenant signup + Stripe webhook routes (optional).
     if deps.signup is not None:

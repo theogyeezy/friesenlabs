@@ -31,6 +31,7 @@ from agents.runtime import FakeRuntime, get_runtime
 from agents.tools.base import ToolContext
 from agents.tools.spec_generator import AnthropicSpecGenerator
 from agents.workspace_store import PgWorkspaceStore, WorkspaceStore
+from api.agents_routes import AgentsDeps
 from api.app import ApiDeps, create_app
 from api.auth import CognitoJwtVerifier, JwtVerifier
 from api.control.autonomy import AutonomyConfig
@@ -256,6 +257,11 @@ def build_app():
         deals=DealsDeps(crm=crm),
         # /contacts + /companies (the real Contacts directory) — the same single PgCrmClient.
         contacts=ContactsDeps(crm=crm),
+        # /agents (the real Agents tab) rides the SAME PgWorkspaceStore instance the /chat
+        # conversation factory + signup provisioning use — one pool, one SET LOCAL discipline.
+        # workspace_store is None when the DSN is unconfigured, so the route answers its
+        # honest 503 (never an invented crew state).
+        agents=AgentsDeps(workspace_store=workspace_store),
     )
     return create_app(deps)
 
