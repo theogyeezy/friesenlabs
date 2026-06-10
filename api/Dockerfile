@@ -16,6 +16,9 @@ COPY shared/ ./shared/
 COPY api/ ./api/
 COPY agents/ ./agents/
 COPY conv/ ./conv/
+# ingest/ is lazy-imported by api/integrations_routes.py + api/pg_clients.py (RAG embed);
+# omitting it ImportErrors the uplift-ingest sync and the RAG leg at call time.
+COPY ingest/ ./ingest/
 COPY signup/ ./signup/
 COPY ml/ ./ml/
 # db/ holds schema.sql + roles.sql, used by `python -m api.migrate`
