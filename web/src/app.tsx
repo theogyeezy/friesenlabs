@@ -23,6 +23,7 @@ import ContactsDirectory from "./api/ContactsDirectory";
 import AgentsRoster from "./api/AgentsRoster";
 import WorkflowsView from "./api/WorkflowsView";
 import ReportsView from "./api/ReportsView";
+import KnowledgeView from "./api/KnowledgeView";
 const { useState, useEffect, useRef, useMemo, useCallback, useLayoutEffect, useReducer, useContext, useImperativeHandle, useId } = React;
 const { Icon, Logo, FL_DATA, FLStore, useStore, askClaude, bizContext, confettiBurst, XPBadge, useCountUp, CountUp, AreaChart, Sparkline, LoadBars, Donut, SlideOver, CommandPalette, HEAT, fmtMoney, StatCard, ToneIco, FLflag, useTweaks, TweaksPanel, TweakSection, TweakRow, TweakSlider, TweakToggle, TweakRadio, TweakSelect, TweakText, TweakNumber, TweakColor, TweakButton, FoxDemo, KanbanDemo, WorkflowDemo, GreenlightDemo, CommandDemo, IntegrationDemo, SupportDemo, SecurityDemo, SidecarDemo, CortexDemo } = window as any;
 // app.jsx, shell: sidebar, topbar, routing, tweaks, palette
@@ -437,9 +438,14 @@ function App() {
                   is wired) — never the FLStore Reports prototype + DataAssistant
                   overlay. */}
               {route === "reports" && <ReportsView />}
+              {/* Knowledge is LIVE in real mode: the tenant's ingested corpus from
+                  GET /knowledge (per-source inventory) + /knowledge/search (RLS
+                  cosine search, honest degrade while the embedder warms up) —
+                  never the FLStore Knowledge prototype. */}
+              {route === "knowledge" && <KnowledgeView />}
               {route === "approvals" && <GreenlightQueue />}
               {route === "integrations" && <IntegrationsPanel />}
-              {route !== "dashboard" && route !== "crm" && route !== "contacts" && route !== "agents" && route !== "workflows" && route !== "reports" && route !== "approvals" && route !== "integrations" && (
+              {route !== "dashboard" && route !== "crm" && route !== "contacts" && route !== "agents" && route !== "workflows" && route !== "reports" && route !== "knowledge" && route !== "approvals" && route !== "integrations" && (
                 <ComingSoon title={meta.h1} icon={navIconFor(route)} />
               )}
             </>
