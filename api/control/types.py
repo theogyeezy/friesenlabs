@@ -23,6 +23,9 @@ class Level(str, Enum):
 class Action:
     """A proposed agent action flowing through the gate."""
     name: str
+    # THE TRUST RULE: set by the API from the verified JWT claim ONLY (request bodies cannot carry
+    # it). The executor binds its ToolContext to this tenant; it never reads env/header/payload.
+    tenant_id: str | None = None
     agent: str | None = None
     side_effecting: bool = False
     channel: str | None = None          # "email" | "sms" | None
