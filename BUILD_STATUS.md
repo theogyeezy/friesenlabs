@@ -438,6 +438,13 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   gate), connector-write IAM verified exact-scope, live-e2e CI job (nightly, self-skipping).
   LIVE CATCH: AWS auto-minor-upgraded Aurora 16.8→16.11 — the stale pin would have planned a
   DOWNGRADE; re-pinned + ignore_changes(engine_version), module.data plan clean.
+- 2026-06-10 — Landing overhaul (user-directed, GHL-energy) shipped over v1-v4 + a fix:
+  interactive agent-roster hero, animated Friesen-vs-GoHighLevel capability RADAR + lens-toggle
+  comparison table, live ROI calculator (sliders → savings count-up + bar race), magnetic CTAs,
+  scroll-progress bar, closing CTA band. Live-verified via browser screenshots (caught + fixed a
+  CountUp $NaN — prop is value= not to=). All additive; every existing section/demo/modal intact.
+  Also: SNS alarm subscription CONFIRMED by the user — 5 CloudWatch alarms now page
+  theogyeezy@gmail.com (sub ARN active, no longer PendingConfirmation).
 
 ## Lane Matt (app code) — log
 - 2026-06-09 — **Cycles 5-6 (lane tail) + LANE MATT COMPLETE:** #67(+hotfix #73: the prod image
