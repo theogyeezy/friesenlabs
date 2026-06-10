@@ -4,6 +4,10 @@
 # AUTHORED + VALIDATED ONLY.
 
 variable "project" { type = string }
+variable "log_retention_days" {
+  type    = number
+  default = 30 # one knob for every uplift log group (TODO Sec/P3 213)
+}
 variable "region" { type = string }
 variable "cluster_id" { type = string }
 variable "private_subnet_ids" { type = list(string) }
@@ -36,13 +40,13 @@ variable "image" {
 
 resource "aws_cloudwatch_log_group" "worker" {
   name              = "/ecs/${var.project}-worker"
-  retention_in_days = 30
+  retention_in_days = var.log_retention_days
 }
 
 # ADOT (AWS Distro for OpenTelemetry) collector sidecar log group — see the sidecar container below.
 resource "aws_cloudwatch_log_group" "worker_otel" {
   name              = "/ecs/${var.project}-worker-otel"
-  retention_in_days = 30
+  retention_in_days = var.log_retention_days
 }
 
 resource "aws_ecs_task_definition" "worker" {

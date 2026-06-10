@@ -98,6 +98,7 @@ module "cube" {
   redis_endpoint      = module.redis.primary_endpoint
   db_secret_arn       = module.secrets.crm_app_db_secret_arn
   cube_api_secret_arn = module.secrets.cube_api_secret_arn
+  log_retention_days  = var.log_retention_days
 }
 
 # --- Phase 9: auth + ALB + api service ---
@@ -145,6 +146,7 @@ module "api_service" {
   aurora_endpoint                = module.data.cluster_endpoint
   aurora_master_secret_arn       = module.data.master_user_secret_arn
   desired_count                  = var.api_desired_count
+  log_retention_days             = var.log_retention_days
 }
 
 # --- Phase 8: Cortex scheduled retrain ---
@@ -211,4 +213,5 @@ module "worker" {
   db_secret_arn      = module.secrets.crm_app_db_secret_arn
   db_host            = module.data.cluster_endpoint
   cube_endpoint      = var.cube_endpoint
+  log_retention_days = var.log_retention_days
 }

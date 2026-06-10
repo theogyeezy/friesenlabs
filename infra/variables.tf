@@ -118,3 +118,9 @@ variable "signup_real_deps" {
   default     = false # REQ-003 step 0: the deliberate signup go-live act — see infra/REQUESTS.md
   description = "Set SIGNUP_REAL_DEPS=1 on the API task (build_signup_deps selects real adapters)."
 }
+
+variable "log_retention_days" {
+  type        = number
+  default     = 30 # the single retention knob for all uplift log groups (TODO 213)
+  description = "CloudWatch retention for every uplift service log group."
+}
