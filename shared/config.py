@@ -56,6 +56,14 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
+def _switch_env(name: str) -> bool:
+    """A DELIBERATE boolean switch: True only when the env var is exactly 'true' or '1'.
+
+    No strip/lower/yes/on leniency — a master switch guarding real side-effecting adapters must
+    fail CLOSED on anything that isn't the documented value (typos, 'True', stray whitespace)."""
+    return os.environ.get(name, "") in ("true", "1")
+
+
 @dataclass(frozen=True)
 class Config:
     aws_region: str = os.environ.get("AWS_REGION", "us-east-1")
@@ -78,6 +86,10 @@ class Config:
     signup_token_secret: str = os.environ.get(
         "SIGNUP_TOKEN_SECRET", "uplift/signup-token-secret"
     )
+    # The RESOLVED signing-secret VALUE (LANE NICK wires the secret above into the API task-def
+    # `secrets` block under this env name). Empty = verification stays OFF (api/prod_deps.py
+    # keeps email_token_ok/sms_code_ok hardcoded False, the safe pre-wire behavior).
+    signup_token_secret_value: str = os.environ.get("SIGNUP_TOKEN_SECRET_VALUE", "")
     # Plain tunables (safe defaults; no secrets).
     signup_email_token_ttl_s: int = _int_env("SIGNUP_EMAIL_TOKEN_TTL_S", 900)   # 15 min
     signup_otp_ttl_s: int = _int_env("SIGNUP_OTP_TTL_S", 600)                   # 10 min
@@ -86,6 +98,15 @@ class Config:
     signup_otp_send_window_s: int = _int_env("SIGNUP_OTP_SEND_WINDOW_S", 3600)  # 1 h
 
     # --- Signup / payment / identity plane (Build Guide Phase 10) -------------------------
+    # MASTER SWITCH for the real signup/provisioning adapters (api/prod_deps.build_signup_deps).
+    # DEPLOY INVARIANCE (adversarial finding, HIGH): the live API task ALREADY injects
+    # COGNITO_USER_POOL_ID (for JWKS) and DB_HOST/DB_NAME/DB_USER/DB_PASS (for the request-path
+    # stores) for OTHER features — so the per-adapter guards below, alone, would flip real
+    # Cognito admin calls + live-Aurora signup state on a mere image deploy (with REQ-002 grants
+    # still OPEN). Every real adapter therefore ALSO requires this deliberate flag — exactly
+    # "true" or "1", wired as plain env on the API task (infra/REQUESTS.md REQ-003). Unset (or
+    # anything else) = all stubs, byte-identical boot, regardless of what other env is present.
+    signup_real_deps: bool = _switch_env("SIGNUP_REAL_DEPS")
     # Key MATERIAL arrives via the task environment (LANE NICK wires Secrets Manager
     # `friesenlabs/platform/shared/stripe-*` into the task-def `secrets` block); adapters read it
     # injected/from here and NEVER fetch Secrets Manager themselves. Safe default: empty string =
@@ -114,6 +135,9 @@ class Config:
     anthropic_admin_key_secret: str = os.environ.get(
         "ANTHROPIC_ADMIN_KEY_SECRET", "uplift/anthropic-admin-key"
     )
+    # The RESOLVED admin-key VALUE (task-def `secrets` valueFrom the reference above; API task
+    # ONLY). Empty = unconfigured — api/prod_deps.py keeps the provisioning _Noop stub.
+    anthropic_admin_key: str = os.environ.get("ANTHROPIC_ADMIN_KEY", "")
 
     # --- Cortex persistent model registry (ml/registry.py) ---
     # Safe '' defaults: unconfigured = no persistent registry, nothing touches AWS. The bucket is

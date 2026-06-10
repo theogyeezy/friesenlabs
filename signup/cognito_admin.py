@@ -111,10 +111,17 @@ class CognitoAdminClient:
         client = self._cidp()
         try:
             client.admin_confirm_sign_up(UserPoolId=self._pool_id, Username=sub)
-        except client.exceptions.NotAuthorizedException:
-            # Cognito raises NotAuthorized for "already CONFIRMED" — an idempotent no-op on a
-            # re-delivered webhook / retried provisioning run.
-            pass
+        except client.exceptions.NotAuthorizedException as e:
+            # Idempotency is ONLY for the already-CONFIRMED replay. Cognito raises
+            # NotAuthorizedException both for that AND for real authorization failures (missing
+            # IAM perms, disabled user, wrong pool) — swallowing those would mark a broken
+            # provisioning step as done. Match the status wording narrowly; re-raise the rest.
+            # VERIFY (live pool): the already-confirmed message is
+            # "User cannot be confirmed. Current status is CONFIRMED" — note the substring must
+            # not also match "... status is UNCONFIRMED" (it doesn't: "is CONFIRMED" != "is
+            # UNCONFIRMED"); confirm exact wording against the live pool before trusting e2e.
+            if "status is CONFIRMED" not in str(e):
+                raise
 
 
 def from_config(cfg: Any = None) -> CognitoAdminClient:

@@ -4,7 +4,8 @@ Proves the three contracts the signup flow leans on, with a fake pool (no DB):
   * accounts/stripe_events are deliberately RLS-EXEMPT pre-tenant tables — the stores issue NO
     `SET LOCAL app.current_tenant` (there is no tenant to bind yet) and NO session-level SET;
   * idempotency: account insert is `ON CONFLICT (id) DO NOTHING`; the stripe_events claim is
-    `ON CONFLICT (event_id) DO NOTHING` with the inserted/lost outcome surfaced to the caller;
+    ONE atomic statement (insert, or re-claim of a released tombstone) with the won/lost outcome
+    surfaced to the caller — and release is an UPDATE tombstone, never a DELETE (REQ-002 grants);
   * jsonb merge ATOMICITY: account updates merge meta (`meta || %s::jsonb`, never `meta = %s`)
     and the OTP write is ONE statement (`meta || jsonb_build_object('otp', %s::jsonb)`) — no
     read-modify-write window, so the two meta writers can never clobber each other.
@@ -193,21 +194,41 @@ def test_ledger_mark_handled_is_atomic_claim(patched):
     store = PgStripeEventLedger(DSN)
     patched.conn.rowcounts = [1, 0]
     assert store.mark_handled("evt_1", "11111111-1111-1111-1111-111111111111") is True
-    assert store.mark_handled("evt_1") is False   # re-delivery loses the insert -> already handled
+    assert store.mark_handled("evt_1") is False   # re-delivery loses the claim -> already handled
     sql, params = patched.conn.log[0]
     assert "INSERT INTO stripe_events" in sql
-    assert "ON CONFLICT (event_id) DO NOTHING" in sql
+    # ONE statement: fresh insert OR atomic re-claim of a row a failed attempt released —
+    # an actively-held claim matches the conflict but NOT the WHERE, touching no row (rowcount 0).
+    assert "ON CONFLICT (event_id) DO UPDATE" in sql
+    assert "SET released_at = NULL" in sql
+    assert "WHERE stripe_events.released_at IS NOT NULL" in sql
     assert params[0] == "evt_1"
     assert not any("app.current_tenant" in s for s in _sql(patched))  # RLS-EXEMPT (pre-tenant)
 
 
 @pytest.mark.unit
-def test_ledger_is_handled(patched):
+def test_ledger_release_is_a_tombstone_not_a_delete(patched):
+    """REQ-002 grants crm_app no DELETE on stripe_events (append-only ledger): releasing a claim
+    after a failed attempt must be an UPDATE setting released_at, never a DELETE."""
+    store = PgStripeEventLedger(DSN)
+    store.release("evt_1")
+    sql, params = patched.conn.log[0]
+    assert sql.startswith("UPDATE stripe_events SET released_at = now()")
+    assert "DELETE" not in sql
+    assert params == ("evt_1",)
+    assert not any("DELETE" in s for s in _sql(patched))
+
+
+@pytest.mark.unit
+def test_ledger_is_handled_ignores_released_rows(patched):
     store = PgStripeEventLedger(DSN)
     patched.conn.results = [{"?column?": 1}, None]
     assert store.is_handled("evt_1") is True
-    assert store.is_handled("evt_2") is False
-    assert any("SELECT 1 FROM stripe_events WHERE event_id = %s" in s for s in _sql(patched))
+    assert store.is_handled("evt_2") is False     # absent OR tombstoned -> retryable
+    assert any(
+        "SELECT 1 FROM stripe_events WHERE event_id = %s AND released_at IS NULL" in s
+        for s in _sql(patched)
+    )
 
 
 # ---------------------------------------------------------------------------

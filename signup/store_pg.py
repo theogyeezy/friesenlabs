@@ -169,24 +169,47 @@ class PgAccountStore(_PgBase):
 class PgStripeEventLedger(_PgBase):
     """Webhook idempotency ledger over `stripe_events` (TODO P1: survive restarts / 2 tasks).
 
-    `mark_handled` is the atomic CLAIM: INSERT .. ON CONFLICT (event_id) DO NOTHING returns
-    True iff THIS call inserted the row — a re-delivered event (same Stripe event id) on any
-    task loses the insert and short-circuits before any state change.
+    `mark_handled` is the atomic CLAIM (PaymentService takes it BEFORE doing the work): one
+    statement, True iff THIS call took the claim — of N tasks racing the same Stripe event id,
+    exactly one gets True; every other returns False and must no-op.
+
+    `release` gives a claim back after a FAILED attempt so the event stays retryable. It is a
+    TOMBSTONE (`released_at` set), NOT a DELETE: the crm_app grant surface on stripe_events is
+    append-only — SELECT/INSERT/UPDATE, deliberately no DELETE (infra/REQUESTS.md REQ-002) —
+    and the released row keeps an audit trail. `mark_handled` re-claims a released row
+    atomically via ON CONFLICT .. DO UPDATE .. WHERE released_at IS NOT NULL.
     """
 
     def is_handled(self, event_id: str) -> bool:
+        # A released (tombstoned) row does NOT count as handled — the event is retryable.
         with self._tx() as cur:
-            cur.execute("SELECT 1 FROM stripe_events WHERE event_id = %s", (str(event_id),))
+            cur.execute(
+                "SELECT 1 FROM stripe_events WHERE event_id = %s AND released_at IS NULL",
+                (str(event_id),),
+            )
             return cur.fetchone() is not None
 
     def mark_handled(self, event_id: str, account_id: str | None = None) -> bool:
+        # The atomic claim: insert a fresh row, OR re-claim one a failed attempt released.
+        # rowcount == 1 iff this call inserted or re-claimed; 0 = actively claimed elsewhere.
+        # (The DO UPDATE's WHERE makes the held-claim case touch no row at all.)
         with self._tx() as cur:
             cur.execute(
                 "INSERT INTO stripe_events (event_id, account_id) VALUES (%s,%s) "
-                "ON CONFLICT (event_id) DO NOTHING",
+                "ON CONFLICT (event_id) DO UPDATE "
+                "SET released_at = NULL, account_id = EXCLUDED.account_id, handled_at = now() "
+                "WHERE stripe_events.released_at IS NOT NULL",
                 (str(event_id), account_id),
             )
             return cur.rowcount == 1   # True = we claimed it; False = someone already had
+
+    def release(self, event_id: str) -> None:
+        # Tombstone, not delete (docstring): the claim is given back; the row stays for audit.
+        with self._tx() as cur:
+            cur.execute(
+                "UPDATE stripe_events SET released_at = now() WHERE event_id = %s",
+                (str(event_id),),
+            )
 
 
 class PgOtpStore(_PgBase):
