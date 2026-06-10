@@ -45,6 +45,7 @@ function lpGlyph(name) {
     default: return null;
   }
 }
+function onActivate(fn) { return (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fn(e); } }; }
 function LpIcon(props) {
   const inner = lpGlyph(props && props.name);
   if (inner == null) return <Icon {...props} />;
@@ -521,7 +522,7 @@ function BookModal({ onClose }) {
         <div className="lp-modal-head">
           <div className="lp-prod-ico" style={{ background: "var(--accent-soft)", color: "var(--accent-ink)", marginBottom: 0 }}><LpIcon name="calendar" size={20} /></div>
           <div style={{ flex: 1 }}><h3 style={{ fontSize: 19, fontWeight: 730, letterSpacing: "-.02em" }}>{done ? "You're booked!" : "Book a call"}</h3><p style={{ fontSize: 13, color: "var(--ink-3)", marginTop: 2 }}>{done ? "Check your inbox for the invite." : "15 minutes with a product specialist."}</p></div>
-          <button className="icon-btn" onClick={onClose}><LpIcon name="x" size={18} /></button>
+          <button className="icon-btn" aria-label="Close" onClick={onClose}><LpIcon name="x" size={18} /></button>
         </div>
         <div className="lp-modal-body">
           {done ? (
@@ -551,7 +552,7 @@ function EmailModal({ onClose }) {
         <div className="lp-modal-head">
           <div className="lp-prod-ico" style={{ background: "var(--rose-soft)", color: "oklch(0.48 0.14 18)", marginBottom: 0 }}><LpIcon name="mail" size={20} /></div>
           <div style={{ flex: 1 }}><h3 style={{ fontSize: 19, fontWeight: 730, letterSpacing: "-.02em" }}>{done ? "Message sent" : "Email us"}</h3><p style={{ fontSize: 13, color: "var(--ink-3)", marginTop: 2 }}>{done ? "We'll reply within a few hours." : "Tell us about your business."}</p></div>
-          <button className="icon-btn" onClick={onClose}><LpIcon name="x" size={18} /></button>
+          <button className="icon-btn" aria-label="Close" onClick={onClose}><LpIcon name="x" size={18} /></button>
         </div>
         <div className="lp-modal-body">
           {done ? (
@@ -577,7 +578,7 @@ function DonateModal({ onClose }) {
         <div className="lp-modal-head">
           <div className="lp-prod-ico" style={{ background: "var(--accent-soft)", color: "var(--accent-ink)", marginBottom: 0 }}><LpIcon name="spark" size={20} /></div>
           <div style={{ flex: 1 }}><h3 style={{ fontSize: 19, fontWeight: 730, letterSpacing: "-.02em" }}>{done ? "Thank you 💛" : "Support the mission"}</h3><p style={{ fontSize: 13, color: "var(--ink-3)", marginTop: 2 }}>{done ? "Your gift helps a small business get started." : "Help put agentic tools in more small businesses."}</p></div>
-          <button className="icon-btn" onClick={onClose}><LpIcon name="x" size={18} /></button>
+          <button className="icon-btn" aria-label="Close" onClick={onClose}><LpIcon name="x" size={18} /></button>
         </div>
         <div className="lp-modal-body">
           {done ? (
@@ -1020,6 +1021,7 @@ function Landing({ onSignIn = () => {} } = {}) {
 
   return (
     <div className="lp lp-cinematic">
+      <a className="lp-skip" href="#main">Skip to content</a>
       <ScrollProgress />
       {/* nav */}
       <nav className="lp-nav">
@@ -1063,7 +1065,7 @@ function Landing({ onSignIn = () => {} } = {}) {
       document.body)}
 
       {/* hero */}
-      <section className="lp-hero">
+      <section className="lp-hero" id="main">
         <div className="lp-wrap lp-hero-grid">
           <div>
             <span className="lp-pill"><span className="live-dot" style={{ width: 6, height: 6 }} />Meet your AI back office</span>
@@ -1116,7 +1118,7 @@ function Landing({ onSignIn = () => {} } = {}) {
                     {L.pills.map(([n, ic, tone]) => {
                       const [bg, fg] = LP_TONE[tone];
                       const prod = LP_PRODUCTS.find((p) => p.name === n);
-                      return <span className={"lp-pp" + (prod ? " clickable" : "")} key={n} onClick={prod ? () => setOpenProduct(prod.id) : undefined}><span className="pp-ico" style={{ background: bg, color: fg }}><LpIcon name={ic} size={14} /></span>{n}{prod && <LpIcon name="arrowRight" size={12} sw={2.2} style={{ opacity: .45, marginLeft: 1 }} />}</span>;
+                      return <span className={"lp-pp" + (prod ? " clickable" : "")} key={n} {...(prod ? { role: "button", tabIndex: 0, onClick: () => setOpenProduct(prod.id), onKeyDown: onActivate(() => setOpenProduct(prod.id)) } : {})}><span className="pp-ico" style={{ background: bg, color: fg }}><LpIcon name={ic} size={14} /></span>{n}{prod && <LpIcon name="arrowRight" size={12} sw={2.2} style={{ opacity: .45, marginLeft: 1 }} />}</span>;
                     })}
                   </div>
                 </div>
@@ -1272,7 +1274,7 @@ function Landing({ onSignIn = () => {} } = {}) {
                 <button className={"lp-plan-chip" + (plan === "custom" ? " active" : "")} onClick={() => setPlan("custom")}>Custom</button>
               </div>
 
-              <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px", borderRadius: "var(--r-md)", border: "1.5px solid " + (byo ? "var(--accent)" : "var(--line)"), background: byo ? "var(--accent-softer)" : "var(--surface)", marginBottom: 16, cursor: "pointer" }} onClick={() => setByoCrm(!byo)}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px", borderRadius: "var(--r-md)", border: "1.5px solid " + (byo ? "var(--accent)" : "var(--line)"), background: byo ? "var(--accent-softer)" : "var(--surface)", marginBottom: 16, cursor: "pointer" }} role="switch" tabIndex={0} aria-checked={byo} aria-label="Bring your own CRM" onClick={() => setByoCrm(!byo)} onKeyDown={onActivate(() => setByoCrm(!byo))}>
                 <div className="lp-mod-ico" style={{ background: "var(--surface)", color: "var(--accent-ink)" }}><LpIcon name="link" size={18} /></div>
                 <div style={{ flex: 1 }}><b style={{ fontSize: 14.5, fontWeight: 680, display: "block" }}>Bring your own CRM</b><span style={{ fontSize: 12.5, color: "var(--ink-3)" }}>Keep HubSpot / Salesforce, skip Uplift, we connect to yours</span></div>
                 <div className={"tog" + (byo ? " on" : "")} />
@@ -1281,7 +1283,7 @@ function Landing({ onSignIn = () => {} } = {}) {
               {LP_MODULES.map((m) => {
                 const [bg, fg] = LP_TONE[m.tone]; const on = sel[m.id]; const disabled = m.id === "uplift" && byo;
                 return (
-                  <div key={m.id} className={"lp-mod" + (on ? " on" : "") + (m.req ? " req" : "")} style={{ opacity: disabled ? .5 : 1 }} onClick={() => !disabled && toggleMod(m)}>
+                  <div key={m.id} className={"lp-mod" + (on ? " on" : "") + (m.req ? " req" : "")} style={{ opacity: disabled ? .5 : 1 }} role="button" tabIndex={disabled ? -1 : 0} aria-pressed={on} aria-disabled={disabled || undefined} onClick={() => !disabled && toggleMod(m)} onKeyDown={onActivate(() => !disabled && toggleMod(m))}>
                     <div className="lp-mod-ico" style={{ background: bg, color: fg }}><LpIcon name={m.icon} size={18} /></div>
                     <div className="m-info"><b>{m.name}{m.req && <span style={{ fontSize: 11, color: "var(--ink-4)", fontWeight: 500 }}> · included</span>}{disabled && <span style={{ fontSize: 11, color: "var(--ink-4)", fontWeight: 500 }}> · using your CRM</span>}</b><span>{m.blurb}</span></div>
                     <span className="m-price">${m.price}/mo</span>
@@ -1459,8 +1461,8 @@ function Landing({ onSignIn = () => {} } = {}) {
                   <div className="lp-founder-title">{f.title}</div>
                   <p>{f.bio}</p>
                   <div className="lp-founder-social">
-                    <a href={f.linkedin} target="_blank" rel="noopener noreferrer" title={`${f.name} on LinkedIn`}><LpIcon name="linkedin" size={17} /></a>
-                    <a href={f.instagram} target="_blank" rel="noopener noreferrer" title={`${f.name} on Instagram`}><LpIcon name="instagram" size={17} /></a>
+                    <a href={f.linkedin} target="_blank" rel="noopener noreferrer" aria-label={`${f.name} on LinkedIn`} title={`${f.name} on LinkedIn`}><LpIcon name="linkedin" size={17} /></a>
+                    <a href={f.instagram} target="_blank" rel="noopener noreferrer" aria-label={`${f.name} on Instagram`} title={`${f.name} on Instagram`}><LpIcon name="instagram" size={17} /></a>
                   </div>
                 </div>
               </div>
@@ -1550,7 +1552,7 @@ function Landing({ onSignIn = () => {} } = {}) {
       {modal === "statement" && (
         <div className="lp-modal-scrim" onClick={() => setModal(null)} style={{ alignItems: "flex-start", overflowY: "auto", padding: "5vh 16px" }}>
           <div className="lp-paper" onClick={(e) => e.stopPropagation()}>
-            <button className="icon-btn" style={{ position: "absolute", top: 16, right: 16 }} onClick={() => setModal(null)}><LpIcon name="x" size={18} /></button>
+            <button className="icon-btn" aria-label="Close" style={{ position: "absolute", top: 16, right: 16 }} onClick={() => setModal(null)}><LpIcon name="x" size={18} /></button>
             <div className="lp-paper-tag">Company Statement</div>
             <h1 className="lp-paper-title">Friesen Labs</h1>
             <div className="lp-paper-meta" style={{ marginTop: 14 }}>A public benefit corporation for small business · Austin, TX</div>
@@ -1578,7 +1580,7 @@ function Landing({ onSignIn = () => {} } = {}) {
       {paper && (
         <div className="lp-modal-scrim" onClick={() => setPaper(null)} style={{ alignItems: "flex-start", overflowY: "auto", padding: "5vh 16px" }}>
           <div className="lp-paper" onClick={(e) => e.stopPropagation()}>
-            <button className="icon-btn" style={{ position: "absolute", top: 16, right: 16 }} onClick={() => setPaper(null)}><LpIcon name="x" size={18} /></button>
+            <button className="icon-btn" aria-label="Close" style={{ position: "absolute", top: 16, right: 16 }} onClick={() => setPaper(null)}><LpIcon name="x" size={18} /></button>
             <div className="lp-paper-tag">{paper.tag} · Friesen Labs Foundation</div>
             <h1 className="lp-paper-title">{paper.title}</h1>
             <div className="lp-paper-authors">
@@ -1613,7 +1615,7 @@ function Landing({ onSignIn = () => {} } = {}) {
             <div className="lp-modal-head">
               <div className="lp-prod-ico" style={{ background: "var(--accent-soft)", color: "var(--accent-ink)", marginBottom: 0 }}><LpIcon name="doc" size={20} /></div>
               <div style={{ flex: 1 }}><h3 style={{ fontSize: 19, fontWeight: 730, letterSpacing: "-.02em" }}>{doc}</h3><p style={{ fontSize: 13, color: "var(--ink-3)", marginTop: 2 }}>Friesen Labs nonprofit disclosures</p></div>
-              <button className="icon-btn" onClick={() => setDoc(null)}><LpIcon name="x" size={18} /></button>
+              <button className="icon-btn" aria-label="Close" onClick={() => setDoc(null)}><LpIcon name="x" size={18} /></button>
             </div>
             <div className="lp-modal-body">
               <p style={{ fontSize: 14, color: "var(--ink-2)", lineHeight: 1.6 }}>Our {doc} is being finalized with our counsel ahead of public launch. We're committed to full transparency, request the current copy and we'll send it over.</p>

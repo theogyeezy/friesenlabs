@@ -7,6 +7,7 @@ const { useState, useEffect, useRef } = React;
 function useCountUp(target, dur = 1100, deps = []) {
   const [v, setV] = useState(0);
   useEffect(() => {
+    if (typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) { setV(target); return; }
     let raf, start;
     const tick = (t) => {
       if (!start) start = t;
