@@ -1,0 +1,103 @@
+name: Deploy
+
+# Manual-trigger deploy pipeline (TODO Sec/P1 196): buildx arm64 api image -> ECR immutable
+# sha tag -> terraform plan artifact -> manual-approval apply (the 'production' environment's
+# protection rule) -> force-new-deployment -> edge health check. OIDC role, no static keys.
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  ECR: 186052668426.dkr.ecr.us-east-1.amazonaws.com
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: meta
+        run: echo "image=$ECR/uplift-api:${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: aws-actions/amazon-ecr-login@v2
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Build + push (arm64, immutable tag)
+        run: |
+          docker buildx build --platform linux/arm64 -f api/Dockerfile \
+            -t "${{ steps.meta.outputs.image }}" --push .
+
+  plan:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Materialize backend + tfvars (gitignored locally; secrets here)
+        working-directory: infra
+        run: |
+          printf '%s' "${{ secrets.TF_BACKEND_HCL_B64 }}" | base64 -d > backend.hcl
+          printf '%s' "${{ secrets.PROD_AUTO_TFVARS_B64 }}" | base64 -d > prod.auto.tfvars
+          printf '\napi_image = "%s"\n' "${{ needs.build.outputs.image }}" >> prod.auto.tfvars
+      - name: Plan
+        working-directory: infra
+        run: |
+          terraform init -backend-config=backend.hcl -input=false
+          terraform plan -input=false -lock-timeout=120s -out=deploy.tfplan
+          terraform show -no-color deploy.tfplan | tail -40
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tfplan
+          path: |
+            infra/deploy.tfplan
+            infra/prod.auto.tfvars
+          retention-days: 3
+
+  apply:
+    needs: [build, plan]
+    runs-on: ubuntu-latest
+    environment: production # protection rule = the manual approval gate
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: tfplan
+          path: infra/
+      - name: Apply the approved plan
+        working-directory: infra
+        run: |
+          printf '%s' "${{ secrets.TF_BACKEND_HCL_B64 }}" | base64 -d > backend.hcl
+          terraform init -backend-config=backend.hcl -input=false
+          terraform apply -input=false -lock-timeout=120s deploy.tfplan
+      - name: Roll the api service + health check
+        run: |
+          aws ecs update-service --cluster uplift-cluster --service uplift-api \
+            --force-new-deployment --query 'service.serviceName' --output text
+          aws ecs wait services-stable --cluster uplift-cluster --services uplift-api
+          for i in $(seq 1 10); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -m 15 https://d1vw20lc120dpa.cloudfront.net/healthz || true)
+            [ "$code" = "200" ] && echo "healthz 200" && exit 0
+            sleep 15
+          done
+          echo "healthz never returned 200" && exit 1

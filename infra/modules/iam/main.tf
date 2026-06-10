@@ -125,5 +125,50 @@ resource "aws_iam_role_policy" "api_task_sfn" {
   })
 }
 
+# CI/CD (TODO Sec/P1): GitHub Actions OIDC — deploy.yml assumes this role; no static keys.
+# Trust is pinned to this repo (build jobs on main + the protected 'production' environment).
+# Policy is AdministratorAccess for now (terraform apply spans every service) — tightening to a
+# scoped deploy policy is a recorded follow-up.
+resource "aws_iam_openid_connect_provider" "github" {
+  url             = "https://token.actions.githubusercontent.com"
+  client_id_list  = ["sts.amazonaws.com"]
+  thumbprint_list = ["6938fd4d98bab03faadb97b34396831e3780aea1"] # ignored by AWS for GitHub since 2023 (trust via root CA) but required by the API
+}
+
+data "aws_iam_policy_document" "github_deploy_assume" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    principals {
+      type        = "Federated"
+      identifiers = [aws_iam_openid_connect_provider.github.arn]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+    condition {
+      test     = "StringLike"
+      variable = "token.actions.githubusercontent.com:sub"
+      values = [
+        "repo:theogyeezy/friesenlabs:ref:refs/heads/main",
+        "repo:theogyeezy/friesenlabs:environment:production",
+      ]
+    }
+  }
+}
+
+resource "aws_iam_role" "github_deploy" {
+  name               = "${var.project}-deploy"
+  assume_role_policy = data.aws_iam_policy_document.github_deploy_assume.json
+}
+
+resource "aws_iam_role_policy_attachment" "github_deploy_admin" {
+  role       = aws_iam_role.github_deploy.name
+  policy_arn = "arn:aws:iam::aws:policy/AdministratorAccess"
+}
+
+output "deploy_role_arn" { value = aws_iam_role.github_deploy.arn }
+
 output "ecs_task_execution_role_arn" { value = aws_iam_role.ecs_task_execution.arn }
 output "task_role_arns" { value = { for k, r in aws_iam_role.task : k => r.arn } }
