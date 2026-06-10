@@ -418,6 +418,14 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   only). Go-live = ingest_tenants + ingest_schedule_enabled flip. Edge 200.
 
 ## Lane Matt (app code) — log
+- 2026-06-09 — **Cycle 4 (deep wiring + remaining provisioning, PRs #42/#47/#50/#56):** #42 cortex+
+  spec-gen wired into asgi/worker, coordinator-driven routing (regex gated to FakeRuntime), /api/me ·
+  #47 per-request Cube JWT minted from the verified claim (TRUST RULE Cube leg) · #50 ingest
+  run_sync entrypoint, per-tenant SecretProvider, ingest_cursor stores migrated to SET LOCAL
+  (closes the CLAUDE.md follow-up), Titan batch (VERIFY) · #56 provisioning Lambda handler +
+  deterministic claim-ordered SFN trigger. REQ-004/REQ-005 filed. Suite 419→506 / 4 skip.
+  TODO true-up: 22 Lane-Matt boxes checked (code-complete; live halves = Lane Nick).
+  Two ENOSPC incidents mid-cycle (disk at 100%%) — survived via cache purges; Lexar offload needed.
 - 2026-06-09 — **Cycle 3 (real wiring + frontend honesty, 5 PRs + 1 fix-PR):** #34 real provisioning
   deps end-to-end behind a NEW `SIGNUP_REAL_DEPS` master switch (adversarial review caught 2 HIGHs:
   the real-adapter guards rode env vars the live task already injects (COGNITO_USER_POOL_ID, DB_*) —
