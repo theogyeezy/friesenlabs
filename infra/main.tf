@@ -149,6 +149,25 @@ module "api_service" {
   log_retention_days             = var.log_retention_days
 }
 
+# REQ-004: ingestion scheduler — one-off Fargate task on an EventBridge rule (DISABLED by
+# default; var.ingest_schedule_enabled is the go-live act).
+module "ingest" {
+  source             = "./modules/ingest"
+  project            = var.project
+  region             = var.aws_region
+  cluster_arn        = module.ecs.cluster_id
+  private_subnet_ids = module.vpc.private_subnet_ids
+  security_group_id  = module.security.sg_api
+  execution_role_arn = module.iam.ecs_task_execution_role_arn
+  image              = var.api_image
+  db_secret_arn      = module.secrets.crm_app_db_secret_arn
+  db_host            = module.data.cluster_endpoint
+  ingest_tenants     = var.ingest_tenants
+  ingest_raw_bucket  = var.ingest_raw_bucket
+  schedule_enabled   = var.ingest_schedule_enabled
+  log_retention_days = var.log_retention_days
+}
+
 # --- Phase 8: Cortex scheduled retrain ---
 module "cortex" {
   source  = "./modules/cortex"
