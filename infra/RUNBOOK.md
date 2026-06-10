@@ -53,6 +53,22 @@ resolved, any apply must be `-target`ed at pure-add modules only.
 - `amplify list-apps` → `uplift-web` @ `d224yxym1ehrim.amplifyapp.com` exists and is live — this is
   the resource the un-clean plan would destroy.
 
+## Aurora hardening — 2026-06-09 (feat/nick-aurora-hardening)
+
+- Live verification showed the TODO premise was stale: the cluster ALREADY has
+  `backup_retention_period=7` and `deletion_protection=true` (verified via
+  `describe-db-clusters`). Remaining real gaps: `copy_tags_to_snapshot=false`,
+  `PerformanceInsightsEnabled=false`.
+- Authored exactly those two attributes. `plan -target=module.data`:
+  **0 add / 2 change / 0 destroy**, attribute diff is precisely
+  `copy_tags_to_snapshot false→true` + `performance_insights_enabled false→true`
+  (in-place, no downtime; PI 7-day retention = free tier).
+- **Intended-change apply** (explicitly named by TODO items 123/136): apply
+  `-target=module.data` from merged main, then re-verify with
+  `describe-db-clusters` / `describe-db-instances`.
+- **APPLIED 2026-06-09 from main @866328b** (re-planned first: still exactly the 2 attrs).
+  Live-verified: `copyTags=true`, `PerformanceInsightsEnabled=true`, cluster + instance `available`.
+
 ### Apply discipline (until the baseline is clean)
 1. No full `terraform apply`.
 2. Pure-add module deploys go via `terraform apply -target=module.<cube|worker|observability> baseline-style plan first`.
