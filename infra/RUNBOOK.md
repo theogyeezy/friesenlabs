@@ -97,6 +97,19 @@ Two flags in the gitignored `prod.auto.tfvars`; NEVER flip both in one apply:
 Rotation: taint `random_password.origin_verify` → phase-1 apply → wait Deployed → phase-2 apply.
 ROLLBACK: flip `alb_enforce_origin_verify=false`, `apply -target=module.alb` (instant).
 
+## X-Origin-Verify APPLIED — 2026-06-09 (from main @d211c38)
+
+- Phase 1 `-target=module.secrets -target=module.api_cdn`: 3 add / 1 change (exactly as planned);
+  distro ETZLYZ2VC4KBI modification took 7m09s, Status=Deployed, CustomHeaders.Quantity=1.
+  Edge /healthz 200.
+- Phase 2 `-target=module.alb`: 1 add / 1 change (listener default → fixed-response 403; rule
+  prio-10 X-Origin-Verify → forward). Edge /healthz 200 ×3 immediately after; unauth API routes
+  unchanged (404 — same pre-existing behavior as the cycle-1 baseline note).
+- Negative path: SG (CloudFront-prefix-only) + 403 default means a stranger's CloudFront distro
+  now gets 403 instead of reaching FastAPI. Direct internet curl can't reach the listener at all.
+- Flags now true in `prod.auto.tfvars`: enable_origin_verify, alb_enforce_origin_verify.
+  ROLLBACK: flip alb_enforce_origin_verify=false, `apply -target=module.alb` (instant).
+
 ### Apply discipline (until the baseline is clean)
 1. No full `terraform apply`.
 2. Pure-add module deploys go via `terraform apply -target=module.<cube|worker|observability> baseline-style plan first`.

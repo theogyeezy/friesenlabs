@@ -337,6 +337,10 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   two-flag, two-phase rollout (no 403 window; nonsensitive() bool so the live listener shows zero
   spurious diff — flags-off plan = baseline +1 pure add). Multi-platform .terraform.lock.hcl now
   TRACKED (aws + random, 2×h1 each) — TODO 135 done; random ~>3.6 added for the secret value.
+- 2026-06-09 — Sec/P0 187 DONE: X-Origin-Verify applied two-phase from main @d211c38 with zero
+  downtime (edge 200 throughout). ALB :80 default is now fixed-response 403; only requests carrying
+  the CloudFront-stamped header forward. Secret in uplift/origin-verify (rotation = taint the
+  random_password → phased re-apply). TODO 135 lock-file also merged (#41, Linux CI proof).
 
 ## Lane Matt (app code) — log
 - 2026-06-09 — **Cycle 3 (real wiring + frontend honesty, 5 PRs + 1 fix-PR):** #34 real provisioning
