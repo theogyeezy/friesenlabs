@@ -835,3 +835,12 @@ textarea.lp-input { height: 92px; padding: 11px 13px; resize: none; }
 .lp .lp-vs .rad-legend .us i { background: var(--accent); }
 /* warm the closing CTA band (was cool indigo too) so it harmonises with the warm theme */
 .lp .lp-finalcta, .lp-cinematic .lp-finalcta { background: oklch(0.205 0.015 52) !important; }
+
+/* a11y + theme tokens scoped to the landing: AA-contrast ink shades, warm accent-press,
+   darker green for text/fills (the base tokens are too light on cream). */
+.lp {
+  --ink-3: oklch(0.5 0.018 56);
+  --ink-4: oklch(0.52 0.018 58);
+  --accent-press: oklch(0.47 0.12 41);
+  --green: oklch(0.5 0.13 152);
+}
