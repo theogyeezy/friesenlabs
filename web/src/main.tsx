@@ -32,6 +32,7 @@ if (import.meta.env.VITE_API_MOCK !== "0" && import.meta.env.VITE_API_MOCK !== "
 import GreenlightQueue from "./api/GreenlightQueue";
 import ChatDock from "./api/ChatDock";
 import DashboardView from "./api/DashboardView";
+import IntegrationsPanel from "./api/IntegrationsPanel";
 import SignupFlow from "./signup/SignupFlow";
 
 // Auth (Cognito Hosted UI, PKCE). The provider and the gate are fully inert
@@ -105,6 +106,12 @@ function Root() {
       return (
         <Gated>
           <DashboardView />
+        </Gated>
+      );
+    case "integrations":
+      return (
+        <Gated>
+          <IntegrationsPanel />
         </Gated>
       );
   }

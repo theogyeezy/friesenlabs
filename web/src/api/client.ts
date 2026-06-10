@@ -105,6 +105,56 @@ export interface ActionResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Integrations wire types (mirror api/integrations_routes.py shapes).
+// ---------------------------------------------------------------------------
+
+/** Connection status straight from the API — never invented client-side. */
+export type IntegrationStatus = "connected" | "not_connected" | "unknown";
+
+/** One known connector + this tenant's connection status (GET /integrations). */
+export interface Integration {
+  name: string;
+  label: string;
+  category: string;
+  description: string;
+  /** true/false from the vault check; null = the API honestly couldn't tell. */
+  connected: boolean | null;
+  status: IntegrationStatus;
+}
+
+export interface ListIntegrationsResponse {
+  integrations: Integration[];
+  /** False = the deployment has no secret writer: connecting will 503. */
+  secrets_configured: boolean;
+  /** False = the ingestion plane isn't wired: sync-now will 503. */
+  sync_configured: boolean;
+}
+
+/**
+ * Body for POST /integrations/{name}/credentials. Carries the token ONLY —
+ * never a tenant_id (the server derives the vault slot from the verified
+ * claim). The token is write-only: the API never echoes it back and this
+ * client never logs it.
+ */
+export interface IntegrationCredentialsBody {
+  token: string;
+}
+
+/** Response from POST /integrations/{name}/credentials (no token echo). */
+export interface StoreCredentialsResponse {
+  name: string;
+  secret_ref: string;
+  stored: boolean;
+  status: IntegrationStatus;
+}
+
+/** Response from POST /integrations/{name}/sync: one SyncResult-shaped bag. */
+export interface IntegrationSyncResponse {
+  name: string;
+  result: Record<string, unknown>;
+}
+
+// ---------------------------------------------------------------------------
 // Signup funnel wire types (public, pre-auth: no bearer token, no tenant_id).
 //
 // These endpoints run before an account has a tenant, so requests carry NO
@@ -509,6 +559,51 @@ export class ApiClient {
       return (await this.mockApi()).runAction(body);
     }
     return this.request<ActionResponse>("POST", "/actions", body);
+  }
+
+  // --- integrations (authed) -------------------------------------------------
+
+  /** GET /integrations: known connectors + this tenant's connection status. */
+  async listIntegrations(): Promise<ListIntegrationsResponse> {
+    if (this.mock) {
+      return (await this.mockApi()).listIntegrations();
+    }
+    return this.request<ListIntegrationsResponse>("GET", "/integrations");
+  }
+
+  /**
+   * POST /integrations/{name}/credentials: vault the tenant's token. The body
+   * carries the token ONLY (no tenant_id — the trust rule); the response never
+   * echoes it. Errors: 503 storage unconfigured, 422 empty token, 502 vault
+   * write failed — surfaced as ApiError for the caller to map honestly.
+   */
+  async storeIntegrationCredentials(
+    name: string,
+    body: IntegrationCredentialsBody,
+  ): Promise<StoreCredentialsResponse> {
+    if (this.mock) {
+      return (await this.mockApi()).storeIntegrationCredentials(name, body);
+    }
+    return this.request<StoreCredentialsResponse>(
+      "POST",
+      `/integrations/${encodeURIComponent(name)}/credentials`,
+      body,
+    );
+  }
+
+  /**
+   * POST /integrations/{name}/sync: kick one incremental sync for THIS tenant
+   * (server derives the tenant from the verified claim). Errors: 503 sync
+   * unconfigured, 409 connect first (no vaulted credential), 502 sync failed.
+   */
+  async kickIntegrationSync(name: string): Promise<IntegrationSyncResponse> {
+    if (this.mock) {
+      return (await this.mockApi()).kickIntegrationSync(name);
+    }
+    return this.request<IntegrationSyncResponse>(
+      "POST",
+      `/integrations/${encodeURIComponent(name)}/sync`,
+    );
   }
 
   // --- signup funnel (public, pre-auth) -------------------------------------
