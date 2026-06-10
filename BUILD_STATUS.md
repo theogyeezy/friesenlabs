@@ -613,3 +613,13 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   /chat request, orphaning worker-resolved reports — per-tenant Conversation cache added (per-tenant
   send lock, rebuild-once on terminated). Suite green. Live remediation after roll: agents.update
   to strip the toolset from the existing live agents.
+- 2026-06-10 — **Cycle 12 (STEP 3 VERIFIED — chat returns real data end-to-end):** turn-2 in the SAME
+  MA session answered with the live Meridian pipeline: **8 deals in Negotiation, $438,550** (Westlake
+  Galleria chiller retrofit $284K top). Four stacked defects found+fixed: unserved native toolset
+  grant (#156) · session-per-request (#156 cache) · sequential work-queue starvation by 9 dead
+  bash-wedged sessions (deleted; worker x2 + bounce) · coordinator multiagent pinned specialist v1
+  (repinned v2, coordinator v3; dangling native bash answered with is_error tool_result). #147
+  CLOSED with evidence; hardening follow-ups filed (#161: worker logging, native-tool refusal,
+  queue hygiene, ensure() roster repin, codify worker desired_count). LANE TALLY: 9/10 steps
+  landed + verified; step 8 blocked SOLELY on the owner's Squarespace NS change (TF zone NS set
+  documented; TLS sequence ready to execute on cutover).
