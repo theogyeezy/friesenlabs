@@ -15,6 +15,11 @@ COPY shared/ ./shared/
 COPY agents/ ./agents/
 COPY worker/ ./worker/
 COPY ml/ ./ml/
+# worker/worker.py run() lazy-imports api.control.greenlight + api.pg_clients (which in turn
+# lazy-imports ingest.embed for SearchRag) — without these the worker crash-loops on startup
+# with ModuleNotFoundError. Both are stdlib-only at module import; deps are in requirements-api.
+COPY api/ ./api/
+COPY ingest/ ./ingest/
 
 RUN useradd --create-home --uid 10001 appuser
 USER appuser
