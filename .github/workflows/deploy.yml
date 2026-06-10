@@ -52,12 +52,13 @@ jobs:
         run: |
           printf '%s' "${{ secrets.TF_BACKEND_HCL_B64 }}" | base64 -d > backend.hcl
           printf '%s' "${{ secrets.PROD_AUTO_TFVARS_B64 }}" | base64 -d > prod.auto.tfvars
-          printf '\napi_image = "%s"\n' "${{ needs.build.outputs.image }}" >> prod.auto.tfvars
       - name: Plan
         working-directory: infra
         run: |
           terraform init -backend-config=backend.hcl -input=false
-          terraform plan -input=false -lock-timeout=120s -out=deploy.tfplan
+          # -var beats the file value — avoids the duplicate-attribute error from appending
+          terraform plan -input=false -lock-timeout=120s \
+            -var "api_image=${{ needs.build.outputs.image }}" -out=deploy.tfplan
           terraform show -no-color deploy.tfplan | tail -40
       - uses: actions/upload-artifact@v4
         with:
