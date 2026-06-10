@@ -776,6 +776,14 @@ function RoiCalculator() {
 }
 
 function Landing({ onSignIn = () => {} } = {}) {
+  // The global app shell sets `body { overflow: hidden }` (it scrolls inside its
+  // own panes). The marketing landing is a full-page document, so it must opt the
+  // body back into scrolling via `body.lp-body` while mounted — without this the
+  // whole page is scroll-locked in real (production) builds.
+  useEffect(() => {
+    document.body.classList.add("lp-body");
+    return () => document.body.classList.remove("lp-body");
+  }, []);
   useReveal();
   useMagnetic();
   const [demoTab, setDemoTab] = useState("agents");
