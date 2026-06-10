@@ -746,3 +746,19 @@ textarea.lp-input { height: 92px; padding: 11px 13px; resize: none; }
 .lp-cinematic .lp-testi, .lp-cinematic .roi-controls, .lp-cinematic .lp-build, .lp-cinematic .lp-founder, .lp-cinematic .lp-demo-side, .lp-cinematic .lp-layer { box-shadow: 0 20px 60px -28px oklch(0 0 0 / .6), 0 0 0 1px oklch(1 0 0 / .05); }
 /* eyebrow + heading glow for cinematic weight in dark */
 .lp-cinematic .lp-eyebrow { text-shadow: 0 0 18px color-mix(in oklch, var(--accent) 45%, transparent); }
+
+/* ============================================================
+   Space-travel scroll — sections are depth-transformed by JS
+   (useSpaceScroll). These just prep them for cheap GPU 3D.
+   ============================================================ */
+.lp-cinematic .lp-section, .lp-cinematic .lp-fullbleed, .lp-cinematic .lp-finalcta {
+  transform-origin: 50% 50%;
+  will-change: transform, opacity;
+  backface-visibility: hidden;
+}
+/* the old one-shot reveal is replaced by the continuous travel — neutralize any leftover .rv */
+.lp-cinematic .rv, .lp-cinematic .rv-in { opacity: 1 !important; transform: none !important; filter: none !important; transition: none !important; }
+@media (prefers-reduced-motion: reduce) {
+  /* no z-travel; sections sit flat and readable */
+  .lp-cinematic .lp-section, .lp-cinematic .lp-fullbleed, .lp-cinematic .lp-finalcta { transform: none !important; opacity: 1 !important; filter: none !important; }
+}
