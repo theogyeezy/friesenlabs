@@ -4,10 +4,13 @@ import "./globals";
 import { SafeHtml } from "./lib/SafeHtml";
 import { useAuth } from "./auth/AuthContext";
 // API-wired surfaces (real mode). When the build runs against the real control
-// plane (VITE_API_MOCK=0), the primary nav surfaces — Command Center,
-// Greenlight, Ask agents — mount these ApiClient-backed components with honest
-// loading/empty/error states instead of the FLStore prototype screens. The
-// prototype stays reachable only in mock mode.
+// plane (VITE_API_MOCK=0), the API-backed surfaces — Command Center
+// (DashboardView), Greenlight (GreenlightQueue), Ask agents (ChatDock) — mount
+// with honest loading/empty/error states. EVERY other route renders an explicit
+// "isn't live yet" panel in real mode: no FLStore prototype screen, demo
+// number, fake badge/feed/agent-rail, or prototype overlay (palette, intake,
+// marketplace, onboarding/tour) is reachable when the build is real. The full
+// FLStore prototype experience exists only in mock builds.
 import { isApiMock } from "./api/client";
 import GreenlightQueue from "./api/GreenlightQueue";
 import DashboardView from "./api/DashboardView";
@@ -30,15 +33,19 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "density": "regular"
 }/*EDITMODE-END*/;
 
+// Honest real-mode placeholder. In a real build, any route without an
+// API-backed component renders this — never an FLStore prototype screen, which
+// would present demo data as the tenant's own. It promises nothing it can't
+// keep: this surface simply isn't live yet.
 const ComingSoon = ({ title, icon }) => (
-  <div className="screen screen-anim" style={{ display: "grid", placeItems: "center", minHeight: "60vh" }}>
-    <div style={{ textAlign: "center", maxWidth: 380 }}>
+  <div className="screen screen-anim" data-testid="coming-soon" style={{ display: "grid", placeItems: "center", minHeight: "60vh" }}>
+    <div style={{ textAlign: "center", maxWidth: 400 }}>
       <div style={{ width: 60, height: 60, borderRadius: 16, background: "var(--accent-soft)", color: "var(--accent-ink)", display: "grid", placeItems: "center", margin: "0 auto 18px" }}>
         <Icon name={icon} size={28} />
       </div>
-      <h2 style={{ fontSize: 21, fontWeight: 720, letterSpacing: "-.02em" }}>{title}</h2>
+      <h2 style={{ fontSize: 21, fontWeight: 720, letterSpacing: "-.02em" }}>{title} isn&rsquo;t live yet</h2>
       <p style={{ color: "var(--ink-3)", fontSize: 14, marginTop: 8, lineHeight: 1.55 }}>
-        This space is wired up in the full product. For this prototype, explore the <b style={{ color: "var(--ink)" }}>Command Center</b> and <b style={{ color: "var(--ink)" }}>Uplift</b>.
+        Uplift is rolling out surface by surface. <b style={{ color: "var(--ink)" }}>Command Center</b>, <b style={{ color: "var(--ink)" }}>Greenlight</b> and <b style={{ color: "var(--ink)" }}>Ask agents</b> are live today; this area is still being built.
       </p>
     </div>
   </div>
@@ -126,8 +133,9 @@ function App() {
     root.setAttribute("data-density", t.density);
   }, [t.accent, t.dark, t.density]);
 
-  // ⌘K
+  // ⌘K (mock only: the palette is prototype chrome with fake counts/agents)
   useEffect(() => {
+    if (realMode) return;
     const k = (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); setCmdk((v) => !v); }
     };
@@ -135,10 +143,13 @@ function App() {
     return () => window.removeEventListener("keydown", k);
   }, []);
 
-  // agents keep working: stream live activity into the shared feed
+  // agents keep working: stream live activity into the shared feed (MOCK ONLY:
+  // FEED_LIVE is scripted prototype activity — fabricating "live" agent events
+  // for a real tenant would be dishonest)
   const secMode = useStore((s) => s.security.mode);
   const agentPaused = useStore((s) => s.security.agentPaused);
   useEffect(() => {
+    if (realMode) return;
     const iv = setInterval(() => {
       const st = FLStore.getState();
       if (st.security.mode === "paused") return; // master kill switch halts autonomous activity
@@ -153,11 +164,19 @@ function App() {
   const routeMeta = {
     dashboard: { h1: "Command Center", p: "Your agents, your pipeline, your morning at a glance" },
     crm:       { h1: "Uplift", p: "Deals worked autonomously, with you in the loop" },
+    contacts:  { h1: "Contacts", p: "Everyone your business talks to" },
+    billing:   { h1: "Billing", p: "Invoices, payments and revenue" },
+    calendar:  { h1: "Calendar", p: "Bookings and schedules" },
+    reviews:   { h1: "Reputation", p: "Reviews and public presence" },
+    templates: { h1: "Templates", p: "Reusable messages and documents" },
+    email:     { h1: "Email", p: "Campaigns and outreach" },
     sell:      { h1: "Sell", p: "Your streaks, goals, quests and leaderboard" },
     frontline: { h1: "Frontline", p: "Your autonomous support desk" },
     workflows: { h1: "Workflows", p: "Automations your agents run" },
     approvals: { h1: "Greenlight", p: "Every agent action waiting on your sign-off" },
     agents:    { h1: "Agents", p: "Your always-on team" },
+    marketplace: { h1: "Marketplace", p: "Add agents to your team" },
+    knowledge: { h1: "Knowledge", p: "What your agents know" },
     reports:   { h1: "Reports", p: "Performance & outcomes" },
     sidecar:   { h1: "Sidecar", p: "Your agents, on top of the tools you already use" },
     cortex:    { h1: "Cortex", p: "Your private, compounding intelligence" },
@@ -167,7 +186,15 @@ function App() {
   };
   const meta = routeMeta[route] || { h1: route, p: "" };
 
-  const navTo = (r) => { if (r === "marketplace") { setMarket(true); setMnav(false); return; } setRoute(r); setMnav(false); document.querySelector(".viewport") && (document.querySelector(".viewport").scrollTop = 0); };
+  // Sidebar icon for a route id (used by the real-mode ComingSoon panel).
+  const navIconFor = (r) => {
+    const hit = [...NAV, ...NAV_CRM, ...NAV_AGENTS, ...NAV_CONNECT, ...NAV2].find((n) => n.id === r);
+    return hit ? hit.icon : "grid";
+  };
+
+  // Marketplace is a prototype overlay (fake agent catalog): in real mode it
+  // routes to the honest ComingSoon panel instead.
+  const navTo = (r) => { if (r === "marketplace" && !realMode) { setMarket(true); setMnav(false); return; } setRoute(r); setMnav(false); document.querySelector(".viewport") && (document.querySelector(".viewport").scrollTop = 0); };
 
   return (
     <div className={"app" + (collapsed ? " nav-collapsed" : "") + (mnav ? " nav-open" : "")}>
@@ -181,11 +208,14 @@ function App() {
         </a>
 
         <div className="nav-scroll">
+        {/* Intake logs into the FLStore prototype — mock mode only. */}
+        {!realMode && (
         <button className="intake-nav-btn" onClick={() => setIntake(true)}>
           <span className="intake-nav-plus"><Icon name="plus" size={16} sw={2.6} /></span>
           <span style={{ flex: 1, textAlign: "left" }}>Intake</span>
           <span className="intake-nav-hint">log anything</span>
         </button>
+        )}
         <div className="nav-section-label">Workspace</div>
         <nav className="nav">
           {NAV.filter((n) => n.id !== "sell" || gamifyOn).map((n) => {
@@ -205,7 +235,8 @@ function App() {
         <div className="nav-section-label">Uplift CRM</div>
         <nav className="nav">
           {NAV_CRM.map((n) => {
-            const badge = n.badge;
+            // Prototype badge counts ("11" deals) are fake — mock mode only.
+            const badge = realMode ? null : n.badge;
             return (
               <button key={n.id} className={"nav-item" + (route === n.id ? " active" : "")} onClick={() => navTo(n.id)}>
                 <span className="nav-ico"><Icon name={n.icon} size={18} /></span>
@@ -247,6 +278,9 @@ function App() {
         </nav>
         </div>
 
+        {/* "5 agents online" + the roster are FLStore prototype agents; claiming
+            they're online for a real tenant would be false. Mock mode only. */}
+        {!realMode && (
         <div className="agent-rail">
           <div className="agent-rail-head"><span className="live-dot" />5 agents online</div>
           <div className="agent-rail-body">
@@ -258,6 +292,7 @@ function App() {
             ))}
           </div>
         </div>
+        )}
       </aside>
 
       {/* main */}
@@ -266,26 +301,38 @@ function App() {
           <button className="icon-btn mobile-only" onClick={() => setMnav((v) => !v)}><Icon name="menu" size={20} /></button>
           <div className="topbar-title"><h1>{meta.h1}</h1><p>{meta.p}</p></div>
           <div className="topbar-spacer" />
-          {(gamifyOn && (route === "crm" || route === "agents" || route === "sell")) && <XPBadge />}
+          {/* XP/gamify reads FLStore prototype stats — mock mode only. */}
+          {(!realMode && gamifyOn && (route === "crm" || route === "agents" || route === "sell")) && <XPBadge />}
+          {/* The command palette surfaces prototype content (fake pending
+              counts, scripted agents) — mock mode only. */}
+          {!realMode && (
           <button className="search-trigger" onClick={() => setCmdk(true)}>
             <Icon name="search" size={16} />
             <span>Search or ask…</span>
             <span className="kbd">⌘K</span>
           </button>
+          )}
           <button className="btn btn-soft" onClick={() => setChat(true)}><Icon name="spark" size={16} /><span>Ask agents</span></button>
           <div style={{ position: "relative" }}>
-            <button className="icon-btn" onClick={() => setNotif((v) => !v)}><Icon name="bell" size={19} />{feed.length > 0 && <span className="dot" />}</button>
+            {/* The feed is FLStore prototype activity. In real mode there is no
+                notification source yet: no fake unread dot, and the panel says
+                so honestly instead of listing scripted events. */}
+            <button className="icon-btn" onClick={() => setNotif((v) => !v)}><Icon name="bell" size={19} />{!realMode && feed.length > 0 && <span className="dot" />}</button>
             {notif && (
               <>
                 <div style={{ position: "fixed", inset: 0, zIndex: 40 }} onClick={() => setNotif(false)} />
                 <div style={{ position: "absolute", top: 46, right: 0, width: 320, maxHeight: 380, overflowY: "auto", background: "var(--surface)", border: "1px solid var(--line)", borderRadius: "var(--r-md)", boxShadow: "var(--shadow-xl)", zIndex: 41, animation: "feed-in .2s both" }}>
                   <div style={{ padding: "12px 15px", borderBottom: "1px solid var(--line)", fontSize: 13, fontWeight: 700 }}>Notifications</div>
-                  {feed.slice(0, 8).map((f, i) => (
-                    <div key={f._k || i} style={{ display: "flex", gap: 10, padding: "11px 15px", borderBottom: "1px solid var(--line-2)" }}>
-                      <span style={{ width: 7, height: 7, borderRadius: 99, background: agents[f.agent] ? agents[f.agent].color : "var(--accent)", marginTop: 5, flexShrink: 0 }} />
-                      <div><SafeHtml as="p" style={{ fontSize: 12.5, lineHeight: 1.45 }} html={f.html} /><span style={{ fontSize: 11, color: "var(--ink-4)", fontFamily: "var(--mono)" }}>{f.meta}</span></div>
-                    </div>
-                  ))}
+                  {realMode || feed.length === 0 ? (
+                    <div data-testid="notif-empty" style={{ padding: "18px 15px", fontSize: 12.5, color: "var(--ink-3)" }}>No notifications yet.</div>
+                  ) : (
+                    feed.slice(0, 8).map((f, i) => (
+                      <div key={f._k || i} style={{ display: "flex", gap: 10, padding: "11px 15px", borderBottom: "1px solid var(--line-2)" }}>
+                        <span style={{ width: 7, height: 7, borderRadius: 99, background: agents[f.agent] ? agents[f.agent].color : "var(--accent)", marginTop: 5, flexShrink: 0 }} />
+                        <div><SafeHtml as="p" style={{ fontSize: 12.5, lineHeight: 1.45 }} html={f.html} /><span style={{ fontSize: 11, color: "var(--ink-4)", fontFamily: "var(--mono)" }}>{f.meta}</span></div>
+                      </div>
+                    ))
+                  )}
                 </div>
               </>
             )}
@@ -340,7 +387,8 @@ function App() {
           </div>
         </header>
 
-        {(secMode === "paused" || secMode === "semi" || Object.values(agentPaused).some(Boolean)) && (
+        {/* Security banner reflects FLStore prototype kill-switch state — mock only. */}
+        {!realMode && (secMode === "paused" || secMode === "semi" || Object.values(agentPaused).some(Boolean)) && (
           <div onClick={() => navTo("security")} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 16px", cursor: "pointer",
             background: secMode === "paused" ? "var(--rose-soft)" : "var(--amber-soft)",
             color: secMode === "paused" ? "oklch(0.48 0.14 18)" : "oklch(0.5 0.12 60)",
@@ -352,26 +400,42 @@ function App() {
         )}
 
         <div className="viewport">
-          {route === "dashboard" && (realMode ? <DashboardView /> : <Dashboard agents={agents} onNavigate={navTo} />)}
-          {route === "crm" && <CRM agents={agents} onOpen={setDeal} onNavigate={navTo} />}
-          {route === "contacts" && <Contacts agents={agents} onNavigate={navTo} onOpenDeal={setDeal} />}
-          {route === "billing" && <Billing agents={agents} onNavigate={navTo} />}
-          {route === "calendar" && <Calendar agents={agents} onNavigate={navTo} />}
-          {route === "reviews" && <Reviews agents={agents} onNavigate={navTo} />}
-          {route === "templates" && <Templates agents={agents} onNavigate={navTo} />}
-          {route === "email" && <Email agents={agents} onNavigate={navTo} />}
-          {route === "sell" && <Sell agents={agents} gamifyOn={gamifyOn} onNavigate={navTo} onOpenDeal={(d) => { navTo("crm"); setDeal(d); }} />}
-          {route === "frontline" && <Frontline agents={agents} />}
-          {route === "workflows" && <WorkflowBuilder agents={agents} />}
-          {route === "approvals" && (realMode ? <GreenlightQueue /> : <Greenlight agents={agents} />)}
-          {route === "agents" && <AgentsConsole agents={agents} />}
-          {route === "sidecar" && <Sidecar agents={agents} onNavigate={navTo} />}
-          {route === "cortex" && <Cortex agents={agents} onNavigate={navTo} />}
-          {route === "knowledge" && <Knowledge agents={agents} onNavigate={navTo} />}
-          {route === "integrations" && <IntegrationHub agents={agents} onNavigate={navTo} />}
-          {route === "reports" && <Reports agents={agents} />}
-          {route === "security" && <Security agents={agents} />}
-          {route === "settings" && <Settings agents={agents} onNavigate={navTo} />}
+          {realMode ? (
+            // REAL MODE: only ApiClient-backed surfaces render data. Every
+            // other route gets the honest ComingSoon panel — never an FLStore
+            // prototype screen, which would pass demo numbers off as real.
+            <>
+              {route === "dashboard" && <DashboardView />}
+              {route === "approvals" && <GreenlightQueue />}
+              {route !== "dashboard" && route !== "approvals" && (
+                <ComingSoon title={meta.h1} icon={navIconFor(route)} />
+              )}
+            </>
+          ) : (
+            // MOCK MODE: the full FLStore prototype experience.
+            <>
+              {route === "dashboard" && <Dashboard agents={agents} onNavigate={navTo} />}
+              {route === "crm" && <CRM agents={agents} onOpen={setDeal} onNavigate={navTo} />}
+              {route === "contacts" && <Contacts agents={agents} onNavigate={navTo} onOpenDeal={setDeal} />}
+              {route === "billing" && <Billing agents={agents} onNavigate={navTo} />}
+              {route === "calendar" && <Calendar agents={agents} onNavigate={navTo} />}
+              {route === "reviews" && <Reviews agents={agents} onNavigate={navTo} />}
+              {route === "templates" && <Templates agents={agents} onNavigate={navTo} />}
+              {route === "email" && <Email agents={agents} onNavigate={navTo} />}
+              {route === "sell" && <Sell agents={agents} gamifyOn={gamifyOn} onNavigate={navTo} onOpenDeal={(d) => { navTo("crm"); setDeal(d); }} />}
+              {route === "frontline" && <Frontline agents={agents} />}
+              {route === "workflows" && <WorkflowBuilder agents={agents} />}
+              {route === "approvals" && <Greenlight agents={agents} />}
+              {route === "agents" && <AgentsConsole agents={agents} />}
+              {route === "sidecar" && <Sidecar agents={agents} onNavigate={navTo} />}
+              {route === "cortex" && <Cortex agents={agents} onNavigate={navTo} />}
+              {route === "knowledge" && <Knowledge agents={agents} onNavigate={navTo} />}
+              {route === "integrations" && <IntegrationHub agents={agents} onNavigate={navTo} />}
+              {route === "reports" && <Reports agents={agents} />}
+              {route === "security" && <Security agents={agents} />}
+              {route === "settings" && <Settings agents={agents} onNavigate={navTo} />}
+            </>
+          )}
         </div>
       </div>
 
@@ -379,11 +443,13 @@ function App() {
       {realMode
         ? <RealChatPanel open={chat} onClose={() => setChat(false)} />
         : <AgentChat open={chat} agents={agents} onClose={() => setChat(false)} />}
-      <CommandPalette open={cmdk} onClose={() => setCmdk(false)} onNavigate={navTo} onChat={() => setChat(true)} onSetup={() => setOnb(true)} onTour={() => setTour(true)} />
-      {onb && <Onboarding agents={agents} onDone={finishOnb} />}
-      {tour && !onb && <ProductTour onNavigate={navTo} onClose={finishTour} />}
-      <AgentMarket open={market} onClose={() => setMarket(false)} />
-      <IntakeModal open={intake} onClose={() => setIntake(false)} onNavigate={navTo} onOpenDeal={(d) => setDeal(d)} />
+      {/* Prototype overlays (palette, onboarding, tour, marketplace, intake)
+          present scripted FLStore content — mock mode only. */}
+      {!realMode && <CommandPalette open={cmdk} onClose={() => setCmdk(false)} onNavigate={navTo} onChat={() => setChat(true)} onSetup={() => setOnb(true)} onTour={() => setTour(true)} />}
+      {!realMode && onb && <Onboarding agents={agents} onDone={finishOnb} />}
+      {!realMode && tour && !onb && <ProductTour onNavigate={navTo} onClose={finishTour} />}
+      {!realMode && <AgentMarket open={market} onClose={() => setMarket(false)} />}
+      {!realMode && <IntakeModal open={intake} onClose={() => setIntake(false)} onNavigate={navTo} onOpenDeal={(d) => setDeal(d)} />}
       {editProfile && (
         <div className="cmdk-scrim show" onClick={() => setEditProfile(false)} style={{ alignItems: "center", paddingTop: 0 }}>
           <div className="cmdk" style={{ maxWidth: 420 }} onClick={(e) => e.stopPropagation()}>
@@ -402,7 +468,8 @@ function App() {
           </div>
         </div>
       )}
-      {route === "reports" && <DataAssistant surface="reports" onNavigate={navTo} />}
+      {/* DataAssistant is a prototype overlay over FLStore data — mock only. */}
+      {route === "reports" && !realMode && <DataAssistant surface="reports" onNavigate={navTo} />}
       {route === "dashboard" && !realMode && <DataAssistant surface="dashboard" onNavigate={navTo} />}
 
       {/* tweaks */}

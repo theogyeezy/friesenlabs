@@ -1,24 +1,50 @@
 import { defineConfig, devices } from "@playwright/test";
 
-// Headless smoke against a production preview build. `npm run build` must have
-// produced dist/ first; the webServer step runs `vite preview` and waits for it.
+// Headless e2e against production preview builds. Two bundles are built and
+// served (the webServer entries below build them; reuseExistingServer makes
+// local re-runs cheap):
+//
+//   :4173  MOCK build (VITE_API_MOCK unset => mock). The prototype + demo
+//          surfaces; every spec except realmode.spec.ts runs here.
+//   :4174  REAL build (VITE_API_MOCK=0 baked at BUILD time). Exactly what a
+//          production deploy ships — there is no runtime URL seam to flip
+//          modes (the old `?apimock=0` param was removed as a prod honesty
+//          fix). realmode.spec.ts runs here fully offline, stubbing the API
+//          with page.route. Cognito env vars are absent, so auth stays inert
+//          and the sign-in gate is open.
 export default defineConfig({
   testDir: "./e2e",
   timeout: 30_000,
   fullyParallel: true,
   reporter: [["list"]],
   use: {
-    baseURL: "http://localhost:4173",
     headless: true,
     trace: "off",
   },
   projects: [
-    { name: "chromium", use: { ...devices["Desktop Chrome"] } },
+    {
+      name: "chromium",
+      testIgnore: /realmode\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], baseURL: "http://localhost:4173" },
+    },
+    {
+      name: "chromium-real",
+      testMatch: /realmode\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], baseURL: "http://localhost:4174" },
+    },
   ],
-  webServer: {
-    command: "npm run build && npm run preview -- --port 4173",
-    url: "http://localhost:4173",
-    reuseExistingServer: !process.env.CI,
-    timeout: 120_000,
-  },
+  webServer: [
+    {
+      command: "npm run build && npm run preview -- --port 4173",
+      url: "http://localhost:4173",
+      reuseExistingServer: !process.env.CI,
+      timeout: 120_000,
+    },
+    {
+      command: "npm run build:real && npm run preview:real",
+      url: "http://localhost:4174",
+      reuseExistingServer: !process.env.CI,
+      timeout: 120_000,
+    },
+  ],
 });

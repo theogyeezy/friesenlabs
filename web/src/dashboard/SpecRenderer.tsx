@@ -89,7 +89,9 @@ function formatValue(v: unknown): string {
 
 function KpiCard({ block, loadData }: { block: KpiBlock; loadData: LoadData }) {
   const [value, setValue] = useState<string | null>(null);
-  const [failed, setFailed] = useState(false);
+  // "empty" = the query resolved but carried no value for this metric. That is
+  // an honest "No data yet", never a fabricated number and never a silent blank.
+  const [state, setState] = useState<"loading" | "ready" | "empty" | "failed">("loading");
 
   // Build the implied single-measure query for this KPI.
   const query: CubeQuery = useMemo(
@@ -99,15 +101,21 @@ function KpiCard({ block, loadData }: { block: KpiBlock; loadData: LoadData }) {
 
   useEffect(() => {
     let live = true;
+    setState("loading");
     loadData(query)
       .then((rows) => {
         if (!live) return;
         const row = rows[0];
         const raw = row ? row[block.metric] : undefined;
-        setValue(formatValue(raw));
+        if (raw === undefined || raw === null || raw === "") {
+          setState("empty");
+        } else {
+          setValue(formatValue(raw));
+          setState("ready");
+        }
       })
       .catch(() => {
-        if (live) setFailed(true);
+        if (live) setState("failed");
       });
     return () => {
       live = false;
@@ -128,12 +136,21 @@ function KpiCard({ block, loadData }: { block: KpiBlock; loadData: LoadData }) {
       <div style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-3, #8a8278)", letterSpacing: ".01em" }}>
         {block.title ?? block.metric}
       </div>
-      <div
-        data-testid="kpi-value"
-        style={{ fontSize: 28, fontWeight: 760, color: "var(--ink, #2a2622)", marginTop: 6, letterSpacing: "-.02em" }}
-      >
-        {failed ? "--" : value === null ? "..." : value}
-      </div>
+      {state === "empty" ? (
+        <div
+          data-testid="kpi-empty"
+          style={{ fontSize: 14, fontWeight: 600, color: "var(--ink-3, #8a8278)", marginTop: 10 }}
+        >
+          No data yet
+        </div>
+      ) : (
+        <div
+          data-testid="kpi-value"
+          style={{ fontSize: 28, fontWeight: 760, color: "var(--ink, #2a2622)", marginTop: 6, letterSpacing: "-.02em" }}
+        >
+          {state === "failed" ? "--" : state === "loading" ? "..." : value}
+        </div>
+      )}
     </div>
   );
 }
@@ -145,6 +162,9 @@ function KpiCard({ block, loadData }: { block: KpiBlock; loadData: LoadData }) {
 function ChartCard({ block, loadData }: { block: ChartBlock; loadData: LoadData }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [failed, setFailed] = useState(false);
+  // The query resolved with zero rows: say "No data yet" instead of drawing an
+  // empty (and misleading) chart frame.
+  const [empty, setEmpty] = useState(false);
 
   useEffect(() => {
     let live = true;
@@ -153,6 +173,11 @@ function ChartCard({ block, loadData }: { block: ChartBlock; loadData: LoadData 
     loadData(block.query)
       .then((rows) => {
         if (!live || !hostRef.current) return;
+        if (rows.length === 0) {
+          setEmpty(true);
+          return;
+        }
+        setEmpty(false);
 
         // Compose the final Vega-Lite spec from the (untrusted) spec fragment
         // plus the loaded data. We override `data` with inline values so a spec
@@ -215,7 +240,14 @@ function ChartCard({ block, loadData }: { block: ChartBlock; loadData: LoadData 
       {failed ? (
         <div style={{ fontSize: 13, color: "var(--ink-3, #8a8278)" }}>Chart could not be drawn.</div>
       ) : (
-        <div data-testid="chart-host" ref={hostRef} style={{ width: "100%" }} />
+        <>
+          {empty && (
+            <div data-testid="chart-empty" style={{ fontSize: 13, color: "var(--ink-3, #8a8278)" }}>
+              No data yet
+            </div>
+          )}
+          <div data-testid="chart-host" ref={hostRef} style={{ width: "100%", display: empty ? "none" : undefined }} />
+        </>
       )}
     </div>
   );
@@ -227,13 +259,17 @@ function ChartCard({ block, loadData }: { block: ChartBlock; loadData: LoadData 
 
 function TableCard({ block, loadData }: { block: TableBlock; loadData: LoadData }) {
   const [rows, setRows] = useState<DataRow[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     let live = true;
     loadData(block.query)
       .then((r) => {
-        if (live) setRows(r);
+        if (live) {
+          setRows(r);
+          setLoaded(true);
+        }
       })
       .catch(() => {
         if (live) setFailed(true);
@@ -264,6 +300,11 @@ function TableCard({ block, loadData }: { block: TableBlock; loadData: LoadData 
       )}
       {failed ? (
         <div style={{ fontSize: 13, color: "var(--ink-3, #8a8278)" }}>Table could not be loaded.</div>
+      ) : loaded && rows.length === 0 ? (
+        // Resolved but empty: an honest "No data yet", not a bare header row.
+        <div data-testid="table-empty" style={{ fontSize: 13, color: "var(--ink-3, #8a8278)" }}>
+          No data yet
+        </div>
       ) : (
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead>
