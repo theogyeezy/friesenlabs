@@ -166,6 +166,12 @@ class Config:
     cortex_s3_prefix: str = os.environ.get("CORTEX_S3_PREFIX", "")  # '' -> ml.registry default
     cortex_local_dir: str = os.environ.get("CORTEX_LOCAL_DIR", "")  # dev/tests fallback root
 
+    # --- Provisioning Step Functions trigger (api/prod_deps.SfnProvisioningTrigger; REQ-005) ---
+    # The uplift-provisioning state machine ARN. A NEW, deliberate env name (never keyed off env
+    # the live API task already injects): empty (default) keeps the in-process provision path —
+    # and even when set, the trigger is selected only UNDER the SIGNUP_REAL_DEPS master switch.
+    provisioning_sfn_arn: str = os.environ.get("PROVISIONING_SFN_ARN", "")
+
 
 # plan id -> env var that carries its Stripe Price ID (values land via task secrets, never here).
 STRIPE_PRICE_ID_ENV = {

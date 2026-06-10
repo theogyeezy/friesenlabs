@@ -36,7 +36,9 @@ Admin endpoints are confirmed.
 """
 from __future__ import annotations
 
+import json
 import logging
+import re
 import time
 import uuid
 
@@ -162,6 +164,127 @@ class _VerifyingAccountService(AccountService):
         return acct
 
 
+class SfnProvisioningTrigger:
+    """Starts the uplift-provisioning Step Functions execution — the DECOUPLED on_paid path.
+
+    Replaces the synchronous in-process `provisioner.provision` inside the webhook request
+    (TODO INT/P1 "Connect the Stripe webhook to start the SFN execution"): `start` returns as
+    soon as StartExecution is accepted; the Lambda in `signup/lambda_handler.py` runs the
+    idempotent steps. Selected by `build_signup_deps` ONLY when BOTH the SIGNUP_REAL_DEPS master
+    switch AND the NEW `PROVISIONING_SFN_ARN` env (shared/config.py; infra/REQUESTS.md REQ-005)
+    are set — the in-process path stays the default everywhere else.
+
+    ORDERING (hard rule): this fires only AFTER the atomic stripe_events ledger claim — it is
+    wired as PaymentService's `on_paid`, which `handle_webhook` invokes strictly after
+    `_claim()` wins. EXACTLY-ONCE: the execution NAME is deterministic (account_id-derived), so
+    a Stripe re-delivery that slips past the ledger (e.g. no ledger configured, or the
+    different-event-id re-delivery) re-derives the SAME name and StartExecution answers
+    ExecutionAlreadyExists — treated as a successful no-op, never a second pipeline.
+    # VERIFY (SFN semantics): ExecutionAlreadyExists dedupes within the 90-day execution
+    # history; a re-delivery older than that would start a fresh execution — safe anyway,
+    # because every step is idempotent and an ACTIVE account short-circuits to skips.
+    """
+
+    def __init__(self, state_machine_arn: str, *, region: str | None = None, client=None):
+        self._arn = state_machine_arn
+        self._region = region
+        self._client = client   # injected fake in tests; lazily built otherwise (import-safe)
+
+    def _sfn(self):
+        if self._client is None:
+            import boto3  # noqa: PLC0415 — lazy: building deps must not require boto3/network
+            self._client = boto3.client(
+                "stepfunctions", region_name=self._region or load().aws_region
+            )
+        return self._client
+
+    @staticmethod
+    def execution_name(account_id: str, attempt: int = 0) -> str:
+        """Deterministic, SFN-legal execution name (<=80 chars of [A-Za-z0-9_-]).
+
+        attempt=0 is the webhook path: same account -> same name -> re-delivery no-ops.
+        attempt>0 is the operator retry path (the failed run burned the base name).
+        """
+        safe = re.sub(r"[^A-Za-z0-9_-]", "-", str(account_id))[:60]
+        return f"provision-{safe}" + (f"-r{attempt}" if attempt else "")
+
+    def start(self, account, attempt: int = 0) -> dict:
+        """The on_paid callback: start exactly one execution for this account."""
+        name = self.execution_name(account.id, attempt)
+        try:
+            self._sfn().start_execution(
+                stateMachineArn=self._arn, name=name,
+                input=json.dumps({"account_id": str(account.id)}),
+            )
+        except Exception as e:  # noqa: BLE001 — only the already-exists dedupe is absorbed
+            if not _is_execution_already_exists(e):
+                raise
+            log.info("provisioning execution %s already exists (re-delivery no-op)", name)
+            return {"started": False, "execution": name, "reason": "already_exists"}
+        return {"started": True, "execution": name}
+
+
+def _is_execution_already_exists(exc: Exception) -> bool:
+    """Match boto3's ExecutionAlreadyExists across the modeled-exception and error-code shapes."""
+    if type(exc).__name__ == "ExecutionAlreadyExistsException" \
+            or type(exc).__name__ == "ExecutionAlreadyExists":
+        return True
+    resp = getattr(exc, "response", None)
+    if isinstance(resp, dict):
+        code = (resp.get("Error") or {}).get("Code", "")
+        return code in ("ExecutionAlreadyExists", "ExecutionAlreadyExistsException")
+    return False
+
+
+def build_provisioner(workspace_store=None, *, store=None, cognito=None, email_sender=None,
+                      refund=None) -> Provisioner:
+    """Env-guarded Provisioner construction — ONE selection path for BOTH runtimes.
+
+    `build_signup_deps` (the API task) passes its already-built store/cognito/email_sender so
+    the two planes share adapters + the Pg pool; `signup/lambda_handler.py` (the SFN Task
+    runtime) calls it bare on cold start and gets the identical env-guarded selection. The
+    SIGNUP_REAL_DEPS master switch is honored exactly as in `build_signup_deps`: without it
+    everything is the stub, regardless of what other env happens to be present.
+
+    db / Secrets-Manager / cube / agent-plane seams remain _Noop (follow-up TODOs): with a real
+    ANTHROPIC_ADMIN_KEY the # VERIFY'd key-create endpoint would fail -> Provisioner parks the
+    account + archives the workspace (rollback-safe), so live provisioning stays BLOCKED: Lane
+    Nick until those seams land. `refund=None` keeps the record-only terminal-failure stub
+    (`signup.provisioning.refund_stub` — # VERIFY the Stripe refund endpoint there before
+    injecting a live callback).
+    """
+    cfg = load()
+    real = cfg.signup_real_deps
+    if store is None:
+        dsn = dsn_from_env() if real else None
+        store = PgAccountStore(dsn) if dsn else _AccountStore()
+    if cognito is None:
+        cognito = (
+            CognitoAdminClient(cfg.cognito_user_pool_id, region=cfg.aws_region)
+            if real and cfg.cognito_user_pool_id else _StubCognito()
+        )
+    if email_sender is None:
+        email_sender = (
+            ResendEmailSender(
+                cfg.resend_api_key,
+                cfg.resend_from_email,
+                allow_real_sends=cfg.allow_real_sends,   # draft-gate stands in the Lambda too
+                verify_url_base=cfg.signup_verify_url_base,
+            )
+            if real and cfg.resend_api_key else _Noop()
+        )
+    anthropic_admin = (
+        AnthropicAdminClient(cfg.anthropic_admin_key)
+        if real and cfg.anthropic_admin_key else _Noop()
+    )
+    return Provisioner(
+        store=store, mint_tenant_id=lambda aid: str(uuid.uuid4()), db=_Noop(),
+        anthropic_admin=anthropic_admin, secrets=_Noop(), cognito=cognito, cube=_Noop(),
+        resend=email_sender, agent_plane=_Noop(), workspace_store=workspace_store,
+        refund=refund,
+    )
+
+
 def build_signup_deps(workspace_store=None, *, now=time.time) -> SignupDeps:
     """`workspace_store` (optional `agents.workspace_store.WorkspaceStore`) persists the
     per-tenant Managed Agents ids at provisioning time; None (default) skips persistence
@@ -234,18 +357,12 @@ def build_signup_deps(workspace_store=None, *, now=time.time) -> SignupDeps:
 
     accounts = _VerifyingAccountService(store, cognito, account_email, sms_sender, otp=otp)
 
-    # --- provisioning pipeline. db / Secrets Manager / cube / agent_plane remain _Noop
-    # --- (follow-up TODOs): with a real ANTHROPIC_ADMIN_KEY the # VERIFY'd key-create endpoint
-    # --- would fail -> Provisioner parks the account + archives the workspace (rollback-safe),
-    # --- so live provisioning stays BLOCKED: Lane Nick until those seams land.
-    anthropic_admin = (
-        AnthropicAdminClient(cfg.anthropic_admin_key)
-        if real and cfg.anthropic_admin_key else _Noop()
-    )
-    provisioner = Provisioner(
-        store=store, mint_tenant_id=lambda aid: str(uuid.uuid4()), db=_Noop(),
-        anthropic_admin=anthropic_admin, secrets=_Noop(), cognito=cognito, cube=_Noop(),
-        resend=email_sender, agent_plane=_Noop(), workspace_store=workspace_store,
+    # --- provisioning pipeline — ONE construction path shared with the Lambda runtime
+    # --- (build_provisioner): the API task hands over its already-built store/cognito/sender so
+    # --- both planes ride the same adapters + Pg pool. The _Noop seams + the BLOCKED: Lane Nick
+    # --- posture are documented on build_provisioner.
+    provisioner = build_provisioner(
+        workspace_store, store=store, cognito=cognito, email_sender=email_sender
     )
 
     # --- payment plane ---
@@ -258,9 +375,14 @@ def build_signup_deps(workspace_store=None, *, now=time.time) -> SignupDeps:
         )
         if real and cfg.stripe_api_key else _StubStripe()
     )
-    payment = PaymentService(
-        stripe, accounts, on_paid=provisioner.provision, event_ledger=event_ledger
-    )
+    # on_paid: the SFN trigger when BOTH the master switch and the NEW PROVISIONING_SFN_ARN env
+    # are set (REQ-005) — handle_webhook takes the atomic ledger claim FIRST, then on_paid fires,
+    # so the execution starts strictly claim-ordered. Default stays the in-process provisioner.
+    if real and cfg.provisioning_sfn_arn:
+        on_paid = SfnProvisioningTrigger(cfg.provisioning_sfn_arn, region=cfg.aws_region).start
+    else:
+        on_paid = provisioner.provision
+    payment = PaymentService(stripe, accounts, on_paid=on_paid, event_ledger=event_ledger)
 
     return SignupDeps(
         accounts=accounts,

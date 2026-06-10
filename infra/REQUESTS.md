@@ -194,3 +194,66 @@ Rules:
   }
   ```
 - **Done when:** `terraform validate` green with safe defaults (schedule DISABLED, "" vars); the ingest task definition shows `INGEST_REAL_STORES=1` + `INGEST_TENANTS` + `INGEST_RAW_BUCKET` + `DB_*` and the API/worker task definitions show NONE of the `INGEST_*` names; with the schedule flipped on and a tenant id + HubSpot secret populated, a scheduled run populates `documents` for that tenant and the next run embeds ~0 (the TODO's done-when). Until then `python -m ingest.run_sync --tenant <id>` stays runnable anywhere as an offline stub (exit 0, touches nothing).
+
+### REQ-005: Provisioning Lambda (signup/lambda_handler.handler) + pin the SFN Task ARNs + api-task states:StartExecution + PROVISIONING_SFN_ARN env
+- **Status:** OPEN
+- **Requested by:** Lane Matt @feat/matt-provisioning-lambda-sfn (PR "feat(signup): provisioning Lambda handler + SFN trigger (deterministic, claim-ordered)")
+- **Needed for:** TODO INT/P1s "Package + deploy the provisioning Lambda the SFN invokes" + "Connect the Stripe webhook to start the SFN execution (decouple from the request)" (the SFN-role `Resource="*"` P2 is already closed on main — sfn_invoke now grants against the placeholder ARN; pinning `provisioning_lambda_arn` swaps both the policy and the Task states to the real ARN)
+- **Env/secret names** (must already exist in shared/config.py): `PROVISIONING_SFN_ARN` (NEW, landed in `shared/config.py` with this PR); on the LAMBDA only existing names: `SIGNUP_REAL_DEPS`, `UPLIFT_DB_URL`/`DB_USER`/`DB_PASS`/`DB_HOST`/`DB_NAME`/`DB_PORT`, `COGNITO_USER_POOL_ID`, `RESEND_API_KEY`, `RESEND_FROM_EMAIL`, `SIGNUP_VERIFY_URL_BASE`, `ALLOW_REAL_SENDS`, `ANTHROPIC_ADMIN_KEY`
+- **Spec:**
+  ```hcl
+  # 1) The provisioning Lambda wrapping signup/lambda_handler.py (one idempotent Provisioner
+  #    step per SFN Task invocation; cold start builds clients from env via
+  #    api.prod_deps.build_provisioner — the SIGNUP_REAL_DEPS master switch is honored, so an
+  #    UNSET switch makes every invocation all-stub even with the env below present).
+  #    Packaging: zip (or image) bundling the repo packages signup/ api/ shared/ agents/ conv/
+  #    + requirements-api.txt deps (the handler's lazy api.prod_deps import pulls fastapi/
+  #    psycopg2-binary/boto3; psycopg2-binary must be built for the Lambda arch).
+  resource "aws_lambda_function" "provisioning" {
+    function_name = "${var.project}-provisioning"
+    runtime       = "python3.13"
+    handler       = "signup.lambda_handler.handler"
+    architectures = ["arm64"]            # match the api image arch for shared wheels
+    timeout       = 60                   # one step per invocation; SFN owns retries (3, backoff)
+    memory_size   = 512
+    # VPC: same private subnets + an SG allowed into Aurora 5432 (the handler's PgAccountStore
+    # connects as crm_app — REQ-002 grants cover the tables it touches).
+    # filename / s3_* / image_uri: Lane Nick's packaging choice at apply.
+    environment {
+      variables = {
+        # SIGNUP_REAL_DEPS — set "1" only at the deliberate signup-plane go-live (REQ-003);
+        # until then the Lambda boots all-stub (deploy invariance).
+        # DB_* / UPLIFT_DB_URL  <- the EXISTING crm_app credentials secret + Aurora outputs
+        # COGNITO_USER_POOL_ID  = module.auth.user_pool_id
+        # RESEND_API_KEY        <- friesenlabs/platform/shared/resend-api-key (draft-gated)
+        # RESEND_FROM_EMAIL / SIGNUP_VERIFY_URL_BASE <- plain values
+        # ALLOW_REAL_SENDS stays unset/"false" (draft-gate; flipping is a separate Nick act)
+        # ANTHROPIC_ADMIN_KEY   <- uplift/anthropic-admin-key (# VERIFY'd endpoints — leave
+        #                          the secret empty until signup/anthropic_admin.py is confirmed)
+        # NOTE secrets must arrive as VALUES here (Lambda env, KMS-encrypted at rest) or via a
+        # small in-handler Secrets Manager fetch — Lane Nick's call; either way the IAM role
+        # needs GetSecretValue on exactly those ARNs (keep the uplift/* scoping TIGHT, TODO P2).
+      }
+    }
+  }
+
+  # 2) PIN the SFN Task ARNs: pass the deployed Lambda ARN into the EXISTING provisioning
+  #    module (today every Task — and the sfn_invoke policy — points at the inert placeholder
+  #    ARN; setting the var swaps both to the real function):
+  #    module "provisioning" { ... provisioning_lambda_arn = aws_lambda_function.provisioning.arn }
+
+  # 3) API-TASK IAM: allow starting the machine — scoped to the ONE machine ARN, never "*":
+  #    statement {
+  #      actions   = ["states:StartExecution"]
+  #      resources = [module.provisioning.state_machine_arn]
+  #    }
+
+  # 4) API task definition env (plain, non-secret): the deliberate decouple switch —
+  #    PROVISIONING_SFN_ARN = module.provisioning.state_machine_arn
+  #    Safe default: LEAVE IT UNSET until the Lambda + machine are live and verified; unset (or
+  #    SIGNUP_REAL_DEPS off) keeps api/prod_deps on the in-process provision path, byte-identical
+  #    to today. Setting it flips on_paid to SfnProvisioningTrigger (deterministic execution
+  #    names; re-delivery -> ExecutionAlreadyExists -> no-op), still strictly AFTER the atomic
+  #    stripe_events ledger claim. Never on the worker task.
+  ```
+- **Done when:** `terraform validate` green with the new function + pinned `provisioning_lambda_arn` (the SFN role + every Task state reference the real function ARN, not the placeholder); the api task role policy lists `states:StartExecution` on exactly the machine ARN; the API task env shows `PROVISIONING_SFN_ARN` (once deliberately set) and the worker shows none of this; a test StartExecution with `{"account_id": <verified+paid test account>}` drives PAID -> ACTIVE through the execution history (or parks via the Catch-all on an injected failure), and a second StartExecution with the same name answers ExecutionAlreadyExists.
