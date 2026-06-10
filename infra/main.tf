@@ -100,6 +100,7 @@ module "cube" {
   db_secret_arn       = module.secrets.crm_app_db_secret_arn
   cube_api_secret_arn = module.secrets.cube_api_secret_arn
   log_retention_days  = var.log_retention_days
+  image               = var.cube_image
 }
 
 # --- Phase 9: auth + ALB + api service ---
