@@ -348,6 +348,11 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   PASS: worker references none of the 7 names; flag-on render = exactly the 5 secrets +
   SIGNUP_REAL_DEPS=1; config.py/_switch_env/build_signup_deps contract confirmed fail-closed;
   ALLOW_REAL_SENDS untouched. Flags-off plan = baseline + 3 pure adds + intended iam change.
+- 2026-06-09 — REQ-003 DONE @7c94e4c (#44): 3 secret containers applied + verified, execution
+  role lists the 2 exact platform ARNs, token-signer value minted + stored (CLI, never in
+  git/state). Signup go-live sequence documented in RUNBOOK (webhook-secret + admin-key values
+  parked on Stripe dashboard / Anthropic admin key; api_signup_env → signup_real_deps are the
+  two later deliberate flips). Edge /healthz 200.
 
 ## Lane Matt (app code) — log
 - 2026-06-09 — **Cycle 3 (real wiring + frontend honesty, 5 PRs + 1 fix-PR):** #34 real provisioning
