@@ -77,6 +77,49 @@ resource "aws_cloudtrail" "org" {
   is_multi_region_trail         = true
   enable_log_file_validation    = true
   depends_on                    = [aws_s3_bucket_policy.trail]
+
+  # Data events (TODO Sec/P2): object-level audit on OUR buckets + secret reads on uplift/* only —
+  # scoped selectors, not account-wide (data events bill per event).
+  advanced_event_selector {
+    name = "uplift-s3-objects"
+    field_selector {
+      field  = "eventCategory"
+      equals = ["Data"]
+    }
+    field_selector {
+      field  = "resources.type"
+      equals = ["AWS::S3::Object"]
+    }
+    field_selector {
+      field       = "resources.ARN"
+      starts_with = ["arn:aws:s3:::${var.project}-"]
+    }
+  }
+
+  advanced_event_selector {
+    name = "uplift-secrets-reads"
+    field_selector {
+      field  = "eventCategory"
+      equals = ["Data"]
+    }
+    field_selector {
+      field  = "resources.type"
+      equals = ["AWS::SecretsManager::Secret"]
+    }
+    field_selector {
+      field       = "resources.ARN"
+      starts_with = ["arn:aws:secretsmanager:us-east-1:${data.aws_caller_identity.current.account_id}:secret:${var.project}/"]
+    }
+  }
+
+  # Management events stay on (the default when any advanced selector is present must re-state it).
+  advanced_event_selector {
+    name = "management-events"
+    field_selector {
+      field  = "eventCategory"
+      equals = ["Management"]
+    }
+  }
 }
 
 output "cloudtrail_bucket" { value = aws_s3_bucket.trail.id }

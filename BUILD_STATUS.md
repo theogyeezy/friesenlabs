@@ -371,6 +371,9 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   signup go-live values (Stripe dashboard + Anthropic admin key), AI plane (Anthropic creds).
   Unblocked remainder is P2/P3 hardening (205 CloudTrail/ALB logs, 204 rotation, 143 NAT
   endpoints, 212 ECS Exec, 213 log retention, 214 GuardDuty/Config).
+- 2026-06-09 — Cycle 9 authoring: CloudTrail scoped data events (uplift buckets + uplift/*
+  secrets, management re-stated) + ALB access logging to a new encrypted bucket (SSE-S3, PAB,
+  90d expiry, ELB 127311923021 delivery policy). Plan = 5 adds + 2 intended changes (trail, ALB).
 
 ## Lane Matt (app code) — log
 - 2026-06-09 — **Cycle 3 (real wiring + frontend honesty, 5 PRs + 1 fix-PR):** #34 real provisioning
