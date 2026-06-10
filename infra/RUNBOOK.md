@@ -69,6 +69,20 @@ resolved, any apply must be `-target`ed at pure-add modules only.
 - **APPLIED 2026-06-09 from main @866328b** (re-planned first: still exactly the 2 attrs).
   Live-verified: `copyTags=true`, `PerformanceInsightsEnabled=true`, cluster + instance `available`.
 
+## One-off task runs — 2026-06-09 (cycle 4: migrate + live isolation gate)
+
+- Image: `uplift-api:dc7a352` (arm64, digest sha256:6b13e10209…) — pushed as a NEW immutable tag;
+  built from main @dc7a352 (bundles the REQ-002 roles.sql + scripts/).
+- One-off task def: family `uplift-migrate-oneoff:1` — a CLONE of the live `uplift-api` def with
+  only the image swapped; the live service's family/revision untouched.
+- `python -m api.migrate` (task 5165fb0731974a7f828814de8df5a13d): exit 0,
+  log "migrate: schema + roles loaded; crm_app password set…" → REQ-002 grants live.
+- `scripts/isolation_test.py` as crm_app (task f3ed4a5cc478437f8205366091cbede8): exit 0,
+  log "[isolation] PASS — RLS enforced; no cross-tenant read/write." → TODO Sec/P0 188 done.
+- REQ-002 live probe (rolled back): crm_app rolsuper=f/rolbypassrls=f; INSERT/SELECT/UPDATE ok,
+  DELETE → InsufficientPrivilege on accounts + stripe_events.
+- Post-run sanity: edge /healthz 200; uplift-api 1/1.
+
 ### Apply discipline (until the baseline is clean)
 1. No full `terraform apply`.
 2. Pure-add module deploys go via `terraform apply -target=module.<cube|worker|observability> baseline-style plan first`.

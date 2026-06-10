@@ -328,6 +328,11 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   3-agent verification: asymmetry proven (flag-on plan = exactly 2 api_service actions, flag-off
   = zero; worker has no org key), grants proven empirically on pgvector/pg16 (CI's image; DELETE
   denied, REVOKE wins, idempotent), env-name contract matches shared/config.py + worker.run().
+- 2026-06-09 — Cycle 4: REQ-002 grants LIVE + the isolation gate finally run against PROD Aurora.
+  Built+pushed `uplift-api:dc7a352` (immutable tag), one-off task-def clone, ran `api.migrate`
+  (exit 0) then `scripts/isolation_test.py` as crm_app → '[isolation] PASS — RLS enforced'.
+  crm_app live: rolsuper=f, rolbypassrls=f; DELETE denied on accounts/stripe_events. REQ-001+002
+  both DONE in REQUESTS.md. Edge /healthz 200 after. TODO Sec/P0 188 checked.
 
 ## Lane Matt (app code) — log
 - 2026-06-09 — **Cycle 2 (asgi integration + provisioning foundations, 4 PRs + 1 fix, all reviewed PASS):**
