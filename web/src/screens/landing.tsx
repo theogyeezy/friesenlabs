@@ -1567,21 +1567,21 @@ function Landing({ onSignIn = () => {} } = {}) {
             </div>
             <div className="lp-foot-cols">
               <div className="lp-foot-col">
-                <h4>Product</h4>
+                <h3>Product</h3>
                 <a {...sectionLink("products")}>Products</a>
                 <a {...sectionLink("pricing")}>Pricing</a>
                 <a {...sectionLink("demos")}>See it work</a>
                 <a href={SIGNIN_HREF} onClick={signInClick}>Sign in</a>
               </div>
               <div className="lp-foot-col">
-                <h4>Organization</h4>
+                <h3>Organization</h3>
                 <a href="Foundation.html">Foundation</a>
                 <a {...sectionLink("research")}>Research</a>
                 <a {...sectionLink("team")}>Team</a>
                 <a {...actionLink(() => setDoc("Form 990"))}>Form 990</a>
               </div>
               <div className="lp-foot-col">
-                <h4>Legal</h4>
+                <h3>Legal</h3>
                 <a {...actionLink(() => setDoc("Privacy Policy"))}>Privacy Policy</a>
                 <a {...actionLink(() => setDoc("Terms of Service"))}>Terms of Service</a>
                 <a {...actionLink(() => setDoc("Donor Privacy Policy"))}>Donor privacy</a>

@@ -154,7 +154,7 @@ body.lp-body { overflow-y: auto; overflow-x: hidden; }
 .lp-footer { padding: 48px 0 32px; border-top: 1px solid var(--line); }
 .lp-foot-grid { display: grid; grid-template-columns: 1.2fr 2fr; gap: 40px; }
 .lp-foot-cols { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
-.lp-foot-col h4 { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-4); margin-bottom: 12px; }
+.lp-foot-col h3 { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-4); margin-bottom: 12px; }
 .lp-foot-col a { display: block; font-size: 13.5px; color: var(--ink-2); margin-bottom: 9px; cursor: pointer; text-decoration: none; transition: color .15s; }
 .lp-foot-col a:hover { color: var(--accent-ink); }
 .lp-foot-legal { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-top: 34px; padding-top: 22px; border-top: 1px solid var(--line); font-size: 12px; color: var(--ink-4); line-height: 1.5; }
