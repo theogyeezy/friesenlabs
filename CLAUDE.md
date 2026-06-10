@@ -23,6 +23,9 @@ real mode) → CloudFront → ALB (HTTP) → arm64 Fargate API → Aurora** (FOR
 JWKS auth. **Browser-verified end-to-end:** sign-in gate → Hosted UI (PKCE) → code exchange →
 app shell → real RLS-scoped tenant rows. Unauth `/api/*` → 401; `/chat` → graceful 503 (AI parked).
 - ✅ **Login:** Cognito Hosted UI + PKCE in `web/src/auth/`; demo creds in `uplift/demo-user`.
+- ✅ **Landing (2026-06-10):** GHL-style interactive marketing page — hero agent roster, animated
+  Friesen-vs-GoHighLevel capability radar + lens comparison, live ROI calculator, scroll progress,
+  closing CTA. Browser-verified on Amplify. SNS alarm email CONFIRMED (alarms page the owner).
 - ✅ **Live since 2026-06-09 (Lane Nick cycles 1-15):** Aurora hardening (retention 7, deletion
   protection, copy-tags, PI); X-Origin-Verify edge→ALB shared secret (403-default listener);
   cube service 1/1 (`/readyz` 200; memory driver — Cube 1.x dropped redis; sg_api self-rule);
