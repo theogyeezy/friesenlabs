@@ -19,12 +19,66 @@ variable "enforce_origin_verify" {
   default = false # Sec/P0 phase 2: flip ONLY after the distro is Deployed with the header, or the edge 403s
 }
 
+# Access logs (TODO Sec/P2): request-level audit for the only public tier. ALB log delivery
+# supports SSE-S3 only; us-east-1 delivery comes from the ELB account 127311923021.
+resource "aws_s3_bucket" "access_logs" {
+  bucket        = "${var.project}-alb-logs-${data.aws_caller_identity.current.account_id}"
+  force_destroy = false
+}
+
+data "aws_caller_identity" "current" {}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "access_logs" {
+  bucket = aws_s3_bucket.access_logs.id
+  rule {
+    apply_server_side_encryption_by_default { sse_algorithm = "AES256" }
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "access_logs" {
+  bucket                  = aws_s3_bucket.access_logs.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "access_logs" {
+  bucket = aws_s3_bucket.access_logs.id
+  rule {
+    id     = "expire-90d"
+    status = "Enabled"
+    filter {}
+    expiration { days = 90 }
+  }
+}
+
+resource "aws_s3_bucket_policy" "access_logs" {
+  bucket = aws_s3_bucket.access_logs.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { AWS = "arn:aws:iam::127311923021:root" }
+      Action    = "s3:PutObject"
+      Resource  = "${aws_s3_bucket.access_logs.arn}/AWSLogs/${data.aws_caller_identity.current.account_id}/*"
+    }]
+  })
+}
+
 resource "aws_lb" "this" {
   name               = "${var.project}-alb"
   load_balancer_type = "application"
   internal           = false
   subnets            = var.public_subnet_ids
   security_groups    = [var.alb_security_group_id]
+
+  access_logs {
+    bucket  = aws_s3_bucket.access_logs.id
+    enabled = true
+  }
+
+  depends_on = [aws_s3_bucket_policy.access_logs]
 }
 
 resource "aws_lb_target_group" "api" {
