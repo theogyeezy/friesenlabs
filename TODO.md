@@ -10,8 +10,9 @@ logging, GuardDuty/Config, **CloudFront WAF + access logging + HSTS + PriceClass
 deletion-protection + admin-create-only + 7-day refresh**, **AWS provider pin**, **ECS circuit
 breakers**, IAM tightening (exact-ARN api task secrets, de-wildcarded SFN), xray perms, lock file,
 shared log-retention, `.stignore` parity, ECR lifecycle + Aurora pg-log retention, and the
-cinematic, 3D, mobile-first GHL landing (hamburger/sticky-CTA, 3D tilt + grid + grain, radar,
-ROI calculator, restored founder photos + corrected Matt bio).
+"Editorial & warm" landing (Fraunces serif + bespoke icons, Apple-style reveals/parallax,
+product-window demos, radar, ROI calculator, founder photos; Lighthouse ~100 desktop+mobile,
+code-split to ~247KB first-load, generated og:image).
 
 The unchecked remainder, by category:
 - **Owner-gated (only the account owner can act):** the MA environment key `uplift/env-key`
