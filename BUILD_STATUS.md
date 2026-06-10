@@ -478,6 +478,15 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   stack full-width to a single dominant action; tighter mobile section rhythm + safe-area insets.
   Live-verified on a 390px viewport (hero, open menu, radar, pricing) — incl. fixing the radar
   axis labels clipping (widened SVG viewBox). Desktop unchanged; e2e anchors intact.
+- 2026-06-10 — "finish everything" pass: security-hardening batch APPLIED + live-verified —
+  CloudFront WAFv2 (managed rules + 2000/5min/IP rate limit) + access logging + HSTS/security-
+  headers policy + PriceClass_100; Cognito deletion-protection + admin-create-only + 7-day refresh;
+  AWS provider pinned ~>6.49; ECS deployment circuit breakers (auto-rollback) on api/cube; CI
+  permissions block; .stignore parity. Then an honest TODO.md sweep: 22 already-done items checked
+  off, a Lane-Nick completion-status block added categorizing the 52 remaining as owner-gated /
+  cost-parked / maintenance-window / Lane-Matt. Caught + fixed a latent tfvars drift (api_image
+  still e0794bc would have reverted the live 14524b0) and refreshed the deploy secret. Edge 200
+  throughout.
 
 ## Lane Matt (app code) — log
 - 2026-06-09 — **Cycles 5-6 (lane tail) + LANE MATT COMPLETE:** #67(+hotfix #73: the prod image
