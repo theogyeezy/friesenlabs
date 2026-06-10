@@ -277,7 +277,7 @@ function VsSection() {
           ))}
         </div>
         <div className="vs-score">
-          <CountUp to={fWins} dur={900} /> of {VS_ROWS.length} rounds to the agents — and we&apos;ll say it plainly: if you want funnels today, they&apos;re ahead <i>(ours are on the roadmap above)</i>.
+          <CountUp value={fWins} /> of {VS_ROWS.length} rounds to the agents — and we&apos;ll say it plainly: if you want funnels today, they&apos;re ahead <i>(ours are on the roadmap above)</i>.
         </div>
       </div>
     </section>
@@ -762,7 +762,7 @@ function RoiCalculator() {
             ))}
           </div>
           <div className="roi-readout">
-            <div className="roi-save"><span className="roi-save-pre">You'd reclaim</span><div className="roi-save-num">$<CountUp to={saved} dur={650} /><span>/mo</span></div><span className="roi-save-pct">{pct}% lower than paying for the hours</span></div>
+            <div className="roi-save"><span className="roi-save-pre">You'd reclaim</span><div className="roi-save-num">$<CountUp value={saved} format={(n)=>Math.round(n).toLocaleString()} /><span>/mo</span></div><span className="roi-save-pct">{pct}% lower than paying for the hours</span></div>
             <div className="roi-bars">
               <div className="roi-bar"><span className="roi-bar-lab">Doing it by hand</span><div className="roi-bar-track"><div className="roi-bar-fill manual" style={{ width: "100%" }}><b>${manualMo.toLocaleString()}</b></div></div></div>
               <div className="roi-bar"><span className="roi-bar-lab">With Friesen agents</span><div className="roi-bar-track"><div className="roi-bar-fill friesen" style={{ width: barF + "%" }}><b>${friesenMo.toLocaleString()}</b></div></div></div>
