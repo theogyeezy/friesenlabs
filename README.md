@@ -68,7 +68,7 @@ Everything that can be built and tested offline is done, and a final adversarial
 | ⛔ **Not live** | Worker service; signup real-deps (Stripe/Resend/Cognito admin) | gated flags off | env-key + webhook-secret + admin-key values |
 | 🟙 **Pending** | friesenlabs.com TLS (Route53 zone + wildcard ACM applied) | cert PENDING_VALIDATION | Squarespace NS cutover, then ALB TLS cutover |
 
-Applied to AWS account 186052668426 (us-east-1) under a $200 budget alarm; Terraform state in S3 (KMS).
+Applied to AWS account 186052668426 (us-east-1) under a $200 budget alarm; Terraform state in S3 (KMS). Edge hardened with WAFv2 (managed rules + rate limit), HSTS, and access logging; Cognito is provisioning-only with deletion protection.
 **Security:** a 37-agent adversarial audit (2026-06-09) found + we **fixed a critical cross-tenant data leak** (the request-path stores shared one DB connection + a session-level tenant GUC, racing across the threadpool) — now pooled per-request connections + `SET LOCAL`, proven on live Aurora under concurrency. Aurora durability (deletion protection + 7-day backups) on. The remaining 25 findings (2 high, 7 medium, 17 low) are tracked in TODO.md.
 
 The full granular, prioritized work list (119 items, P0→P3) and the critical path to a fully-real
