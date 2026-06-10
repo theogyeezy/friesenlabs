@@ -72,10 +72,13 @@ class _CachedConversation:
         self._tenant_id = tenant_id
 
     def send(self, message: str, **kwargs: Any):
-        convo, lock = self._cache.entry(self._tenant_id)
+        _, lock = self._cache.entry(self._tenant_id)
         # Per-tenant serialization: two concurrent turns on ONE MA session would interleave
         # two stream-drains; chat turns are seconds-long and per-tenant, so a lock is cheap.
         with lock:
+            # Re-read UNDER the lock: a concurrent turn may have rebuilt the conversation
+            # while we waited (review finding — avoids a stale ref + a wasted second rebuild).
+            convo, _ = self._cache.entry(self._tenant_id)
             try:
                 return convo.send(message, **kwargs)
             except RuntimeError as e:
