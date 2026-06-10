@@ -7,6 +7,7 @@ own model.
 from __future__ import annotations
 
 from ml import features
+from ml.registry import RegistryFormatError
 
 from .base import Policy, Tool, ToolContext
 
@@ -22,10 +23,15 @@ class RunModel(Tool):
     policy = Policy.AUTO
 
     def _execute(self, ctx: ToolContext, *, record: dict) -> dict:
-        registry = ctx.cortex  # the injected per-tenant model registry
+        registry = ctx.cortex  # the injected per-tenant model registry (ml.registry)
         if registry is None:
             return {"score": None, "reason": "no model registry configured"}
-        champ = registry.champion(ctx.tenant_id)
+        try:
+            champ = registry.champion(ctx.tenant_id)
+        except RegistryFormatError as exc:
+            # A corrupt/foreign-format champion artifact degrades to a clean tool result instead
+            # of crashing the worker's tool call; the retrain job re-promotes a fresh artifact.
+            return {"score": None, "reason": f"champion model unreadable: {exc}"}
         if champ is None:
             return {"score": None, "reason": "no champion model for tenant"}
         x = features.featurize([record])

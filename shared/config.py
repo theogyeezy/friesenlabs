@@ -25,6 +25,11 @@ ENV_CUBE_ENDPOINT = "CUBE_ENDPOINT"           # governed-metrics API base URL (u
 ENV_UPLIFT_DB_URL = "UPLIFT_DB_URL"
 ENV_DB_USER, ENV_DB_PASS = "DB_USER", "DB_PASS"
 ENV_DB_HOST, ENV_DB_NAME, ENV_DB_PORT = "DB_HOST", "DB_NAME", "DB_PORT"
+# Cortex persistent model registry (ml/registry.py registry_from_env). All-unset = no persistent
+# registry -> ToolContext.cortex stays None and run_model degrades cleanly ("no model registry").
+ENV_CORTEX_S3_BUCKET = "CORTEX_S3_BUCKET"  # S3 bucket holding serialized tenant models (prod)
+ENV_CORTEX_S3_PREFIX = "CORTEX_S3_PREFIX"  # key prefix in that bucket (empty -> cortex/registry)
+ENV_CORTEX_LOCAL_DIR = "CORTEX_LOCAL_DIR"  # local-filesystem registry root — dev/tests fallback
 
 
 def dsn_from_env() -> str | None:
@@ -109,6 +114,13 @@ class Config:
     anthropic_admin_key_secret: str = os.environ.get(
         "ANTHROPIC_ADMIN_KEY_SECRET", "uplift/anthropic-admin-key"
     )
+
+    # --- Cortex persistent model registry (ml/registry.py) ---
+    # Safe '' defaults: unconfigured = no persistent registry, nothing touches AWS. The bucket is
+    # plain config (no secret material); access rides the task role, never embedded credentials.
+    cortex_s3_bucket: str = os.environ.get("CORTEX_S3_BUCKET", "")
+    cortex_s3_prefix: str = os.environ.get("CORTEX_S3_PREFIX", "")  # '' -> ml.registry default
+    cortex_local_dir: str = os.environ.get("CORTEX_LOCAL_DIR", "")  # dev/tests fallback root
 
 
 # plan id -> env var that carries its Stripe Price ID (values land via task secrets, never here).
