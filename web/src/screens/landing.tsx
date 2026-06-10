@@ -673,6 +673,28 @@ function useMagnetic() {
   }, []);
 }
 
+// Section anchors shared by the desktop nav + the mobile menu.
+const NAV_LINKS = [
+  ["products", "Products"], ["demos", "See it work"], ["compare", "vs GHL"],
+  ["roi", "ROI"], ["testimonials", "Customers"], ["pricing", "Pricing"],
+  ["team", "Team"], ["research", "Research"], ["about", "About"],
+];
+
+// Back-to-top button — appears once you've scrolled past the first screen.
+function BackToTop() {
+  const [show, setShow] = useState(false);
+  useEffect(() => {
+    const on = () => setShow(window.scrollY > 900);
+    on(); window.addEventListener("scroll", on, { passive: true });
+    return () => window.removeEventListener("scroll", on);
+  }, []);
+  return (
+    <button className={"lp-totop" + (show ? " in" : "")} aria-label="Back to top" onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}>
+      <Icon name="chevDown" size={18} sw={2.4} style={{ transform: "rotate(180deg)" }} />
+    </button>
+  );
+}
+
 // Sticky scroll-progress bar across the top of the marketing page.
 function ScrollProgress() {
   const [p, setP] = useState(0);
@@ -794,6 +816,17 @@ function Landing({ onSignIn = () => {} } = {}) {
   const [openProduct, setOpenProduct] = useState(null);
   const [doc, setDoc] = useState(null);
   const [paper, setPaper] = useState(null);
+  const [navOpen, setNavOpen] = useState(false);
+
+  // Scroll to a section and close the mobile menu.
+  const go = (id) => { setNavOpen(false); const el = document.getElementById(id); if (el) el.scrollIntoView({ behavior: "smooth" }); };
+  // Lock body scroll while the mobile menu is open.
+  useEffect(() => {
+    if (!navOpen) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = prev; };
+  }, [navOpen]);
 
   const addProduct = (pid) => { setSel((s) => ({ ...s, [pid]: true })); setPlan("custom"); if (pid === "uplift") setByo(false); setOpenProduct(null); setTimeout(() => document.getElementById("pricing") && document.getElementById("pricing").scrollIntoView({ behavior: "smooth" }), 80); };
 
@@ -827,22 +860,35 @@ function Landing({ onSignIn = () => {} } = {}) {
             <b>Friesen Labs</b>
           </div>
           <div className="lp-nav-links">
-            <a onClick={() => document.getElementById("products").scrollIntoView({ behavior: "smooth" })}>Products</a>
-            <a onClick={() => document.getElementById("demos").scrollIntoView({ behavior: "smooth" })}>See it work</a>
-            <a onClick={() => document.getElementById("testimonials").scrollIntoView({ behavior: "smooth" })}>Customers</a>
-            <a onClick={() => document.getElementById("compare").scrollIntoView({ behavior: "smooth" })}>vs GHL</a>
-            <a onClick={() => document.getElementById("pricing").scrollIntoView({ behavior: "smooth" })}>Pricing</a>
-            <a onClick={() => document.getElementById("team").scrollIntoView({ behavior: "smooth" })}>Team</a>
-            <a onClick={() => document.getElementById("research").scrollIntoView({ behavior: "smooth" })}>Research</a>
-            <a onClick={() => document.getElementById("about").scrollIntoView({ behavior: "smooth" })}>About</a>
+            {NAV_LINKS.map(([id, label]) => <a key={id} onClick={() => go(id)}>{label}</a>)}
           </div>
           <div className="lp-nav-cta">
-            <span className="lp-signin" onClick={() => setModal("book")}>Book a call</span>
             <a className="lp-signin" onClick={onSignIn}>Sign in</a>
-            <button className="btn btn-primary" onClick={() => document.getElementById("pricing").scrollIntoView({ behavior: "smooth" })}>Get started</button>
+            <button className="btn btn-primary" onClick={() => go("pricing")}>Get started</button>
           </div>
+          <button className="lp-burger" aria-label="Open menu" aria-expanded={navOpen} onClick={() => setNavOpen((v) => !v)}>
+            <span /><span /><span />
+          </button>
         </div>
       </nav>
+
+      {/* mobile menu */}
+      <div className={"lp-mnav" + (navOpen ? " open" : "")} onClick={() => setNavOpen(false)}>
+        <div className="lp-mnav-panel" onClick={(e) => e.stopPropagation()}>
+          <div className="lp-mnav-head">
+            <div className="lp-brand"><div className="brand-mark"><Logo size={18} /></div><b>Friesen Labs</b></div>
+            <button className="lp-mnav-x" aria-label="Close menu" onClick={() => setNavOpen(false)}><Icon name="x" size={20} /></button>
+          </div>
+          <div className="lp-mnav-links">
+            {NAV_LINKS.map(([id, label]) => <a key={id} onClick={() => go(id)}>{label}<Icon name="arrowRight" size={15} sw={2} style={{ opacity: .4 }} /></a>)}
+          </div>
+          <div className="lp-mnav-cta">
+            <button className="btn btn-primary btn-lg" onClick={() => go("pricing")}><Icon name="bolt" size={16} />Build your suite</button>
+            <button className="btn btn-ghost btn-lg" onClick={() => { setNavOpen(false); setModal("book"); }}><Icon name="calendar" size={15} />Book a call</button>
+            <a className="lp-mnav-signin" onClick={() => { setNavOpen(false); onSignIn(); }}>Sign in</a>
+          </div>
+        </div>
+      </div>
 
       {/* hero */}
       <section className="lp-hero">
@@ -1399,6 +1445,14 @@ function Landing({ onSignIn = () => {} } = {}) {
         </div>
       )}
       {openProduct && <ProductPage id={openProduct} onClose={() => setOpenProduct(null)} onAdd={addProduct} onBook={() => { setOpenProduct(null); setModal("book"); }} />}
+
+      <BackToTop />
+
+      {/* sticky mobile CTA — always-reachable primary action */}
+      <div className="lp-mobar">
+        <button className="btn btn-primary" onClick={() => go("pricing")}><Icon name="bolt" size={16} />Build your suite</button>
+        <a className="lp-mobar-signin" onClick={onSignIn}>Sign in</a>
+      </div>
     </div>
   );
 }
