@@ -6,6 +6,52 @@ import mattPhoto from "../assets/matt-yee.jpg";
 import nickPhoto from "../assets/nick-friesen.jpg";
 const { useState, useEffect, useRef, useMemo, useCallback, useLayoutEffect, useReducer, useContext, useImperativeHandle, useId } = React;
 const { Icon, Logo, FL_DATA, FLStore, useStore, askClaude, bizContext, confettiBurst, XPBadge, useCountUp, CountUp, AreaChart, Sparkline, LoadBars, Donut, SlideOver, CommandPalette, HEAT, fmtMoney, StatCard, ToneIco, FLflag, useTweaks, TweaksPanel, TweakSection, TweakRow, TweakSlider, TweakToggle, TweakRadio, TweakSelect, TweakText, TweakNumber, TweakColor, TweakButton, FoxDemo, KanbanDemo, WorkflowDemo, GreenlightDemo, CommandDemo, IntegrationDemo, SupportDemo, SecurityDemo, SidecarDemo, CortexDemo } = window as any;
+
+// ── Bespoke editorial icon set ───────────────────────────────────────────────
+// Original line glyphs on a 24-grid (rounded joins, a recurring filled "live dot" for the agentic
+// pulse). Each is grounded in the product it marks, so the set reads as designed rather than a
+// generic Lucide/Feather default. Names without a bespoke glyph fall back to the app's Icon.
+function lpGlyph(name) {
+  switch (name) {
+    case "grid": return <><rect x="3" y="4.5" width="18" height="15" rx="2.6" /><path d="M3 9.2h18" /><path d="M6.5 13h4.5M6.5 16h8" /><circle cx="16.8" cy="13.6" r="1.4" fill="currentColor" stroke="none" /></>;
+    case "users": return <><circle cx="8.6" cy="8" r="3" /><circle cx="16.2" cy="9.4" r="2.4" /><path d="M3.4 19a5.2 5.2 0 019.2-3.3" /><path d="M14.4 19a4.2 4.2 0 016.2-3.2" /></>;
+    case "inbox": return <><path d="M4 7a3 3 0 013-3h10a3 3 0 013 3v6a3 3 0 01-3 3H9l-4.2 3.4a.5 .5 0 01-.8-.4V7z" /><circle cx="9" cy="10" r="1" fill="currentColor" stroke="none" /><circle cx="12.5" cy="10" r="1" fill="currentColor" stroke="none" /><circle cx="16" cy="10" r="1" fill="currentColor" stroke="none" /></>;
+    case "workflow": return <><rect x="3" y="4" width="6" height="5" rx="1.5" /><rect x="15" y="4" width="6" height="5" rx="1.5" /><rect x="9" y="15" width="6" height="5" rx="1.5" /><path d="M6 9v3a2 2 0 002 2h1" /><path d="M18 9v3a2 2 0 01-2 2h-1" /></>;
+    case "approve": return <><rect x="3.5" y="3.5" width="17" height="17" rx="4.2" /><path d="M7.8 12.2l2.9 2.9 5.7-5.8" /></>;
+    case "spark": return <><path d="M12 3c.45 4.2 1.6 5.7 6 6-4.4 .3-5.55 1.95-6 6-.45-4.05-1.6-5.7-6-6 4.4-.3 5.55-1.8 6-6z" /><path d="M18.6 4.4c.12 1.1 .45 1.5 1.6 1.6-1.15 .1-1.48 .5-1.6 1.6-.12-1.1-.45-1.5-1.6-1.6 1.15-.1 1.48-.5 1.6-1.6z" fill="currentColor" stroke="none" /></>;
+    case "plug": return <><circle cx="12" cy="12" r="3.1" /><path d="M12 8.9V4M12 20v-4.9M8.9 12H4M20 12h-4.9" /><circle cx="12" cy="4" r="1.1" fill="currentColor" stroke="none" /><circle cx="12" cy="20" r="1.1" fill="currentColor" stroke="none" /><circle cx="4" cy="12" r="1.1" fill="currentColor" stroke="none" /><circle cx="20" cy="12" r="1.1" fill="currentColor" stroke="none" /></>;
+    case "layers": return <><rect x="3.5" y="6.5" width="11" height="13" rx="2.2" /><path d="M9 6.5V5.2A2.2 2.2 0 0111.2 3h7A2.2 2.2 0 0120.5 5.2v11A2.2 2.2 0 0118.3 18.4h-1.3" /></>;
+    case "doc": return <><path d="M6.5 3.6h6.8L18 8.3V20.4H6.5z" /><path d="M13 3.6V8h4.6" /><path d="M9.4 12.2h5.2M9.4 15.4h5.2" /></>;
+    case "network": return <><circle cx="12" cy="5" r="2" /><circle cx="5" cy="13" r="2" /><circle cx="19" cy="13" r="2" /><circle cx="12" cy="19.5" r="2" /><path d="M10.5 6.3L6.4 11.6M13.5 6.3l4.1 5.3M6.6 14.4l4 3.6M17.4 14.4l-4 3.6" /></>;
+    case "shield": return <><path d="M12 3.4l7.2 2.6v4.5c0 4.9-3.1 7.9-7.2 9.7-4.1-1.8-7.2-4.8-7.2-9.7V6l7.2-2.6z" /><path d="M12 9.2v3.2" /><circle cx="12" cy="14.6" r="0.7" fill="currentColor" stroke="none" /></>;
+    case "bolt": return <path d="M13.2 3.4l-7.4 9.6H11l-1.1 7.6 7.6-9.8H11l2.2-7.4z" />;
+    case "check": return <path d="M5 12.5l4.4 4.4L19 7.2" />;
+    case "checkCircle": return <><circle cx="12" cy="12" r="8.6" /><path d="M8.4 12.2l2.6 2.6 4.6-5.1" /></>;
+    case "arrowRight": return <><path d="M4.5 12h13.5" /><path d="M13 6.3l5.7 5.7-5.7 5.7" /></>;
+    case "link": return <><path d="M10 14.2l4-4.2" /><path d="M8.5 12.2l-1.9 2a3.2 3.2 0 004.6 4.4l1.9-2" /><path d="M15.5 11.8l1.9-2a3.2 3.2 0 00-4.6-4.4l-1.9 2" /></>;
+    case "calendar": return <><rect x="3.5" y="5" width="17" height="15.5" rx="2.6" /><path d="M3.5 9.6h17M8 3v4M16 3v4" /></>;
+    case "mail": return <><rect x="3.5" y="5.5" width="17" height="13" rx="2.4" /><path d="M4.6 7.8l7.4 5.4 7.4-5.4" /></>;
+    case "send": return <><path d="M20.5 3.5L3.5 11l6.6 2.4L12.5 20 20.5 3.5z" /><path d="M10.1 13.4L20.5 3.5" /></>;
+    case "trend": return <><path d="M4 16.5l5-5 3.5 2.5L20 6" /><path d="M15.5 6H20v4.5" /></>;
+    case "clock": return <><circle cx="12" cy="12" r="8.4" /><path d="M12 7.4V12l3 2" /></>;
+    case "quote": return <path d="M9.2 7.2c-2.5 1-3.9 2.9-3.9 5.6V17h4.7v-4.6H7.3c0-1.5 .8-2.6 2.5-3.3l-.6-1.9zM18.6 7.2c-2.5 1-3.9 2.9-3.9 5.6V17h4.7v-4.6h-2.7c0-1.5 .8-2.6 2.5-3.3l-.6-1.9z" fill="currentColor" stroke="none" />;
+    case "plus": return <path d="M12 5v14M5 12h14" />;
+    case "x": return <path d="M6 6l12 12M18 6L6 18" />;
+    case "chevDown": return <path d="M5.5 9l6.5 6.6L18.5 9" />;
+    case "chevL": return <path d="M14.5 5.5L8 12l6.5 6.5" />;
+    case "megaphone": return <><path d="M4 10.5v3l11 4.6V6L4 10.5z" /><path d="M15 9.2a4 4 0 010 5.6" /><path d="M7 14.3v3.4a1.6 1.6 0 003.2 0V15.4" /></>;
+    case "gauge": return <><path d="M4.5 16.5a8 8 0 1115 0" /><path d="M12 16.5l4.2-4.6" /><circle cx="12" cy="16.5" r="1.1" fill="currentColor" stroke="none" /></>;
+    case "play": return <path d="M7.6 5.4l11 6.6-11 6.6z" />;
+    default: return null;
+  }
+}
+function LpIcon(props) {
+  const inner = lpGlyph(props && props.name);
+  if (inner == null) return <Icon {...props} />;
+  const size = (props && props.size) || 16;
+  const sw = (props && props.sw) || 1.6;
+  return <svg className={props && props.className} width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" style={props && props.style} aria-hidden="true">{inner}</svg>;
+}
 // landing.jsx, Friesen Labs marketing site
 
 const LP_PRODUCTS = [
@@ -21,7 +67,7 @@ const LP_PRODUCTS = [
   { id: "workflows", name: "Workflows", cat: "Automation", icon: "workflow", tone: "amber", blurb: "Compose agent automations by dragging blocks, or just describe them.",
     long: "Compose agent automations by dragging blocks, or just describe what you want and the AI builds the workflow for you.",
     features: [["Visual builder", "Drag, connect, zoom and pan a node canvas"], ["Prompt-to-build AI", "Describe it, the AI designs it"], ["Your agents as steps", "Drop any agent you've made into a flow"], ["Approval gates", "Pause for Greenlight anywhere in the flow"]] },
-  { id: "greenlight", name: "Greenlight", cat: "Approvals", icon: "inbox", tone: "amber", blurb: "Every agent action waits for your one-tap sign-off.",
+  { id: "greenlight", name: "Greenlight", cat: "Approvals", icon: "approve", tone: "amber", blurb: "Every agent action waits for your one-tap sign-off.",
     long: "Human-in-the-loop control for everything your agents do. Review, edit and approve in one tap, or let the routine stuff run itself.",
     features: [["One-tap approve", "Approve or decline from anywhere"], ["Inline editing", "Tweak the agent's draft before it sends"], ["Bulk approve", "Clear the routine queue in one go"], ["Policy & spend limits", "Auto-approve under your thresholds"]] },
   { id: "agents", name: "Agents", cat: "Workforce", icon: "spark", tone: "indigo", blurb: "Build agents in a visual Studio, give them skills, set their autonomy.",
@@ -51,7 +97,7 @@ const FEAT_VIVID = {
   indigo: "var(--accent)", amber: "oklch(0.7 0.14 65)", green: "oklch(0.62 0.13 152)", rose: "oklch(0.62 0.15 18)",
 };
 const LP_STACK = [
-  { eyebrow: "Layer 5 · Oversight", fc: "var(--accent)", h: "You stay in command", desc: "Watch, approve and control everything from one place.", pills: [["Command Center", "grid", "indigo"], ["Greenlight", "inbox", "amber"], ["Security & Control", "shield", "indigo"]] },
+  { eyebrow: "Layer 5 · Oversight", fc: "var(--accent)", h: "You stay in command", desc: "Watch, approve and control everything from one place.", pills: [["Command Center", "grid", "indigo"], ["Greenlight", "approve", "amber"], ["Security & Control", "shield", "indigo"]] },
   { eyebrow: "Layer 4 · Where the work happens", fc: "oklch(0.62 0.15 18)", h: "Your business, run by agents", desc: "Sales, support and automations, done for you.", pills: [["Uplift", "users", "rose"], ["Frontline", "inbox", "green"], ["Workflows", "workflow", "amber"]] },
   { eyebrow: "Layer 3 · The workforce", fc: "var(--accent)", h: "Your agents", desc: "A crew you name, shape and set loose, working on top of everything below.", pills: [["Agents", "spark", "indigo"], ["Sidecar", "layers", "indigo"]] },
   { eyebrow: "Layer 2 · The intelligence", fc: "oklch(0.7 0.14 65)", h: "Knowledge & private brains", desc: "Hosted knowledge grounds every agent; optional plugins train private models and compound over time, your moat.", pills: [["Knowledge", "doc", "amber"], ["Cortex", "network", "amber"]] },
@@ -119,7 +165,7 @@ const LP_MODULES = [
   { id: "command", name: "Command Center", icon: "grid", tone: "indigo", price: 49, req: true, blurb: "The agentic command center" },
   { id: "agents", name: "Agents", icon: "spark", tone: "indigo", price: 39, blurb: "Studio, skills & your agent team" },
   { id: "workflows", name: "Workflows", icon: "workflow", tone: "amber", price: 39, blurb: "Automations, drag or by prompt" },
-  { id: "greenlight", name: "Greenlight", icon: "inbox", tone: "amber", price: 25, blurb: "Human-in-the-loop approvals" },
+  { id: "greenlight", name: "Greenlight", icon: "approve", tone: "amber", price: 25, blurb: "Human-in-the-loop approvals" },
   { id: "frontline", name: "Frontline", icon: "inbox", tone: "green", price: 39, blurb: "Autonomous support desk" },
   { id: "uplift", name: "Uplift CRM", icon: "users", tone: "rose", price: 49, blurb: "Agentic CRM (optional)" },
   { id: "knowledge", name: "Knowledge", icon: "doc", tone: "amber", price: 25, blurb: "Hosted knowledge bases (RAG) for your whole suite" },
@@ -189,7 +235,7 @@ function useReveal() {
 }
 
 function VsMark({ v }) {
-  if (v === true) return <span className="vs-mark yes"><Icon name="check" size={15} sw={3} /></span>;
+  if (v === true) return <span className="vs-mark yes"><LpIcon name="check" size={15} sw={3} /></span>;
   if (v === "partial") return <span className="vs-mark part">~</span>;
   return <span className="vs-mark no">✕</span>;
 }
@@ -338,7 +384,7 @@ function NiceAdsDemo({ accent }) {
         <div className="ntg-panel-h"><b>By platform</b><span>spend · ROAS</span></div>
         {plats.map(([n, ic, sp, ro]) => (
           <div key={n} className="ntg-row">
-            <span className="ntg-row-ico" style={{ background: accent + "22", color: accent }}><Icon name={ic} size={13} /></span>
+            <span className="ntg-row-ico" style={{ background: accent + "22", color: accent }}><LpIcon name={ic} size={13} /></span>
             <span style={{ flex: 1, fontWeight: 600 }}>{n}</span>
             <span style={{ width: 110 }}><span className="ntg-bar"><span style={{ width: (sp / 4820 * 100) + "%", background: accent }} /></span></span>
             <span style={{ fontFamily: "var(--mono)", fontSize: 12, width: 52, textAlign: "right" }}>${(sp / 1000).toFixed(1)}k</span>
@@ -364,14 +410,14 @@ function NiceTrafficDemo({ accent }) {
         <NiceLine pts={[120, 180, 150, 240, 300, 260, 360]} accent={accent} />
       </div>
       <div className="ntg-code">
-        <div className="ntg-code-h"><span style={{ display: "flex", alignItems: "center", gap: 7 }}><Icon name="doc" size={13} />Paste in your &lt;head&gt;</span><span className="ntg-copy">Copy</span></div>
+        <div className="ntg-code-h"><span style={{ display: "flex", alignItems: "center", gap: 7 }}><LpIcon name="doc" size={13} />Paste in your &lt;head&gt;</span><span className="ntg-copy">Copy</span></div>
         <code>&lt;script src="https://t.friesen.app/p.js" data-site="acme"&gt;&lt;/script&gt;</code>
       </div>
       <div className="ntg-panel">
         <div className="ntg-panel-h"><b>Recent session replays</b><span>watch real visits</span></div>
         {replays.map(([p, t, loc, sc]) => (
           <div key={p} className="ntg-row">
-            <span className="ntg-row-ico" style={{ background: accent + "22", color: accent }}><Icon name="play" size={12} /></span>
+            <span className="ntg-row-ico" style={{ background: accent + "22", color: accent }}><LpIcon name="play" size={12} /></span>
             <span style={{ flex: 1, fontWeight: 600, fontFamily: "var(--mono)", fontSize: 12 }}>{p}</span>
             <span style={{ fontSize: 11.5, color: "var(--ink-4)" }}>{loc}</span>
             <span style={{ fontFamily: "var(--mono)", fontSize: 12, width: 52, textAlign: "right" }}>{t}</span>
@@ -391,7 +437,7 @@ function NiceContentDemo({ accent }) {
       <div className="ntg-stats">
         {chans.map(([n, ic, foll, gr]) => (
           <div key={n} className="ntg-stat">
-            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}><span className="ntg-row-ico" style={{ width: 22, height: 22, background: accent + "22", color: accent }}><Icon name={ic} size={12} /></span><span className="ntg-stat-v" style={{ fontSize: 17 }}>{foll}</span></div>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}><span className="ntg-row-ico" style={{ width: 22, height: 22, background: accent + "22", color: accent }}><LpIcon name={ic} size={12} /></span><span className="ntg-stat-v" style={{ fontSize: 17 }}>{foll}</span></div>
             <div className="ntg-stat-l">{n}</div><div className="ntg-stat-s" style={{ color: "var(--green)" }}>{gr} / wk</div>
           </div>
         ))}
@@ -406,7 +452,7 @@ function NiceContentDemo({ accent }) {
           <div style={{ display: "flex", flexDirection: "column", gap: 7, marginTop: 4 }}>
             {[["Book a table", "1.2k"], ["Shop the menu", "840"], ["Latest reel", "560"]].map(([l, c]) => (
               <div key={l} style={{ display: "flex", alignItems: "center", gap: 9, padding: "8px 10px", border: "1px solid var(--lp-line)", borderRadius: 10 }}>
-                <Icon name="link" size={13} style={{ color: accent }} /><span style={{ flex: 1, fontSize: 12.5, fontWeight: 600 }}>{l}</span><span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--ink-4)" }}>{c} clicks</span>
+                <LpIcon name="link" size={13} style={{ color: accent }} /><span style={{ flex: 1, fontSize: 12.5, fontWeight: 600 }}>{l}</span><span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--ink-4)" }}>{c} clicks</span>
               </div>
             ))}
           </div>
@@ -438,7 +484,7 @@ function NiceToHave() {
         <h2 className="lp-h2">Nice-to-have products</h2>
         <p className="lp-sub">Optional hubs we'll stand up for you as the suite grows. Same private instance, same agents, more of your business in one place.</p>
         <div className="lp-demo-tabs">
-          {LP_NICE.map((n) => <button key={n.id} className={"lp-demo-tab" + (tab === n.id ? " active" : "")} onClick={() => setTab(n.id)}><Icon name={n.icon} size={15} style={{ marginRight: 7, verticalAlign: "-2px" }} />{n.tab}</button>)}
+          {LP_NICE.map((n) => <button key={n.id} className={"lp-demo-tab" + (tab === n.id ? " active" : "")} onClick={() => setTab(n.id)}><LpIcon name={n.icon} size={15} style={{ marginRight: 7, verticalAlign: "-2px" }} />{n.tab}</button>)}
         </div>
         <div className="lp-demo-stage">
           <div className="lp-demo-canvas">
@@ -450,8 +496,8 @@ function NiceToHave() {
             <span className="cat" style={{ background: bg, color: fg }}>Roadmap</span>
             <h3>{active.title}</h3>
             <p>{active.desc}</p>
-            <ul>{active.bullets.map((b) => <li key={b}><Icon name="check" size={16} sw={2.4} style={{ color: accent, flexShrink: 0, marginTop: 1 }} />{b}</li>)}</ul>
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 7, marginTop: 4, fontSize: 12.5, fontWeight: 600, color: "var(--ink-4)" }}><Icon name="clock" size={14} />Coming as the suite grows</span>
+            <ul>{active.bullets.map((b) => <li key={b}><LpIcon name="check" size={16} sw={2.4} style={{ color: accent, flexShrink: 0, marginTop: 1 }} />{b}</li>)}</ul>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 7, marginTop: 4, fontSize: 12.5, fontWeight: 600, color: "var(--ink-4)" }}><LpIcon name="clock" size={14} />Coming as the suite grows</span>
           </div>
         </div>
       </div>
@@ -461,7 +507,7 @@ function NiceToHave() {
 
 function ProductIco({ tone, icon, big }) {
   const [bg, fg] = LP_TONE[tone];
-  return <div className="lp-prod-ico" style={{ background: bg, color: fg, width: big ? 46 : 38, height: big ? 46 : 38, marginBottom: 0, borderRadius: big ? 13 : 10 }}><Icon name={icon} size={big ? 22 : 18} /></div>;
+  return <div className="lp-prod-ico" style={{ background: bg, color: fg, width: big ? 46 : 38, height: big ? 46 : 38, marginBottom: 0, borderRadius: big ? 13 : 10 }}><LpIcon name={icon} size={big ? 22 : 18} /></div>;
 }
 
 /* ---------- modals ---------- */
@@ -473,14 +519,14 @@ function BookModal({ onClose }) {
     <div className="lp-modal-scrim" onClick={onClose}>
       <div className="lp-modal" onClick={(e) => e.stopPropagation()}>
         <div className="lp-modal-head">
-          <div className="lp-prod-ico" style={{ background: "var(--accent-soft)", color: "var(--accent-ink)", marginBottom: 0 }}><Icon name="calendar" size={20} /></div>
+          <div className="lp-prod-ico" style={{ background: "var(--accent-soft)", color: "var(--accent-ink)", marginBottom: 0 }}><LpIcon name="calendar" size={20} /></div>
           <div style={{ flex: 1 }}><h3 style={{ fontSize: 19, fontWeight: 730, letterSpacing: "-.02em" }}>{done ? "You're booked!" : "Book a call"}</h3><p style={{ fontSize: 13, color: "var(--ink-3)", marginTop: 2 }}>{done ? "Check your inbox for the invite." : "15 minutes with a product specialist."}</p></div>
-          <button className="icon-btn" onClick={onClose}><Icon name="x" size={18} /></button>
+          <button className="icon-btn" onClick={onClose}><LpIcon name="x" size={18} /></button>
         </div>
         <div className="lp-modal-body">
           {done ? (
             <div style={{ textAlign: "center", padding: "16px 0" }}>
-              <div className="lp-prov-check" style={{ width: 60, height: 60, borderRadius: 18 }}><Icon name="check" size={30} sw={2.6} style={{ color: "#fff" }} /></div>
+              <div className="lp-prov-check" style={{ width: 60, height: 60, borderRadius: 18 }}><LpIcon name="check" size={30} sw={2.6} style={{ color: "#fff" }} /></div>
               <p style={{ fontSize: 14, color: "var(--ink-2)", marginTop: 14 }}><b>{day} at {slot}</b>, we'll see you then.</p>
             </div>
           ) : (
@@ -489,7 +535,7 @@ function BookModal({ onClose }) {
               <div className="lp-slot" style={{ margin: "9px 0 16px" }}>{days.map((d) => <button key={d} className={day === d ? "sel" : ""} onClick={() => setDay(d)}>{d}</button>)}</div>
               <label style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-3)" }}>Pick a time</label>
               <div className="lp-slot" style={{ margin: "9px 0 20px" }}>{slots.map((s) => <button key={s} className={slot === s ? "sel" : ""} onClick={() => setSlot(s)}>{s}</button>)}</div>
-              <button className="btn btn-primary btn-lg" style={{ width: "100%" }} onClick={() => setDone(true)}><Icon name="check" size={16} sw={2.2} />Confirm {day} at {slot}</button>
+              <button className="btn btn-primary btn-lg" style={{ width: "100%" }} onClick={() => setDone(true)}><LpIcon name="check" size={16} sw={2.2} />Confirm {day} at {slot}</button>
             </>
           )}
         </div>
@@ -503,19 +549,19 @@ function EmailModal({ onClose }) {
     <div className="lp-modal-scrim" onClick={onClose}>
       <div className="lp-modal" onClick={(e) => e.stopPropagation()}>
         <div className="lp-modal-head">
-          <div className="lp-prod-ico" style={{ background: "var(--rose-soft)", color: "oklch(0.48 0.14 18)", marginBottom: 0 }}><Icon name="mail" size={20} /></div>
+          <div className="lp-prod-ico" style={{ background: "var(--rose-soft)", color: "oklch(0.48 0.14 18)", marginBottom: 0 }}><LpIcon name="mail" size={20} /></div>
           <div style={{ flex: 1 }}><h3 style={{ fontSize: 19, fontWeight: 730, letterSpacing: "-.02em" }}>{done ? "Message sent" : "Email us"}</h3><p style={{ fontSize: 13, color: "var(--ink-3)", marginTop: 2 }}>{done ? "We'll reply within a few hours." : "Tell us about your business."}</p></div>
-          <button className="icon-btn" onClick={onClose}><Icon name="x" size={18} /></button>
+          <button className="icon-btn" onClick={onClose}><LpIcon name="x" size={18} /></button>
         </div>
         <div className="lp-modal-body">
           {done ? (
-            <div style={{ textAlign: "center", padding: "16px 0" }}><div className="lp-prov-check" style={{ width: 60, height: 60, borderRadius: 18 }}><Icon name="check" size={30} sw={2.6} style={{ color: "#fff" }} /></div><p style={{ fontSize: 14, color: "var(--ink-2)", marginTop: 14 }}>Thanks, a human will get back to you soon.</p></div>
+            <div style={{ textAlign: "center", padding: "16px 0" }}><div className="lp-prov-check" style={{ width: 60, height: 60, borderRadius: 18 }}><LpIcon name="check" size={30} sw={2.6} style={{ color: "#fff" }} /></div><p style={{ fontSize: 14, color: "var(--ink-2)", marginTop: 14 }}>Thanks, a human will get back to you soon.</p></div>
           ) : (
             <>
               <input className="lp-input" placeholder="Your name" />
               <input className="lp-input" placeholder="Work email" />
               <textarea className="lp-input" placeholder="What are you hoping to automate?" />
-              <button className="btn btn-primary btn-lg" style={{ width: "100%", marginTop: 14 }} onClick={() => setDone(true)}><Icon name="send" size={16} />Send message</button>
+              <button className="btn btn-primary btn-lg" style={{ width: "100%", marginTop: 14 }} onClick={() => setDone(true)}><LpIcon name="send" size={16} />Send message</button>
             </>
           )}
         </div>
@@ -529,18 +575,18 @@ function DonateModal({ onClose }) {
     <div className="lp-modal-scrim" onClick={onClose}>
       <div className="lp-modal" onClick={(e) => e.stopPropagation()}>
         <div className="lp-modal-head">
-          <div className="lp-prod-ico" style={{ background: "var(--accent-soft)", color: "var(--accent-ink)", marginBottom: 0 }}><Icon name="spark" size={20} /></div>
+          <div className="lp-prod-ico" style={{ background: "var(--accent-soft)", color: "var(--accent-ink)", marginBottom: 0 }}><LpIcon name="spark" size={20} /></div>
           <div style={{ flex: 1 }}><h3 style={{ fontSize: 19, fontWeight: 730, letterSpacing: "-.02em" }}>{done ? "Thank you 💛" : "Support the mission"}</h3><p style={{ fontSize: 13, color: "var(--ink-3)", marginTop: 2 }}>{done ? "Your gift helps a small business get started." : "Help put agentic tools in more small businesses."}</p></div>
-          <button className="icon-btn" onClick={onClose}><Icon name="x" size={18} /></button>
+          <button className="icon-btn" onClick={onClose}><LpIcon name="x" size={18} /></button>
         </div>
         <div className="lp-modal-body">
           {done ? (
-            <div style={{ textAlign: "center", padding: "16px 0" }}><div className="lp-prov-check" style={{ width: 60, height: 60, borderRadius: 18 }}><Icon name="check" size={30} sw={2.6} style={{ color: "#fff" }} /></div><p style={{ fontSize: 14, color: "var(--ink-2)", marginTop: 14 }}>A <b>${amt}</b> gift, thank you for backing the mission.</p></div>
+            <div style={{ textAlign: "center", padding: "16px 0" }}><div className="lp-prov-check" style={{ width: 60, height: 60, borderRadius: 18 }}><LpIcon name="check" size={30} sw={2.6} style={{ color: "#fff" }} /></div><p style={{ fontSize: 14, color: "var(--ink-2)", marginTop: 14 }}>A <b>${amt}</b> gift, thank you for backing the mission.</p></div>
           ) : (
             <>
               <label style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-3)" }}>Choose an amount</label>
               <div className="lp-slot" style={{ margin: "9px 0 18px" }}>{[10, 25, 50, 100, 250].map((a) => <button key={a} className={amt === a ? "sel" : ""} onClick={() => setAmt(a)}>${a}</button>)}</div>
-              <button className="btn btn-primary btn-lg" style={{ width: "100%" }} onClick={() => setDone(true)}><Icon name="spark" size={16} />Donate ${amt}</button>
+              <button className="btn btn-primary btn-lg" style={{ width: "100%" }} onClick={() => setDone(true)}><LpIcon name="spark" size={16} />Donate ${amt}</button>
               <p style={{ fontSize: 11.5, color: "var(--ink-4)", textAlign: "center", marginTop: 12, lineHeight: 1.5 }}>Friesen Labs is a 501(c)(3) tax-exempt nonprofit (EIN 00-0000000). Your gift is tax-deductible to the extent allowed by law; no goods or services are provided in exchange. A receipt is emailed for your records.</p>
             </>
           )}
@@ -562,17 +608,17 @@ function ProvisionModal({ selected, byo, onClose }) {
   return (
     <div className="lp-modal-scrim">
       <div className="lp-prov">
-        {finished ? <div className="lp-prov-check"><Icon name="check" size={38} sw={2.6} style={{ color: "#fff" }} /></div> : <div className="lp-prov-ring" />}
+        {finished ? <div className="lp-prov-check"><LpIcon name="check" size={38} sw={2.6} style={{ color: "#fff" }} /></div> : <div className="lp-prov-ring" />}
         <div className="lp-eyebrow" style={{ textAlign: "center" }}>{finished ? "All set" : "Provisioning"}</div>
         <h2 style={{ fontSize: 26, fontWeight: 760, letterSpacing: "-.03em", marginTop: 8 }}>{finished ? "Your instance is ready" : "Spinning up your instance"}</h2>
         <div className="lp-prov-steps">
           {steps.map((s, i) => (
             <div key={s} className={"lp-prov-step" + (i < done ? " done" : "")}>
-              <div className="ps-box">{i < done && <Icon name="check" size={13} sw={3} />}</div>{s}
+              <div className="ps-box">{i < done && <LpIcon name="check" size={13} sw={3} />}</div>{s}
             </div>
           ))}
         </div>
-        {finished && <a className="btn btn-primary btn-lg" href="index.html?onboard=1" style={{ marginTop: 24, width: "100%" }}><Icon name="bolt" size={16} />Enter Friesen Labs</a>}
+        {finished && <a className="btn btn-primary btn-lg" href="index.html?onboard=1" style={{ marginTop: 24, width: "100%" }}><LpIcon name="bolt" size={16} />Enter Friesen Labs</a>}
       </div>
     </div>
   );
@@ -601,27 +647,27 @@ function ProductPage({ id, onClose, onAdd, onBook }) {
   return (
     <div style={{ position: "fixed", inset: 0, zIndex: 85, background: "var(--bg)", overflowY: "auto", animation: "screen-in .35s both" }}>
       <nav className="lp-nav"><div className="lp-nav-in">
-        <button className="btn btn-ghost btn-sm" onClick={onClose}><Icon name="chevL" size={15} sw={2.2} />All products</button>
+        <button className="btn btn-ghost btn-sm" onClick={onClose}><LpIcon name="chevL" size={15} sw={2.2} />All products</button>
         <div className="lp-brand" style={{ marginLeft: 4 }}><div className="brand-mark" style={{ width: 28, height: 28 }}><Logo size={17} /></div><b>Friesen Labs</b></div>
         <div className="lp-nav-cta">{included
-          ? <span className="chip green" style={{ height: 34, padding: "0 14px" }}><Icon name="check" size={13} sw={2.4} />Included free</span>
-          : <button className="btn btn-primary" onClick={() => onAdd(id)}><Icon name="plus" size={15} sw={2.2} />Add to suite</button>}</div>
+          ? <span className="chip green" style={{ height: 34, padding: "0 14px" }}><LpIcon name="check" size={13} sw={2.4} />Included free</span>
+          : <button className="btn btn-primary" onClick={() => onAdd(id)}><LpIcon name="plus" size={15} sw={2.2} />Add to suite</button>}</div>
       </div></nav>
 
       <section className="lp-section" style={{ paddingBottom: 32 }}>
         <div className="lp-wrap lp-hero-grid" style={{ alignItems: "center" }}>
           <div>
             <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
-              <div className="lp-prod-ico" style={{ background: bg, color: fg, width: 52, height: 52, marginBottom: 0, borderRadius: 14 }}><Icon name={p.icon} size={26} /></div>
+              <div className="lp-prod-ico" style={{ background: bg, color: fg, width: 52, height: 52, marginBottom: 0, borderRadius: 14 }}><LpIcon name={p.icon} size={26} /></div>
               <span className="lp-eyebrow" style={{ textAlign: "left" }}>{p.cat}</span>
             </div>
             <h1 className="lp-h1" style={{ fontSize: 44 }}>{p.name}</h1>
             <p className="lp-lead">{p.long}</p>
             <div className="lp-hero-cta">
               {included
-                ? <span className="btn btn-soft btn-lg" style={{ cursor: "default" }}><Icon name="check" size={16} sw={2.2} />Included free in every plan</span>
-                : <button className="btn btn-primary btn-lg" onClick={() => onAdd(id)}><Icon name="plus" size={16} sw={2.2} />Add to my suite</button>}
-              <button className="btn btn-ghost btn-lg" onClick={onBook}><Icon name="calendar" size={16} />Book a call</button>
+                ? <span className="btn btn-soft btn-lg" style={{ cursor: "default" }}><LpIcon name="check" size={16} sw={2.2} />Included free in every plan</span>
+                : <button className="btn btn-primary btn-lg" onClick={() => onAdd(id)}><LpIcon name="plus" size={16} sw={2.2} />Add to my suite</button>}
+              <button className="btn btn-ghost btn-lg" onClick={onBook}><LpIcon name="calendar" size={16} />Book a call</button>
             </div>
           </div>
           <div className="lp-demo-stage" style={{ gridTemplateColumns: "1fr", minHeight: 0, boxShadow: "var(--shadow-xl)" }}>
@@ -645,8 +691,8 @@ function ProductPage({ id, onClose, onAdd, onBook }) {
           </div>
           <div style={{ textAlign: "center", marginTop: 44 }}>
             {included
-              ? <button className="btn btn-primary btn-lg" onClick={onClose}><Icon name="bolt" size={16} />Explore the other products</button>
-              : <button className="btn btn-primary btn-lg" onClick={() => onAdd(id)}><Icon name="bolt" size={16} />Add {p.name} &amp; build my suite</button>}
+              ? <button className="btn btn-primary btn-lg" onClick={onClose}><LpIcon name="bolt" size={16} />Explore the other products</button>
+              : <button className="btn btn-primary btn-lg" onClick={() => onAdd(id)}><LpIcon name="bolt" size={16} />Add {p.name} &amp; build my suite</button>}
           </div>
         </div>
       </section>
@@ -805,7 +851,7 @@ function BackToTop() {
   }, []);
   return (
     <button className={"lp-totop" + (show ? " in" : "")} aria-label="Back to top" onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}>
-      <Icon name="chevDown" size={18} sw={2.4} style={{ transform: "rotate(180deg)" }} />
+      <LpIcon name="chevDown" size={18} sw={2.4} style={{ transform: "rotate(180deg)" }} />
     </button>
   );
 }
@@ -831,10 +877,10 @@ function FinalCta({ onBook }) {
         <h2 className="fc-h">Stop doing the busywork.<br />Put a crew on it tonight.</h2>
         <p className="fc-sub">Build your suite in minutes, keep the CRM you love, and approve only what matters. Live by this afternoon.</p>
         <div className="fc-cta">
-          <a className="btn btn-primary btn-lg" href={SIGNUP_HREF}><Icon name="bolt" size={17} />Build your suite</a>
-          <button className="btn btn-glass btn-lg" onClick={onBook}><Icon name="calendar" size={16} />Book a 15-min call</button>
+          <a className="btn btn-primary btn-lg" href={SIGNUP_HREF}><LpIcon name="bolt" size={17} />Build your suite</a>
+          <button className="btn btn-glass btn-lg" onClick={onBook}><LpIcon name="calendar" size={16} />Book a 15-min call</button>
         </div>
-        <div className="fc-trust">{["Live in a day", "Keep your CRM", "One-tap kill switch", "Cancel anytime"].map((t) => <span key={t}><Icon name="check" size={14} sw={2.6} />{t}</span>)}</div>
+        <div className="fc-trust">{["Live in a day", "Keep your CRM", "One-tap kill switch", "Cancel anytime"].map((t) => <span key={t}><LpIcon name="check" size={14} sw={2.6} />{t}</span>)}</div>
       </div>
     </section>
   );
@@ -1005,14 +1051,14 @@ function Landing({ onSignIn = () => {} } = {}) {
         <div className="lp-mnav-panel" onClick={(e) => e.stopPropagation()}>
           <div className="lp-mnav-head">
             <div className="lp-brand"><div className="brand-mark"><Logo size={18} /></div><b>Friesen Labs</b></div>
-            <button className="lp-mnav-x" aria-label="Close menu" onClick={() => setNavOpen(false)}><Icon name="x" size={20} /></button>
+            <button className="lp-mnav-x" aria-label="Close menu" onClick={() => setNavOpen(false)}><LpIcon name="x" size={20} /></button>
           </div>
           <div className="lp-mnav-links">
-            {NAV_LINKS.map(([id, label]) => <a key={id} {...sectionLink(id)}>{label}<Icon name="arrowRight" size={15} sw={2} style={{ opacity: .4 }} /></a>)}
+            {NAV_LINKS.map(([id, label]) => <a key={id} {...sectionLink(id)}>{label}<LpIcon name="arrowRight" size={15} sw={2} style={{ opacity: .4 }} /></a>)}
           </div>
           <div className="lp-mnav-cta">
-            <a className="btn btn-primary btn-lg" href={SIGNUP_HREF}><Icon name="bolt" size={16} />Build your suite</a>
-            <button className="btn btn-ghost btn-lg" onClick={() => { setNavOpen(false); setModal("book"); }}><Icon name="calendar" size={15} />Book a call</button>
+            <a className="btn btn-primary btn-lg" href={SIGNUP_HREF}><LpIcon name="bolt" size={16} />Build your suite</a>
+            <button className="btn btn-ghost btn-lg" onClick={() => { setNavOpen(false); setModal("book"); }}><LpIcon name="calendar" size={15} />Book a call</button>
             <a className="lp-mnav-signin" href={SIGNIN_HREF} onClick={signInClick}>Sign in</a>
           </div>
         </div>
@@ -1030,15 +1076,15 @@ function Landing({ onSignIn = () => {} } = {}) {
             <h1 className="lp-h1">Your business, run by <span className="accentword">agents</span>. Watched by you.</h1>
             <p className="lp-lead">Friesen Labs gives small teams a crew of AI agents that research, reach out, quote, follow up and book, inside one calm command center. You approve the moments that matter.</p>
             <div className="lp-hero-cta">
-              <a className="btn btn-primary btn-lg" href={SIGNUP_HREF}><Icon name="bolt" size={17} />Build your suite</a>
-              <button className="btn btn-ghost btn-lg" onClick={() => go("demos")}><Icon name="play" size={16} />See it in action</button>
+              <a className="btn btn-primary btn-lg" href={SIGNUP_HREF}><LpIcon name="bolt" size={17} />Build your suite</a>
+              <button className="btn btn-ghost btn-lg" onClick={() => go("demos")}><LpIcon name="play" size={16} />See it in action</button>
             </div>
             <div className="lp-trust">
-              <span><Icon name="check" size={14} sw={2.6} />No credit card to explore</span>
-              <span><Icon name="check" size={14} sw={2.6} />Live in a day</span>
-              <span><Icon name="check" size={14} sw={2.6} />Keep your CRM</span>
+              <span><LpIcon name="check" size={14} sw={2.6} />No credit card to explore</span>
+              <span><LpIcon name="check" size={14} sw={2.6} />Live in a day</span>
+              <span><LpIcon name="check" size={14} sw={2.6} />Keep your CRM</span>
             </div>
-            <div className="lp-hero-note"><Icon name="link" size={15} /><span>Already have a CRM? <b style={{ color: "var(--ink)" }}>Keep it</b>, we plug right into HubSpot, Salesforce &amp; more.</span></div>
+            <div className="lp-hero-note"><LpIcon name="link" size={15} /><span>Already have a CRM? <b style={{ color: "var(--ink)" }}>Keep it</b>, we plug right into HubSpot, Salesforce &amp; more.</span></div>
             <HeroRoster />
           </div>
           <div className="lp-hero-3d">
@@ -1076,11 +1122,11 @@ function Landing({ onSignIn = () => {} } = {}) {
                     {L.pills.map(([n, ic, tone]) => {
                       const [bg, fg] = LP_TONE[tone];
                       const prod = LP_PRODUCTS.find((p) => p.name === n);
-                      return <span className={"lp-pp" + (prod ? " clickable" : "")} key={n} onClick={prod ? () => setOpenProduct(prod.id) : undefined}><span className="pp-ico" style={{ background: bg, color: fg }}><Icon name={ic} size={14} /></span>{n}{prod && <Icon name="arrowRight" size={12} sw={2.2} style={{ opacity: .45, marginLeft: 1 }} />}</span>;
+                      return <span className={"lp-pp" + (prod ? " clickable" : "")} key={n} onClick={prod ? () => setOpenProduct(prod.id) : undefined}><span className="pp-ico" style={{ background: bg, color: fg }}><LpIcon name={ic} size={14} /></span>{n}{prod && <LpIcon name="arrowRight" size={12} sw={2.2} style={{ opacity: .45, marginLeft: 1 }} />}</span>;
                     })}
                   </div>
                 </div>
-                {li < LP_STACK.length - 1 && <div className="lp-stack-arrow"><Icon name="chevDown" size={18} /></div>}
+                {li < LP_STACK.length - 1 && <div className="lp-stack-arrow"><LpIcon name="chevDown" size={18} /></div>}
               </React.Fragment>
             ))}
           </div>
@@ -1105,7 +1151,7 @@ function Landing({ onSignIn = () => {} } = {}) {
               <span className="cat">{activeDemo.cat}</span>
               <h3>{activeDemo.title}</h3>
               <p>{activeDemo.desc}</p>
-              <ul>{activeDemo.bullets.map((b) => <li key={b}><Icon name="check" size={16} sw={2.4} style={{ color: "var(--accent)", flexShrink: 0, marginTop: 1 }} />{b}</li>)}</ul>
+              <ul>{activeDemo.bullets.map((b) => <li key={b}><LpIcon name="check" size={16} sw={2.4} style={{ color: "var(--accent)", flexShrink: 0, marginTop: 1 }} />{b}</li>)}</ul>
             </div>
           </div>
         </div>
@@ -1115,12 +1161,12 @@ function Landing({ onSignIn = () => {} } = {}) {
       <section className="lp-section alt">
         <div className="lp-wrap lp-byo" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 40, alignItems: "center" }}>
           <div>
-            <span className="lp-pill"><Icon name="link" size={14} />Bring your own CRM</span>
+            <span className="lp-pill"><LpIcon name="link" size={14} />Bring your own CRM</span>
             <h2 style={{ fontSize: 32, fontWeight: 760, letterSpacing: "-.03em", margin: "16px 0 0", textAlign: "left" }}>Love your CRM? Keep it.</h2>
             <p style={{ fontSize: 16, color: "var(--ink-2)", lineHeight: 1.6, marginTop: 14 }}>You don't have to rip anything out. Connect HubSpot, Salesforce or Pipedrive in Switchboard and your agents work right inside it, enriching contacts, sending outreach, and pushing approved actions back to your system of record.</p>
             <ul style={{ listStyle: "none", marginTop: 20, display: "flex", flexDirection: "column", gap: 11 }}>
               {["Command Center, Workflows, Agents & Greenlight work on your CRM's data", "Two-way sync, nothing lives in two places", "No migration, no data export, live in a day"].map((b) => (
-                <li key={b} style={{ display: "flex", gap: 10, fontSize: 14.5 }}><Icon name="checkCircle" size={18} style={{ color: "var(--green)", flexShrink: 0 }} />{b}</li>
+                <li key={b} style={{ display: "flex", gap: 10, fontSize: 14.5 }}><LpIcon name="checkCircle" size={18} style={{ color: "var(--green)", flexShrink: 0 }} />{b}</li>
               ))}
             </ul>
           </div>
@@ -1148,14 +1194,14 @@ function Landing({ onSignIn = () => {} } = {}) {
             <div className="lp-eyebrow">How it works</div>
             <h2 className="lp-h2">Live in an afternoon.</h2>
             <p className="lp-sub" style={{ marginTop: 14 }}>No rip-and-replace, no consultants. Three steps and your agents are working.</p>
-            <a className="btn btn-primary btn-lg" style={{ marginTop: 22 }} href={SIGNUP_HREF}><Icon name="bolt" size={16} />Build your suite</a>
+            <a className="btn btn-primary btn-lg" style={{ marginTop: 22 }} href={SIGNUP_HREF}><LpIcon name="bolt" size={16} />Build your suite</a>
           </div>
           <div className="lp-hiw-steps">
             {[["01", "Connect your stack", "Plug in your CRM, inbox, calendar and payments, or start fresh with Uplift.", "plug"], ["02", "Hire your agents", "Pick your crew, give them names and faces, and set how much they can do on their own.", "spark"], ["03", "Approve & go", "Agents work 24/7. The judgment calls land in Greenlight for your one-tap sign-off.", "checkCircle"]].map(([n, h, p, ic], i, arr) => (
               <div className="lp-hiw-step" key={n}>
                 <div className="lp-hiw-marker"><span className="lp-hiw-num">{n}</span>{i < arr.length - 1 && <span className="lp-hiw-line" />}</div>
                 <div className="lp-hiw-body">
-                  <div style={{ display: "flex", alignItems: "center", gap: 9 }}><Icon name={ic} size={17} style={{ color: "var(--accent-ink)" }} /><h4>{h}</h4></div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 9 }}><LpIcon name={ic} size={17} style={{ color: "var(--accent-ink)" }} /><h4>{h}</h4></div>
                   <p>{p}</p>
                 </div>
               </div>
@@ -1189,7 +1235,7 @@ function Landing({ onSignIn = () => {} } = {}) {
           <div className="lp-testi-grid">
             {LP_TESTIMONIALS.slice(0, 5).map((t, i) => (
               <figure className={"lp-testi" + (i === 0 ? " lp-testi-lead" : "")} key={t.name}>
-                <Icon name="quote" size={i === 0 ? 30 : 22} style={{ color: "var(--accent)", opacity: .5 }} />
+                <LpIcon name="quote" size={i === 0 ? 30 : 22} style={{ color: "var(--accent)", opacity: .5 }} />
                 <blockquote>{t.quote}</blockquote>
                 <figcaption>
                   <div className="avatar" style={{ background: t.color, width: 38, height: 38, fontSize: 13 }}>{t.init}</div>
@@ -1216,7 +1262,7 @@ function Landing({ onSignIn = () => {} } = {}) {
             {[["grid", "A monthly plan", "Pick your products and get a predictable monthly fee with a bucket of agent credits included. No surprises."], ["bolt", "Credits = agent work", "Every meaningful action, a workflow run, a prediction, an outreach, a knowledge answer, spends credits. Always transparent."], ["trend", "Overage only if you exceed", "Go over your bucket and it's a simple per-credit rate. Quiet month? You're never overpaying."]].map(([ic, h, p], i) => (
               <div className="card" key={h} style={{ padding: 22 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 11 }}>
-                  <div className="lp-mod-ico" style={{ background: "var(--accent-soft)", color: "var(--accent-ink)" }}><Icon name={ic} size={18} /></div>
+                  <div className="lp-mod-ico" style={{ background: "var(--accent-soft)", color: "var(--accent-ink)" }}><LpIcon name={ic} size={18} /></div>
                   <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--ink-4)", fontWeight: 600 }}>0{i + 1}</span>
                 </div>
                 <h4 style={{ fontSize: 16, fontWeight: 700, letterSpacing: "-.01em" }}>{h}</h4>
@@ -1233,7 +1279,7 @@ function Landing({ onSignIn = () => {} } = {}) {
               </div>
 
               <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px", borderRadius: "var(--r-md)", border: "1.5px solid " + (byo ? "var(--accent)" : "var(--line)"), background: byo ? "var(--accent-softer)" : "var(--surface)", marginBottom: 16, cursor: "pointer" }} onClick={() => setByoCrm(!byo)}>
-                <div className="lp-mod-ico" style={{ background: "var(--surface)", color: "var(--accent-ink)" }}><Icon name="link" size={18} /></div>
+                <div className="lp-mod-ico" style={{ background: "var(--surface)", color: "var(--accent-ink)" }}><LpIcon name="link" size={18} /></div>
                 <div style={{ flex: 1 }}><b style={{ fontSize: 14.5, fontWeight: 680, display: "block" }}>Bring your own CRM</b><span style={{ fontSize: 12.5, color: "var(--ink-3)" }}>Keep HubSpot / Salesforce, skip Uplift, we connect to yours</span></div>
                 <div className={"tog" + (byo ? " on" : "")} />
               </div>
@@ -1242,10 +1288,10 @@ function Landing({ onSignIn = () => {} } = {}) {
                 const [bg, fg] = LP_TONE[m.tone]; const on = sel[m.id]; const disabled = m.id === "uplift" && byo;
                 return (
                   <div key={m.id} className={"lp-mod" + (on ? " on" : "") + (m.req ? " req" : "")} style={{ opacity: disabled ? .5 : 1 }} onClick={() => !disabled && toggleMod(m)}>
-                    <div className="lp-mod-ico" style={{ background: bg, color: fg }}><Icon name={m.icon} size={18} /></div>
+                    <div className="lp-mod-ico" style={{ background: bg, color: fg }}><LpIcon name={m.icon} size={18} /></div>
                     <div className="m-info"><b>{m.name}{m.req && <span style={{ fontSize: 11, color: "var(--ink-4)", fontWeight: 500 }}> · included</span>}{disabled && <span style={{ fontSize: 11, color: "var(--ink-4)", fontWeight: 500 }}> · using your CRM</span>}</b><span>{m.blurb}</span></div>
                     <span className="m-price">${m.price}/mo</span>
-                    <div className={"gl-check" + (on ? " on" : "")} style={{ marginTop: 0 }}><Icon name="check" size={12} sw={3} /></div>
+                    <div className={"gl-check" + (on ? " on" : "")} style={{ marginTop: 0 }}><LpIcon name="check" size={12} sw={3} /></div>
                   </div>
                 );
               })}
@@ -1254,18 +1300,18 @@ function Landing({ onSignIn = () => {} } = {}) {
             <div className="lp-summary">
               <h4>Your instance</h4>
               <div className="lp-price">${total}<span>/mo</span></div>
-              {discount > 0 && <div className="lp-saver"><Icon name="bolt" size={13} />Bundle saver, 10% off applied</div>}
+              {discount > 0 && <div className="lp-saver"><LpIcon name="bolt" size={13} />Bundle saver, 10% off applied</div>}
               <div style={{ display: "flex", alignItems: "center", gap: 9, marginTop: 14, padding: "11px 13px", background: "var(--accent-softer)", borderRadius: "var(--r-sm)" }}>
-                <Icon name="bolt" size={16} style={{ color: "var(--accent-ink)" }} />
+                <LpIcon name="bolt" size={16} style={{ color: "var(--accent-ink)" }} />
                 <div style={{ fontSize: 12.5, color: "var(--accent-ink)", lineHeight: 1.4 }}><b style={{ fontWeight: 700 }}>≈ {credits.toLocaleString()} agent credits/mo</b> included<br />then $0.05 / extra credit · you set the cap</div>
               </div>
               <div className="lp-summary-list">
-                {selectedMods.map((m) => <div className="sl" key={m.id}><Icon name="check" size={15} sw={2.4} style={{ color: "var(--green)" }} />{m.name}</div>)}
-                {byo && <div className="sl" style={{ color: "var(--accent-ink)" }}><Icon name="link" size={15} style={{ color: "var(--accent-ink)" }} />Your CRM (HubSpot / Salesforce…)</div>}
-                <div className="sl" style={{ color: "var(--ink-3)" }}><Icon name="shield" size={15} style={{ color: "var(--ink-3)" }} />Security &amp; Control <span style={{ marginLeft: "auto", fontSize: 11, fontWeight: 700, color: "var(--green)" }}>FREE</span></div>
+                {selectedMods.map((m) => <div className="sl" key={m.id}><LpIcon name="check" size={15} sw={2.4} style={{ color: "var(--green)" }} />{m.name}</div>)}
+                {byo && <div className="sl" style={{ color: "var(--accent-ink)" }}><LpIcon name="link" size={15} style={{ color: "var(--accent-ink)" }} />Your CRM (HubSpot / Salesforce…)</div>}
+                <div className="sl" style={{ color: "var(--ink-3)" }}><LpIcon name="shield" size={15} style={{ color: "var(--ink-3)" }} />Security &amp; Control <span style={{ marginLeft: "auto", fontSize: 11, fontWeight: 700, color: "var(--green)" }}>FREE</span></div>
               </div>
-              <button className="btn btn-primary btn-lg" style={{ width: "100%" }} onClick={() => setModal("provision")}><Icon name="bolt" size={16} />Provision my instance</button>
-              <button className="btn btn-ghost" style={{ width: "100%", marginTop: 10 }} onClick={() => setModal("book")}><Icon name="calendar" size={15} />Talk to us first</button>
+              <button className="btn btn-primary btn-lg" style={{ width: "100%" }} onClick={() => setModal("provision")}><LpIcon name="bolt" size={16} />Provision my instance</button>
+              <button className="btn btn-ghost" style={{ width: "100%", marginTop: 10 }} onClick={() => setModal("book")}><LpIcon name="calendar" size={15} />Talk to us first</button>
               <p style={{ fontSize: 11.5, color: "var(--ink-4)", textAlign: "center", marginTop: 12 }}>Free to start · starter credits · no card required</p>
             </div>
           </div>
@@ -1273,7 +1319,7 @@ function Landing({ onSignIn = () => {} } = {}) {
           <div className="lp-guarantees" style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12, marginTop: 40 }}>
             {[["spark", "Free to start", "Starter credits on every account"], ["shield", "No bill shock", "Spend caps you control"], ["bolt", "No token costs", "We eat the AI & compute bills"], ["plug", "Your private instance", "Isolated, secure, never pooled"], ["target", "Pay for outcomes", "Priced by results, increasingly"]].map(([ic, h, p]) => (
               <div key={h} style={{ textAlign: "center" }}>
-                <div style={{ width: 42, height: 42, borderRadius: 12, background: "var(--surface)", border: "1px solid var(--line)", color: "var(--accent-ink)", display: "grid", placeItems: "center", margin: "0 auto 10px", boxShadow: "var(--shadow-sm)" }}><Icon name={ic} size={19} /></div>
+                <div style={{ width: 42, height: 42, borderRadius: 12, background: "var(--surface)", border: "1px solid var(--line)", color: "var(--accent-ink)", display: "grid", placeItems: "center", margin: "0 auto 10px", boxShadow: "var(--shadow-sm)" }}><LpIcon name={ic} size={19} /></div>
                 <b style={{ fontSize: 13, fontWeight: 680, display: "block" }}>{h}</b>
                 <span style={{ fontSize: 11.5, color: "var(--ink-3)", lineHeight: 1.45, display: "block", marginTop: 3 }}>{p}</span>
               </div>
@@ -1298,9 +1344,9 @@ function Landing({ onSignIn = () => {} } = {}) {
             ))}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 14, marginTop: 26, padding: "18px 22px", background: "var(--surface)", border: "1px solid var(--line)", borderRadius: "var(--r-lg)", boxShadow: "var(--shadow-sm)", flexWrap: "wrap" }}>
-            <div style={{ width: 44, height: 44, borderRadius: 12, background: "var(--green-soft)", color: "oklch(0.42 0.12 152)", display: "grid", placeItems: "center", flexShrink: 0 }}><Icon name="trend" size={22} /></div>
+            <div style={{ width: 44, height: 44, borderRadius: 12, background: "var(--green-soft)", color: "oklch(0.42 0.12 152)", display: "grid", placeItems: "center", flexShrink: 0 }}><LpIcon name="trend" size={22} /></div>
             <p style={{ flex: 1, minWidth: 240, fontSize: 14.5, color: "var(--ink-2)", lineHeight: 1.55 }}><b style={{ color: "var(--ink)" }}>Money back in your pocket, time back in your day.</b> Cut the cost of busywork, grow revenue without growing payroll, and reinvest both into the business, and yourself.</p>
-            <button className="btn btn-primary" onClick={() => go("pricing")}><Icon name="bolt" size={16} />See the plans</button>
+            <button className="btn btn-primary" onClick={() => go("pricing")}><LpIcon name="bolt" size={16} />See the plans</button>
           </div>
           <p style={{ fontSize: 11.5, color: "var(--ink-4)", textAlign: "center", marginTop: 14 }}>Figures are typical outcomes for small teams and vary by business.</p>
         </div>
@@ -1314,16 +1360,16 @@ function Landing({ onSignIn = () => {} } = {}) {
           <p className="lp-sub">Nobody gets replaced. Everybody gets leverage.</p>
           <div className="lp-enable">
             <div className="lp-enable-card owner">
-              <div className="ec-ico" style={{ background: "var(--surface)", color: "var(--accent-ink)" }}><Icon name="spark" size={24} /></div>
+              <div className="ec-ico" style={{ background: "var(--surface)", color: "var(--accent-ink)" }}><LpIcon name="spark" size={24} /></div>
               <h3>For you, the owner</h3>
               <p className="ec-sub">Run a bigger, calmer business, without a bigger team or a longer day.</p>
-              <ul>{LP_ENABLE_OWNER.map((b) => <li key={b}><Icon name="checkCircle" size={18} style={{ color: "var(--accent)", flexShrink: 0, marginTop: 1 }} />{b}</li>)}</ul>
+              <ul>{LP_ENABLE_OWNER.map((b) => <li key={b}><LpIcon name="checkCircle" size={18} style={{ color: "var(--accent)", flexShrink: 0, marginTop: 1 }} />{b}</li>)}</ul>
             </div>
             <div className="lp-enable-card team">
-              <div className="ec-ico" style={{ background: "var(--green-soft)", color: "oklch(0.42 0.12 152)" }}><Icon name="users" size={24} /></div>
+              <div className="ec-ico" style={{ background: "var(--green-soft)", color: "oklch(0.42 0.12 152)" }}><LpIcon name="users" size={24} /></div>
               <h3>For your team</h3>
               <p className="ec-sub">Give every employee an agent teammate that clears the busywork off their plate.</p>
-              <ul>{LP_ENABLE_TEAM.map((b) => <li key={b}><Icon name="checkCircle" size={18} style={{ color: "var(--green)", flexShrink: 0, marginTop: 1 }} />{b}</li>)}</ul>
+              <ul>{LP_ENABLE_TEAM.map((b) => <li key={b}><LpIcon name="checkCircle" size={18} style={{ color: "var(--green)", flexShrink: 0, marginTop: 1 }} />{b}</li>)}</ul>
             </div>
           </div>
         </div>
@@ -1334,14 +1380,14 @@ function Landing({ onSignIn = () => {} } = {}) {
         <div className="lp-wrap">
           <div style={{ display: "flex", alignItems: "center", gap: 28, flexWrap: "wrap", background: "var(--accent-softer)", border: "1px solid var(--accent-soft)", borderRadius: "var(--r-xl)", padding: "32px 36px" }}>
             <div style={{ flex: 1, minWidth: 260 }}>
-              <span className="lp-pill"><Icon name="spark" size={14} />Public benefit corporation</span>
+              <span className="lp-pill"><LpIcon name="spark" size={14} />Public benefit corporation</span>
               <h2 style={{ fontSize: 28, fontWeight: 760, letterSpacing: "-.03em", margin: "14px 0 0", textAlign: "left" }}>A company with a mission, and a foundation to back it.</h2>
               <p style={{ fontSize: 15, color: "var(--ink-2)", lineHeight: 1.6, marginTop: 12, maxWidth: 560 }}>Friesen Labs is a public benefit corporation building agentic AI for small business. Our independent nonprofit wing, the Friesen Labs Foundation, runs open research, free education, and need-based access, so the businesses that anchor communities can use it too. Paid plans keep the company sustainable; a portion funds the Foundation.</p>
               <p style={{ fontSize: 13, color: "var(--ink-3)", lineHeight: 1.55, marginTop: 12, maxWidth: 560 }}><b style={{ color: "var(--ink)", fontWeight: 650 }}>Separate by design.</b> The Foundation has its own 501(c)(3) board and books. Value flows from the company to the Foundation, never the other way. It serves its mission, not our sales.</p>
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              <a className="btn btn-primary btn-lg" href="Foundation.html"><Icon name="spark" size={16} />Visit the Foundation</a>
-              <button className="btn btn-ghost" onClick={() => setModal("statement")}><Icon name="doc" size={15} />Read our statement</button>
+              <a className="btn btn-primary btn-lg" href="Foundation.html"><LpIcon name="spark" size={16} />Visit the Foundation</a>
+              <button className="btn btn-ghost" onClick={() => setModal("statement")}><LpIcon name="doc" size={15} />Read our statement</button>
             </div>
           </div>
         </div>
@@ -1358,14 +1404,14 @@ function Landing({ onSignIn = () => {} } = {}) {
               <p style={{ fontSize: 15, color: "var(--ink-2)", lineHeight: 1.65, marginTop: 16 }}>Friesen Labs is a for-profit company with a public mission written into how it operates: put the same agentic AI the largest companies use into the hands of the cafés, plumbers, clinics and shops that anchor their communities. The company builds and sells the software; agents do the busywork, owners stay in command.</p>
               <p style={{ fontSize: 15, color: "var(--ink-2)", lineHeight: 1.65, marginTop: 12 }}>Our independent nonprofit wing, the Friesen Labs Foundation, runs the charitable work, open research, free education, and need-based access for businesses that can't pay. Separate boards, separate books; the separation is the point.</p>
               <div style={{ display: "flex", gap: 10, marginTop: 22 }}>
-                <a className="btn btn-primary" href="Foundation.html"><Icon name="spark" size={16} />Visit the Foundation</a>
-                <button className="btn btn-ghost" onClick={() => setModal("statement")}><Icon name="doc" size={16} />Read our full statement</button>
+                <a className="btn btn-primary" href="Foundation.html"><LpIcon name="spark" size={16} />Visit the Foundation</a>
+                <button className="btn btn-ghost" onClick={() => setModal("statement")}><LpIcon name="doc" size={16} />Read our full statement</button>
               </div>
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
               {[["building", "The company", "A public benefit corporation building the software."], ["spark", "The Foundation", "A 501(c)(3) running research, education & access."], ["trend", "Company → Foundation", "A portion of revenue funds the charitable work."], ["shield", "Separate by design", "Independent board and books, never a sales channel."]].map(([ic, t, d]) => (
                 <div key={t} className="card card-pad">
-                  <div className="feed-ico" style={{ width: 38, height: 38, background: "var(--accent-soft)", color: "var(--accent-ink)", marginBottom: 12 }}><Icon name={ic} size={18} /></div>
+                  <div className="feed-ico" style={{ width: 38, height: 38, background: "var(--accent-soft)", color: "var(--accent-ink)", marginBottom: 12 }}><LpIcon name={ic} size={18} /></div>
                   <b style={{ fontSize: 14.5, fontWeight: 700, display: "block" }}>{t}</b>
                   <p style={{ fontSize: 12.5, color: "var(--ink-2)", lineHeight: 1.5, marginTop: 5 }}>{d}</p>
                 </div>
@@ -1388,12 +1434,12 @@ function Landing({ onSignIn = () => {} } = {}) {
                 <h3>{r.title}</h3>
                 <p>{r.blurb}</p>
                 <span className="lp-research-meta">M. Yee · Friesen Labs Foundation</span>
-                <span className="lp-research-link">Read the paper<Icon name="arrowRight" size={14} sw={2.2} /></span>
+                <span className="lp-research-link">Read the paper<LpIcon name="arrowRight" size={14} sw={2.2} /></span>
               </a>
             ))}
           </div>
           <div style={{ textAlign: "center", marginTop: 30 }}>
-            <button className="btn btn-ghost" onClick={() => setModal("email")}><Icon name="mail" size={16} />Get research updates</button>
+            <button className="btn btn-ghost" onClick={() => setModal("email")}><LpIcon name="mail" size={16} />Get research updates</button>
           </div>
         </div>
       </section>
@@ -1405,7 +1451,7 @@ function Landing({ onSignIn = () => {} } = {}) {
           <h2 className="lp-h2">Built by people who root for small business.</h2>
           <p className="lp-sub">Friesen Labs is a two-founder, nonprofit team on a mission to put agentic tools in every small business.</p>
           <div className="lp-cred">
-            <div className="lp-cred-ico"><Icon name="shield" size={22} /></div>
+            <div className="lp-cred-ico"><LpIcon name="shield" size={22} /></div>
             <p>We're not n8n hobbyists or tech bros chasing a trend. Our team has shipped <b>agentic AI in production at some of the world's largest companies</b>, work that has delivered <b>hundreds of millions of dollars in measurable revenue and cost savings</b>. We're bringing that same enterprise-grade muscle to small business.</p>
           </div>
           <div className="lp-team-grid">
@@ -1419,8 +1465,8 @@ function Landing({ onSignIn = () => {} } = {}) {
                   <div className="lp-founder-title">{f.title}</div>
                   <p>{f.bio}</p>
                   <div className="lp-founder-social">
-                    <a href={f.linkedin} target="_blank" rel="noopener noreferrer" title={`${f.name} on LinkedIn`}><Icon name="linkedin" size={17} /></a>
-                    <a href={f.instagram} target="_blank" rel="noopener noreferrer" title={`${f.name} on Instagram`}><Icon name="instagram" size={17} /></a>
+                    <a href={f.linkedin} target="_blank" rel="noopener noreferrer" title={`${f.name} on LinkedIn`}><LpIcon name="linkedin" size={17} /></a>
+                    <a href={f.instagram} target="_blank" rel="noopener noreferrer" title={`${f.name} on Instagram`}><LpIcon name="instagram" size={17} /></a>
                   </div>
                 </div>
               </div>
@@ -1435,9 +1481,9 @@ function Landing({ onSignIn = () => {} } = {}) {
             <h2>Put your busywork on autopilot.</h2>
             <p>Spin up your agentic workspace today, or talk to a human about what you're trying to automate.</p>
             <div className="lp-cta-row">
-              <a className="btn btn-lg btn-onink" href={SIGNUP_HREF}><Icon name="bolt" size={16} />Get started free</a>
-              <button className="btn btn-lg btn-onink-ghost" onClick={() => setModal("book")}><Icon name="calendar" size={16} />Book a call</button>
-              <button className="btn btn-lg btn-onink-ghost" onClick={() => setModal("email")}><Icon name="mail" size={16} />Email us</button>
+              <a className="btn btn-lg btn-onink" href={SIGNUP_HREF}><LpIcon name="bolt" size={16} />Get started free</a>
+              <button className="btn btn-lg btn-onink-ghost" onClick={() => setModal("book")}><LpIcon name="calendar" size={16} />Book a call</button>
+              <button className="btn btn-lg btn-onink-ghost" onClick={() => setModal("email")}><LpIcon name="mail" size={16} />Email us</button>
             </div>
           </div>
         </div>
@@ -1468,8 +1514,8 @@ function Landing({ onSignIn = () => {} } = {}) {
               <div className="lp-brand" style={{ marginBottom: 11 }}><div className="brand-mark" style={{ width: 28, height: 28 }}><Logo size={16} /></div><b style={{ fontSize: 15 }}>Friesen Labs</b></div>
               <p style={{ fontSize: 13, color: "var(--ink-3)", lineHeight: 1.55 }}>A public benefit corporation building agentic software for small business. Our independent nonprofit wing, the Friesen Labs Foundation, makes it reachable for the businesses that anchor communities.</p>
               <div style={{ display: "flex", gap: 9, marginTop: 14 }}>
-                <a className="btn btn-soft btn-sm" href="Foundation.html"><Icon name="spark" size={13} />The Foundation</a>
-                <button className="btn btn-ghost btn-sm" onClick={() => setModal("email")}><Icon name="mail" size={13} />Contact</button>
+                <a className="btn btn-soft btn-sm" href="Foundation.html"><LpIcon name="spark" size={13} />The Foundation</a>
+                <button className="btn btn-ghost btn-sm" onClick={() => setModal("email")}><LpIcon name="mail" size={13} />Contact</button>
               </div>
             </div>
             <div className="lp-foot-cols">
@@ -1510,7 +1556,7 @@ function Landing({ onSignIn = () => {} } = {}) {
       {modal === "statement" && (
         <div className="lp-modal-scrim" onClick={() => setModal(null)} style={{ alignItems: "flex-start", overflowY: "auto", padding: "5vh 16px" }}>
           <div className="lp-paper" onClick={(e) => e.stopPropagation()}>
-            <button className="icon-btn" style={{ position: "absolute", top: 16, right: 16 }} onClick={() => setModal(null)}><Icon name="x" size={18} /></button>
+            <button className="icon-btn" style={{ position: "absolute", top: 16, right: 16 }} onClick={() => setModal(null)}><LpIcon name="x" size={18} /></button>
             <div className="lp-paper-tag">Company Statement</div>
             <h1 className="lp-paper-title">Friesen Labs</h1>
             <div className="lp-paper-meta" style={{ marginTop: 14 }}>A public benefit corporation for small business · Austin, TX</div>
@@ -1529,7 +1575,7 @@ function Landing({ onSignIn = () => {} } = {}) {
               <code>Friesen Labs is a public benefit corporation building agentic AI for small business. Its independent nonprofit wing, the Friesen Labs Foundation (a 501(c)(3)), runs open research, free education, and need-based access so the businesses that anchor communities can use it too. friesenlabs.org</code>
             </div>
             <div style={{ display: "flex", gap: 9, marginTop: 18, flexWrap: "wrap" }}>
-              <button className="btn btn-primary" onClick={() => setModal("donate")}><Icon name="spark" size={15} />Support the mission</button>
+              <button className="btn btn-primary" onClick={() => setModal("donate")}><LpIcon name="spark" size={15} />Support the mission</button>
               <button className="btn btn-ghost" onClick={() => setModal(null)}>Close</button>
             </div>
           </div>
@@ -1538,7 +1584,7 @@ function Landing({ onSignIn = () => {} } = {}) {
       {paper && (
         <div className="lp-modal-scrim" onClick={() => setPaper(null)} style={{ alignItems: "flex-start", overflowY: "auto", padding: "5vh 16px" }}>
           <div className="lp-paper" onClick={(e) => e.stopPropagation()}>
-            <button className="icon-btn" style={{ position: "absolute", top: 16, right: 16 }} onClick={() => setPaper(null)}><Icon name="x" size={18} /></button>
+            <button className="icon-btn" style={{ position: "absolute", top: 16, right: 16 }} onClick={() => setPaper(null)}><LpIcon name="x" size={18} /></button>
             <div className="lp-paper-tag">{paper.tag} · Friesen Labs Foundation</div>
             <h1 className="lp-paper-title">{paper.title}</h1>
             <div className="lp-paper-authors">
@@ -1561,7 +1607,7 @@ function Landing({ onSignIn = () => {} } = {}) {
               <code>Yee, M. ({paper.date.split(" ")[1]}). {paper.title}. Friesen Labs Foundation Technical Report.</code>
             </div>
             <div style={{ display: "flex", gap: 9, marginTop: 18, flexWrap: "wrap" }}>
-              <button className="btn btn-primary" onClick={() => { setPaper(null); setModal("email"); }}><Icon name="mail" size={15} />Get research updates</button>
+              <button className="btn btn-primary" onClick={() => { setPaper(null); setModal("email"); }}><LpIcon name="mail" size={15} />Get research updates</button>
               <button className="btn btn-ghost" onClick={() => setPaper(null)}>Close</button>
             </div>
           </div>
@@ -1571,13 +1617,13 @@ function Landing({ onSignIn = () => {} } = {}) {
         <div className="lp-modal-scrim" onClick={() => setDoc(null)}>
           <div className="lp-modal" onClick={(e) => e.stopPropagation()}>
             <div className="lp-modal-head">
-              <div className="lp-prod-ico" style={{ background: "var(--accent-soft)", color: "var(--accent-ink)", marginBottom: 0 }}><Icon name="doc" size={20} /></div>
+              <div className="lp-prod-ico" style={{ background: "var(--accent-soft)", color: "var(--accent-ink)", marginBottom: 0 }}><LpIcon name="doc" size={20} /></div>
               <div style={{ flex: 1 }}><h3 style={{ fontSize: 19, fontWeight: 730, letterSpacing: "-.02em" }}>{doc}</h3><p style={{ fontSize: 13, color: "var(--ink-3)", marginTop: 2 }}>Friesen Labs nonprofit disclosures</p></div>
-              <button className="icon-btn" onClick={() => setDoc(null)}><Icon name="x" size={18} /></button>
+              <button className="icon-btn" onClick={() => setDoc(null)}><LpIcon name="x" size={18} /></button>
             </div>
             <div className="lp-modal-body">
               <p style={{ fontSize: 14, color: "var(--ink-2)", lineHeight: 1.6 }}>Our {doc} is being finalized with our counsel ahead of public launch. We're committed to full transparency, request the current copy and we'll send it over.</p>
-              <button className="btn btn-primary btn-lg" style={{ width: "100%", marginTop: 16 }} onClick={() => { setDoc(null); setModal("email"); }}><Icon name="mail" size={16} />Request {doc}</button>
+              <button className="btn btn-primary btn-lg" style={{ width: "100%", marginTop: 16 }} onClick={() => { setDoc(null); setModal("email"); }}><LpIcon name="mail" size={16} />Request {doc}</button>
               <p style={{ fontSize: 11.5, color: "var(--ink-4)", textAlign: "center", marginTop: 12 }}>Once published, this will link directly to the document.</p>
             </div>
           </div>
@@ -1589,7 +1635,7 @@ function Landing({ onSignIn = () => {} } = {}) {
 
       {/* sticky mobile CTA — always-reachable primary action */}
       <div className="lp-mobar">
-        <a className="btn btn-primary" href={SIGNUP_HREF}><Icon name="bolt" size={16} />Build your suite</a>
+        <a className="btn btn-primary" href={SIGNUP_HREF}><LpIcon name="bolt" size={16} />Build your suite</a>
         <a className="lp-mobar-signin" href={SIGNIN_HREF} onClick={signInClick}>Sign in</a>
       </div>
     </div>
