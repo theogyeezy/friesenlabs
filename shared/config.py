@@ -107,6 +107,22 @@ def stripe_price_ids() -> dict[str, str]:
     """plan -> Stripe Price ID map, read from env at call time (unset plans are omitted)."""
     return {plan: os.environ[var] for plan, var in STRIPE_PRICE_ID_ENV.items() if os.environ.get(var)}
 
+    # --- Outbound senders + Anthropic Admin (signup/provisioning) ---
+    # DRAFT-GATE (CLAUDE.md hard constraint #2): real outbound delivery (email/SMS) stays OFF
+    # unless this is explicitly the string "true". Default is draft-only — senders log and drop.
+    allow_real_sends: bool = os.environ.get("ALLOW_REAL_SENDS", "false").strip().lower() == "true"
+    # Resend (transactional email). Key is the VALUE injected at runtime (task-def secret),
+    # never committed; empty default means "unconfigured — stub cleanly".
+    resend_api_key: str = os.environ.get("RESEND_API_KEY", "")
+    resend_from_email: str = os.environ.get("RESEND_FROM_EMAIL", "")
+    # Base URL the signed email-verification token is appended to (SPA click-through route).
+    signup_verify_url_base: str = os.environ.get("SIGNUP_VERIFY_URL_BASE", "")
+    # Anthropic ADMIN key (sk-ant-admin..., distinct from the inference key) — Secrets Manager
+    # *reference name*, resolved at runtime like the refs above. Never the value.
+    anthropic_admin_key_secret: str = os.environ.get(
+        "ANTHROPIC_ADMIN_KEY_SECRET", "uplift/anthropic-admin-key"
+    )
+
 
 def load() -> Config:
     """Return the active configuration."""
