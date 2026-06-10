@@ -23,25 +23,23 @@ real mode) → CloudFront → ALB (HTTP) → arm64 Fargate API → Aurora** (FOR
 JWKS auth. **Browser-verified end-to-end:** sign-in gate → Hosted UI (PKCE) → code exchange →
 app shell → real RLS-scoped tenant rows. Unauth `/api/*` → 401; `/chat` → graceful 503 (AI parked).
 - ✅ **Login:** Cognito Hosted UI + PKCE in `web/src/auth/`; demo creds in `uplift/demo-user`.
-- ✅ **Landing (2026-06-10):** cinematic, **3D, mobile-first** GHL-style marketing page —
-  a DARK cinematic, fly-through-space experience — the whole page runs the dark theme and a
-  lazy-loaded **three.js** persistent 3D agent-constellation tunnel the camera FLIES FORWARD through
-  as you scroll; a FLY-THROUGH scroll where every section is a panel PINNED dead-center (position:fixed) that moves
-  only in Z — a scroll-spacer camera rushes each panel at you from the depth, holds it in focus,
-  then blasts it past the viewer as the next emerges from behind (galaxy in between; reverses on
-  scroll-up). No vertical-scroll feeling. Scroll-driven → identical on mobile; a live WebGL shader backdrop (custom GLSL
-  fbm light field) the whole page sits in; interactive hero agent roster + cursor-tilt 3D demo panel + receding perspective
-  grid floor + film grain + vignette; animated Friesen-vs-GoHighLevel capability radar (3D-tilt) + lens
-  comparison; live ROI calculator; scroll-progress bar; hamburger nav + slide-in menu + sticky
-  mobile CTA + back-to-top; closing CTA band; founder photos restored (optimized 7MB→32KB, bundled
-  assets) + Matt's bio corrected (currently at ServiceNow). The backdrop is raw WebGL (~+4KB, not three.js — the right tool for an atmosphere; rendered at
-  0.55x, tab-paused); the rest of the 3D/grain is pure CSS. All of it
-  disables on touch/reduced-motion. All cinematic effects (field, constellation,
-  dark hero, grain) run on mobile too — only cursor-tilt is desktop-only; reduced-motion disables
-  all. three.js is code-split (175KB gz lazy chunk — never blocks first paint). Browser-verified
-  desktop + 390px mobile. SNS alarm email
-  CONFIRMED (alarms page the owner). Amplify edge cache: HTML `no-store` + hashed assets
-  `immutable`, so web deploys appear instantly.
+- ✅ **Landing (overhauled 2026-06-10):** an **"Editorial & warm"** marketing page — cream paper,
+  one warm-clay accent, **Fraunces** serif display, mono eyebrows with section numerals, hairline
+  rules/cards, and a **bespoke product-grounded line-icon set**. Normal vertical scroll (the earlier
+  dark cinematic/three.js fly-through was reverted as unusable — three.js removed); mobile hamburger
+  portaled to `<body>` + sticky CTA. **Apple-style cinematics** (reduced-motion safe): hero load-in
+  assembly, staggered card reveals, gentle hero-plate parallax. Hero + live demos framed as **product
+  windows** (live address + LIVE pulse → real-capture feel). Friesen-vs-GoHighLevel radar + comparison
+  (warm/light); live ROI calculator; benefit-first copy (no em-dashes/arrows/slop). **Hardened via a
+  4-lens audit + live Lighthouse: SEO 100 · Best Practices 100 · Accessibility ~100 · Agentic 100** —
+  keyboard-operable controls, dialog roles + Escape, skip-link + `<main>`, AA contrast, heading order,
+  touch targets. **Perf: the authed app (Vega/dashboards/panels) is code-split off the landing →
+  first-load ~247KB gz (was ~560KB).** SEO: real title/meta/OG/Twitter/canonical/theme-color, brand
+  favicon, and a generated 1200×630 **og:image** card emitted by an inline Vite plugin (survives
+  `publicDir:false`), served at `/og.png`. Founder photos bundled (7MB→32KB) + Matt's bio corrected
+  (currently at ServiceNow). Browser-verified desktop + mobile. SNS alarm email CONFIRMED (alarms page
+  the owner). Amplify edge cache: HTML `no-store` + hashed assets `immutable`, so web deploys appear
+  instantly.
 - ✅ **Live since 2026-06-09 (Lane Nick cycles 1-15):** Aurora hardening (retention 7, deletion
   protection, copy-tags, PI); X-Origin-Verify edge→ALB shared secret (403-default listener);
   cube service 1/1 (`/readyz` 200; memory driver — Cube 1.x dropped redis; sg_api self-rule);
