@@ -61,6 +61,17 @@ def _dict_rows(cur) -> list[dict]:
     return [dict(zip(columns, r)) for r in rows]
 
 
+def _dict_one(cur) -> dict | None:
+    """Normalize one fetched row to a dict via cursor.description (plain cursors + fakes)."""
+    row = cur.fetchone()
+    if row is None:
+        return None
+    if isinstance(row, dict):
+        return dict(row)
+    columns = [d[0] for d in (cur.description or [])]
+    return dict(zip(columns, row))
+
+
 def _as_str(value: Any) -> str | None:
     """uuid.UUID / str -> str (JSON-stable ids); None stays None."""
     return None if value is None else str(value)
@@ -157,6 +168,41 @@ def _normalize_company_row(row: dict) -> dict:
         if key in row:
             out[key] = int(row[key]) if row.get(key) is not None else 0
     return out
+
+
+def _normalize_deal_write_row(row: dict) -> dict:
+    """Write result for a deal row. The external write field `name` maps to deals.title."""
+    out = {
+        "id": _as_str(row.get("id")),
+        "name": row.get("title"),
+        "stage": row.get("stage"),
+        "amount": _as_float(row.get("amount")),
+    }
+    if "company_id" in row:
+        out["company_id"] = _as_str(row.get("company_id"))
+    if "created_at" in row:
+        out["created_at"] = _as_iso(row.get("created_at"))
+    return out
+
+
+def _normalize_contact_write_row(row: dict) -> dict:
+    return {
+        "id": _as_str(row.get("id")),
+        "name": row.get("name"),
+        "email": row.get("email"),
+        "phone": row.get("phone"),
+    }
+
+
+def _normalize_activity_write_row(row: dict) -> dict:
+    return {
+        "id": _as_str(row.get("id")),
+        "contact_id": _as_str(row.get("contact_id")),
+        "deal_id": _as_str(row.get("deal_id")),
+        "kind": row.get("kind"),
+        "body": row.get("body"),
+        "occurred_at": _as_iso(row.get("occurred_at")),
+    }
 
 
 class _PgTenantClient:
@@ -296,7 +342,7 @@ _ORDER_BY: dict[str, str] = {
 
 
 class PgCrmClient(_PgTenantClient):
-    """Allow-listed, read-only CRM table reads (tenant-scoped via RLS).
+    """Allow-listed CRM reads and post-approval writes (tenant-scoped via RLS).
 
     Only `companies`, `contacts`, `deals`, `activities` are reachable; any other entity raises
     ValueError before any SQL is built. Filters are simple equality matches against the table's
@@ -570,6 +616,121 @@ class PgCrmClient(_PgTenantClient):
                 (str(company_id), n),
             )
             return [_normalize_contact_row(r) for r in _dict_rows(cur)]
+
+    # ----------------------------------------------------------------- CRM writes
+    # These are deliberately small fixed-surface mutators for Greenlight appliers only.
+    # Identifiers are selected from allow-lists before SQL is built, values are always bound
+    # parameters, and tenancy is enforced by the per-op SET LOCAL transaction + table RLS.
+
+    _DEAL_UPDATE_COLUMNS = {"stage": "stage", "amount": "amount", "name": "title"}
+    _CONTACT_UPDATE_COLUMNS = {"name": "name", "email": "email", "phone": "phone"}
+    _CONTACT_SKIPPED_FIELDS = {"title": "contacts.title is not in the schema"}
+
+    @staticmethod
+    def _change_items(changes: dict, allowed: dict[str, str], *,
+                      skipped: dict[str, str] | None = None) -> tuple[list[tuple[str, str, Any]], dict]:
+        if not isinstance(changes, dict):
+            raise ValueError("changes must be an object")
+        skipped = skipped or {}
+        bad = [k for k in changes if k not in allowed and k not in skipped]
+        if bad:
+            allowed_names = sorted([*allowed, *skipped])
+            raise ValueError(
+                f"change field {bad[0]!r} is not allow-listed "
+                f"(allowed: {', '.join(allowed_names)})"
+            )
+        items = [(key, allowed[key], changes[key]) for key in changes if key in allowed]
+        skipped_out = {key: skipped[key] for key in changes if key in skipped}
+        return items, skipped_out
+
+    def update_deal_fields(self, *, tenant_id: str, deal_id: str, changes: dict) -> dict:
+        """Update allow-listed deal fields after Greenlight approval.
+
+        Logical field `name` maps to the current schema column `deals.title`; callers cannot name
+        arbitrary columns and tenant scoping remains RLS-only.
+        """
+        items, _ = self._change_items(changes, self._DEAL_UPDATE_COLUMNS)
+        if not items:
+            raise ValueError("changes must include at least one writable deal field")
+        set_sql = ", ".join(f"{column} = %s" for _, column, _ in items)
+        params = [value for _, _, value in items]
+        params.append(str(deal_id))
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                f"UPDATE deals SET {set_sql} WHERE id = %s "
+                "RETURNING id, title, stage, amount, company_id, created_at",
+                tuple(params),
+            )
+            row = _dict_one(cur)
+        if row is None:
+            raise ValueError("deal not found or not visible")
+        return {
+            "id": _as_str(row.get("id")),
+            "updated": {key: changes[key] for key, _, _ in items},
+            "deal": _normalize_deal_write_row(row),
+        }
+
+    def update_contact_fields(self, *, tenant_id: str, contact_id: str, changes: dict) -> dict:
+        """Update allow-listed contact fields after Greenlight approval.
+
+        `title` is an accepted no-op field for forward-compatible tool payloads; the contacts
+        table has no title column today, so it is reported as skipped rather than invented.
+        """
+        items, skipped = self._change_items(
+            changes, self._CONTACT_UPDATE_COLUMNS, skipped=self._CONTACT_SKIPPED_FIELDS
+        )
+        if not items:
+            return {"id": str(contact_id), "updated": {}, "skipped": skipped}
+        set_sql = ", ".join(f"{column} = %s" for _, column, _ in items)
+        params = [value for _, _, value in items]
+        params.append(str(contact_id))
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                f"UPDATE contacts SET {set_sql} WHERE id = %s "
+                "RETURNING id, name, email, phone",
+                tuple(params),
+            )
+            row = _dict_one(cur)
+        if row is None:
+            raise ValueError("contact not found or not visible")
+        return {
+            "id": _as_str(row.get("id")),
+            "updated": {key: changes[key] for key, _, _ in items},
+            "skipped": skipped,
+            "contact": _normalize_contact_write_row(row),
+        }
+
+    def insert_activity(self, *, tenant_id: str, kind: str, body: str,
+                        contact_id: str | None = None, deal_id: str | None = None) -> dict:
+        """Insert one CRM activity after Greenlight approval."""
+        if contact_id is None and deal_id is None:
+            raise ValueError("activity must reference a contact_id or deal_id")
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "INSERT INTO activities (tenant_id, contact_id, deal_id, kind, body) "
+                "VALUES (%s,%s,%s,%s,%s) "
+                "RETURNING id, contact_id, deal_id, kind, body, occurred_at",
+                (str(tenant_id), contact_id, deal_id, kind, body),
+            )
+            row = _dict_one(cur)
+        if row is None:
+            raise RuntimeError("activity insert returned no row")
+        return _normalize_activity_write_row(row)
+
+    def insert_deal(self, *, tenant_id: str, company_id: str, name: str,
+                    stage: str, amount: float | int | None) -> dict:
+        """Insert one CRM deal after Greenlight approval. `name` writes to deals.title."""
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "INSERT INTO deals (tenant_id, company_id, title, stage, amount) "
+                "VALUES (%s,%s,%s,%s,%s) "
+                "RETURNING id, title, stage, amount, company_id, created_at",
+                (str(tenant_id), str(company_id), name, stage, amount),
+            )
+            row = _dict_one(cur)
+        if row is None:
+            raise RuntimeError("deal insert returned no row")
+        return _normalize_deal_write_row(row)
 
     # ----------------------------------------------------------------- ToolContext adapter
     def binding(self) -> "TenantBoundCrm":

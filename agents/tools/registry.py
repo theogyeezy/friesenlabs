@@ -12,12 +12,20 @@ from .base import Policy, Tool
 from .build_view import BuildView
 from .readonly import QueryCube, ReadCrm, SearchRag
 from .run_model import RunModel
-from .sideeffecting import DraftEmail, IssueQuote, SendEmail, UpdateDeal
+from .sideeffecting import (
+    CreateActivity,
+    CreateDeal,
+    DraftEmail,
+    IssueQuote,
+    SendEmail,
+    UpdateContact,
+    UpdateDeal,
+)
 
 _TOOL_CLASSES: list[type[Tool]] = [
     SearchRag, QueryCube, ReadCrm, RunModel, BuildView,  # read-only (auto)
     DraftEmail,                                           # draft (auto)
-    SendEmail, UpdateDeal, IssueQuote,                    # side-effecting (always_ask)
+    SendEmail, UpdateDeal, UpdateContact, CreateActivity, CreateDeal, IssueQuote,
 ]
 
 # name -> Tool class

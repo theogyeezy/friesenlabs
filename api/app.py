@@ -10,6 +10,7 @@ Built via `create_app(deps)` so it is fully testable offline with a fake verifie
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from fastapi import Depends, FastAPI, HTTPException
@@ -18,6 +19,7 @@ from pydantic import BaseModel
 from api.agents_routes import AgentsDeps
 from api.auth import JwtVerifier, TenantClaims, make_current_tenant
 from api.control.autonomy import AutonomyConfig
+from api.control.appliers import apply_approved_action
 from api.control.gate import ActionGate, GateContext
 from api.control.greenlight import Greenlight
 from api.control.killswitch import KillSwitch
@@ -38,6 +40,7 @@ class ApiDeps:
     conversation_factory: Callable[[str], Any]          # tenant_id -> conv.session.Conversation
     autonomy_config: AutonomyConfig
     executor: Callable[[Action], Any]                   # performs an approved/auto action
+    crm: Any | None = None                              # post-approval CRM appliers
     killswitch: KillSwitch = field(default_factory=KillSwitch)
     trace_store: TraceStore = field(default_factory=InMemoryTraceStore)
     view_patcher: Callable[[dict, str], dict] | None = None  # NL refine: (spec, instruction) -> spec
@@ -131,10 +134,35 @@ def create_app(deps: ApiDeps) -> FastAPI:
         if rec is None or str(rec["tenant_id"]) != str(claims.tenant_id):
             raise HTTPException(status_code=404, detail="no such approval")  # tenant-scoped
         try:
-            return deps.greenlight.decide(claims.tenant_id, approval_id, body.decision, edits=body.edits,
-                                          deny_message=body.deny_message, decided_by=claims.sub)
+            decided = deps.greenlight.decide(
+                claims.tenant_id,
+                approval_id,
+                body.decision,
+                edits=body.edits,
+                deny_message=body.deny_message,
+                decided_by=claims.sub,
+            )
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
+        if body.decision not in ("approve", "edit"):
+            return decided
+
+        # Apply-on-approve: the tenant for the write is the approval row's tenant (stamped
+        # from verified claims when proposed), not anything in the request body.
+        apply_tenant = str(decided["tenant_id"])
+        try:
+            apply_result = apply_approved_action(
+                deps.crm, apply_tenant, dict(decided["proposed_action"])
+            )
+            deps.greenlight.store.update(apply_tenant, approval_id, {
+                "applied_at": datetime.now(timezone.utc),
+                "apply_result": apply_result,
+            })
+        except Exception as e:  # noqa: BLE001 - response records type only, never internals
+            deps.greenlight.store.update(apply_tenant, approval_id, {
+                "apply_result": {"performed": False, "error": e.__class__.__name__},
+            })
+        return deps.greenlight.store.get(claims.tenant_id, approval_id)
 
     @app.get("/views")
     def list_views(claims: TenantClaims = Depends(current_tenant)):

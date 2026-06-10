@@ -12,7 +12,7 @@ import psycopg2
 import psycopg2.pool
 
 from api.control.greenlight import Greenlight, PgApprovalStore
-from api.views import PgSavedViewStore, SavedViews
+from api.views import PgSavedViewStore
 
 
 class FakeCursor:

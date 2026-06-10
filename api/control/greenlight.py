@@ -9,7 +9,7 @@ Conforms to the `Greenlight` protocol in agents/tools/base.py (so Phase 4 tools 
 """
 import os
 from contextlib import contextmanager
-from typing import Any, Protocol
+from typing import Protocol
 
 
 class ApprovalStore(Protocol):
@@ -34,7 +34,7 @@ class InMemoryApprovalStore:
 
     def insert(self, row: dict) -> int:
         self._n += 1
-        row = {"id": self._n, **row}
+        row = {"id": self._n, "applied_at": None, "apply_result": None, **row}
         self._rows[self._n] = row
         return self._n
 
@@ -77,6 +77,15 @@ class PgApprovalStore:
         # min == max: a fixed-size pool RETAINS returned connections (psycopg2 closes any
         # connection beyond minconn on putconn), avoiding TCP/auth churn under concurrent load.
         self._pool = psycopg2.pool.ThreadedConnectionPool(pool_max, pool_max, dsn)
+
+    @staticmethod
+    def _row(row) -> dict | None:
+        if row is None:
+            return None
+        out = dict(row)
+        out.setdefault("applied_at", None)
+        out.setdefault("apply_result", None)
+        return out
 
     def _getconn(self):
         """Check out a pooled connection, waiting briefly if the pool is momentarily exhausted.
@@ -129,12 +138,12 @@ class PgApprovalStore:
         with self._tx(tenant_id) as cur:
             cur.execute("SELECT * FROM approvals WHERE id = %s", (str(approval_id),))
             row = cur.fetchone()
-        return dict(row) if row else None
+        return self._row(row)
 
     def list_pending(self, tenant_id: str) -> list[dict]:
         with self._tx(tenant_id) as cur:
             cur.execute("SELECT * FROM approvals WHERE status = 'pending' ORDER BY created_at")
-            return [dict(r) for r in cur.fetchall()]
+            return [self._row(r) for r in cur.fetchall()]
 
     def update(self, tenant_id: str, approval_id, changes: dict) -> None:
         if not changes:

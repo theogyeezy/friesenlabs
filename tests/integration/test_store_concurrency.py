@@ -25,8 +25,8 @@ import pytest
 
 psycopg2 = pytest.importorskip("psycopg2")
 
-from api.control.greenlight import Greenlight, PgApprovalStore
-from api.views import PgSavedViewStore, SavedViews
+from api.control.greenlight import Greenlight, PgApprovalStore  # noqa: E402
+from api.views import PgSavedViewStore, SavedViews  # noqa: E402
 
 OWNER_URL = os.environ.get("UPLIFT_TEST_DB_URL")
 APP_URL = os.environ.get("UPLIFT_DB_URL")

@@ -263,3 +263,9 @@ DROP POLICY IF EXISTS tenant_isolation ON tenant_settings;
 CREATE POLICY tenant_isolation ON tenant_settings
     USING (tenant_id = current_setting('app.current_tenant', true)::uuid)
     WITH CHECK (tenant_id = current_setting('app.current_tenant', true)::uuid);
+
+-- approvals.apply_* — post-approval execution audit (appended; idempotent).
+-- Greenlight decisions remain the source of truth for human approval, while these columns record
+-- whether the approved proposal was applied to the CRM or deliberately left record-only.
+ALTER TABLE approvals ADD COLUMN IF NOT EXISTS applied_at timestamptz;
+ALTER TABLE approvals ADD COLUMN IF NOT EXISTS apply_result jsonb;

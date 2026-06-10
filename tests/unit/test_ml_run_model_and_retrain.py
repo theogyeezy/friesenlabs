@@ -13,7 +13,9 @@ def _synthetic(n=300, seed=2):
     rng = random.Random(seed)
     recs = []
     for _ in range(n):
-        amount = rng.uniform(0, 10000); acts = rng.randint(0, 20); has_email = rng.random() < 0.7
+        amount = rng.uniform(0, 10000)
+        acts = rng.randint(0, 20)
+        has_email = rng.random() < 0.7
         score = amount / 10000 + acts / 20 + (0.3 if has_email else 0)
         recs.append({"amount": amount, "n_activities": acts, "days_since_created": rng.randint(0, 90),
                      "email": "x@y.com" if has_email else None, "phone": None,

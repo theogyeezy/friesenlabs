@@ -14,7 +14,7 @@ import psycopg2.pool
 
 from agents.tools.base import ToolContext
 from agents.tools.readonly import ReadCrm, SearchRag
-from api.pg_clients import MAX_LIMIT, PgCrmClient, PgRagClient, TenantBoundCrm
+from api.pg_clients import MAX_LIMIT, PgCrmClient, PgRagClient
 
 
 # --------------------------------------------------------------------------- fakes

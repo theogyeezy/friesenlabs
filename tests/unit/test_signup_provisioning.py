@@ -108,7 +108,7 @@ def _account_service():
 
 
 def _verified_account(svc, aid="a1"):
-    acct = svc.create(aid, "u@x.com", "+15555550100")
+    svc.create(aid, "u@x.com", "+15555550100")
     svc.verify_email(aid, True)
     svc.verify_phone(aid, True)
     return svc.store.get(aid)
