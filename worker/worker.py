@@ -6,18 +6,32 @@ Inside each tool, `app.current_tenant` is set from the session metadata before a
 Postgres RLS applies during tool execution too.
 
 Client wiring: `run()` builds the injectable tool clients (PgCrmClient / PgRagClient / Greenlight)
-from env (shared/config.py names — see infra/REQUESTS.md REQ-001 for the task-def wiring) and passes
-them into `build_context()` per tool call. Import-safe: NOTHING is constructed at import — psycopg2 /
-anthropic / boto3 all load lazily inside functions, and an unconfigured env yields None clients so
-tools degrade cleanly (read tools error per-call, side-effecting tools still surface proposals).
+from env (shared/config.py names — see infra/REQUESTS.md REQ-001 for the task-def wiring) and binds
+them per claimed session via `session_tools_factory()`. Import-safe: NOTHING is constructed at
+import — psycopg2 / anthropic / boto3 all load lazily inside functions, and an unconfigured env
+yields None clients so tools degrade cleanly (read tools error per-call, side-effecting tools still
+surface proposals).
+
+Liveness (docs/decisions/workers-polling-heartbeat-assumption.md, RATIFIED 2026-06-10 #123):
+the `Uplift/Agents:workers_polling` metric the `worker_absent` alarm watches is emitted by an
+EXPLICIT heartbeat task (`heartbeat_loop`, every 30s) running as a sibling of the SDK poll loop —
+NEVER piggybacked on the SDK tools callable, which is invoked once per CLAIMED SESSION, not per
+poll, and would go silent on an idle queue (permanent false-positive alarms). Structured
+concurrency in `run()` guarantees the heartbeat dies when the poll loop dies, so
+"metric present ⇔ worker process up and its poll loop not crashed" holds.
 
 AUTHORED ONLY — `run()` is not executed against real Anthropic in this build (beta; needs Nick).
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import json
+import logging
 import os
+from typing import Any, Callable
 
-from agents.tools.base import ToolContext
+from agents.tools.base import Tool, ToolContext
 from agents.tools.readonly import QueryCube, ReadCrm, SearchRag
 from agents.tools.sideeffecting import DraftEmail, IssueQuote, SendEmail, UpdateDeal
 from shared.config import (
@@ -26,30 +40,98 @@ from shared.config import (
     ENV_CUBE_ENDPOINT,
     ENV_UPLIFT_ENV_ID,
     ENV_UPLIFT_ENV_KEY,
+    ENV_WORKER_HEARTBEAT_SECONDS,
     dsn_from_env,
 )
+
+log = logging.getLogger(__name__)
 
 # The tool list the worker registers. Read-only run; side-effecting route to Greenlight.
 TOOLS = [SearchRag(), QueryCube(), ReadCrm(), DraftEmail(), SendEmail(), UpdateDeal(), IssueQuote()]
 
+# Brief Option A: a fixed 30s emit interval — two emits per alarm period (60s), so a single
+# dropped PutMetricData can never trip the worker_absent alarm on its own.
+DEFAULT_HEARTBEAT_INTERVAL_S = 30.0
 
-def emit_polling_metric() -> None:
-    """Emit the `workers_polling=1` CloudWatch metric the worker-absent alarm watches.
 
-    Called once per poll loop so `Uplift/Agents:workers_polling` stays >= 1 while a worker is
-    live; the observability module alarms (treat_missing_data=breaching) when it drops to zero.
-    Env-gated (CLOUDWATCH_METRICS=1) and boto3 is imported lazily INSIDE the function so importing
-    this module stays AWS-free. Never called from tests; only wired into the live run() loop.
+def _heartbeat_interval_s() -> float:
+    """The heartbeat interval: `WORKER_HEARTBEAT_SECONDS` (shared/config.py, a NEW deliberate
+    name — deploy invariance) when set to a positive number; the 30s default on unset/junk.
+    Never raises — a bad env value must not keep the worker from starting."""
+    raw = os.environ.get(ENV_WORKER_HEARTBEAT_SECONDS, "")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_HEARTBEAT_INTERVAL_S
+    return value if value > 0 else DEFAULT_HEARTBEAT_INTERVAL_S
+
+
+def emit_polling_metric(cloudwatch: Any = None) -> None:
+    """One `workers_polling=1` PutMetricData — the datapoint the worker-absent alarm watches
+    (`treat_missing_data=breaching`: the metric going missing IS the alarm signal, by design).
+
+    Env-gated (CLOUDWATCH_METRICS=1 — set on the worker task def only, REQ-001) and boto3 is
+    imported lazily INSIDE the function so importing this module stays AWS-free. `heartbeat_loop`
+    passes a prebuilt client so the per-emit path never reconstructs one (brief Option A); the
+    None fallback keeps the function usable standalone (dev/one-off).
     """
     if os.environ.get(ENV_CLOUDWATCH_METRICS) != "1":
         return
-    import boto3  # noqa: PLC0415 — lazy so module import needs no AWS/boto3
+    if cloudwatch is None:
+        import boto3  # noqa: PLC0415 — lazy so module import needs no AWS/boto3
 
-    cloudwatch = boto3.client("cloudwatch", region_name=os.environ.get("AWS_REGION", "us-east-1"))
+        cloudwatch = boto3.client("cloudwatch", region_name=os.environ.get("AWS_REGION", "us-east-1"))
     cloudwatch.put_metric_data(
         Namespace="Uplift/Agents",
         MetricData=[{"MetricName": "workers_polling", "Value": 1, "Unit": "Count"}],
     )
+
+
+async def heartbeat_loop(
+    *,
+    interval_s: float | None = None,
+    cloudwatch: Any = None,
+    sleep: Callable[[float], Any] = asyncio.sleep,
+) -> None:
+    """Explicit `workers_polling` heartbeat (brief Option A — the RATIFIED recommendation).
+
+    Emits the metric immediately, then every `interval_s` (default 30s), for as long as this task
+    is alive. `run()` starts it as a SIBLING of the SDK poll loop and cancels it when the loop
+    exits, so the metric's presence tracks the poll loop's liveness — independent of SDK callable
+    behavior (the tools callable fires once per claimed session, NOT per poll; an idle queue would
+    starve any piggybacked emit).
+
+    Failure posture:
+    - CLOUDWATCH_METRICS != "1" → no-op (returns immediately; dev/tests stay AWS-free).
+    - boto3/client construction fails → log and return (the worker keeps serving, unmetered).
+    - A PutMetricData failure → log and CONTINUE (a CloudWatch blip must never kill the worker,
+      and one missed 30s emit still leaves a datapoint inside the alarm's 60s period).
+    - Cancellation → clean shutdown; the metric then goes missing and the alarm fires, by design.
+
+    boto3 is blocking, so each emit runs via `asyncio.to_thread` to keep the event loop (and the
+    SDK's own lease heartbeats — unrelated to this metric) responsive.
+    """
+    if os.environ.get(ENV_CLOUDWATCH_METRICS) != "1":
+        return
+    interval = interval_s if interval_s is not None else _heartbeat_interval_s()
+    if cloudwatch is None:
+        try:
+            import boto3  # noqa: PLC0415 — lazy so module import needs no AWS/boto3
+
+            cloudwatch = boto3.client(
+                "cloudwatch", region_name=os.environ.get("AWS_REGION", "us-east-1")
+            )
+        except Exception:
+            log.exception("workers_polling heartbeat disabled: CloudWatch client build failed")
+            return
+    while True:
+        try:
+            await asyncio.to_thread(emit_polling_metric, cloudwatch)
+        except asyncio.CancelledError:
+            raise  # clean shutdown — never swallow cancellation
+        except Exception:
+            log.warning("workers_polling heartbeat emit failed; continuing", exc_info=True)
+        await sleep(interval)
 
 
 def build_clients_from_env() -> dict:
@@ -124,8 +206,94 @@ def build_context(session_metadata: dict, clients: dict) -> ToolContext:
     )
 
 
-async def run() -> None:  # pragma: no cover — live Anthropic, BLOCKED: needs Nick
-    """Connect to the environment queue and serve tools. VERIFY against the live SDK before use."""
+class SessionToolBinding:
+    """Per-claimed-session tenant binding over the SDK's REAL context seam.
+
+    The installed SDK's `EnvironmentWorker` has NO `context_factory` kwarg (the brief's verified
+    finding) — its supported seam is the `tools=` factory, invoked ONCE PER CLAIMED SESSION with
+    that session's `AgentToolContext` (`.client` = an environment-key-scoped sub-client,
+    `.session_id`). That factory is synchronous, so the session-metadata fetch happens here,
+    lazily, on the FIRST tool call of the session (awaitable context), and is cached for the
+    session's remaining calls. Each call still gets a FRESH `ToolContext` via `build_context`
+    (fresh db binding — tenant state never shared across concurrent calls).
+
+    THE TRUST RULE: tenant_id comes ONLY from the session metadata the API stamped from the
+    verified Cognito JWT claim at session create (agents/runtime.py) — never env/header/payload.
+    VERIFY (CLAUDE.md hard constraint #4): `sessions.retrieve` under the ENVIRONMENT key on the
+    first live run — the brief flags this exact call as the one to confirm before deploy.
+    """
+
+    def __init__(self, env: Any, clients: dict) -> None:
+        self._env = env
+        self._clients = clients
+        self._metadata: dict | None = None
+        self._lock = asyncio.Lock()
+
+    async def context(self) -> ToolContext:
+        if self._metadata is None:
+            async with self._lock:
+                if self._metadata is None:  # re-check under the lock (concurrent first calls)
+                    session = await self._env.client.beta.sessions.retrieve(self._env.session_id)
+                    self._metadata = dict(getattr(session, "metadata", None) or {})
+        if "tenant_id" not in self._metadata:
+            # Fail LOUDLY: a session without a stamped tenant must never run tenant-scoped tools.
+            raise RuntimeError(
+                f"session {self._env.session_id} has no tenant_id in its metadata — "
+                "refusing to build a ToolContext (THE TRUST RULE)"
+            )
+        return build_context(self._metadata, self._clients)
+
+
+class SessionBoundTool:
+    """SDK-runnable adapter (`name` + async `call`) binding one registry Tool to one session.
+
+    `call` resolves the session's tenant-bound ToolContext from the shared binding, then runs the
+    sync `Tool.invoke` (psycopg2 = blocking) via `asyncio.to_thread` so the worker's event loop —
+    including the SDK's work-item lease heartbeats — stays responsive. The base-class guarantee is
+    unchanged: ALWAYS_ASK tools only ever produce Greenlight proposals (draft gate)."""
+
+    def __init__(self, tool: Tool, binding: SessionToolBinding) -> None:
+        self._tool = tool
+        self._binding = binding
+
+    @property
+    def name(self) -> str:
+        return self._tool.name
+
+    def to_dict(self) -> dict:
+        return self._tool.to_spec()
+
+    async def call(self, input: object) -> str:
+        ctx = await self._binding.context()
+        payload = input if isinstance(input, dict) else {}
+        result = await asyncio.to_thread(self._tool.invoke, ctx, **payload)
+        return json.dumps(result, default=str)
+
+
+def session_tools_factory(clients: dict) -> Callable[[Any], list[SessionBoundTool]]:
+    """The `tools=` callable for `EnvironmentWorker`: per CLAIMED SESSION (the SDK's documented
+    cadence — never per poll), wrap the registry TOOLS around that session's tenant binding."""
+
+    def _tools_for_session(env: Any) -> list[SessionBoundTool]:
+        binding = SessionToolBinding(env, clients)
+        return [SessionBoundTool(tool, binding) for tool in TOOLS]
+
+    return _tools_for_session
+
+
+async def run() -> None:
+    """Connect to the environment queue and serve tools, with the explicit liveness heartbeat.
+
+    Order matters (the brief's crash-loop finding): the `EnvironmentWorker` is CONSTRUCTED before
+    the heartbeat task starts, so a dead-on-arrival worker (bad kwargs, bad env) emits ZERO
+    heartbeats — a crash-looping task can never feed the very metric that's supposed to prove it's
+    serving. The heartbeat then runs as a sibling task and is cancelled (finally) when the poll
+    loop exits for ANY reason, keeping "metric present ⇔ poll loop alive" true.
+
+    VERIFY against the live SDK before first use (CLAUDE.md hard constraint #4) — kwargs below are
+    confirmed against the installed anthropic SDK's `EnvironmentWorker.__init__` (client,
+    environment_id, environment_key, tools, workdir, ... — NO context_factory).
+    """
     env_id = os.environ[ENV_UPLIFT_ENV_ID]
     env_key = os.environ[ENV_UPLIFT_ENV_KEY]  # environment key ONLY; never the org API key
     # Build the injectable tool clients once per process (each call still runs its own
@@ -135,27 +303,18 @@ async def run() -> None:  # pragma: no cover — live Anthropic, BLOCKED: needs 
     from anthropic import AsyncAnthropic  # noqa: PLC0415
     from anthropic.lib.environments import EnvironmentWorker  # noqa: PLC0415
 
-    def _tools_for_poll(env):  # pragma: no cover — invoked by the live SDK each poll
-        # The SDK requests the tool list each poll iteration; piggyback the heartbeat metric here
-        # so `workers_polling` stays >= 1 while this worker is serving (drives the worker-absent alarm).
-        emit_polling_metric()
-        return TOOLS
-
-    def _context_for(session_metadata: dict) -> ToolContext:  # pragma: no cover — live SDK only
-        # Per tool call: tenant from the session metadata (stamped upstream from the verified JWT
-        # claim) + the env-built clients -> RLS-scoped ToolContext.
-        return build_context(session_metadata, clients)
-
-    emit_polling_metric()  # emit once up front so the alarm clears as soon as we start serving
     async with AsyncAnthropic(auth_token=env_key) as client:
-        await EnvironmentWorker(
+        worker = EnvironmentWorker(
             client,
             environment_id=env_id,
             environment_key=env_key,
             workdir="/workspace",
-            tools=_tools_for_poll,
-            # VERIFY: the EnvironmentWorker hook for per-invocation context — the intended flow is
-            # context_factory(invocation.session_metadata) -> Tool.invoke(ctx, **input). Confirm
-            # the kwarg name/shape against the live SDK before first run.
-            context_factory=_context_for,
-        ).run()
+            tools=session_tools_factory(clients),
+        )
+        heartbeat = asyncio.create_task(heartbeat_loop(), name="workers-polling-heartbeat")
+        try:
+            await worker.run()
+        finally:
+            heartbeat.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await heartbeat

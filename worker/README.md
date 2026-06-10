@@ -12,11 +12,24 @@ outbound 443 to api.anthropic.com.
 - On Claude Platform on AWS, worker auth is IAM SigV4 instead of an env key.
 
 ## Tenant isolation during tool exec
-`build_context(session_metadata, clients)` sets `app.current_tenant` from the session metadata before
-any DB/Cube call, so Postgres RLS applies while tools run.
+The SDK's `tools=` factory is the per-session seam (its `EnvironmentWorker` has **no**
+`context_factory` kwarg — verified, see the ratified brief below): `session_tools_factory(clients)`
+wraps the tool registry per CLAIMED SESSION; on the first tool call the binding fetches the session's
+metadata (`sessions.retrieve` under the environment key — VERIFY on first live run) and every call
+gets a fresh `build_context(session_metadata, clients)` that sets `app.current_tenant` before any
+DB/Cube call, so Postgres RLS applies while tools run.
+
+## Liveness heartbeat
+`heartbeat_loop()` emits `Uplift/Agents:workers_polling=1` every 30s (`WORKER_HEARTBEAT_SECONDS`
+to tune; gated on `CLOUDWATCH_METRICS=1`) as a sibling task of the SDK poll loop — never piggybacked
+on the tools callable, which fires once per claimed session, not per poll
+(`docs/decisions/workers-polling-heartbeat-assumption.md`, ratified #123, Option A). Emit failures
+log-and-continue; the heartbeat is cancelled with the poll loop, so missing metric ⇔ worker down
+(the `worker_absent` alarm's `treat_missing_data=breaching` contract).
 
 ## Status
-`worker.py` is authored and import-safe (no network on import; `anthropic` imported lazily). `run()` is
-**not** executed against real Anthropic in this build — BLOCKED: needs Nick (env id/key + beta verify).
+`worker.py` is authored and import-safe (no network on import; `anthropic`/`boto3` imported lazily).
+`run()` is **not** executed against real Anthropic in this build — BLOCKED: needs Nick (env id/key +
+beta verify; the worker service deploy is Lane Nick's flip).
 Verify connectivity once live: `ant beta:environments:work stats --environment-id "$ENV_ID"`
 (expect `workers_polling >= 1`).
