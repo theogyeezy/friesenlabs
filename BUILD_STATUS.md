@@ -537,3 +537,11 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   enforced, graceful extractive fallback). Suite 195→249 passed / 4 skipped. Cycle-2 follow-ups:
   tenant↔environment binding via store lookup in the conversation factory (review medium), asgi
   factory+executor wiring, provisioning upsert, worker client wiring.
+
+## Lane Ship (deploy / go-live flips) — log
+- 2026-06-10 — **Cycle 1 (step 1/10):** `api/Dockerfile` ships `ingest/` (`COPY ingest/ ./ingest/`).
+  Verified the crash premise: `api/integrations_routes.py` + `api/pg_clients.py` lazy-import
+  `ingest.run_sync`/`ingest.embed` at call time — without the package the uplift-ingest sync and
+  the RAG embed leg ImportError in the live image. `ingest/` is stdlib-only at import time; its
+  lazy deps (boto3/psycopg2) are already in `requirements-api.txt`. arm64 image build verified
+  locally. Next: roll the api image to current main via deploy.yml (live is 44 commits stale).
