@@ -389,7 +389,7 @@ textarea.lp-input { height: 92px; padding: 11px 13px; resize: none; }
 .lp-proof-chip b { color: var(--accent-ink); font-weight: 760; }
 
 /* scroll reveals (additive; sections fade-rise once) */
-.rv { opacity: 0; transform: translateY(22px); transition: opacity .65s cubic-bezier(.2,.65,.25,1), transform .65s cubic-bezier(.2,.65,.25,1); transition-delay: var(--d, 0ms); }
+.rv { opacity: 0; transform: translateY(16px); transition: opacity .8s cubic-bezier(.2,.65,.25,1), transform .8s cubic-bezier(.2,.65,.25,1); transition-delay: var(--d, 0ms); will-change: opacity, transform; }
 .rv-in { opacity: 1; transform: none; }
 
 /* primary CTA shimmer sweep */
@@ -852,4 +852,22 @@ textarea.lp-input { height: 92px; padding: 11px 13px; resize: none; }
 /* a11y: ensure interactive pills meet the 44px touch target on touch devices */
 @media (hover: none) {
   .lp .hr-chip, .lp .vs-lens, .lp .lp-demo-tab, .lp .lp-mobar-signin, .lp .lp-mnav-signin { min-height: 44px; }
+}
+
+/* ============================================================
+   Apple-style cinematics: hero elements assemble in sequence on
+   first paint; the demo plate fades + drifts (parallax via JS).
+   Reduced-motion safe (neutralised below).
+   ============================================================ */
+@keyframes lpHeroRise { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: none; } }
+@keyframes lpHeroFade { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+.lp-hero .lp-eyebrow, .lp-hero .lp-h1, .lp-hero .lp-lead, .lp-hero .lp-hero-cta, .lp-hero .lp-trust { animation: lpHeroRise .9s cubic-bezier(.2,.65,.25,1) both; }
+.lp-hero .lp-eyebrow { animation-delay: .06s; }
+.lp-hero .lp-h1 { animation-delay: .14s; }
+.lp-hero .lp-lead { animation-delay: .30s; }
+.lp-hero .lp-hero-cta { animation-delay: .44s; }
+.lp-hero .lp-trust { animation-delay: .54s; }
+.lp-hero .lp-hero-3d { animation: lpHeroFade 1.1s cubic-bezier(.2,.65,.25,1) .34s both; }
+@media (prefers-reduced-motion: reduce) {
+  .lp-hero .lp-eyebrow, .lp-hero .lp-h1, .lp-hero .lp-lead, .lp-hero .lp-hero-cta, .lp-hero .lp-trust, .lp-hero .lp-hero-3d { animation: none; }
 }
