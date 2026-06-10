@@ -702,8 +702,15 @@ function ProductPage({ id, onClose, onAdd, onBook }) {
               <button className="btn btn-ghost btn-lg" onClick={onBook}><LpIcon name="calendar" size={16} />Book a call</button>
             </div>
           </div>
-          <div className="lp-demo-stage" style={{ gridTemplateColumns: "1fr", minHeight: 0, boxShadow: "var(--shadow-xl)" }}>
-            <div className="lp-demo-canvas" style={{ borderRight: "none" }}><Visual /></div>
+          <div className="lp-demo-window">
+            <div className="lp-demo-chrome">
+              <span className="lp-demo-dots"><i /><i /><i /></span>
+              <span className="lp-demo-addr">{id}.friesenlabs.com</span>
+              <span className="lp-demo-live"><span className="dot" />Live</span>
+            </div>
+            <div className="lp-demo-stage" style={{ gridTemplateColumns: "1fr", minHeight: 0 }}>
+              <div className="lp-demo-canvas" style={{ borderRight: "none" }}><Visual /></div>
+            </div>
           </div>
         </div>
       </section>
