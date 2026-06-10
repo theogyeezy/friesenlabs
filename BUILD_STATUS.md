@@ -568,3 +568,10 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   secrets are wired and the tests RUN; `signup/payment.py` reused ONE idempotency key across two
   Stripe endpoints (customers + checkout.sessions) → idempotency_error on every run. Fixed with
   per-endpoint suffixes (`:customer`/`:checkout`); offline suite green; live proof = next main push.
+- 2026-06-10 — **Cycle 10 (step 10):** Cognito MFA → OPTIONAL + software-token TOTP (ON would force
+  enrollment on the demo user's next Hosted UI login — enforcement flip stays a deliberate later
+  act). Billing alerts CONFIRMED: budgets uplift-200-ceiling + uplift-monthly ($500) with ACTUAL
+  50/80% + FORECASTED 100% notifications to the restored notify_email, all OK. The legacy
+  "Receive CloudWatch billing alerts" account preference is OFF and console-only — optional 1-click
+  for Matt; budgets do not need it. Step 9 live proof landed: post-merge main push ran
+  live-signup-e2e against Stripe TEST mode → SUCCESS (main fully green).

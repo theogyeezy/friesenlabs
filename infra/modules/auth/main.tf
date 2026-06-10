@@ -37,6 +37,14 @@ resource "aws_cognito_user_pool" "this" {
     require_symbols   = true
   }
 
+  # OPTIONAL (not ON): ON forces TOTP enrollment at next Hosted UI login, which would break the
+  # demo user + every automated login flow; OPTIONAL enables per-user TOTP enrollment now and
+  # leaves the enforcement flip (ON) as a deliberate later act once admin users carry MFA.
+  mfa_configuration = "OPTIONAL"
+  software_token_mfa_configuration {
+    enabled = true
+  }
+
   schema {
     name                     = "tenant_id"
     attribute_data_type      = "String"
