@@ -353,6 +353,9 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   git/state). Signup go-live sequence documented in RUNBOOK (webhook-secret + admin-key values
   parked on Stripe dashboard / Anthropic admin key; api_signup_env → signup_real_deps are the
   two later deliberate flips). Edge /healthz 200.
+- 2026-06-09 — Cycle 7 authoring: CloudWatch `uplift-live` dashboard (6 widgets) + api-task-role
+  X-Ray export policy (the ADOT sidecar has been failing silently). Targeted plan = exactly 2
+  pure adds; applies post-merge.
 
 ## Lane Matt (app code) — log
 - 2026-06-09 — **Cycle 3 (real wiring + frontend honesty, 5 PRs + 1 fix-PR):** #34 real provisioning
