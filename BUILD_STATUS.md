@@ -489,6 +489,34 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   throughout.
 
 ## Lane Matt (app code) — log
+- 2026-06-10 — **LANE PRODUCT (real-mode tab build-out) — Pipeline · Contacts · Agents · Workflows · Reports:**
+  converted five sidebar surfaces from FLStore prototypes to honest, API-wired real-mode views, each
+  with loading/empty/error states, no fabricated data, and offline Playwright vs the REAL bundle.
+  #146 Pipeline (`PipelineBoard`: RLS `GET /deals` board + Greenlight-gated stage moves) · #148
+  Contacts (`ContactsDirectory`: RLS `GET /contacts`+`/companies`, searchable, deal-linked, read) ·
+  #151 Agents (`AgentsRoster`: owned MA crew from `GET /agents` — roster + trusted tool policies +
+  truncated provisioned ids, never full ARNs) · #155 Workflows (`WorkflowsView`: the OWNED 5-step
+  provisioning diagram from `GET /workflows` + IAM-degradable recent-executions feed; REQ-009 the
+  states:read grant) · **#157 Reports (`ReportsView`: saved-views gallery from `GET /views`, each
+  rendered through the SAME trusted dashboard `SpecRenderer` — spec-not-code, re-validated, zero-rows
+  loader in real mode so blocks honestly say "No data yet"; "ask for a chart" rides the EXISTING
+  `POST /views/{id}/refine` NL route, degrading to an honest "not live yet" state on 501 when the
+  agent runtime/view_patcher isn't wired — same posture as chat's 503. No new backend routes; client
+  gained `refineView` + a deterministic mock).** Each PR: draft → adversarial review → squash-merge
+  on green CI; #157 review caught a latent cross-view stale-state risk (fixed with `key={selected}`).
+  Combined main after the batch: **pytest 819 passed / 5 skipped**; web typecheck + mock/real builds
+  (`sample`/`mockData` fold out of `dist-real`) + node units 28/28 + Playwright 66/66 (reports 6 new).
+  **(4) Knowledge — SKIPPED this cycle, gated on Lane Ship:** there is NO knowledge/documents/search
+  HTTP route in `main`; the RAG chain (`documents` pgvector table + `ingest/` pipeline + `PgRagClient`)
+  is reachable ONLY as the agent-side `search_rag` tool through `/chat` (parked 503). Embedding needs
+  live Bedrock Titan V2 and the ingest worker is BLOCKED on the Console env-key, so no docs are
+  ingested into a live tenant's `documents` table. Building a Knowledge tab over the RAG chain has no
+  honest live surface yet. **Follow-up when Lane Ship lands the worker (env-key) + ingests docs:**
+  author `POST /search` (or `GET /knowledge/documents`) over `PgRagClient.search()` bound to the
+  verified-claim tenant under RLS, then a `KnowledgeView.tsx` (ingested-sources list + grounded
+  semantic search with citations, reusing the ChatDock citation components). Remaining stub tabs for a
+  future cycle: Billing · Calendar · Email · Templates · Reputation · Marketplace · Cortex · Sell ·
+  Frontline · Security · Settings · Sidecar (all render the honest ComingSoon panel in real mode).
 - 2026-06-09 — **Cycles 5-6 (lane tail) + LANE MATT COMPLETE:** #67(+hotfix #73: the prod image
   bundles no ingest/ — top-level import would have crash-looped the deployed API; caught by
   adversarial review AFTER an early merge → draft-PR discipline adopted; also closed the shared-
