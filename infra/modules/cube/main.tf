@@ -48,8 +48,10 @@ resource "aws_ecs_task_definition" "cube" {
         { name = "CUBEJS_DB_TYPE", value = "postgres" },
         { name = "CUBEJS_DB_HOST", value = var.aurora_endpoint },
         { name = "CUBEJS_DB_NAME", value = "uplift" },
-        { name = "CUBEJS_CACHE_AND_QUEUE_DRIVER", value = "redis" },
-        { name = "CUBEJS_REDIS_URL", value = "redis://${var.redis_endpoint}:6379" },
+        # Cube 1.x removed the redis driver (live log: "Only 'cubestore' or 'memory' are
+        # supported ... passed: redis" -> /readyz 500). memory = correct for a single task;
+        # move to a Cube Store sidecar when pre-aggregations land.
+        { name = "CUBEJS_CACHE_AND_QUEUE_DRIVER", value = "memory" },
       ]
       secrets = [
         # crm_app DB credentials (non-owner role so Postgres RLS applies) + the JWT signing secret.
