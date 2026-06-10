@@ -227,7 +227,7 @@ function CapabilityRadar() {
   const gPath = radarPath(VS_AXES.map((a) => a.g), R, cx, cy);
   return (
     <div className="vs-radar" ref={ref}>
-      <svg viewBox="0 0 260 248" role="img" aria-label="Friesen vs GoHighLevel capability radar">
+      <svg viewBox="-72 -8 404 272" role="img" aria-label="Friesen vs GoHighLevel capability radar">
         {[0.25, 0.5, 0.75, 1].map((g) => (
           <polygon key={g} className="rad-grid" points={VS_AXES.map((_, i) => { const a = (Math.PI * 2 * i) / n - Math.PI / 2; return `${cx + R * g * Math.cos(a)},${cy + R * g * Math.sin(a)}`; }).join(" ")} />
         ))}
