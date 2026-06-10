@@ -17,6 +17,10 @@ variable "aurora_endpoint" { type = string }
 variable "redis_endpoint" { type = string }
 variable "db_secret_arn" { type = string }
 variable "cube_api_secret_arn" { type = string }
+variable "image" {
+  type    = string
+  default = "" # custom uplift-cube image (semantic/ baked in); "" = the pinned public image
+}
 
 resource "aws_cloudwatch_log_group" "cube" {
   name              = "/ecs/${var.project}-cube"
@@ -41,7 +45,7 @@ resource "aws_ecs_task_definition" "cube" {
   container_definitions = jsonencode([
     {
       name         = "cube"
-      image        = "cubejs/cube:latest@sha256:3e3715ccad21ba7914203c5a0e1c011f829200738d77ed9cb4012f67caa05ee4" # linux/amd64, pinned 2026-06-09
+      image        = var.image != "" ? var.image : "cubejs/cube:latest@sha256:3e3715ccad21ba7914203c5a0e1c011f829200738d77ed9cb4012f67caa05ee4" # custom model image, or the pinned public amd64 fallback
       essential    = true
       portMappings = [{ containerPort = 4000, protocol = "tcp" }]
       environment = [
