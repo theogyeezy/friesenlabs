@@ -37,13 +37,18 @@ class PaymentService:
         if not acct.may_pay:
             # VERIFY BEFORE PAY — refuse checkout until email + phone are verified.
             raise PaymentError("account not fully verified; cannot take payment")
-        customer = self.stripe.create_customer(email=acct.email, idempotency_key=idempotency_key)
+        # Stripe scopes idempotency keys to ONE endpoint: reusing the caller's key verbatim on
+        # both calls 400s with idempotency_error on the second. Per-endpoint suffixes keep the
+        # double-click guarantee (same client retry -> same suffixed key per call).
+        customer = self.stripe.create_customer(
+            email=acct.email, idempotency_key=f"{idempotency_key}:customer",
+        )
         acct.stripe_customer_id = customer["id"]
         self.accounts.store.update(acct)
         try:
             session = self.stripe.create_checkout_session(
                 customer=customer["id"], plan=plan, client_reference_id=account_id,
-                idempotency_key=idempotency_key,  # no double-charge on double-click
+                idempotency_key=f"{idempotency_key}:checkout",  # no double-charge on double-click
             )
         except ValueError as e:
             # An unknown/unconfigured plan (StripeAdapter raises ValueError when the plan has no

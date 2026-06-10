@@ -553,3 +553,18 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   Anthropic env poll loop). tfvars synced: machine + worktree + GH secret `PROD_AUTO_TFVARS_B64`
   (also fixed stale `api_image` e0794bc→682b2ea there). Verify: workers_polling + alarm pending
   the fixed-image roll.
+- 2026-06-10 — **Cycles 6-8 (steps 6-8):** Signup go-live: `api_signup_env` flip (rev-8, 6 additive
+  secret injections) then `signup_real_deps` as its own apply (rev-9, SIGNUP_REAL_DEPS=1,
+  ALLOW_REAL_SENDS unset); live probes: /signup 422-validates, /webhooks/stripe 400s unsigned.
+  **tfvars state-reconciliation:** machine copy was missing 10 applied vars (full plan = 15 destroys
+  incl. Amplify/DNS-zone/Lambda); all recovered from state, GH secret re-synced — full plan clean.
+  Admin-key VERIFY (live): workspace create/list/archive ✅; assumed key-create **405** + limits-write
+  **404** (issue filed — Console pre-minted pool per the ratified brief); flag applied, Lambda env
+  verified. **Route53 recon:** rogue zone Z0599822DN7S53EA8VCJ DELETED (dangling djvyqxdhlili4
+  CloudFront alias = takeover risk, validation CNAME for a nonexistent cert, zero public references —
+  records backed up); TF zone NS set documented for the Squarespace cutover (user act); TLS sequence
+  parked on cutover + cert ISSUED.
+- 2026-06-10 — **Cycle 9 (step 9):** live-signup-e2e red-on-main root-caused: NOT the skip guard —
+  secrets are wired and the tests RUN; `signup/payment.py` reused ONE idempotency key across two
+  Stripe endpoints (customers + checkout.sessions) → idempotency_error on every run. Fixed with
+  per-endpoint suffixes (`:customer`/`:checkout`); offline suite green; live proof = next main push.
