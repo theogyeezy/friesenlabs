@@ -58,6 +58,9 @@ Everything that can be built and tested offline is done, and a final adversarial
 | ✅ **Live & working** | Cube semantic service (1/1, `/readyz` 200 internally) | digest-pinned, memory driver (Cube 1.x), SG self-rule | data model image (semantic/ bake) next |
 | ✅ **Live & working** | Observability: 4 CloudWatch alarms + SNS + billing-alarm action + `uplift-live` dashboard; budget notification subscribed | applied | email sub PendingConfirmation (click) |
 | ✅ **Live & working** | Audit: CloudTrail scoped S3 data events; ALB access logs (encrypted bucket, delivering) | applied + verified | — |
+| ✅ **Live & working** | crm-app-db secrets rotation (30-day, controlled-window procedure) | rotation executed + services rolled + verified | — |
+| ✅ **Live & working** | CI/CD: OIDC deploy pipeline (build→plan→approved apply→roll) | build proven live; apply gates on the user's approval | approval click |
+| ✅ **Live & working** | Cloud Map (`cube.uplift.local`) + cube semantic model + ECS Exec | verified end-to-end | — |
 | ✅ **Live & working** | Provisioning Lambda + Step Functions (pinned ARNs, idempotent executions) | applied + smoked all-stub | signup go-live values (Stripe/Resend/admin key) |
 | 🟙 **Half-live** | AI / agent plane: MA environment live, org key + env-id on the API task, `/chat` reaches auth (401) | MA SDK shapes verified; env `uplift-prod` created | env-key Console click (worker), conversation wiring (app) |
 | 🟙 **Authored, gated** | Ingest scheduler (nightly EventBridge → Fargate `run_sync`) | applied, rule DISABLED | `ingest_tenants` + enable flip |

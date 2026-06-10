@@ -42,7 +42,10 @@ app shell → real RLS-scoped tenant rows. Unauth `/api/*` → 401; `/chat` → 
 - **Ops:** state in S3 (KMS); machine-local `infra/prod.auto.tfvars` carries the live values +
   go-live flags — full applies allowed only against a re-verified clean plan; targeted applies
   are the norm. One-off tasks run via the `uplift-migrate-oneoff` task-def family. Runbook:
-  `infra/RUNBOOK.md`. REQUESTS queue: REQ-001..005 all DONE.
+  `infra/RUNBOOK.md`. REQUESTS queue: REQ-001..005 all DONE. Completion sprint (cycles 16-23):
+  cube model + Cloud Map live, CI/CD OIDC pipeline, ECS Exec, GuardDuty/Config/SSM, worker image
+  staged, rotation executed, TLS-cutover runbook authored, GHL-style landing shipped. Remaining
+  work is user-input-gated only (env-key, NS cutover, SNS confirm, Stripe/admin values).
 **Tooling:** `.claude/settings.json` enables the official-marketplace plugins so collaborators inherit
 them on clone+trust. Don't commit secrets to it.
 
