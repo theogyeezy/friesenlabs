@@ -754,3 +754,29 @@ textarea.lp-input { height: 92px; padding: 11px 13px; resize: none; }
 /* refined initial monogram in roster chips (replaces emoji) */
 .lp .hr-mono { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 5px; background: var(--accent-softer); color: var(--accent-ink); font-family: "JetBrains Mono", monospace; font-size: 11px; font-weight: 700; }
 .lp .hr-chip.on .hr-mono { background: oklch(1 0 0 / .16); color: var(--bg); }
+
+/* ============================================================
+   EDITORIAL refinements — section numerals, asymmetric heads,
+   hairline cards (no glossy shadows), serif card titles.
+   ============================================================ */
+/* numbered sections: 01 — , 02 — , … in the eyebrow */
+.lp { counter-reset: lpsec; }
+.lp .lp-section { counter-increment: lpsec; }
+.lp .lp-section .lp-eyebrow::before { content: counter(lpsec, decimal-leading-zero) "  —"; width: auto; height: auto; background: none; font-variant-numeric: tabular-nums; letter-spacing: 0.06em; }
+/* asymmetric, left-aligned section heads with an editorial measure */
+.lp .lp-section > .lp-wrap > .lp-eyebrow,
+.lp .lp-section > .lp-wrap > .lp-h2,
+.lp .lp-section > .lp-wrap > .lp-sub { text-align: left; margin-left: 0; margin-right: 0; }
+.lp .lp-section > .lp-wrap > .lp-h2 { max-width: 18ch; }
+.lp .lp-section > .lp-wrap > .lp-sub { max-width: 52ch; }
+/* hairline cards, no glossy shadows, calmer radius */
+.lp .lp-testi, .lp .lp-nice-card, .lp .lp-layer, .lp .lp-founder, .lp .lp-demo-side,
+.lp .roi-controls, .lp .lp-build, .lp .lp-feat-card, .lp .lp-prod-card, .lp .lp-mod-row {
+  border: 1px solid var(--line) !important;
+  box-shadow: none !important;
+  border-radius: 8px !important;
+  background: var(--surface);
+}
+.lp .lp-testi:hover, .lp .lp-layer:hover, .lp .lp-nice-card:hover { box-shadow: 0 14px 40px -30px oklch(0.3 0.04 48 / .35) !important; transform: none; }
+/* serif titles on cards/products/modules */
+.lp .lp-testi blockquote, .lp .lp-layer h4, .lp .lp-nice-card h3, .lp .lp-prod-name, .lp .lp-mod-name { font-family: var(--display); letter-spacing: -0.01em; }
