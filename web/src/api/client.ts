@@ -362,6 +362,45 @@ export interface WorkflowsResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Knowledge wire types (mirror api/knowledge_routes.py shapes). READ-ONLY: the
+// inventory is a plain per-source aggregate over the tenant's documents, and
+// search carries ref_id + source + a bounded snippet + score (the full content
+// is never dumped; ARNs/embeddings never leave).
+// ---------------------------------------------------------------------------
+
+/** One ingested source's footprint in the tenant's corpus. */
+export interface KnowledgeSource {
+  source: string | null;
+  document_count: number;
+  /** Newest-ingested timestamp for the source (MAX(created_at)); null if absent. */
+  last_updated: string | null;
+}
+
+export interface KnowledgeInventoryResponse {
+  sources: KnowledgeSource[];
+  source_count: number;
+  total_documents: number;
+}
+
+/** One search hit: display fields only — no embedding, no full content dump. */
+export interface KnowledgeSearchResult {
+  ref_id: string | null;
+  source: string | null;
+  snippet: string;
+  score: number | null;
+}
+
+export interface KnowledgeSearchResponse {
+  query: string;
+  results: KnowledgeSearchResult[];
+  /** False = the query embedder (Titan/Bedrock) isn't reachable yet (env-key-gated):
+   * the result list is empty and `reason` explains it — an informative state, NOT an
+   * error. The inventory tab stays useful regardless. */
+  search_available: boolean;
+  reason: string | null;
+}
+
+// ---------------------------------------------------------------------------
 // Integrations wire types (mirror api/integrations_routes.py shapes).
 // ---------------------------------------------------------------------------
 
@@ -951,6 +990,31 @@ export class ApiClient {
       return (await this.mockApi()).getWorkflows();
     }
     return this.request<WorkflowsResponse>("GET", "/workflows");
+  }
+
+  // --- knowledge (authed, read-only) -------------------------------------------
+
+  /** GET /knowledge: the tenant's knowledge-base inventory — per-source document
+   * counts + newest-ingested timestamp + totals. A plain aggregate (no embedder),
+   * so it's honest the moment the data plane is wired; an un-ingested tenant gets
+   * zeros. */
+  async getKnowledge(): Promise<KnowledgeInventoryResponse> {
+    if (this.mock) {
+      return (await this.mockApi()).getKnowledge();
+    }
+    return this.request<KnowledgeInventoryResponse>("GET", "/knowledge");
+  }
+
+  /** GET /knowledge/search?q=: cosine search over the tenant's corpus (ref_id +
+   * source + snippet + score). Degrades honestly to {search_available: false,
+   * reason} when the Titan query embedder isn't reachable (env-key-gated). */
+  async searchKnowledge(query: string, limit?: number): Promise<KnowledgeSearchResponse> {
+    if (this.mock) {
+      return (await this.mockApi()).searchKnowledge(query, limit);
+    }
+    const params = new URLSearchParams({ q: query });
+    if (limit !== undefined) params.set("limit", String(limit));
+    return this.request<KnowledgeSearchResponse>("GET", `/knowledge/search?${params.toString()}`);
   }
 
   // --- integrations (authed) -------------------------------------------------

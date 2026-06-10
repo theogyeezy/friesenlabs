@@ -26,6 +26,7 @@ from api.control.types import Action
 from api.contacts_routes import ContactsDeps
 from api.deals_routes import DealsDeps
 from api.integrations_routes import IntegrationsDeps, build_integrations_deps
+from api.knowledge_routes import KnowledgeDeps
 from api.views import SavedViews
 from api.workflows_routes import WorkflowsDeps
 
@@ -69,6 +70,11 @@ class ApiDeps:
     # deps never builds a boto3 client; api/asgi.py is the ONLY real wiring
     # (Config.provisioning_sfn_arn). Pass None to skip mounting the route entirely.
     workflows: WorkflowsDeps | None = field(default_factory=WorkflowsDeps)
+    # /knowledge deps (the real Knowledge tab — the tenant's ingested corpus). Same inert-default
+    # contract: the all-None stub mounts honest-503 routes and constructing deps never opens a DB
+    # pool; api/asgi.py is the ONLY real wiring (the SAME PgRagClient instance the executor/chat
+    # RAG tool rides). Pass None to skip mounting the routes entirely.
+    knowledge: KnowledgeDeps | None = field(default_factory=KnowledgeDeps)
 
 
 # --- request bodies (note: NONE carry tenant_id — the trust rule forbids it) ---
@@ -241,6 +247,14 @@ def create_app(deps: ApiDeps) -> FastAPI:
     if deps.workflows is not None:
         from api.workflows_routes import mount_workflows
         mount_workflows(app, deps.workflows, current_tenant)
+
+    # Authed per-tenant knowledge view (the real Knowledge tab). Claims-bound, READ-ONLY: the
+    # inventory is a plain aggregate over the tenant's documents (no embedder), and search
+    # degrades to an honest "search model not configured" 200 when the Titan embedder isn't
+    # reachable — never a 500, never a leaked AWS error (see knowledge_routes).
+    if deps.knowledge is not None:
+        from api.knowledge_routes import mount_knowledge
+        mount_knowledge(app, deps.knowledge, current_tenant)
 
     # Public, pre-tenant signup + Stripe webhook routes (optional).
     if deps.signup is not None:

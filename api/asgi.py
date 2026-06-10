@@ -40,6 +40,7 @@ from api.control.greenlight import Greenlight, PgApprovalStore
 from api.contacts_routes import ContactsDeps
 from api.control.types import Action
 from api.deals_routes import DealsDeps
+from api.knowledge_routes import KnowledgeDeps
 from api.pg_clients import PgCrmClient, PgRagClient
 from api.views import PgSavedViewStore, SavedViews
 from api.workflows_routes import WorkflowsDeps
@@ -338,6 +339,11 @@ def build_app():
         # (request path only); the api task role's missing read perms degrade to the
         # honest pending-IAM shape until REQ-009 (see api/workflows_routes.py).
         workflows=WorkflowsDeps(state_machine_arn=load().provisioning_sfn_arn or None),
+        # /knowledge (the real Knowledge tab) rides the SAME PgRagClient instance the executor +
+        # /chat RAG tool use — one pool, one SET LOCAL discipline. The inventory is a plain
+        # aggregate (no embedder); search embeds lazily via Titan (Bedrock, env-key-gated) and
+        # degrades honestly. rag is None when the DSN is unconfigured -> honest 503.
+        knowledge=KnowledgeDeps(rag=rag),
     )
     return create_app(deps)
 

@@ -39,6 +39,8 @@ import {
   type SaveViewBody,
   type RefineViewBody,
   type SavedViewRow,
+  type KnowledgeInventoryResponse,
+  type KnowledgeSearchResponse,
   type SignupResponse,
   type SignupState,
   type StoreCredentialsResponse,
@@ -589,6 +591,46 @@ export class MockApi {
       steps: w.steps.map((s) => ({ ...s })),
       recent_executions: w.recent_executions.map((e) => ({ ...e })),
     };
+  }
+
+  getKnowledge(): KnowledgeInventoryResponse {
+    // The demo tenant's ingested corpus — mirrors api/knowledge_routes.py: per-source counts +
+    // newest-ingested timestamp + honest totals (a plain aggregate; the real API strips nothing
+    // sensitive because the inventory carries none).
+    const sources = [
+      { source: "hubspot", document_count: 1280, last_updated: "2026-06-09T12:00:00+00:00" },
+      { source: "call", document_count: 262, last_updated: "2026-06-08T09:30:00+00:00" },
+      { source: "email", document_count: 188, last_updated: "2026-06-09T15:20:00+00:00" },
+      { source: "upload", document_count: 17, last_updated: "2026-06-07T18:05:00+00:00" },
+    ];
+    return {
+      sources: sources.map((s) => ({ ...s })),
+      source_count: sources.length,
+      total_documents: sources.reduce((n, s) => n + s.document_count, 0),
+    };
+  }
+
+  searchKnowledge(query: string, _limit?: number): KnowledgeSearchResponse {
+    // A few canned hits shaped like the real feed (ref_id + source + snippet + score). The mock
+    // always has the embedder, so search_available is true; the real API degrades honestly when
+    // the Titan embedder isn't reachable.
+    const results = [
+      {
+        ref_id: "deal-westlake",
+        source: "hubspot",
+        snippet:
+          "Westlake Galleria chiller retrofit — Pinnacle Property Partners, negotiation stage, $284,000.",
+        score: 0.8137,
+      },
+      {
+        ref_id: "call-meridian-42",
+        source: "call",
+        snippet:
+          "Discovery call: Meridian wants the retrofit scoped before Q3; budget approved, decision by the controller.",
+        score: 0.7421,
+      },
+    ];
+    return { query, results: results.map((r) => ({ ...r })), search_available: true, reason: null };
   }
 
   runAction(body: ActionBody): ActionResponse {

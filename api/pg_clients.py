@@ -275,6 +275,27 @@ class PgRagClient(_PgTenantClient):
             for r in rows
         ]
 
+    def list_document_inventory(self, *, tenant_id: str) -> list[dict]:
+        """Per-source document counts + newest-ingested timestamp for the tenant's corpus, RLS-
+        scoped via SET LOCAL. A PLAIN aggregate — NO embedding model is touched, so the Knowledge
+        inventory works the moment the data plane is wired even if the Titan embedder isn't. An
+        un-ingested tenant gets an empty list (never a hand-written tenant filter; `documents` has
+        created_at only — there is no updated_at column — so last_updated is MAX(created_at))."""
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "SELECT source, COUNT(*) AS document_count, MAX(created_at) AS last_updated "
+                "FROM documents GROUP BY source ORDER BY document_count DESC, source"
+            )
+            rows = _dict_rows(cur)
+        return [
+            {
+                "source": r.get("source"),
+                "document_count": int(r.get("document_count") or 0),
+                "last_updated": r.get("last_updated"),
+            }
+            for r in rows
+        ]
+
 
 # Allow-listed CRM tables + their filterable columns (identifiers are NEVER taken from input
 # without passing this list). `tenant_id` is deliberately NOT filterable — tenancy is RLS-only;
