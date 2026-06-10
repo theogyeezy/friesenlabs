@@ -398,6 +398,11 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   (verified); cube service deployed 1/1 STEADY STATE (digest-pinned, minted secret). Live :4000 probe
   caught the missing sg_api self-ingress rule (timeout) — fix PR'd. Cloud Map service discovery noted
   as the remaining cube gap. SNS email sub still PendingConfirmation (user).
+- 2026-06-09 — Cube VERIFIED: /readyz 200 from in-VPC probe (SG self-rule #58 + memory driver #59
+  — Cube 1.x removed redis, caught from live logs). TODO 127 DONE. Cycle-11 batch check-off:
+  baseline 122/190 DONE (clean plan), budget 195 DONE, alarms 194/129 DONE (sub pending user
+  click), domain 131 IN PROGRESS (cert pending NS cutover). Next: cycle 12 MA env creation
+  (org key in SM).
 
 ## Lane Matt (app code) — log
 - 2026-06-09 — **Cycle 3 (real wiring + frontend honesty, 5 PRs + 1 fix-PR):** #34 real provisioning
