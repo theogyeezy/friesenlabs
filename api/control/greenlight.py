@@ -8,15 +8,26 @@ mapping is authored + flagged "verify"; it is never called live here.
 Conforms to the `Greenlight` protocol in agents/tools/base.py (so Phase 4 tools route through it).
 """
 import os
+import threading
 from contextlib import contextmanager
 from typing import Protocol
+
+
+class EditNotAllowed(ValueError):
+    """An edit-approve tried to change a key outside the proposal's editable payload fields.
+
+    The 'action' key (and any key not already present in the proposed payload) is never editable —
+    a human edit may tune WHAT the approved action does, never swap it for a different action.
+    Maps to 422 at the API boundary (a subclass of ValueError so untyped callers still fail safe).
+    """
 
 
 class ApprovalStore(Protocol):
     def insert(self, row: dict) -> object: ...
     def get(self, tenant_id: str, approval_id: object) -> dict | None: ...
     def list_pending(self, tenant_id: str) -> list[dict]: ...
-    def update(self, tenant_id: str, approval_id: object, changes: dict) -> None: ...
+    def update(self, tenant_id: str, approval_id: object, changes: dict,
+               *, expected_status: str | None = None) -> int: ...
 
 
 class InMemoryApprovalStore:
@@ -25,6 +36,7 @@ class InMemoryApprovalStore:
     def __init__(self):
         self._rows: dict[int, dict] = {}
         self._n = 0
+        self._lock = threading.Lock()
 
     @staticmethod
     def _key(approval_id):
@@ -33,10 +45,11 @@ class InMemoryApprovalStore:
         return int(s) if s.isdigit() else s
 
     def insert(self, row: dict) -> int:
-        self._n += 1
-        row = {"id": self._n, "applied_at": None, "apply_result": None, **row}
-        self._rows[self._n] = row
-        return self._n
+        with self._lock:
+            self._n += 1
+            row = {"id": self._n, "applied_at": None, "apply_result": None, **row}
+            self._rows[self._n] = row
+            return self._n
 
     def get(self, tenant_id: str, approval_id) -> dict | None:
         row = self._rows.get(self._key(approval_id))
@@ -49,11 +62,23 @@ class InMemoryApprovalStore:
         return [r for r in self._rows.values()
                 if str(r["tenant_id"]) == str(tenant_id) and r["status"] == "pending"]
 
-    def update(self, tenant_id: str, approval_id, changes: dict) -> None:
-        row = self._rows.get(self._key(approval_id))
-        if row is None or str(row["tenant_id"]) != str(tenant_id):
-            return  # tenant-scoped: silently ignore a cross-tenant write
-        row.update(changes)
+    def update(self, tenant_id: str, approval_id, changes: dict,
+               *, expected_status: str | None = None) -> int:
+        """Tenant-scoped update; returns the touched-row count (0 or 1), mirroring Pg's rowcount.
+
+        With `expected_status`, the write is an atomic CHECK-AND-SET under the store lock: the row
+        is mutated only if its CURRENT status equals `expected_status`, so two concurrent deciders
+        racing pending->decided can never both win (the loser gets 0 — same contract as the
+        conditional `UPDATE ... AND status = %s` in PgApprovalStore).
+        """
+        with self._lock:
+            row = self._rows.get(self._key(approval_id))
+            if row is None or str(row["tenant_id"]) != str(tenant_id):
+                return 0  # tenant-scoped: silently ignore a cross-tenant write
+            if expected_status is not None and row["status"] != expected_status:
+                return 0  # lost the race — another decider already moved the row on
+            row.update(changes)
+            return 1
 
 
 class PgApprovalStore:
@@ -145,15 +170,28 @@ class PgApprovalStore:
             cur.execute("SELECT * FROM approvals WHERE status = 'pending' ORDER BY created_at")
             return [self._row(r) for r in cur.fetchall()]
 
-    def update(self, tenant_id: str, approval_id, changes: dict) -> None:
+    def update(self, tenant_id: str, approval_id, changes: dict,
+               *, expected_status: str | None = None) -> int:
+        """Tenant-scoped UPDATE; returns the rowcount.
+
+        With `expected_status`, the UPDATE is CONDITIONAL — `... WHERE id = %s AND status = %s` —
+        so Postgres's row lock arbitrates concurrent deciders atomically: exactly one transition
+        wins (rowcount 1) and every racer loses honestly (rowcount 0). The per-op
+        `SET LOCAL app.current_tenant` transaction pattern is unchanged (RLS still scopes the write).
+        """
         if not changes:
-            return
+            return 0
         cols = ", ".join(f"{k} = %s" for k in changes)
         # jsonb columns (e.g. proposed_action) need the Json adapter.
         vals = [self._Json(v) if isinstance(v, dict) else v for v in changes.values()]
         vals.append(str(approval_id))
+        sql = f"UPDATE approvals SET {cols} WHERE id = %s"
+        if expected_status is not None:
+            sql += " AND status = %s"
+            vals.append(expected_status)
         with self._tx(tenant_id) as cur:
-            cur.execute(f"UPDATE approvals SET {cols} WHERE id = %s", vals)
+            cur.execute(sql, vals)
+            return cur.rowcount
 
 
 class Greenlight:
@@ -182,6 +220,11 @@ class Greenlight:
 
         tenant_id is the verified per-request tenant (THE TRUST RULE) — threaded into every store call
         so RLS scopes the read/write; the store never relies on shared connection state.
+
+        The pending->decided transition is ATOMIC: the store's conditional update
+        (`expected_status='pending'`) arbitrates concurrent deciders, so a TOCTOU race between the
+        read above and the write below can never double-decide — the loser's rowcount is 0 and it
+        raises exactly like an already-decided approval (the caller must never apply for the loser).
         """
         rec = self.store.get(tenant_id, approval_id)
         if rec is None or rec["status"] != "pending":
@@ -191,11 +234,22 @@ class Greenlight:
         elif decision in ("approve", "edit"):
             action = dict(rec["proposed_action"])
             if decision == "edit" and edits:
+                # Edit guard: a human edit may tune the proposal's PAYLOAD fields only — never the
+                # 'action' key (no swapping send_email for create_deal) and never a novel key.
+                editable = set(action) - {"action"}
+                bad = sorted(k for k in edits if k not in editable)
+                if bad:
+                    raise EditNotAllowed(
+                        "edit may only change the proposal's payload fields; "
+                        f"not editable: {', '.join(map(repr, bad))}"
+                    )
                 action.update(edits)
             changes = {"status": "approved", "proposed_action": action, "decided_by": decided_by}
         else:
             raise ValueError(f"unknown decision {decision!r}")
-        self.store.update(tenant_id, approval_id, changes)
+        if self.store.update(tenant_id, approval_id, changes, expected_status="pending") == 0:
+            # Lost the race (or the row was decided between read and write) — never double-decide.
+            raise ValueError(f"approval {approval_id} not pending")
         return self.store.get(tenant_id, approval_id)
 
     def to_ma_confirmation(self, rec: dict, tool_use_id: str) -> dict:

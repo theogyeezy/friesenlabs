@@ -19,6 +19,7 @@ class FakeCursor:
     def __init__(self, log, one):
         self.log = log
         self._one = one
+        self.rowcount = 1  # the conditional update path reads cur.rowcount
 
     def execute(self, sql, params=None):
         self.log.append((" ".join(sql.split()), params))
@@ -87,6 +88,7 @@ def test_approval_store_binds_tenant_before_each_op(patched):
     store.get("A", "uuid-1")
     store.list_pending("A")
     store.update("A", "uuid-1", {"status": "approved", "proposed_action": {"x": 1}})
+    n = store.update("A", "uuid-1", {"status": "approved"}, expected_status="pending")
 
     sql = _sql(patched)
     # Every op binds the tenant with SET LOCAL (auto-resets at txn end — can't leak across the pool).
@@ -96,6 +98,13 @@ def test_approval_store_binds_tenant_before_each_op(patched):
     assert any("SELECT * FROM approvals WHERE id" in s for s in sql)
     assert any("status = 'pending'" in s for s in sql)
     assert any("UPDATE approvals SET" in s for s in sql)
+    # The CONDITIONAL form (the atomic pending->decided arbiter) appends the status predicate
+    # and returns the rowcount; the unconditional form stays predicate-free.
+    assert any(s.endswith("WHERE id = %s AND status = %s") for s in sql)
+    assert any(s.endswith("WHERE id = %s") for s in sql)
+    assert n == 1  # rowcount from the fake cursor
+    cond_params = [list(p) for s, p in patched.log if s.endswith("AND status = %s")]
+    assert cond_params == [["approved", "uuid-1", "pending"]]
     # First statement issued in insert() is the tenant bind, not the write.
     assert sql[0].startswith("SET LOCAL app.current_tenant")
 
