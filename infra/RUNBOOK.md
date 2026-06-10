@@ -110,6 +110,20 @@ ROLLBACK: flip `alb_enforce_origin_verify=false`, `apply -target=module.alb` (in
 - Flags now true in `prod.auto.tfvars`: enable_origin_verify, alb_enforce_origin_verify.
   ROLLBACK: flip alb_enforce_origin_verify=false, `apply -target=module.alb` (instant).
 
+## REQ-003 APPLIED — 2026-06-09 (from main @7c94e4c)
+
+- `-target=module.secrets -target=module.iam`: 3 add / 1 change, exactly as planned.
+- Containers live: uplift/stripe-webhook-secret, uplift/signup-token-secret,
+  uplift/anthropic-admin-key. Token-signer value minted (`openssl rand -hex 32` → CLI
+  put-secret-value; 1 version; never echoed/committed/in-state).
+- Execution-role policy verified: uplift/* + rds!* + the 2 exact platform-secret ARNs.
+- Signup go-live sequence (deliberate, in order): (1) Stripe dashboard → register
+  /webhooks/stripe → put webhook-secret value; (2) put admin-key value after the
+  signup/anthropic_admin.py VERIFY items pass; (3) flip `api_signup_env=true` (tfvars) →
+  targeted api_service apply (task-def replace + service update ONLY); (4) separately flip
+  `signup_real_deps=true` — the master switch. ALLOW_REAL_SENDS stays false throughout.
+- Edge /healthz 200 after apply.
+
 ### Apply discipline (until the baseline is clean)
 1. No full `terraform apply`.
 2. Pure-add module deploys go via `terraform apply -target=module.<cube|worker|observability> baseline-style plan first`.
