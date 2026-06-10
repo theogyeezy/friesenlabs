@@ -106,3 +106,15 @@ variable "alb_enforce_origin_verify" {
   default     = false # Sec/P0 phase 2: flip ONLY after the distro shows Deployed with the header
   description = "ALB :80 default becomes 403; only requests with the matching X-Origin-Verify forward."
 }
+
+variable "api_signup_env" {
+  type        = bool
+  default     = false # REQ-003: flip ONLY after stripe-webhook + signup-token + admin-key secrets hold values
+  description = "Inject the signup/provisioning secrets into the API task def (never the worker)."
+}
+
+variable "signup_real_deps" {
+  type        = bool
+  default     = false # REQ-003 step 0: the deliberate signup go-live act — see infra/REQUESTS.md
+  description = "Set SIGNUP_REAL_DEPS=1 on the API task (build_signup_deps selects real adapters)."
+}

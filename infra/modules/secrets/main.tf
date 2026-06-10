@@ -63,12 +63,35 @@ resource "aws_secretsmanager_secret_version" "origin_verify" {
   secret_string = random_password.origin_verify[0].result
 }
 
+# REQ-003: signup/provisioning plane secrets (API task ONLY — never the worker).
+# Values arrive out-of-band: webhook secret from the Stripe dashboard after endpoint registration;
+# token-signer minted by Lane Nick (openssl rand -hex 32, CLI put — never in git or TF state);
+# admin key (sk-ant-admin…, distinct from the inference key) after the # VERIFY'd endpoints in
+# signup/anthropic_admin.py are confirmed.
+resource "aws_secretsmanager_secret" "stripe_webhook_secret" {
+  name        = "${var.project}/stripe-webhook-secret"
+  description = "Stripe webhook signing secret — construct_event refuses all webhooks while empty."
+}
+
+resource "aws_secretsmanager_secret" "signup_token_secret" {
+  name        = "${var.project}/signup-token-secret"
+  description = "HMAC key for signup email/phone verification tokens (REQ-003)."
+}
+
+resource "aws_secretsmanager_secret" "anthropic_admin_key" {
+  name        = "${var.project}/anthropic-admin-key"
+  description = "Anthropic ADMIN key (workspace provisioning) — NOT the inference key; API task only."
+}
+
 output "anthropic_api_key_secret_arn" { value = aws_secretsmanager_secret.anthropic_api_key.arn }
 output "connectors_secret_arn" { value = aws_secretsmanager_secret.connectors.arn }
 output "crm_app_db_secret_arn" { value = aws_secretsmanager_secret.crm_app_db.arn }
 output "cube_api_secret_arn" { value = aws_secretsmanager_secret.cube_api_secret.arn }
 output "env_key_secret_arn" { value = aws_secretsmanager_secret.env_key.arn }
 output "env_id_secret_arn" { value = aws_secretsmanager_secret.env_id.arn }
+output "stripe_webhook_secret_arn" { value = aws_secretsmanager_secret.stripe_webhook_secret.arn }
+output "signup_token_secret_arn" { value = aws_secretsmanager_secret.signup_token_secret.arn }
+output "anthropic_admin_key_secret_arn" { value = aws_secretsmanager_secret.anthropic_admin_key.arn }
 output "origin_verify_secret_arn" { value = aws_secretsmanager_secret.origin_verify.arn }
 output "origin_verify_value" {
   value     = var.enable_origin_verify ? random_password.origin_verify[0].result : ""

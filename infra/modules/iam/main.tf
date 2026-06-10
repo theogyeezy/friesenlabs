@@ -30,6 +30,11 @@ data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
 
 # Secrets the tasks read: project secrets (uplift/*) + the RDS-managed Aurora master (rds!*).
+variable "extra_execution_secret_arns" {
+  type    = list(string)
+  default = [] # REQ-003: exact platform-secret ARNs (listed, NOT a widened wildcard)
+}
+
 locals {
   secret_arns = [
     "arn:aws:secretsmanager:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:secret:uplift/*",
@@ -43,7 +48,7 @@ resource "aws_iam_role_policy" "ecs_execution_secrets" {
   role = aws_iam_role.ecs_task_execution.id
   policy = jsonencode({
     Version   = "2012-10-17"
-    Statement = [{ Effect = "Allow", Action = ["secretsmanager:GetSecretValue"], Resource = local.secret_arns }]
+    Statement = [{ Effect = "Allow", Action = ["secretsmanager:GetSecretValue"], Resource = concat(local.secret_arns, var.extra_execution_secret_arns) }]
   })
 }
 

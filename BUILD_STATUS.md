@@ -341,6 +341,13 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   downtime (edge 200 throughout). ALB :80 default is now fixed-response 403; only requests carrying
   the CloudFront-stamped header forward. Secret in uplift/origin-verify (rotation = taint the
   random_password → phased re-apply). TODO 135 lock-file also merged (#41, Linux CI proof).
+- 2026-06-09 — REQ-003 authored (feat/nick-req-003): 3 new secret containers (stripe-webhook,
+  signup-token, anthropic-admin-key — the last did NOT pre-exist despite the spec) + API-task
+  injection gated behind api_signup_env=false; SIGNUP_REAL_DEPS go-live act has its own flag.
+  Execution role gains the 2 exact platform-secret ARNs (no wildcard widening). 2-agent verify
+  PASS: worker references none of the 7 names; flag-on render = exactly the 5 secrets +
+  SIGNUP_REAL_DEPS=1; config.py/_switch_env/build_signup_deps contract confirmed fail-closed;
+  ALLOW_REAL_SENDS untouched. Flags-off plan = baseline + 3 pure adds + intended iam change.
 
 ## Lane Matt (app code) — log
 - 2026-06-09 — **Cycle 3 (real wiring + frontend honesty, 5 PRs + 1 fix-PR):** #34 real provisioning
