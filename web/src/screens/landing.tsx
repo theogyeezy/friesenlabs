@@ -162,6 +162,76 @@ if (import.meta.env.VITE_API_MOCK !== "0" && import.meta.env.VITE_API_MOCK !== "
   };
 }
 
+// ---- Friesen vs GoHighLevel (interactive comparison) ----
+const VS_LENSES = [
+  { id: "doit", label: "Do the work for me", rows: ["agents", "approvals", "support", "compound"] },
+  { id: "control", label: "Keep me in control", rows: ["approvals", "kill", "audit"] },
+  { id: "own", label: "Own my data & stack", rows: ["byocrm", "models", "knowledge"] },
+];
+const VS_ROWS = [
+  { id: "agents", f: "Autonomous AI agents that research, draft, send & book — around the clock", g: "Automation templates & drip workflows you assemble yourself", fHas: true, gHas: "partial" },
+  { id: "approvals", f: "Greenlight: every risky action waits for your one-tap approval", g: "No human-in-the-loop layer — automations just run", fHas: true, gHas: false },
+  { id: "kill", f: "One-tap kill switch + tiered autonomy (suggest → ask-first → autonomous)", g: "Pause individual campaigns by hand", fHas: true, gHas: "partial" },
+  { id: "byocrm", f: "Keep HubSpot / Salesforce / Pipedrive — agents work inside YOUR system of record", g: "Built around moving onto their CRM", fHas: true, gHas: false },
+  { id: "models", f: "Cortex: private models trained on your own outcomes — a moat nobody can copy", g: "Generic AI features shared by every customer", fHas: true, gHas: false },
+  { id: "knowledge", f: "Hosted knowledge bases ground every agent answer on YOUR docs", g: "Basic bot training on FAQs", fHas: true, gHas: "partial" },
+  { id: "support", f: "Frontline: support desk that deflects routine tickets itself", g: "Shared inbox + chatbot you script", fHas: true, gHas: "partial" },
+  { id: "audit", f: "Full audit trail — every agent action logged, anomalies auto-paused", g: "Activity history on contacts", fHas: true, gHas: "partial" },
+  { id: "compound", f: "Gets smarter every week — prediction → outcome → retrain flywheel", g: "Static: same product until the next release", fHas: true, gHas: false },
+  { id: "funnels", f: "Ad dashboards, traffic analytics & content calendar — on the roadmap", g: "Funnels, sites & ad tools today", fHas: "partial", gHas: true },
+];
+
+function useReveal() {
+  useEffect(() => {
+    const els = document.querySelectorAll(".lp-section .lp-wrap, .lp-vs-row, .lp-fullbleed .lp-wrap");
+    if (!("IntersectionObserver" in window)) { els.forEach((el) => el.classList.add("rv-in")); return; }
+    const io = new IntersectionObserver((es) => es.forEach((e) => { if (e.isIntersecting) { e.target.classList.add("rv-in"); io.unobserve(e.target); } }), { threshold: 0.12 });
+    els.forEach((el) => { el.classList.add("rv"); io.observe(el); });
+    return () => io.disconnect();
+  }, []);
+}
+
+function VsMark({ v }) {
+  if (v === true) return <span className="vs-mark yes"><Icon name="check" size={15} sw={3} /></span>;
+  if (v === "partial") return <span className="vs-mark part">~</span>;
+  return <span className="vs-mark no">✕</span>;
+}
+
+function VsSection() {
+  const [lens, setLens] = useState(null);
+  const hot = lens ? VS_LENSES.find((l) => l.id === lens).rows : null;
+  const fWins = VS_ROWS.filter((r) => r.fHas === true && r.gHas !== true).length;
+  return (
+    <section className="lp-section lp-vs" id="compare">
+      <div className="lp-wrap">
+        <div className="lp-eyebrow">Why not just use GoHighLevel?</div>
+        <h2 className="lp-h2">Marketing automation sends the email.<br />Agents close the loop.</h2>
+        <p className="lp-sub">GoHighLevel is a great funnel machine. Friesen is a workforce. Pick what matters to you and see the difference.</p>
+        <div className="vs-lenses">
+          {VS_LENSES.map((l) => (
+            <button key={l.id} className={"vs-lens" + (lens === l.id ? " active" : "")} onClick={() => setLens(lens === l.id ? null : l.id)}>{l.label}</button>
+          ))}
+        </div>
+        <div className="vs-table" role="table">
+          <div className="vs-head" role="row">
+            <div className="vs-cell-f"><div className="vs-brand us"><div className="brand-mark"><Logo size={15} /></div>Friesen Labs</div></div>
+            <div className="vs-cell-g"><div className="vs-brand them">GoHighLevel</div></div>
+          </div>
+          {VS_ROWS.map((r, i) => (
+            <div key={r.id} className={"lp-vs-row vs-row" + (hot ? (hot.includes(r.id) ? " hot" : " dim") : "")} style={{ "--d": i * 45 + "ms" }} role="row">
+              <div className="vs-cell-f"><VsMark v={r.fHas} /><span>{r.f}</span></div>
+              <div className="vs-cell-g"><VsMark v={r.gHas} /><span>{r.g}</span></div>
+            </div>
+          ))}
+        </div>
+        <div className="vs-score">
+          <CountUp to={fWins} dur={900} /> of {VS_ROWS.length} rounds to the agents — and we&apos;ll say it plainly: if you want funnels today, they&apos;re ahead <i>(ours are on the roadmap above)</i>.
+        </div>
+      </div>
+    </section>
+  );
+}
+
 // ---- "Nice to have" preview products (roadmap add-ons) ----
 const LP_NICE = [
   { id: "ads", tab: "Advertising Hubs", icon: "megaphone", tone: "rose",
@@ -539,6 +609,7 @@ function ProductPage({ id, onClose, onAdd, onBook }) {
 // sign-in gate is active. Defaults to a no-op so the screen is render-safe
 // standalone.
 function Landing({ onSignIn = () => {} } = {}) {
+  useReveal();
   const [demoTab, setDemoTab] = useState("agents");
   const [plan, setPlan] = useState("keepcrm");
   const [sel, setSel] = useState({ command: true, agents: true, workflows: true, greenlight: true, integration: true });
@@ -582,6 +653,7 @@ function Landing({ onSignIn = () => {} } = {}) {
             <a onClick={() => document.getElementById("products").scrollIntoView({ behavior: "smooth" })}>Products</a>
             <a onClick={() => document.getElementById("demos").scrollIntoView({ behavior: "smooth" })}>See it work</a>
             <a onClick={() => document.getElementById("testimonials").scrollIntoView({ behavior: "smooth" })}>Customers</a>
+            <a onClick={() => document.getElementById("compare").scrollIntoView({ behavior: "smooth" })}>vs GHL</a>
             <a onClick={() => document.getElementById("pricing").scrollIntoView({ behavior: "smooth" })}>Pricing</a>
             <a onClick={() => document.getElementById("team").scrollIntoView({ behavior: "smooth" })}>Team</a>
             <a onClick={() => document.getElementById("research").scrollIntoView({ behavior: "smooth" })}>Research</a>
@@ -597,6 +669,7 @@ function Landing({ onSignIn = () => {} } = {}) {
 
       {/* hero */}
       <section className="lp-hero">
+        <div className="lp-aurora" aria-hidden="true"><span /><span /><span /></div>
         <div className="lp-wrap lp-hero-grid">
           <div>
             <span className="lp-pill"><span className="live-dot" style={{ width: 6, height: 6 }} />Meet your AI back office</span>
@@ -610,6 +683,13 @@ function Landing({ onSignIn = () => {} } = {}) {
           </div>
           <div className="lp-demo-stage" style={{ gridTemplateColumns: "1fr", minHeight: 0, boxShadow: "var(--shadow-xl)" }}>
             <div className="lp-demo-canvas" style={{ borderRight: "none" }}><FoxDemo /></div>
+          </div>
+        </div>
+        <div className="lp-proof-marquee" aria-hidden="true">
+          <div className="lp-marquee-track">
+            {[...LP_TESTIMONIALS, ...LP_TESTIMONIALS].map((t, i) => (
+              <span className="lp-proof-chip" key={i}><b>{t.metric}</b> — {t.role}</span>
+            ))}
           </div>
         </div>
       </section>
@@ -691,6 +771,9 @@ function Landing({ onSignIn = () => {} } = {}) {
           </div>
         </div>
       </section>
+
+      {/* Friesen vs GoHighLevel */}
+      <VsSection />
 
       {/* how it works */}
       <section className="lp-section">

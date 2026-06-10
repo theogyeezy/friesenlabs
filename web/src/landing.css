@@ -370,3 +370,68 @@ textarea.lp-input { height: 92px; padding: 11px 13px; resize: none; }
   .lp-founder { flex-direction: column; }
   .lp-testi-metric { margin-left: 0; }
 }
+
+/* ---- GHL-energy pass: aurora hero, marquee, scroll reveals, vs table ---- */
+.lp-hero { position: relative; overflow: hidden; }
+.lp-aurora { position: absolute; inset: -20% -10%; pointer-events: none; z-index: 0; filter: blur(72px) saturate(1.15); opacity: .5; }
+.lp-aurora span { position: absolute; border-radius: 50%; mix-blend-mode: multiply; }
+.lp-aurora span:nth-child(1) { width: 46vw; height: 46vw; left: -8%; top: -18%; background: color-mix(in oklch, var(--accent) 55%, transparent); animation: lpFloat 16s ease-in-out infinite alternate; }
+.lp-aurora span:nth-child(2) { width: 38vw; height: 38vw; right: -6%; top: 4%; background: oklch(0.78 0.13 65 / .55); animation: lpFloat 21s ease-in-out -6s infinite alternate-reverse; }
+.lp-aurora span:nth-child(3) { width: 30vw; height: 30vw; left: 36%; bottom: -30%; background: oklch(0.72 0.12 152 / .5); animation: lpFloat 26s ease-in-out -12s infinite alternate; }
+@keyframes lpFloat { from { transform: translate3d(0,0,0) scale(1); } to { transform: translate3d(4vw,3vh,0) scale(1.12); } }
+.lp-hero .lp-wrap { position: relative; z-index: 1; }
+
+.lp-proof-marquee { position: relative; z-index: 1; margin-top: 38px; overflow: hidden; -webkit-mask-image: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent); mask-image: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent); }
+.lp-marquee-track { display: inline-flex; gap: 14px; padding: 6px 0; white-space: nowrap; animation: lpMarquee 36s linear infinite; will-change: transform; }
+.lp-proof-marquee:hover .lp-marquee-track { animation-play-state: paused; }
+@keyframes lpMarquee { to { transform: translateX(-50%); } }
+.lp-proof-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--ink-2); background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 7px 14px; box-shadow: var(--shadow-sm); }
+.lp-proof-chip b { color: var(--accent-ink); font-weight: 760; }
+
+/* scroll reveals (additive; sections fade-rise once) */
+.rv { opacity: 0; transform: translateY(22px); transition: opacity .65s cubic-bezier(.2,.65,.25,1), transform .65s cubic-bezier(.2,.65,.25,1); transition-delay: var(--d, 0ms); }
+.rv-in { opacity: 1; transform: none; }
+
+/* primary CTA shimmer sweep */
+.lp-hero-cta .btn-primary { position: relative; overflow: hidden; }
+.lp-hero-cta .btn-primary::after { content: ""; position: absolute; inset: 0; background: linear-gradient(115deg, transparent 30%, oklch(1 0 0 / .35) 50%, transparent 70%); transform: translateX(-120%); animation: lpSheen 4.5s ease-in-out 1.2s infinite; }
+@keyframes lpSheen { 0% { transform: translateX(-120%);} 28% { transform: translateX(120%);} 100% { transform: translateX(120%);} }
+
+/* testimonial cards: lift + tilt */
+.lp-testi-grid > * { transition: transform .35s cubic-bezier(.2,.65,.25,1), box-shadow .35s; }
+.lp-testi-grid > *:hover { transform: translateY(-5px) rotate(-.4deg) scale(1.012); box-shadow: var(--shadow-xl); }
+
+/* ---- vs GoHighLevel ---- */
+.lp-vs { background: oklch(0.205 0.03 277); color: oklch(0.96 0.005 277); }
+.lp-vs .lp-eyebrow { color: color-mix(in oklch, var(--accent) 55%, #fff); }
+.lp-vs .lp-h2 { color: #fff; }
+.lp-vs .lp-sub { color: oklch(0.78 0.01 277); }
+.vs-lenses { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin: 26px 0 30px; }
+.vs-lens { font: inherit; font-size: 13.5px; font-weight: 640; padding: 9px 18px; border-radius: 999px; border: 1px solid oklch(0.42 0.02 277); background: oklch(0.26 0.025 277); color: oklch(0.88 0.01 277); cursor: pointer; transition: all .25s; }
+.vs-lens:hover { border-color: var(--accent); transform: translateY(-1px); }
+.vs-lens.active { background: var(--accent); border-color: var(--accent); color: #fff; box-shadow: 0 6px 24px -6px color-mix(in oklch, var(--accent) 70%, transparent); }
+.vs-table { max-width: 980px; margin: 0 auto; border: 1px solid oklch(0.36 0.02 277); border-radius: 18px; overflow: hidden; background: oklch(0.23 0.025 277); box-shadow: 0 30px 80px -30px oklch(0 0 0 / .5); }
+.vs-head { display: grid; grid-template-columns: 1.2fr 1fr; background: oklch(0.27 0.03 277); border-bottom: 1px solid oklch(0.36 0.02 277); }
+.vs-brand { display: flex; align-items: center; gap: 9px; font-weight: 760; font-size: 15px; padding: 16px 20px; }
+.vs-brand.us { color: #fff; }
+.vs-brand.them { color: oklch(0.72 0.01 277); }
+.vs-row { display: grid; grid-template-columns: 1.2fr 1fr; border-bottom: 1px solid oklch(0.3 0.02 277); transition: background .25s, opacity .35s, filter .35s; }
+.vs-row:last-child { border-bottom: none; }
+.vs-row:hover { background: oklch(0.27 0.03 277); }
+.vs-row.hot { background: color-mix(in oklch, var(--accent) 16%, oklch(0.23 0.025 277)); }
+.vs-row.dim { opacity: .32; filter: saturate(.4); }
+.vs-cell-f, .vs-cell-g { display: flex; align-items: flex-start; gap: 11px; padding: 15px 20px; font-size: 13.8px; line-height: 1.5; }
+.vs-cell-f { color: oklch(0.95 0.005 277); border-right: 1px solid oklch(0.3 0.02 277); }
+.vs-cell-g { color: oklch(0.7 0.01 277); }
+.vs-mark { flex-shrink: 0; width: 22px; height: 22px; border-radius: 7px; display: grid; place-items: center; font-weight: 800; font-size: 13px; margin-top: 1px; }
+.vs-mark.yes { background: oklch(0.62 0.13 152 / .25); color: oklch(0.78 0.13 152); }
+.vs-mark.part { background: oklch(0.7 0.14 65 / .22); color: oklch(0.8 0.13 65); }
+.vs-mark.no { background: oklch(0.55 0.14 18 / .2); color: oklch(0.72 0.13 18); font-size: 11px; }
+.vs-score { text-align: center; margin-top: 26px; font-size: 14.5px; color: oklch(0.85 0.01 277); }
+.vs-score i { color: oklch(0.65 0.01 277); }
+@media (max-width: 760px) { .vs-head, .vs-row { grid-template-columns: 1fr; } .vs-cell-f { border-right: none; border-bottom: 1px dashed oklch(0.32 0.02 277); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .lp-aurora span, .lp-marquee-track, .lp-hero-cta .btn-primary::after { animation: none; }
+  .rv { opacity: 1; transform: none; transition: none; }
+}
