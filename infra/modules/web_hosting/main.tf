@@ -28,6 +28,15 @@ variable "api_cdn_domain" {
   type    = string
   default = "" # CloudFront HTTPS domain in front of the ALB; when set, Amplify proxies /api/* to it
 }
+variable "custom_domain" {
+  type    = string
+  default = "" # e.g. friesenlabs.com — creates the Amplify domain association (apex + www)
+}
+variable "zone_id" {
+  type    = string
+  default = "" # Route53 zone for the verification CNAME + apex/www records
+}
+
 variable "cognito_domain" {
   type    = string
   default = "" # Hosted UI host (no scheme); empty disables the login flow in the build
@@ -106,6 +115,68 @@ resource "aws_amplify_branch" "this" {
   branch_name       = var.branch
   enable_auto_build = true
   stage             = "PRODUCTION"
+}
+
+# Custom domain: apex + www -> the main branch. Amplify mints its own managed cert; the
+# verification CNAME + the apex ALIAS/www CNAME land in OUR Route53 zone below.
+resource "aws_amplify_domain_association" "this" {
+  count                 = var.custom_domain != "" ? 1 : 0
+  app_id                = aws_amplify_app.web.id
+  domain_name           = var.custom_domain
+  wait_for_verification = false
+
+  sub_domain {
+    branch_name = aws_amplify_branch.this.branch_name
+    prefix      = ""
+  }
+
+  sub_domain {
+    branch_name = aws_amplify_branch.this.branch_name
+    prefix      = "www"
+  }
+}
+
+locals {
+  # "name CNAME value" -> record pieces (computed; safe in record VALUES, never in count).
+  amplify_cert_parts = var.custom_domain != "" ? split(" ", aws_amplify_domain_association.this[0].certificate_verification_dns_record) : []
+  # Per-sub_domain dns_record is "<prefix> CNAME <target>.cloudfront.net".
+  amplify_apex_target = var.custom_domain != "" ? trimsuffix(trimspace(element(split(" CNAME ", [for sd in aws_amplify_domain_association.this[0].sub_domain : sd.dns_record if sd.prefix == ""][0]), 1)), ".") : ""
+  amplify_www_target  = var.custom_domain != "" ? trimsuffix(trimspace(element(split(" CNAME ", [for sd in aws_amplify_domain_association.this[0].sub_domain : sd.dns_record if sd.prefix == "www"][0]), 1)), ".") : ""
+  cloudfront_zone_id  = "Z2FDTNDATAQYW2" # the fixed hosted-zone id for ALL *.cloudfront.net aliases
+}
+
+resource "aws_route53_record" "amplify_cert_verification" {
+  count           = (var.custom_domain != "" && var.zone_id != "") ? 1 : 0
+  allow_overwrite = true
+  zone_id         = var.zone_id
+  name            = local.amplify_cert_parts[0]
+  type            = "CNAME"
+  ttl             = 300
+  records         = [trimsuffix(local.amplify_cert_parts[2], ".")]
+}
+
+resource "aws_route53_record" "apex" {
+  count           = (var.custom_domain != "" && var.zone_id != "") ? 1 : 0
+  allow_overwrite = true
+  zone_id         = var.zone_id
+  name            = var.custom_domain
+  type            = "A"
+
+  alias {
+    name                   = local.amplify_apex_target
+    zone_id                = local.cloudfront_zone_id
+    evaluate_target_health = false
+  }
+}
+
+resource "aws_route53_record" "www" {
+  count           = (var.custom_domain != "" && var.zone_id != "") ? 1 : 0
+  allow_overwrite = true
+  zone_id         = var.zone_id
+  name            = "www.${var.custom_domain}"
+  type            = "CNAME"
+  ttl             = 300
+  records         = [local.amplify_www_target]
 }
 
 output "app_id" { value = aws_amplify_app.web.id }
