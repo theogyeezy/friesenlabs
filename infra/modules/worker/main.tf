@@ -121,6 +121,14 @@ resource "aws_ecs_service" "worker" {
   desired_count   = 1
   launch_type     = "FARGATE"
 
+  # A broken task def auto-rolls back instead of draining the service to zero.
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+  deployment_minimum_healthy_percent = 100
+  deployment_maximum_percent         = 200
+
   network_configuration {
     subnets          = var.private_subnet_ids
     security_groups  = [var.security_group_id]

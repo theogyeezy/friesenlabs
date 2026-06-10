@@ -210,6 +210,14 @@ resource "aws_ecs_service" "api" {
   desired_count   = var.desired_count
   launch_type     = "FARGATE"
 
+  # A broken task def auto-rolls back instead of draining the service to zero.
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+  deployment_minimum_healthy_percent = 100
+  deployment_maximum_percent         = 200
+
   # Break-glass debugging (TODO Sec/P3 212): live shell into a task via SSM — no inbound ports.
   enable_execute_command = true
 
