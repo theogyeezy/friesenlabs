@@ -363,6 +363,14 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   ceiling — adding Fargate services needs Matt's cost call): IAM tightening P2 206 — api task
   role scoped to the exact 2 ARNs migrate reads; SFN invoke de-wildcarded to the placeholder
   ARN. Targeted plan = exactly 2 intended in-place changes.
+- 2026-06-09 — Cycle 8 APPLIED @c8f2f10: IAM tightening live (api task role = exactly 2 ARNs;
+  SFN invoke = placeholder ARN, no wildcard) — get-role-policy verified, edge 200. TODO 206 done.
+  QUEUE STATUS: remaining Lane Nick P0/P1s are all PARKED on external inputs — baseline plan
+  (Amplify PAT + notify_email, Matt), budget fix (email/limit, Matt), observability alarms
+  (notify_email, Matt), cube/worker deploys ($200-ceiling cost call, Matt), domain/ACM (purchase),
+  signup go-live values (Stripe dashboard + Anthropic admin key), AI plane (Anthropic creds).
+  Unblocked remainder is P2/P3 hardening (205 CloudTrail/ALB logs, 204 rotation, 143 NAT
+  endpoints, 212 ECS Exec, 213 log retention, 214 GuardDuty/Config).
 
 ## Lane Matt (app code) — log
 - 2026-06-09 — **Cycle 3 (real wiring + frontend honesty, 5 PRs + 1 fix-PR):** #34 real provisioning
