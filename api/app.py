@@ -22,6 +22,7 @@ from api.control.greenlight import Greenlight
 from api.control.killswitch import KillSwitch
 from api.control.traces import InMemoryTraceStore, TraceStore
 from api.control.types import Action
+from api.integrations_routes import IntegrationsDeps, build_integrations_deps
 from api.views import SavedViews
 
 
@@ -37,6 +38,11 @@ class ApiDeps:
     trace_store: TraceStore = field(default_factory=InMemoryTraceStore)
     view_patcher: Callable[[dict, str], dict] | None = None  # NL refine: (spec, instruction) -> spec
     signup: Any = None                                  # optional SignupDeps (mounts public routes)
+    # /integrations deps (TODO INT/P2). Env-built by default so api/asgi.py needs no change:
+    # with no env set every piece is the honest unconfigured stub (credentials/sync 503,
+    # status "unknown"); real adapters ride ONLY the deliberate INTEGRATIONS_REAL_SECRETS /
+    # INGEST_REAL_STORES switches. Pass None to skip mounting the routes entirely.
+    integrations: IntegrationsDeps | None = field(default_factory=build_integrations_deps)
 
 
 # --- request bodies (note: NONE carry tenant_id — the trust rule forbids it) ---
@@ -171,6 +177,13 @@ def create_app(deps: ApiDeps) -> FastAPI:
         result = ActionGate().run(action, ctx)
         return {"status": result.status, "decision": result.decision.value, "detail": result.detail,
                 "approval": result.approval, "result": result.result}
+
+    # Authed per-tenant integrations endpoints (TODO INT/P2 — the api half; the web screen
+    # rides a later cycle). Same verified-claims dependency as every authed route above —
+    # tenant NEVER from the body. Unconfigured deps answer honest 503s, never fake success.
+    if deps.integrations is not None:
+        from api.integrations_routes import mount_integrations
+        mount_integrations(app, deps.integrations, current_tenant)
 
     # Public, pre-tenant signup + Stripe webhook routes (optional).
     if deps.signup is not None:

@@ -191,6 +191,17 @@ def load() -> Config:
     return Config()
 
 
+# --- Integrations-plane env-var NAMES (api/integrations_routes.py — the api half of TODO INT/P2
+# --- "Build the real integrations/connect UI + backend"; infra/REQUESTS.md REQ-006). A NEW,
+# --- deliberate name on purpose: the live API task ALREADY injects DB_*/COGNITO_*/
+# --- ANTHROPIC_API_KEY for OTHER features, so the per-tenant secret WRITE path keys ONLY off
+# --- this master switch (deploy invariance — same rationale as SIGNUP_REAL_DEPS /
+# --- INGEST_REAL_STORES). Exactly "true"/"1" (the _switch_env semantics — fail CLOSED on
+# --- anything else) selects the real boto3 Secrets Manager writer; unset = no writer, and the
+# --- credentials/status endpoints answer an honest 503 "not configured" / status "unknown" —
+# --- never a fake success.
+ENV_INTEGRATIONS_REAL_SECRETS = "INTEGRATIONS_REAL_SECRETS"
+
 # --- Live agent-plane verify env-var NAMES (scripts/verify_agent_plane.py — TODO AI/P1).
 # --- NEW deliberate names (deploy invariance: new behavior never keys off env the live tasks
 # --- already inject). All-unset = the script runs in offline PLAN mode and makes ZERO live

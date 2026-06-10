@@ -22,33 +22,27 @@ short-lived `feat/…` PRs — see `CONTRIBUTING.md`).
 real mode) → CloudFront → ALB (HTTP) → arm64 Fargate API → Aurora** (FORCE'd RLS) with real Cognito
 JWKS auth. **Browser-verified end-to-end:** sign-in gate → Hosted UI (PKCE) → code exchange →
 app shell → real RLS-scoped tenant rows. Unauth `/api/*` → 401; `/chat` → graceful 503 (AI parked).
-- ✅ **Login:** Cognito Hosted UI (`uplift-<acct>.auth.us-east-1.amazoncognito.com`) + hand-rolled
-  PKCE in `web/src/auth/` (no auth SDK). Demo user creds live in Secrets Manager `uplift/demo-user`
-  (tenant seeded via `scripts/seed_demo_tenant.py` as a one-off Fargate task, run as `crm_app`).
-  Note: Amplify 301s `/auth/callback` → `/auth/callback/` — the path match tolerates the slash.
-- ⛔ **Not live (parked):** the AI/agent plane (`agents/runtime.py` stub, `/chat` 503, noop executor —
-  needs Anthropic creds); provisioning clients (`api/prod_deps.py` `_Stub`/`_Noop`, verify hardcoded off
-  — needs Stripe/Resend/Admin creds); the cube/worker/observability/provisioning-Lambda/cortex modules
-  (authored, unapplied).
-- ⚠️ **State reconciled, but the baseline plan is NOT clean (2026-06-09, `infra/RUNBOOK.md`):**
-  out-of-band SG rules imported, budget untainted, ECR `uplift-api` back to **IMMUTABLE** (push new
-  image versions as new tags, not `:latest` overwrites). Live var values load from gitignored
-  `infra/prod.auto.tfvars` — and a plan run without `github_access_token`/`notify_email` set there
-  **plans to DESTROY the live Amplify app** and strip the budget notification. Until those values are
-  restored and the plan re-verified clean: no full `terraform apply`; pure-add `-target` applies only
-  (the unapplied cube/worker/observability modules are the only intentional adds).
-- **Ops:** state in **S3** (`uplift-tfstate-*`, KMS) — init `terraform init -backend-config=backend.hcl`
-  (gitignored). API image (arm64): `docker build --platform linux/arm64`. DB migrate
-  `python -m api.migrate`; tenant seed `scripts/seed_demo_tenant.py` — both as one-off Fargate tasks.
-- **Security:** a 37-agent adversarial audit (2026-06-09) is folded into `TODO.md` (27 findings). A
-  **critical cross-tenant leak is FIXED** — the request-path stores (`PgApprovalStore`/`PgSavedViewStore`)
-  now use a per-request pooled connection + `SET LOCAL app.current_tenant` in a transaction (NOT a
-  shared connection + session-level SET, which raced across the anyio threadpool). Tenant is threaded
-  explicitly; proven on live Aurora (16 threads) + CI real-Postgres. **Follow-up:** the `ingest_cursor`
-  stores (`ingest/pipeline.py`) share the old single-conn pattern but run off the request path.
-- **The full granular, prioritized work list is in [`TODO.md`](./TODO.md)**. Next big chunks: AI plane
-  (needs Anthropic creds), provisioning (needs Stripe/Resend), cube/worker/observability deploys.
-
+- ✅ **Login:** Cognito Hosted UI + PKCE in `web/src/auth/`; demo creds in `uplift/demo-user`.
+- ✅ **Live since 2026-06-09 (Lane Nick cycles 1-15):** Aurora hardening (retention 7, deletion
+  protection, copy-tags, PI); X-Origin-Verify edge→ALB shared secret (403-default listener);
+  cube service 1/1 (`/readyz` 200; memory driver — Cube 1.x dropped redis; sg_api self-rule);
+  4 alarms + SNS + billing-alarm action + `uplift-live` dashboard + budget subscriber; CloudTrail
+  scoped S3 data events + ALB access logs; IAM tightening (exact-ARN api task secrets, no SFN
+  wildcard); provisioning Lambda + pinned SFN (idempotent executions, smoked all-stub); ingest
+  scheduler applied DISABLED; prod isolation gate PASSED live as `crm_app`; baseline plan CLEAN.
+- 🟙 **AI plane half-live:** MA SDK shapes VERIFIED real (managed-agents-2026-04-01); environment
+  `uplift-prod` (env_012JvqRKUZzUDeH3Gse6TBgZ) live; org key + env-id on the API task (rev 4);
+  `/chat` 401-unauth (conversation wiring = app side). Worker blocked on the Console-generated
+  environment key (`uplift/env-key`).
+- 🟙 **Domain:** friesenlabs.com bought (Squarespace); Route53 zone + wildcard ACM applied,
+  PENDING_VALIDATION until the registrar NS cutover; ALB TLS cutover follows (RUNBOOK sequence).
+- ⛔ **Parked on values:** signup go-live (`uplift/stripe-webhook-secret` from the Stripe
+  dashboard, `uplift/anthropic-admin-key` after the VERIFY pass) — flags `api_signup_env` then
+  `signup_real_deps`; worker deploy (env-key + cost); SNS email sub PendingConfirmation.
+- **Ops:** state in S3 (KMS); machine-local `infra/prod.auto.tfvars` carries the live values +
+  go-live flags — full applies allowed only against a re-verified clean plan; targeted applies
+  are the norm. One-off tasks run via the `uplift-migrate-oneoff` task-def family. Runbook:
+  `infra/RUNBOOK.md`. REQUESTS queue: REQ-001..005 all DONE.
 **Tooling:** `.claude/settings.json` enables the official-marketplace plugins so collaborators inherit
 them on clone+trust. Don't commit secrets to it.
 

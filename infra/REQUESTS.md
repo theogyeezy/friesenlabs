@@ -196,7 +196,7 @@ Rules:
 - **Done when:** `terraform validate` green with safe defaults (schedule DISABLED, "" vars); the ingest task definition shows `INGEST_REAL_STORES=1` + `INGEST_TENANTS` + `INGEST_RAW_BUCKET` + `DB_*` and the API/worker task definitions show NONE of the `INGEST_*` names; with the schedule flipped on and a tenant id + HubSpot secret populated, a scheduled run populates `documents` for that tenant and the next run embeds ~0 (the TODO's done-when). Until then `python -m ingest.run_sync --tenant <id>` stays runnable anywhere as an offline stub (exit 0, touches nothing).
 
 ### REQ-005: Provisioning Lambda (signup/lambda_handler.handler) + pin the SFN Task ARNs + api-task states:StartExecution + PROVISIONING_SFN_ARN env
-- **Status:** IN-PROGRESS (Nick) @feat/nick-req-005 — AUTHORED + validate green: `provisioning-lambda.Dockerfile` (arm64 Lambda image bundling signup/api/shared/agents/conv/db + requirements-api.txt), `modules/provisioning_lambda` (function count-gated on the pushed image URI; secrets as env VALUES per the spec's choice — no SM reads on the role; SIGNUP_REAL_DEPS + ALLOW_REAL_SENDS deliberately absent; ANTHROPIC_ADMIN_KEY env gated on `provisioning_admin_key_available` since the secret is empty and a version read would fail), 4th ECR repo `provisioning`, iam `api_task_sfn` StartExecution scoped to exactly the machine ARN, api-task `PROVISIONING_SFN_ARN` gated on `api_provisioning_sfn` (default false = byte-identical task def). Pin flows automatically: lambda absent → placeholder preserved; image pushed → Task states + sfn_invoke swap to the real ARN. PLAN/APPLY + image build PARKED: AWS session credentials expired mid-cycle — resumes on refresh.
+- **Status:** DONE @e55dcc4 (#65) — APPLIED + SMOKED: `uplift-provisioning` Lambda live (arm64 image `uplift-provisioning:e55dcc4`, VPC'd, all-stub since SIGNUP_REAL_DEPS unset); SFN Task states + `sfn_invoke` pinned to the real ARN; api task role has `states:StartExecution` on exactly the machine ARN. Smoke: StartExecution invoked the Lambda cleanly (cold start + handler ran; failed correctly on the nonexistent test account with SFN retries + Catch park — packaging/wiring/retry/park-path proven), duplicate execution name → `ExecutionAlreadyExists` (idempotency proven). The full verified+paid PAID→ACTIVE drive rides the signup go-live (needs SIGNUP_REAL_DEPS + Stripe values). `PROVISIONING_SFN_ARN` stays un-injected (`api_provisioning_sfn=false`) — flipping it is the deliberate decouple act in the RUNBOOK go-live sequence.
 - **Requested by:** Lane Matt @feat/matt-provisioning-lambda-sfn (PR "feat(signup): provisioning Lambda handler + SFN trigger (deterministic, claim-ordered)")
 - **Needed for:** TODO INT/P1s "Package + deploy the provisioning Lambda the SFN invokes" + "Connect the Stripe webhook to start the SFN execution (decouple from the request)" (the SFN-role `Resource="*"` P2 is already closed on main — sfn_invoke now grants against the placeholder ARN; pinning `provisioning_lambda_arn` swaps both the policy and the Task states to the real ARN)
 - **Env/secret names** (must already exist in shared/config.py): `PROVISIONING_SFN_ARN` (NEW, landed in `shared/config.py` with this PR); on the LAMBDA only existing names: `SIGNUP_REAL_DEPS`, `UPLIFT_DB_URL`/`DB_USER`/`DB_PASS`/`DB_HOST`/`DB_NAME`/`DB_PORT`, `COGNITO_USER_POOL_ID`, `RESEND_API_KEY`, `RESEND_FROM_EMAIL`, `SIGNUP_VERIFY_URL_BASE`, `ALLOW_REAL_SENDS`, `ANTHROPIC_ADMIN_KEY`
@@ -257,3 +257,37 @@ Rules:
   #    stripe_events ledger claim. Never on the worker task.
   ```
 - **Done when:** `terraform validate` green with the new function + pinned `provisioning_lambda_arn` (the SFN role + every Task state reference the real function ARN, not the placeholder); the api task role policy lists `states:StartExecution` on exactly the machine ARN; the API task env shows `PROVISIONING_SFN_ARN` (once deliberately set) and the worker shows none of this; a test StartExecution with `{"account_id": <verified+paid test account>}` drives PAID -> ACTIVE through the execution history (or parks via the Catch-all on an injected failure), and a second StartExecution with the same name answers ExecutionAlreadyExists.
+
+### REQ-006: api-task IAM Secrets Manager WRITE on the per-tenant connector slots (`uplift/*/hubspot`) + `INTEGRATIONS_REAL_SECRETS` env
+- **Status:** OPEN
+- **Requested by:** Lane Matt @feat/matt-integrations-api (PR "feat(api): integrations endpoints — list/credentials/sync (claims-bound, gated)")
+- **Needed for:** TODO INT/P2 "Build the real integrations/connect UI + backend" — the api half (`api/integrations_routes.py`): `POST /integrations/{name}/credentials` vaults a tenant's HubSpot token into `uplift/{tenant_id}/hubspot` (the `ingest/connectors/base.py tenant_secret_ref` slot the REQ-004 ingest task already READS); `GET /integrations` answers connection status via DescribeSecret (never the value).
+- **Env/secret names** (must already exist in shared/config.py): `INTEGRATIONS_REAL_SECRETS` (NEW, landed in `shared/config.py` with this PR). Safe default UNSET = the writer is a stub: credentials POST answers an honest 503, status reads "unknown" — byte-identical boot regardless of what other env the task carries.
+- **Spec:**
+  ```hcl
+  # 1) API-TASK IAM: write + existence-check on EXACTLY the per-tenant hubspot slots — never
+  #    uplift/* broadly (the env-id/admin-key/demo-user secrets stay out of reach). Secrets
+  #    Manager appends a random 6-char suffix to secret ARNs, hence the trailing wildcard.
+  #    # VERIFY on first live connect: CreateSecret resource-scoping matches the name pattern.
+  statement {
+    actions = [
+      "secretsmanager:PutSecretValue",   # rotate path (slot already exists)
+      "secretsmanager:CreateSecret",     # first-connect path (slot does not exist yet)
+      "secretsmanager:DescribeSecret",   # GET /integrations status — existence only, no value
+    ]
+    resources = ["arn:aws:secretsmanager:${var.region}:${data.aws_caller_identity.current.account_id}:secret:uplift/*/hubspot*"]
+  }
+
+  # 2) API task definition env (plain, non-secret): the deliberate master switch —
+  #    INTEGRATIONS_REAL_SECRETS = "1"
+  #    Safe default: LEAVE IT UNSET until this REQ's IAM is applied; unset keeps the all-stub
+  #    behavior (honest 503s). Exactly "true"/"1" — anything else fails closed. API task ONLY,
+  #    never the worker.
+
+  # 3) NO INGEST_* names on the API task (unchanged — REQ-004 done-when stands). The new
+  #    POST /integrations/{name}/sync therefore answers an honest 503 on the live API; the
+  #    EventBridge-scheduled one-off task stays the primary sync path. Wiring API-kicked syncs
+  #    (INGEST_REAL_STORES + DB_* + bedrock:InvokeModel on the API task) is a SEPARATE,
+  #    deliberate future REQ — do not flip it as part of this one.
+  ```
+- **Done when:** `terraform validate` green; the api task role policy lists exactly the three actions above scoped to `uplift/*/hubspot*` (and the worker/ingest roles are unchanged); with `INTEGRATIONS_REAL_SECRETS=1` on the API task, `POST /integrations/hubspot/credentials` (authed) creates/updates `uplift/<that tenant>/hubspot` in Secrets Manager, `GET /integrations` flips that tenant's hubspot status to `connected`, and the next REQ-004 scheduled ingest run for that tenant resolves the per-tenant secret WITHOUT the deprecated shared-token fallback warning.

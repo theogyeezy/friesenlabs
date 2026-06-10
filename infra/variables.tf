@@ -202,3 +202,9 @@ variable "provisioning_admin_key_available" {
   default     = false # flip once uplift/anthropic-admin-key holds a value (VERIFY endpoints first)
   description = "Inject ANTHROPIC_ADMIN_KEY into the provisioning Lambda env."
 }
+
+variable "cube_image" {
+  type        = string
+  default     = "" # the custom uplift-cube image (semantic/ model + security context baked in)
+  description = "ECR image URI for the cube service; empty = pinned public cubejs/cube."
+}
