@@ -403,6 +403,11 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   baseline 122/190 DONE (clean plan), budget 195 DONE, alarms 194/129 DONE (sub pending user
   click), domain 131 IN PROGRESS (cert pending NS cutover). Next: cycle 12 MA env creation
   (org key in SM).
+- 2026-06-09 — CYCLE 12, AI-plane unlock: MA shapes VERIFIED (claude-api skill — runtime.py's
+  assumptions all real, incl. managed-agents-2026-04-01 + multiagent coordinator); live
+  create_environment → env_012JvqRKUZzUDeH3Gse6TBgZ in uplift/env-id; api_anthropic_env flipped
+  → task-def rev 4 (zero downtime; ANTHROPIC_API_KEY + UPLIFT_ENV_ID live on the API task, env-key
+  provably absent). /chat 503→401-unauth. PARKED: uplift/env-key = Console-only click (user).
 
 ## Lane Matt (app code) — log
 - 2026-06-09 — **Cycle 3 (real wiring + frontend honesty, 5 PRs + 1 fix-PR):** #34 real provisioning
