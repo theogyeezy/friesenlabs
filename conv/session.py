@@ -19,11 +19,19 @@ Routing (TODO AI/P1 resolved — coordinator-driven on real runtimes):
         which — by the Phase 4 base-class guarantee — routes a proposal to Greenlight WITHOUT
         performing the side effect, surfacing a pending approval.
   - Any real runtime (ManagedAgentsRuntime): tool selection comes from the COORDINATOR — the
-    `send_message` event digest carries the agent.custom_tool_use events + delegations. A
-    side-effecting tool the coordinator named is resolved through the TRUSTED registry and
-    invoked (=> Greenlight proposal, draft-only); read-only/unknown tool events are surfaced
-    untouched — the self-hosted worker executes read tools in the VPC, and an unknown name is
-    never default-allowed.
+    `send_message` event digest carries the agent.custom_tool_use events + delegations.
+    READ-ONLY (Policy.AUTO) tools are executed CLIENT-SIDE inside the runtime's send_message
+    loop (docs/decisions/custom-tool-execution-path.md, ratified #123 — the Conversation binds
+    its tenant-scoped ToolContext builder onto the runtime's `tool_context_factory` seam, and
+    results feed back as user.custom_tool_result). SIDE-EFFECTING (ALWAYS_ASK) tools are
+    likewise ROUTED to Greenlight inside that loop when the bound context carries a greenlight
+    client (the session gets an immediate queued_for_approval reply, per the ratified brief) —
+    they arrive here as already-routed `tool_name` entries and pass through untouched. A
+    side-effecting `tool` entry that reaches the digest UN-routed (no greenlight in the bound
+    context, or a stub runtime without the seam) is resolved through the TRUSTED registry and
+    invoked here (=> Greenlight proposal, draft-only). Read-only/unknown events that reach the
+    digest un-executed (no clients configured, unresolvable round, round bound) are surfaced
+    untouched — an unknown name is never default-allowed.
 """
 from __future__ import annotations
 
@@ -39,6 +47,9 @@ from agents.tools.sideeffecting import IssueQuote, SendEmail, UpdateDeal
 from .analytics import Analytics, Event, EventType
 from .rag import Answer, RagContext, answer as rag_answer
 from .slots import SlotContext, resolve_slots
+
+# Sentinel distinguishing "runtime has no tool_context_factory seam" from "seam present, unset".
+_SEAM_ABSENT = object()
 
 # Lightweight intent matching for the offline facade — FakeRuntime ONLY (explicitly gated in
 # send()). On a real runtime the coordinator picks the tools; this regex never runs there.
@@ -147,7 +158,35 @@ class Conversation:
             environment_id=environment_id,
         )
 
+        # CLIENT-SIDE AUTO-TOOL EXECUTION (custom-tool-execution-path decision, ratified #123):
+        # when the runtime exposes the `tool_context_factory` seam (ManagedAgentsRuntime) and the
+        # caller injected nothing, bind this conversation's tenant-scoped context builder so the
+        # coordinator's read-only tool calls execute in-process during send_message and feed back
+        # as user.custom_tool_result. A factory injected at runtime construction always wins.
+        # FakeRuntime / stub runtimes don't carry the seam — nothing changes for them.
+        if getattr(self.runtime, "tool_context_factory", _SEAM_ABSENT) is None:
+            self.runtime.tool_context_factory = self._session_tool_ctx
+
     # ------------------------------------------------------------------ helpers
+    def _session_tool_ctx(self, session: Session) -> ToolContext:
+        """ToolContext for the runtime's client-side AUTO-tool execution. THE TRUST RULE: the
+        tenant comes from the SESSION metadata only (set from the verified claim at
+        create_session) — never re-read from conversation/request state. Fresh extra dict per
+        call — tool invocations must never share mutable context state."""
+        extra: dict = {}
+        if self.spec_generator is not None:
+            extra["generate_spec"] = self.spec_generator
+        return ToolContext(
+            tenant_id=session.metadata["tenant_id"],
+            agent=self.agent,
+            db=self.crm,
+            cube=self.cube,
+            rag=self.rag,
+            cortex=self.cortex,
+            greenlight=self.greenlight,
+            extra=extra,
+        )
+
     def _tool_ctx(self) -> ToolContext:
         # Fresh extra dict per call — tool invocations must never share mutable context state.
         extra: dict = {}
@@ -218,17 +257,29 @@ class Conversation:
         answer text, delegations (session.thread_created), and agent.custom_tool_use events
         surfaced as pending entries `{status, tool, input, custom_tool_use_id}`. Routing:
 
-        - a SIDE-EFFECTING tool named by the coordinator resolves through the TRUSTED registry
-          and is invoked — the Phase 4 base class routes a proposal to Greenlight WITHOUT
-          performing the side effect (draft-only stays guaranteed);
-        - read-only tool events pass through untouched (the self-hosted worker executes read
-          tools in the VPC — this facade never re-runs them);
+        - a SIDE-EFFECTING tool the runtime ALREADY ROUTED to Greenlight (ratified #123: gated
+          calls get an immediate queued_for_approval reply inside send_message when the bound
+          context carries greenlight) arrives as a `tool_name` entry — passed through untouched,
+          the proposal is never enqueued twice (`action_kwargs` top-ups apply only to the
+          un-routed path below);
+        - a side-effecting `tool` entry that reached the digest UN-routed resolves through the
+          TRUSTED registry and is invoked here — the Phase 4 base class routes a proposal to
+          Greenlight WITHOUT performing the side effect (draft-only stays guaranteed);
+        - READ-ONLY (AUTO) tools were already executed CLIENT-SIDE inside the runtime's
+          send_message loop (ratified #123) — resolved calls arrive in the digest's
+          `tool_results` (recorded to analytics here, never re-run); any read-only event that
+          reaches `pending_approvals` un-executed passes through untouched;
         - an UNKNOWN tool name is never default-allowed: the event is surfaced as-is, nothing
           resolves or executes.
         """
         from agents.tools.registry import get_tool  # noqa: PLC0415 — trusted server-side registry
 
         resp = self.runtime.send_message(self.session, message)
+
+        # Client-side executions the runtime already performed this turn (AUTO tools only) —
+        # recorded for the trace; the results were fed back into the session, nothing re-runs.
+        for tr in resp.get("tool_results") or []:
+            self._record(EventType.TOOL_CALL, {"tool": tr.get("tool"), "status": tr.get("status")})
 
         pending: list[dict] = []
         for event in resp.get("pending_approvals") or []:
