@@ -877,7 +877,7 @@ textarea.lp-input { height: 92px; padding: 11px 13px; resize: none; }
    window (muted warm controls, mono address, live pulse) so it
    reads as a real product capture while staying editorial.
    ============================================================ */
-.lp-demo-window { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--surface); box-shadow: 0 40px 80px -52px oklch(0.3 0.04 48 / .45); }
+.lp-demo-window { position: relative; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--surface); box-shadow: 0 40px 80px -52px oklch(0.3 0.04 48 / .45); }
 .lp-demo-chrome { display: flex; align-items: center; gap: 12px; height: 40px; padding: 0 15px; border-bottom: 1px solid var(--line); background: var(--surface-2); }
 .lp-demo-dots { display: inline-flex; gap: 7px; flex-shrink: 0; }
 .lp-demo-dots i { width: 10px; height: 10px; border-radius: 50%; background: var(--line); }

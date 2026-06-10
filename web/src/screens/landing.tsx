@@ -1116,9 +1116,16 @@ function Landing({ onSignIn = () => {} } = {}) {
             <HeroRoster />
           </div>
           <div className="lp-hero-3d">
-            <div className="lp-demo-stage tilt3d" data-tilt="11" style={{ gridTemplateColumns: "1fr", minHeight: 0 }}>
+            <div className="lp-demo-window tilt3d" data-tilt="11">
               <div className="tilt3d-glare" aria-hidden="true" />
-              <div className="lp-demo-canvas" style={{ borderRight: "none" }}><FoxDemo /></div>
+              <div className="lp-demo-chrome">
+                <span className="lp-demo-dots"><i /><i /><i /></span>
+                <span className="lp-demo-addr">app.friesenlabs.com</span>
+                <span className="lp-demo-live"><span className="dot" />Live</span>
+              </div>
+              <div className="lp-demo-stage" style={{ gridTemplateColumns: "1fr", minHeight: 0 }}>
+                <div className="lp-demo-canvas" style={{ borderRight: "none" }}><FoxDemo /></div>
+              </div>
             </div>
           </div>
         </div>
