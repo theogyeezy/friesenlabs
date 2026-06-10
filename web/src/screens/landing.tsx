@@ -225,6 +225,26 @@ const VS_ROWS = [
   { id: "funnels", f: "Ad dashboards, traffic analytics, and a content calendar, all on the roadmap", g: "Funnels, sites, and ad tools today", fHas: "partial", gHas: true },
 ];
 
+function useHeroParallax() {
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const el = document.querySelector(".lp-hero-3d");
+    if (!el) return;
+    let raf = 0;
+    const onScroll = () => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        const y = Math.min(window.scrollY, 700) * 0.06;
+        el.style.transform = "translate3d(0," + y.toFixed(1) + "px,0)";
+      });
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => { window.removeEventListener("scroll", onScroll); if (raf) cancelAnimationFrame(raf); };
+  }, []);
+}
+
 function useReveal() {
   useEffect(() => {
     const els = document.querySelectorAll(".lp-section .lp-wrap, .lp-vs-row, .lp-fullbleed .lp-wrap");
@@ -968,6 +988,7 @@ function Landing({ onSignIn = () => {} } = {}) {
     return () => document.body.classList.remove("lp-body");
   }, []);
   useReveal();
+  useHeroParallax();
   useMagnetic();
   useTilt3d();
   const [demoTab, setDemoTab] = useState("agents");
