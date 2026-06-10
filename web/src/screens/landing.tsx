@@ -673,6 +673,36 @@ function useMagnetic() {
   }, []);
 }
 
+// Sticky scroll-progress bar across the top of the marketing page.
+function ScrollProgress() {
+  const [p, setP] = useState(0);
+  useEffect(() => {
+    const on = () => { const h = document.documentElement; const max = h.scrollHeight - h.clientHeight; setP(max > 0 ? (h.scrollTop / max) * 100 : 0); };
+    on(); window.addEventListener("scroll", on, { passive: true }); window.addEventListener("resize", on);
+    return () => { window.removeEventListener("scroll", on); window.removeEventListener("resize", on); };
+  }, []);
+  return <div className="lp-progress" style={{ transform: `scaleX(${p / 100})` }} aria-hidden="true" />;
+}
+
+// Bold closing CTA band — the last beat before the footer.
+function FinalCta({ onBuild, onBook }) {
+  return (
+    <section className="lp-finalcta">
+      <div className="lp-aurora" aria-hidden="true"><span /><span /><span /></div>
+      <div className="lp-wrap">
+        <div className="lp-eyebrow" style={{ color: "color-mix(in oklch, var(--accent) 55%, #fff)" }}>Your agents are waiting</div>
+        <h2 className="fc-h">Stop doing the busywork.<br />Put a crew on it tonight.</h2>
+        <p className="fc-sub">Build your suite in minutes, keep the CRM you love, and approve only what matters. Live by this afternoon.</p>
+        <div className="fc-cta">
+          <button className="btn btn-primary btn-lg" onClick={onBuild}><Icon name="bolt" size={17} />Build your suite</button>
+          <button className="btn btn-glass btn-lg" onClick={onBook}><Icon name="calendar" size={16} />Book a 15-min call</button>
+        </div>
+        <div className="fc-trust">{["Live in a day", "Keep your CRM", "One-tap kill switch", "Cancel anytime"].map((t) => <span key={t}><Icon name="check" size={14} sw={2.6} />{t}</span>)}</div>
+      </div>
+    </section>
+  );
+}
+
 // Interactive agent roster — click a crew member, the hero line rewrites to what they do.
 const HERO_ROSTER = [
   { id: "margo", emoji: "💬", name: "Margo", role: "Sales", line: "quotes every inbound lead before your coffee's cold, then chases the follow-up." },
@@ -780,6 +810,7 @@ function Landing({ onSignIn = () => {} } = {}) {
 
   return (
     <div className="lp">
+      <ScrollProgress />
       {/* nav */}
       <nav className="lp-nav">
         <div className="lp-nav-in">
@@ -1233,6 +1264,9 @@ function Landing({ onSignIn = () => {} } = {}) {
           </a>
         </div>
       </section>
+
+      {/* closing CTA band */}
+      <FinalCta onBuild={() => document.getElementById("pricing").scrollIntoView({ behavior: "smooth" })} onBook={() => setModal("book")} />
 
       <footer className="lp-footer">
         <div className="lp-wrap">
