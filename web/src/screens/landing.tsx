@@ -695,6 +695,82 @@ function useTilt3d() {
 // Fixed film-grain overlay — cinematic texture across the whole page.
 function Grain() { return <div className="lp-grain" aria-hidden="true" />; }
 
+// Live WebGL shader backdrop — the cinematic atmosphere the whole page sits in. A custom GLSL
+// fragment field (domain-warped fbm) flows behind every (translucent) section and reacts to scroll
+// + cursor. Raw WebGL (~no deps), rendered at 0.55x and CSS-upscaled (the field is soft, so it's
+// cheap), DPR-light, paused when the tab is hidden. Reduced-motion or no-WebGL → renders nothing
+// and the CSS gradient shows through (graceful). This is the real-3D layer; three.js geometry
+// would be heavier for an atmosphere and is reserved for a possible hero showpiece.
+function WebGLBackdrop() {
+  const ref = useRef(null);
+  useEffect(() => {
+    if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const canvas = ref.current;
+    const gl = canvas && canvas.getContext("webgl", { antialias: false, alpha: false, powerPreference: "low-power" });
+    if (!gl) return;
+    const VS = "attribute vec2 p; void main(){ gl_Position = vec4(p, 0.0, 1.0); }";
+    const FS = [
+      "precision highp float;",
+      "uniform vec2 u_res; uniform float u_time; uniform float u_scroll; uniform vec2 u_mouse;",
+      "float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }",
+      "float noise(vec2 p){ vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);",
+      "  float a=hash(i), b=hash(i+vec2(1.0,0.0)), c=hash(i+vec2(0.0,1.0)), d=hash(i+vec2(1.0,1.0));",
+      "  return mix(mix(a,b,f.x), mix(c,d,f.x), f.y); }",
+      "float fbm(vec2 p){ float v=0.0, a=0.5; for(int i=0;i<5;i++){ v+=a*noise(p); p=p*2.0+vec2(1.7,9.2); a*=0.5; } return v; }",
+      "void main(){",
+      "  vec2 uv = gl_FragCoord.xy/u_res.xy;",
+      "  vec2 p = uv; p.x *= u_res.x/u_res.y; p *= 1.55;",
+      "  float t = u_time*0.035;",
+      "  vec2 q = vec2(fbm(p+vec2(0.0,t)), fbm(p+vec2(5.2,1.3)-t));",
+      "  vec2 r = vec2(fbm(p+2.0*q+vec2(1.7+u_mouse.x*0.4,9.2)+t*0.5), fbm(p+2.0*q+vec2(8.3,2.8)+u_scroll*0.45));",
+      "  float f = fbm(p+1.8*r);",
+      "  vec3 base = vec3(0.965,0.962,0.992);",
+      "  vec3 c1 = vec3(0.45,0.39,0.96);",
+      "  vec3 c2 = vec3(0.64,0.34,0.92);",
+      "  vec3 c3 = vec3(0.36,0.80,0.86);",
+      "  vec3 col = base;",
+      "  col = mix(col, c1, clamp(f*f*1.5,0.0,1.0)*0.55);",
+      "  col = mix(col, c3, clamp(r.x,0.0,1.0)*0.30);",
+      "  col = mix(col, c2, clamp(q.y,0.0,1.0)*0.22);",
+      "  float vig = smoothstep(1.25,0.32,length(uv-0.5));",
+      "  col *= 0.90+0.14*vig;",
+      "  gl_FragColor = vec4(col, 1.0);",
+      "}",
+    ].join("\n");
+    const compile = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); return s; };
+    const prog = gl.createProgram();
+    gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+    gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) return;
+    gl.useProgram(prog);
+    const buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+    const loc = gl.getAttribLocation(prog, "p");
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+    const uRes = gl.getUniformLocation(prog, "u_res"), uTime = gl.getUniformLocation(prog, "u_time"),
+      uScroll = gl.getUniformLocation(prog, "u_scroll"), uMouse = gl.getUniformLocation(prog, "u_mouse");
+    const SCALE = 0.55;
+    let raf, running = true, elapsed = 0, t0 = performance.now();
+    let mouse = [0.5, 0.5], scroll = 0;
+    const resize = () => { const w = Math.max(2, Math.floor(window.innerWidth * SCALE)), h = Math.max(2, Math.floor(window.innerHeight * SCALE)); canvas.width = w; canvas.height = h; gl.viewport(0, 0, w, h); };
+    const onMove = (e) => { mouse = [e.clientX / window.innerWidth, 1 - e.clientY / window.innerHeight]; };
+    const onScroll = () => { const m = document.documentElement.scrollHeight - window.innerHeight; scroll = m > 0 ? window.scrollY / m : 0; };
+    const loop = () => { if (!running) return; elapsed = performance.now() - t0; gl.uniform2f(uRes, canvas.width, canvas.height); gl.uniform1f(uTime, elapsed / 1000); gl.uniform1f(uScroll, scroll); gl.uniform2f(uMouse, mouse[0], mouse[1]); gl.drawArrays(gl.TRIANGLES, 0, 3); raf = requestAnimationFrame(loop); };
+    const onVis = () => { if (document.hidden) { running = false; cancelAnimationFrame(raf); } else if (!running) { running = true; t0 = performance.now() - elapsed; loop(); } };
+    resize();
+    window.addEventListener("resize", resize);
+    window.addEventListener("mousemove", onMove, { passive: true });
+    window.addEventListener("scroll", onScroll, { passive: true });
+    document.addEventListener("visibilitychange", onVis);
+    loop();
+    return () => { running = false; cancelAnimationFrame(raf); window.removeEventListener("resize", resize); window.removeEventListener("mousemove", onMove); window.removeEventListener("scroll", onScroll); document.removeEventListener("visibilitychange", onVis); };
+  }, []);
+  return <canvas ref={ref} className="lp-webgl" aria-hidden="true" />;
+}
+
 // Section anchors shared by the desktop nav + the mobile menu.
 const NAV_LINKS = [
   ["products", "Products"], ["demos", "See it work"], ["compare", "vs GHL"],
@@ -874,6 +950,7 @@ function Landing({ onSignIn = () => {} } = {}) {
 
   return (
     <div className="lp lp-cinematic">
+      <WebGLBackdrop />
       <Grain />
       <ScrollProgress />
       {/* nav */}
