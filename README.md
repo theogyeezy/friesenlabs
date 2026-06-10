@@ -54,7 +54,7 @@ Everything that can be built and tested offline is done, and a final adversarial
 |-------|-----------|-----|--------------|
 | ✅ **Live & working** | Amplify → CloudFront → ALB → arm64 Fargate API → Aurora (FORCE'd RLS); Cognito JWKS auth | deployed + **verified** (`/healthz` 200, unauth API 401) | — |
 | ✅ **Live & working** | Web UI with real login (Hosted-UI PKCE, `web/src/auth/`) | browser-verified end-to-end | — |
-| ✅ **Live & working** | GHL-energy marketing landing: interactive hero roster, vs-GoHighLevel radar + comparison, live ROI calculator | browser-verified on Amplify | — |
+| ✅ **Live & working** | GHL-energy marketing landing, **mobile-first**: hamburger nav, sticky CTA, interactive hero roster, vs-GoHighLevel radar, live ROI calculator | browser-verified desktop + 390px mobile | — |
 | ✅ **Live & working** | Edge hardening: X-Origin-Verify shared secret (CloudFront → ALB 403-default) | applied two-phase, zero downtime | — |
 | ✅ **Live & working** | Cube semantic service (1/1, `/readyz` 200 internally) | digest-pinned, memory driver (Cube 1.x), SG self-rule | data model image (semantic/ bake) next |
 | ✅ **Live & working** | Observability: 4 CloudWatch alarms + SNS + billing-alarm action + `uplift-live` dashboard; budget notification subscribed | applied | email sub PendingConfirmation (click) |

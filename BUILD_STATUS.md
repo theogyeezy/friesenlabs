@@ -470,6 +470,14 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   `/assets/**` (hashed) → `immutable` — so future web deploys are seen immediately without a hard
   refresh (AWS-side `amplify update-app --custom-headers`, not in git). Existing users should
   hard-refresh once to clear the previously-cached bundle.
+- 2026-06-10 — Landing mobile-first UX redesign (user: "bad UX, can't see everything easily on
+  mobile"). Researched SaaS landing best practices (mobile-first / one primary CTA / wayfinding /
+  scannable), diagnosed the real gaps on the live phone view, then shipped: HAMBURGER nav +
+  slide-in menu (the 15k-px page had NO mobile navigation — links just display:none'd at 860px);
+  sticky bottom CTA bar (Build your suite always one tap away); back-to-top; hero/final CTAs
+  stack full-width to a single dominant action; tighter mobile section rhythm + safe-area insets.
+  Live-verified on a 390px viewport (hero, open menu, radar, pricing) — incl. fixing the radar
+  axis labels clipping (widened SVG viewBox). Desktop unchanged; e2e anchors intact.
 
 ## Lane Matt (app code) — log
 - 2026-06-09 — **Cycles 5-6 (lane tail) + LANE MATT COMPLETE:** #67(+hotfix #73: the prod image
