@@ -19,8 +19,15 @@ variable "logout_urls" {
 resource "aws_cognito_user_pool" "this" {
   name                     = "${var.project}-users"
   auto_verified_attributes = ["email"]
+  deletion_protection      = "ACTIVE" # holds tenant identities — guard against accidental delete
 
   username_attributes = ["email"]
+
+  # Provisioning-only pool: users are created by the signup provisioner via AdminCreateUser, never
+  # self-registered through the Hosted UI (which would bypass verify-before-pay + the tenant claim).
+  admin_create_user_config {
+    allow_admin_create_user_only = true
+  }
 
   password_policy {
     minimum_length    = 12
@@ -74,7 +81,7 @@ resource "aws_cognito_user_pool_client" "web" {
   }
   id_token_validity      = 60
   access_token_validity  = 60
-  refresh_token_validity = 30
+  refresh_token_validity = 7 # short-lived for a browser SPA (was 30); revoke-on-signout still applies
 
   # custom:tenant_id is READ-only to the client (not in write_attributes) so it can never be self-set.
   read_attributes  = ["email", "custom:tenant_id"]

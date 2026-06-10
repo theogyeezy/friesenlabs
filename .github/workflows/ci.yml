@@ -9,6 +9,10 @@ on:
   schedule:
     - cron: "17 9 * * *" # nightly: the gated live signup e2e (REQ-007)
 
+# Least privilege: CI only needs to read the repo (no deploys here — that's deploy.yml's OIDC role).
+permissions:
+  contents: read
+
 jobs:
   python:
     runs-on: ubuntu-latest
