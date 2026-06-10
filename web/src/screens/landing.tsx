@@ -247,10 +247,21 @@ function useHeroParallax() {
 
 function useReveal() {
   useEffect(() => {
-    const els = document.querySelectorAll(".lp-section .lp-wrap, .lp-vs-row, .lp-fullbleed .lp-wrap");
-    if (!("IntersectionObserver" in window)) { els.forEach((el) => el.classList.add("rv-in")); return; }
-    const io = new IntersectionObserver((es) => es.forEach((e) => { if (e.isIntersecting) { e.target.classList.add("rv-in"); io.unobserve(e.target); } }), { threshold: 0.12 });
-    els.forEach((el) => { el.classList.add("rv"); io.observe(el); });
+    const wraps = document.querySelectorAll(".lp-section .lp-wrap, .lp-vs-row, .lp-fullbleed .lp-wrap");
+    const cards = document.querySelectorAll(".lp-feat, .lp-layer, .lp-testi");
+    if (!("IntersectionObserver" in window)) { [...wraps, ...cards].forEach((el) => el.classList.add("rv-in")); return; }
+    const io = new IntersectionObserver((es) => es.forEach((e) => {
+      if (!e.isIntersecting) return;
+      e.target.classList.add("rv-in"); io.unobserve(e.target);
+      // staggered cards drop the reveal classes after settling so their own hover transition returns
+      if (e.target.classList.contains("rvc")) setTimeout(() => e.target.classList.remove("rv", "rvc"), 900);
+    }), { threshold: 0.12 });
+    wraps.forEach((el) => { el.classList.add("rv"); io.observe(el); });
+    cards.forEach((el) => {
+      const kin = el.parentElement ? [...el.parentElement.children].filter((n) => n.classList && (n.classList.contains("lp-feat") || n.classList.contains("lp-layer") || n.classList.contains("lp-testi"))) : [el];
+      const i = Math.max(0, kin.indexOf(el));
+      el.classList.add("rv", "rvc"); el.style.setProperty("--d", (i * 70) + "ms"); io.observe(el);
+    });
     return () => io.disconnect();
   }, []);
 }
