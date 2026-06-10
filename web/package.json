@@ -7,8 +7,10 @@
     "dev": "vite",
     "build": "vite build",
     "build:real": "VITE_API_MOCK=0 vite build --outDir dist-real",
+    "build:auth": "VITE_API_MOCK=0 VITE_COGNITO_DOMAIN=auth-e2e.uplift.invalid VITE_COGNITO_CLIENT_ID=e2e-client-id VITE_COGNITO_REGION=us-east-1 vite build --outDir dist-auth",
     "preview": "vite preview",
     "preview:real": "vite preview --outDir dist-real --port 4174",
+    "preview:auth": "vite preview --outDir dist-auth --port 4175",
     "typecheck": "tsc --noEmit",
     "test": "node --test test/*.test.mjs",
     "test:e2e": "playwright test"

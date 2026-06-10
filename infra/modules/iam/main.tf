@@ -105,5 +105,25 @@ resource "aws_iam_role_policy" "api_task_xray" {
   })
 }
 
+# REQ-005: the api task starts provisioning executions — scoped to exactly ONE machine ARN.
+variable "provisioning_sfn_arn" {
+  type    = string
+  default = ""
+}
+
+resource "aws_iam_role_policy" "api_task_sfn" {
+  count = var.provisioning_sfn_arn != "" ? 1 : 0
+  name  = "start-provisioning-sfn"
+  role  = aws_iam_role.task["api"].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["states:StartExecution"]
+      Resource = var.provisioning_sfn_arn
+    }]
+  })
+}
+
 output "ecs_task_execution_role_arn" { value = aws_iam_role.ecs_task_execution.arn }
 output "task_role_arns" { value = { for k, r in aws_iam_role.task : k => r.arn } }

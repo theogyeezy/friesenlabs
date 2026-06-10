@@ -63,6 +63,11 @@ variable "anthropic_admin_key_secret_arn" {
   type    = string
   default = ""
 }
+# REQ-005: the deliberate decouple switch — unset keeps the in-process provision path.
+variable "provisioning_sfn_arn" {
+  type    = string
+  default = ""
+}
 variable "cognito_user_pool_id" { type = string }
 variable "cognito_client_id" { type = string }
 variable "aurora_endpoint" {
@@ -122,7 +127,8 @@ resource "aws_ecs_task_definition" "api" {
         ],
         # REQ-003 step 0: the master switch appears ONLY at the deliberate go-live act —
         # without it build_signup_deps() boots all-stub even with every secret present.
-        var.signup_real_deps ? [{ name = "SIGNUP_REAL_DEPS", value = "1" }] : []
+        var.signup_real_deps ? [{ name = "SIGNUP_REAL_DEPS", value = "1" }] : [],
+        var.provisioning_sfn_arn != "" ? [{ name = "PROVISIONING_SFN_ARN", value = var.provisioning_sfn_arn }] : []
       )
       secrets = concat(
         [

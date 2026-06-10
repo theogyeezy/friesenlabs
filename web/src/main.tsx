@@ -10,21 +10,19 @@ import "./landing.css";
 import "./globals";
 
 import App from "./app";
-import DashboardDemo from "./dashboard/Demo";
-import { SafeHtml } from "./lib/SafeHtml";
 
-// Demo proving feed HTML is sanitized: a malicious payload renders inert, safe markup survives.
-function SafeHtmlDemo() {
-  const payload =
-    '<img src=x onerror="window.__pwned=1"><script>window.__pwned=1<\/script><b>safe bold</b>';
-  return (
-    <div style={{ padding: 24 }}>
-      <h1>SafeHtml</h1>
-      <div data-testid="feed">
-        <SafeHtml as="p" html={payload} />
-      </div>
-    </div>
-  );
+// Offline demo surfaces (?view=dashboard-demo / ?view=safehtml-demo) — MOCK
+// BUILDS ONLY. The gate below is BUILD-TIME: Vite statically replaces
+// import.meta.env.VITE_API_MOCK, so in real builds (VITE_API_MOCK=0) the
+// branch folds away and rollup never emits these chunks. That keeps the
+// __pwned XSS-probe payloads (SafeHtmlDemo + Demo.tsx's malicious spec) and
+// the demo renderer fixtures out of production bundles entirely; the demo
+// ?view= ids simply fall through to the gated app shell in real mode.
+let DashboardDemoLazy: React.LazyExoticComponent<React.ComponentType> | null = null;
+let SafeHtmlDemoLazy: React.LazyExoticComponent<React.ComponentType> | null = null;
+if (import.meta.env.VITE_API_MOCK !== "0" && import.meta.env.VITE_API_MOCK !== "false") {
+  DashboardDemoLazy = React.lazy(() => import("./dashboard/Demo"));
+  SafeHtmlDemoLazy = React.lazy(() => import("./dev/SafeHtmlDemo"));
 }
 
 // API-wired surfaces (Phase 9b). Each reads through the typed ApiClient, which
@@ -65,11 +63,27 @@ function Gated({ children }: { children: React.ReactElement }) {
 
 function Root() {
   switch (view) {
-    // Offline demo surfaces — no API client, safe ungated.
+    // Offline demo surfaces — no API client, safe ungated. Mock builds only:
+    // in real builds the lazy components are null and these ids fall through
+    // to the default gated shell.
     case "dashboard-demo":
-      return <DashboardDemo />;
+      if (DashboardDemoLazy) {
+        return (
+          <React.Suspense fallback={null}>
+            <DashboardDemoLazy />
+          </React.Suspense>
+        );
+      }
+      break;
     case "safehtml-demo":
-      return <SafeHtmlDemo />;
+      if (SafeHtmlDemoLazy) {
+        return (
+          <React.Suspense fallback={null}>
+            <SafeHtmlDemoLazy />
+          </React.Suspense>
+        );
+      }
+      break;
     // Pre-auth by design: the signup funnel runs before any tenant or token exists.
     case "signup":
       return <SignupFlow />;
@@ -93,13 +107,13 @@ function Root() {
           <DashboardView />
         </Gated>
       );
-    default:
-      return (
-        <Gated>
-          <App />
-        </Gated>
-      );
   }
+  // Default shell — also the fall-through for demo ?view= ids in real builds.
+  return (
+    <Gated>
+      <App />
+    </Gated>
+  );
 }
 
 // The OAuth callback (/auth/callback — the SPA rewrite serves index.html for

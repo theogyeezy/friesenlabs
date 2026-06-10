@@ -31,6 +31,7 @@ module "iam" {
     module.secrets.crm_app_db_secret_arn,
     module.data.master_user_secret_arn,
   ])
+  provisioning_sfn_arn = module.provisioning.state_machine_arn
   # REQ-003: exact platform-secret ARNs for the execution role (listed, not a wildcard widen).
   extra_execution_secret_arns = [
     data.aws_secretsmanager_secret.platform_stripe.arn,
@@ -99,6 +100,8 @@ module "cube" {
   db_secret_arn       = module.secrets.crm_app_db_secret_arn
   cube_api_secret_arn = module.secrets.cube_api_secret_arn
   log_retention_days  = var.log_retention_days
+  image               = var.cube_image
+  namespace_id        = module.vpc.service_discovery_namespace_id
 }
 
 # --- Phase 9: auth + ALB + api service ---
@@ -140,6 +143,7 @@ module "api_service" {
   stripe_webhook_secret_arn      = module.secrets.stripe_webhook_secret_arn
   signup_token_secret_arn        = module.secrets.signup_token_secret_arn
   anthropic_admin_key_secret_arn = module.secrets.anthropic_admin_key_secret_arn
+  provisioning_sfn_arn           = var.api_provisioning_sfn ? module.provisioning.state_machine_arn : ""
   cognito_user_pool_id           = module.auth.user_pool_id
   cognito_client_id              = module.auth.user_pool_client_id
   image                          = var.api_image
@@ -175,9 +179,27 @@ module "cortex" {
 }
 
 # --- Phase 10: provisioning orchestration (Step Functions) ---
+# REQ-005: the Lambda the SFN invokes (count-gated on the pushed image).
+module "provisioning_lambda" {
+  source               = "./modules/provisioning_lambda"
+  project              = var.project
+  image_uri            = var.provisioning_lambda_image
+  private_subnet_ids   = module.vpc.private_subnet_ids
+  security_group_id    = module.security.sg_api
+  db_secret_arn        = module.secrets.crm_app_db_secret_arn
+  db_host              = module.data.cluster_endpoint
+  cognito_user_pool_id = module.auth.user_pool_id
+  resend_key_secret_id = data.aws_secretsmanager_secret.platform_resend.id
+  resend_from_email    = var.resend_from_email
+  verify_url_base      = var.signup_verify_url_base
+  admin_key_secret_id  = module.secrets.anthropic_admin_key_secret_arn
+  admin_key_available  = var.provisioning_admin_key_available
+}
+
 module "provisioning" {
-  source  = "./modules/provisioning"
-  project = var.project
+  provisioning_lambda_arn = module.provisioning_lambda.function_arn
+  source                  = "./modules/provisioning"
+  project                 = var.project
 }
 
 # --- Web hosting: Amplify (Vite SPA). Only created when a GitHub token is supplied. ---

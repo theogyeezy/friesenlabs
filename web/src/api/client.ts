@@ -13,7 +13,7 @@
 // injects { baseURL, getToken, refreshAuth }; no other code changes.
 
 import { fetchWithAuthRetry } from "../auth/core.js";
-import { getValidIdToken, isAuthConfigured, localSignOut, refreshAuthForRetry } from "../auth/cognito";
+import { getValidIdToken, isAuthConfigured, refreshAuthForRetry, sessionExpired } from "../auth/cognito";
 
 // ---------------------------------------------------------------------------
 // Wire types (mirror api/app.py request/response shapes)
@@ -241,134 +241,25 @@ export function configFromEnv(): ApiClientConfig {
   if (!mock && isAuthConfigured()) {
     config.getToken = () => getValidIdToken();
     config.refreshAuth = () => refreshAuthForRetry();
-    config.onAuthRejected = () => localSignOut();
+    // A 401 that survives refresh+retry is a dead session: clear it and land
+    // on the sign-in route (the gated root) instead of refresh-churning.
+    config.onAuthRejected = () => sessionExpired();
   }
   return config;
 }
 
 // ---------------------------------------------------------------------------
-// Fixtures (mock mode): canned, deterministic, offline
+// Fixtures (mock mode): canned, deterministic, offline — in MOCK BUILDS ONLY.
+//
+// The fixture data and mock state machine live in ./mockData, loaded through
+// the build-time-gated dynamic import below. Real-mode bundles fold the gate
+// to false at build time, so the mock chunk (demo tenants, canned deals,
+// fixture numbers, mock account ids) is never emitted into a production
+// bundle — prod bundle hygiene, provable by grepping dist-real.
 // ---------------------------------------------------------------------------
 
-const MOCK_TENANT = "tenant-demo";
-
-function seedApprovals(): Approval[] {
-  return [
-    {
-      id: 1,
-      tenant_id: MOCK_TENANT,
-      proposed_action: {
-        action: "send_email",
-        to: "ops@riverside-plumbing.example",
-        subject: "Your Q3 renewal quote",
-        body:
-          "Hi Dana, thanks for the call. I have put together your renewal at the agreed " +
-          "terms, a 6 percent uplift held flat on support. The signed quote is attached. " +
-          "Happy to walk through it whenever works for you.",
-      },
-      agent: "nadia",
-      reasoning:
-        "Renewal is 11 days out and the buyer opened the prior quote six times. Sending now " +
-        "keeps us ahead of the cycle and matches the discount policy we agreed.",
-      value_at_stake: 22100,
-      status: "pending",
-    },
-    {
-      id: 2,
-      tenant_id: MOCK_TENANT,
-      proposed_action: {
-        action: "apply_discount",
-        deal: "Lantern Bakehouse",
-        percent: 8,
-        note: "One time onboarding credit to close before month end.",
-      },
-      agent: "scout",
-      reasoning:
-        "Deal has stalled two weeks at proposal. An 8 percent onboarding credit is inside the " +
-        "approved band and the win probability lifts to 71 percent with it.",
-      value_at_stake: 15700,
-      status: "pending",
-    },
-  ];
-}
-
-function seedViews(): SavedViewRow[] {
-  return [
-    {
-      tenant_id: MOCK_TENANT,
-      view_id: "demo_pipeline",
-      version: 1,
-      spec_json: {
-        view_id: "demo_pipeline",
-        title: "Pipeline overview",
-        version: 1,
-        source_prompt: "Show me total pipeline and value by stage",
-        semantic_refs: ["Deals.totalValue", "Deals.count", "Deals.stage"],
-        layout: [
-          { type: "kpi", title: "Open pipeline", metric: "Deals.totalValue" },
-          { type: "kpi", title: "Open deals", metric: "Deals.count" },
-          {
-            type: "chart",
-            title: "Pipeline value by stage",
-            encoding: "vega-lite",
-            spec: {
-              mark: "bar",
-              encoding: {
-                x: { field: "stage", type: "nominal", title: "Stage" },
-                y: { field: "value", type: "quantitative", title: "Value" },
-              },
-            },
-            query: { measures: ["Deals.totalValue"], dimensions: ["Deals.stage"] },
-          },
-        ],
-      },
-      semantic_refs: ["Deals.totalValue", "Deals.count", "Deals.stage"],
-      source_prompt: "Show me total pipeline and value by stage",
-      created_by: "demo",
-    },
-  ];
-}
-
-function cannedChat(_message: string): ChatResponse {
-  return {
-    answer:
-      "Across the open pipeline, three deals are most likely to close this week: Riverside " +
-      "Plumbing, Lantern Bakehouse, and Maple Grove Vet. Riverside is the clear priority today.",
-    citations: [
-      {
-        claim: "Riverside Plumbing is the highest probability deal at 78 percent.",
-        source_ref: "deal:riverside-plumbing",
-        snippet: "Riverside Plumbing, 22.1k, win probability 78 percent, quote opened 6 times.",
-      },
-      {
-        claim: "Pipeline grew 12 percent this week.",
-        source_ref: "report:weekly-pipeline",
-        snippet: "Weekly pipeline rollup: total open value up 12 percent to 124.8k.",
-      },
-    ],
-    pending_approvals: [],
-    slots: {},
-    needs_disambiguation: [],
-    delegations: [],
-    session_id: "mock-session",
-    tenant_id: MOCK_TENANT,
-  };
-}
-
-// A single in-flight mock signup. The mock walks the state machine forward:
-// created -> email_verified -> phone_verified -> paid -> provisioning -> active.
-// We store NO password (the form never sends one and the client never logs it);
-// we keep only what the API contract carries. There is no tenant_id here, by
-// construction: the funnel mints a tenant server-side only after provisioning.
-interface MockSignup {
-  account_id: string;
-  state: SignupState;
-  email_verified: boolean;
-  phone_verified: boolean;
-  // How many GET /signup polls remain before flipping provisioning -> active,
-  // so the UI shows a real "provisioning..." step instead of an instant jump.
-  provisioningPollsLeft: number;
-}
+/** Shape of the lazily-loaded mock module (type-only; erased at runtime). */
+type MockDataModule = typeof import("./mockData");
 
 // ---------------------------------------------------------------------------
 // Client
@@ -460,10 +351,9 @@ export class ApiClient {
   private mock: boolean;
   private fetchImpl: typeof fetch;
 
-  // Mutable in-memory mock stores so decide/save behave statefully in tests.
-  private mockApprovals: Approval[] | null = null;
-  private mockViews: SavedViewRow[] | null = null;
-  private mockSignup: MockSignup | null = null;
+  // Lazily-instantiated mock API (one per client, so decide/save/signup stay
+  // stateful within a test run). Loaded only in mock builds — see mockApi().
+  private mockApiPromise: Promise<InstanceType<MockDataModule["MockApi"]>> | null = null;
 
   constructor(config: ApiClientConfig = {}) {
     this.baseURL = (config.baseURL ?? "").replace(/\/$/, "");
@@ -548,23 +438,31 @@ export class ApiClient {
     return (await res.json()) as T;
   }
 
-  // --- mock-store accessors -------------------------------------------------
+  // --- mock surface (mock builds only) ---------------------------------------
 
-  private approvalsStore(): Approval[] {
-    if (this.mockApprovals === null) this.mockApprovals = seedApprovals();
-    return this.mockApprovals;
-  }
-
-  private viewsStore(): SavedViewRow[] {
-    if (this.mockViews === null) this.mockViews = seedViews();
-    return this.mockViews;
+  /**
+   * The lazily-loaded mock API. The outer condition is the BUILD-TIME gate:
+   * Vite replaces import.meta.env.VITE_API_MOCK with a literal, so in real
+   * builds the branch folds away and rollup never emits the mockData chunk.
+   * The throw is unreachable in practice (this.mock is only true in mock
+   * builds — apiMockEnabled() above shares the same env flag), but fails
+   * loudly rather than fetching fixtures if that invariant ever breaks.
+   */
+  private mockApi(): Promise<InstanceType<MockDataModule["MockApi"]>> {
+    if (import.meta.env.VITE_API_MOCK !== "0" && import.meta.env.VITE_API_MOCK !== "false") {
+      if (this.mockApiPromise === null) {
+        this.mockApiPromise = import("./mockData").then((m) => new m.MockApi());
+      }
+      return this.mockApiPromise;
+    }
+    return Promise.reject(new Error("mock fixtures are not part of real-mode builds"));
   }
 
   // --- API methods ----------------------------------------------------------
 
   async listApprovals(): Promise<Approval[]> {
     if (this.mock) {
-      return this.approvalsStore().filter((a) => a.status === "pending").map((a) => ({ ...a }));
+      return (await this.mockApi()).listApprovals();
     }
     const data = await this.request<ListApprovalsResponse>("GET", "/approvals");
     return data.approvals;
@@ -572,31 +470,14 @@ export class ApiClient {
 
   async decideApproval(id: number, body: DecideBody): Promise<Approval> {
     if (this.mock) {
-      const store = this.approvalsStore();
-      const rec = store.find((a) => a.id === id);
-      if (!rec || rec.status !== "pending") {
-        throw new ApiError(400, `approval ${id} not pending`);
-      }
-      if (body.decision === "deny") {
-        rec.status = "denied";
-        rec.deny_message = body.deny_message ?? "";
-      } else if (body.decision === "approve" || body.decision === "edit") {
-        if (body.decision === "edit" && body.edits) {
-          rec.proposed_action = { ...rec.proposed_action, ...body.edits };
-        }
-        rec.status = "approved";
-      } else {
-        throw new ApiError(400, `unknown decision ${String(body.decision)}`);
-      }
-      rec.decided_by = "demo-user";
-      return { ...rec };
+      return (await this.mockApi()).decideApproval(id, body);
     }
     return this.request<Approval>("POST", `/approvals/${id}/decide`, body);
   }
 
   async listViews(): Promise<SavedViewRow[]> {
     if (this.mock) {
-      return this.viewsStore().map((v) => ({ ...v }));
+      return (await this.mockApi()).listViews();
     }
     const data = await this.request<ListViewsResponse>("GET", "/views");
     return data.views;
@@ -604,55 +485,28 @@ export class ApiClient {
 
   async getView(viewId: string): Promise<SavedViewRow> {
     if (this.mock) {
-      const v = this.viewsStore().find((row) => row.view_id === viewId);
-      if (!v) throw new ApiError(404, "no such view");
-      return { ...v };
+      return (await this.mockApi()).getView(viewId);
     }
     return this.request<SavedViewRow>("GET", `/views/${encodeURIComponent(viewId)}`);
   }
 
   async saveView(body: SaveViewBody): Promise<SavedViewRow> {
     if (this.mock) {
-      const store = this.viewsStore();
-      const spec = body.spec as Record<string, unknown>;
-      const viewId = String(spec.view_id ?? "");
-      const existing = store.filter((r) => r.view_id === viewId);
-      const version = existing.length ? Math.max(...existing.map((r) => r.version)) + 1 : 1;
-      const row: SavedViewRow = {
-        tenant_id: MOCK_TENANT,
-        view_id: viewId,
-        version,
-        spec_json: { ...spec, version },
-        semantic_refs: (spec.semantic_refs as string[]) ?? [],
-        source_prompt: body.source_prompt ?? "",
-        created_by: "demo-user",
-      };
-      store.push(row);
-      return { ...row };
+      return (await this.mockApi()).saveView(body);
     }
     return this.request<SavedViewRow>("POST", "/views", body);
   }
 
   async chat(message: string): Promise<ChatResponse> {
     if (this.mock) {
-      return cannedChat(message);
+      return (await this.mockApi()).chat(message);
     }
     return this.request<ChatResponse>("POST", "/chat", { message });
   }
 
   async runAction(body: ActionBody): Promise<ActionResponse> {
     if (this.mock) {
-      // Side-effecting actions route to Greenlight; non-side-effecting auto-run.
-      if (body.side_effecting) {
-        return {
-          status: "needs_approval",
-          decision: "propose",
-          detail: "Queued for Greenlight review.",
-          approval: null,
-          result: null,
-        };
-      }
-      return { status: "executed", decision: "auto", detail: "", approval: null, result: { ok: true } };
+      return (await this.mockApi()).runAction(body);
     }
     return this.request<ActionResponse>("POST", "/actions", body);
   }
@@ -666,14 +520,7 @@ export class ApiClient {
   /** POST /signup: create the pending account from {email, phone}. */
   async signup(body: SignupBody): Promise<SignupResponse> {
     if (this.mock) {
-      this.mockSignup = {
-        account_id: "acct_mock_001",
-        state: "created",
-        email_verified: false,
-        phone_verified: false,
-        provisioningPollsLeft: 2,
-      };
-      return { account_id: this.mockSignup.account_id, state: this.mockSignup.state };
+      return (await this.mockApi()).signup();
     }
     // Pre-auth: send without a bearer token. Body carries email/phone only.
     return this.requestPublic<SignupResponse>("POST", "/signup", body);
@@ -682,10 +529,7 @@ export class ApiClient {
   /** POST /signup/{id}/verify-email: confirm the email token. */
   async verifyEmail(accountId: string, body: VerifyEmailBody): Promise<VerifyEmailResponse> {
     if (this.mock) {
-      const s = this.requireMockSignup(accountId);
-      s.email_verified = true;
-      s.state = "email_verified";
-      return { state: s.state, email_verified: true };
+      return (await this.mockApi()).verifyEmail(accountId);
     }
     return this.requestPublic<VerifyEmailResponse>(
       "POST",
@@ -697,10 +541,7 @@ export class ApiClient {
   /** POST /signup/{id}/verify-phone: confirm the SMS code. */
   async verifyPhone(accountId: string, body: VerifyPhoneBody): Promise<VerifyPhoneResponse> {
     if (this.mock) {
-      const s = this.requireMockSignup(accountId);
-      s.phone_verified = true;
-      s.state = "phone_verified";
-      return { state: s.state, phone_verified: true };
+      return (await this.mockApi()).verifyPhone(accountId);
     }
     return this.requestPublic<VerifyPhoneResponse>(
       "POST",
@@ -712,11 +553,7 @@ export class ApiClient {
   /** POST /signup/{id}/checkout: start Stripe checkout for the chosen plan. */
   async checkout(accountId: string, body: CheckoutBody): Promise<CheckoutResponse> {
     if (this.mock) {
-      const s = this.requireMockSignup(accountId);
-      // Payment "succeeds" in the mock; provisioning kicks off server-side.
-      s.state = "provisioning";
-      s.provisioningPollsLeft = 2;
-      return { checkout_id: "cs_mock_001", stripe_customer_id: "cus_mock_001" };
+      return (await this.mockApi()).checkout(accountId);
     }
     return this.requestPublic<CheckoutResponse>(
       "POST",
@@ -728,27 +565,12 @@ export class ApiClient {
   /** GET /signup/{id}: poll the funnel state until it reaches "active". */
   async getSignup(accountId: string): Promise<GetSignupResponse> {
     if (this.mock) {
-      const s = this.requireMockSignup(accountId);
-      if (s.state === "provisioning") {
-        if (s.provisioningPollsLeft > 0) {
-          s.provisioningPollsLeft -= 1;
-        } else {
-          s.state = "active";
-        }
-      }
-      return { state: s.state };
+      return (await this.mockApi()).getSignup(accountId);
     }
     return this.requestPublic<GetSignupResponse>(
       "GET",
       `/signup/${encodeURIComponent(accountId)}`,
     );
-  }
-
-  private requireMockSignup(accountId: string): MockSignup {
-    if (!this.mockSignup || this.mockSignup.account_id !== accountId) {
-      throw new ApiError(404, "no such signup");
-    }
-    return this.mockSignup;
   }
 }
 

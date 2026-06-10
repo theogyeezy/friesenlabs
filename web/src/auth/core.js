@@ -229,6 +229,67 @@ export function takePkce(storage) {
 }
 
 /**
+ * Merge a token-endpoint refresh response into the current stored token set.
+ *
+ * ROTATION-TOLERANT: when the endpoint returns a new refresh_token (Cognito
+ * with refresh-token rotation enabled rotates on every refresh grant), the
+ * rotated token REPLACES the stored one — keeping the old token after a
+ * rotation would strand the session on the next refresh, because a rotated
+ * predecessor is invalidated server-side. When the response carries no
+ * refresh_token (rotation off — Cognito's default), the current one is kept.
+ * Same keep-on-absent rule for access_token.
+ *
+ * Returns the merged set to store, or null when the response carries no usable
+ * id_token (the refresh failed; nothing should be stored).
+ * @param {{ id_token: string, access_token?: string, refresh_token?: string }} current
+ * @param {unknown} data  parsed token-endpoint response body
+ * @returns {{ id_token: string, access_token?: string, refresh_token?: string } | null}
+ */
+export function mergeRefreshedTokens(current, data) {
+  if (!data || typeof data !== "object") return null;
+  const d = /** @type {Record<string, unknown>} */ (data);
+  if (typeof d.id_token !== "string" || d.id_token === "") return null;
+  return {
+    id_token: d.id_token,
+    access_token:
+      typeof d.access_token === "string" && d.access_token !== ""
+        ? d.access_token
+        : current.access_token,
+    refresh_token:
+      typeof d.refresh_token === "string" && d.refresh_token !== ""
+        ? d.refresh_token
+        : current.refresh_token,
+  };
+}
+
+/**
+ * Single-flight combinator: while a call is in flight, every concurrent call
+ * shares the SAME promise instead of issuing its own. The slot clears when the
+ * flight settles (resolve or reject), so the next call starts fresh. Used for
+ * token refresh: N requests hitting 401 at once must produce exactly one
+ * token-endpoint round-trip — critical under rotation, where a second
+ * concurrent refresh with the just-rotated (now invalid) token would kill the
+ * session.
+ * @template T
+ * @param {() => Promise<T>} fn
+ * @returns {() => Promise<T>}
+ */
+export function singleFlight(fn) {
+  /** @type {Promise<T> | null} */
+  let inflight = null;
+  return () => {
+    if (inflight === null) {
+      inflight = Promise.resolve()
+        .then(fn)
+        .finally(() => {
+          inflight = null;
+        });
+    }
+    return inflight;
+  };
+}
+
+/**
  * The 401 policy for authenticated API calls: run the request; on a 401,
  * make ONE refresh attempt and, if it succeeds, retry ONCE (the doFetch
  * closure rebuilds headers so the retry carries the refreshed token). A

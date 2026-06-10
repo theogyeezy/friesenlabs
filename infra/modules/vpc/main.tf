@@ -99,3 +99,12 @@ resource "aws_vpc_endpoint" "s3" {
 output "vpc_id" { value = aws_vpc.this.id }
 output "public_subnet_ids" { value = aws_subnet.public[*].id }
 output "private_subnet_ids" { value = aws_subnet.private[*].id }
+
+# Cloud Map private DNS namespace (uplift.local) — internal service discovery so api/worker can
+# resolve cube (and future services) by name instead of chasing task IPs.
+resource "aws_service_discovery_private_dns_namespace" "internal" {
+  name = "uplift.local"
+  vpc  = aws_vpc.this.id
+}
+
+output "service_discovery_namespace_id" { value = aws_service_discovery_private_dns_namespace.internal.id }

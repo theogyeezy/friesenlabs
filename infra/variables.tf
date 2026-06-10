@@ -25,7 +25,7 @@ variable "azs" {
 variable "ecr_repos" {
   description = "ECR repositories to create (one image home per service)."
   type        = list(string)
-  default     = ["api", "cube", "worker"]
+  default     = ["api", "cube", "worker", "provisioning"] # provisioning = the REQ-005 Lambda image
 }
 
 variable "notify_email" {
@@ -171,4 +171,40 @@ variable "ingest_batch_s3_bucket" {
   type        = string
   default     = "" # REQ-004 (later): batch-embed JSONL I/O bucket
   description = "Reserved for the Titan batch-embed backfill bucket."
+}
+
+variable "provisioning_lambda_image" {
+  type        = string
+  default     = "" # REQ-005: set to the pushed uplift-provisioning image URI to create the Lambda
+  description = "ECR image URI for the provisioning Lambda (empty = function not created)."
+}
+
+variable "api_provisioning_sfn" {
+  type        = bool
+  default     = false # REQ-005 decouple switch: injects PROVISIONING_SFN_ARN into the API task
+  description = "Expose the provisioning state-machine ARN to the API task (SfnProvisioningTrigger)."
+}
+
+variable "resend_from_email" {
+  type        = string
+  default     = ""
+  description = "From-address for signup verification emails (provisioning Lambda env)."
+}
+
+variable "signup_verify_url_base" {
+  type        = string
+  default     = ""
+  description = "Base URL for signup verification links (provisioning Lambda env)."
+}
+
+variable "provisioning_admin_key_available" {
+  type        = bool
+  default     = false # flip once uplift/anthropic-admin-key holds a value (VERIFY endpoints first)
+  description = "Inject ANTHROPIC_ADMIN_KEY into the provisioning Lambda env."
+}
+
+variable "cube_image" {
+  type        = string
+  default     = "" # the custom uplift-cube image (semantic/ model + security context baked in)
+  description = "ECR image URI for the cube service; empty = pinned public cubejs/cube."
 }

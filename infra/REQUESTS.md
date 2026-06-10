@@ -196,7 +196,7 @@ Rules:
 - **Done when:** `terraform validate` green with safe defaults (schedule DISABLED, "" vars); the ingest task definition shows `INGEST_REAL_STORES=1` + `INGEST_TENANTS` + `INGEST_RAW_BUCKET` + `DB_*` and the API/worker task definitions show NONE of the `INGEST_*` names; with the schedule flipped on and a tenant id + HubSpot secret populated, a scheduled run populates `documents` for that tenant and the next run embeds ~0 (the TODO's done-when). Until then `python -m ingest.run_sync --tenant <id>` stays runnable anywhere as an offline stub (exit 0, touches nothing).
 
 ### REQ-005: Provisioning Lambda (signup/lambda_handler.handler) + pin the SFN Task ARNs + api-task states:StartExecution + PROVISIONING_SFN_ARN env
-- **Status:** OPEN
+- **Status:** DONE @e55dcc4 (#65) — APPLIED + SMOKED: `uplift-provisioning` Lambda live (arm64 image `uplift-provisioning:e55dcc4`, VPC'd, all-stub since SIGNUP_REAL_DEPS unset); SFN Task states + `sfn_invoke` pinned to the real ARN; api task role has `states:StartExecution` on exactly the machine ARN. Smoke: StartExecution invoked the Lambda cleanly (cold start + handler ran; failed correctly on the nonexistent test account with SFN retries + Catch park — packaging/wiring/retry/park-path proven), duplicate execution name → `ExecutionAlreadyExists` (idempotency proven). The full verified+paid PAID→ACTIVE drive rides the signup go-live (needs SIGNUP_REAL_DEPS + Stripe values). `PROVISIONING_SFN_ARN` stays un-injected (`api_provisioning_sfn=false`) — flipping it is the deliberate decouple act in the RUNBOOK go-live sequence.
 - **Requested by:** Lane Matt @feat/matt-provisioning-lambda-sfn (PR "feat(signup): provisioning Lambda handler + SFN trigger (deterministic, claim-ordered)")
 - **Needed for:** TODO INT/P1s "Package + deploy the provisioning Lambda the SFN invokes" + "Connect the Stripe webhook to start the SFN execution (decouple from the request)" (the SFN-role `Resource="*"` P2 is already closed on main — sfn_invoke now grants against the placeholder ARN; pinning `provisioning_lambda_arn` swaps both the policy and the Task states to the real ARN)
 - **Env/secret names** (must already exist in shared/config.py): `PROVISIONING_SFN_ARN` (NEW, landed in `shared/config.py` with this PR); on the LAMBDA only existing names: `SIGNUP_REAL_DEPS`, `UPLIFT_DB_URL`/`DB_USER`/`DB_PASS`/`DB_HOST`/`DB_NAME`/`DB_PORT`, `COGNITO_USER_POOL_ID`, `RESEND_API_KEY`, `RESEND_FROM_EMAIL`, `SIGNUP_VERIFY_URL_BASE`, `ALLOW_REAL_SENDS`, `ANTHROPIC_ADMIN_KEY`
@@ -289,3 +289,37 @@ Rules:
   #    `SET app.current_tenant`, INSERT + SELECT a tenant_settings row; without the GUC, 0 rows.
   ```
 - **Done when:** the API task definition + provisioning Lambda show `POSTHOG_PROJECT_KEY_VALUE` under `secrets` (and the worker/cube/ingest tasks show it NOWHERE); with SIGNUP_REAL_DEPS=1 + the key populated, a staging payment produces `payment_succeeded` + `instance_provisioned` grouped under the tenant in PostHog (the INT/P3 done-when) and a forced failure produces `provisioning_failed`; `api.migrate` has been re-run and the crm_app tenant_settings probe above passes; with the key absent the deploy boots byte-identically (funnel None, no network).
+
+### REQ-006: api-task IAM Secrets Manager WRITE on the per-tenant connector slots (`uplift/*/hubspot`) + `INTEGRATIONS_REAL_SECRETS` env
+- **Status:** OPEN
+- **Requested by:** Lane Matt @feat/matt-integrations-api (PR "feat(api): integrations endpoints — list/credentials/sync (claims-bound, gated)")
+- **Needed for:** TODO INT/P2 "Build the real integrations/connect UI + backend" — the api half (`api/integrations_routes.py`): `POST /integrations/{name}/credentials` vaults a tenant's HubSpot token into `uplift/{tenant_id}/hubspot` (the `ingest/connectors/base.py tenant_secret_ref` slot the REQ-004 ingest task already READS); `GET /integrations` answers connection status via DescribeSecret (never the value).
+- **Env/secret names** (must already exist in shared/config.py): `INTEGRATIONS_REAL_SECRETS` (NEW, landed in `shared/config.py` with this PR). Safe default UNSET = the writer is a stub: credentials POST answers an honest 503, status reads "unknown" — byte-identical boot regardless of what other env the task carries.
+- **Spec:**
+  ```hcl
+  # 1) API-TASK IAM: write + existence-check on EXACTLY the per-tenant hubspot slots — never
+  #    uplift/* broadly (the env-id/admin-key/demo-user secrets stay out of reach). Secrets
+  #    Manager appends a random 6-char suffix to secret ARNs, hence the trailing wildcard.
+  #    # VERIFY on first live connect: CreateSecret resource-scoping matches the name pattern.
+  statement {
+    actions = [
+      "secretsmanager:PutSecretValue",   # rotate path (slot already exists)
+      "secretsmanager:CreateSecret",     # first-connect path (slot does not exist yet)
+      "secretsmanager:DescribeSecret",   # GET /integrations status — existence only, no value
+    ]
+    resources = ["arn:aws:secretsmanager:${var.region}:${data.aws_caller_identity.current.account_id}:secret:uplift/*/hubspot*"]
+  }
+
+  # 2) API task definition env (plain, non-secret): the deliberate master switch —
+  #    INTEGRATIONS_REAL_SECRETS = "1"
+  #    Safe default: LEAVE IT UNSET until this REQ's IAM is applied; unset keeps the all-stub
+  #    behavior (honest 503s). Exactly "true"/"1" — anything else fails closed. API task ONLY,
+  #    never the worker.
+
+  # 3) NO INGEST_* names on the API task (unchanged — REQ-004 done-when stands). The new
+  #    POST /integrations/{name}/sync therefore answers an honest 503 on the live API; the
+  #    EventBridge-scheduled one-off task stays the primary sync path. Wiring API-kicked syncs
+  #    (INGEST_REAL_STORES + DB_* + bedrock:InvokeModel on the API task) is a SEPARATE,
+  #    deliberate future REQ — do not flip it as part of this one.
+  ```
+- **Done when:** `terraform validate` green; the api task role policy lists exactly the three actions above scoped to `uplift/*/hubspot*` (and the worker/ingest roles are unchanged); with `INTEGRATIONS_REAL_SECRETS=1` on the API task, `POST /integrations/hubspot/credentials` (authed) creates/updates `uplift/<that tenant>/hubspot` in Secrets Manager, `GET /integrations` flips that tenant's hubspot status to `connected`, and the next REQ-004 scheduled ingest run for that tenant resolves the per-tenant secret WITHOUT the deprecated shared-token fallback warning.

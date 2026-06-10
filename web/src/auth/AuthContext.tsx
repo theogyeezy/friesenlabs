@@ -4,8 +4,10 @@
 //   - listens for AUTH_CHANGED_EVENT (login, refresh, logout) and cross-tab
 //     "storage" events;
 //   - ticks getValidIdToken() once on mount and every minute, which refreshes
-//     the ID token when it is within 5 minutes of expiry and signs out
-//     LOCALLY (no redirect, no loop) when the refresh fails.
+//     the ID token when it is within 5 minutes of expiry (rotation-tolerant:
+//     a rotated refresh_token from the token endpoint replaces the stored
+//     one) and, when the refresh fails, ends the session via sessionExpired()
+//     — clear + return to the sign-in route (no Hosted-UI redirect, no loop).
 //
 // When auth is disabled (mock mode / Cognito unconfigured) the provider is
 // fully inert: no listeners, no timers, no network, isAuthenticated=false —
