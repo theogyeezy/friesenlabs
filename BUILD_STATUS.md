@@ -445,6 +445,24 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   CountUp $NaN — prop is value= not to=). All additive; every existing section/demo/modal intact.
   Also: SNS alarm subscription CONFIRMED by the user — 5 CloudWatch alarms now page
   theogyeezy@gmail.com (sub ARN active, no longer PendingConfirmation).
+- 2026-06-10 — "FINISH IT": drove the CI/CD pipeline END-TO-END (master approval) — first full
+  build→plan→approved-apply→roll→health-gate, all green. Prod API upgraded from the weeks-old
+  e0794bc to current main `uplift-api:14524b0` (all merged backend work now live; rev 6, 1/1,
+  /healthz 200, unauth 401). Pre-req: gated the worker module on `worker_deployed` so a full apply
+  can't crash-loop a worker on the empty env-key.
+  >>> COMPLETION STATE: every Lane-Nick item that can be finished WITHOUT a third-party
+  credential/console action is DONE and live. The four irreducible remainders each need something
+  only the account owner can produce:
+    1. uplift/env-key — Anthropic Console "Generate environment key" (SDK has no mint method;
+       verified). Unblocks: worker deploy (image + ARM64 task-def + module all staged; flip
+       worker_deployed=true + apply -target=module.worker).
+    2. Squarespace NS → the 4 Route53 nameservers — unblocks ACM validation → ALB TLS cutover
+       (sequence authored in RUNBOOK).
+    3. uplift/stripe-webhook-secret — Stripe Dashboard endpoint registration — unblocks signup
+       webhook go-live (api_signup_env → signup_real_deps flips, all wired).
+    4. uplift/anthropic-admin-key — Anthropic Console admin key — unblocks workspace provisioning
+       (provisioning_admin_key_available flip).
+  Hand me any one of those values/clicks and the corresponding go-live runs same-session.
 
 ## Lane Matt (app code) — log
 - 2026-06-09 — **Cycles 5-6 (lane tail) + LANE MATT COMPLETE:** #67(+hotfix #73: the prod image

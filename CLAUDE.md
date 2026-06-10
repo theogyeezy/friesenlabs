@@ -48,7 +48,9 @@ app shell → real RLS-scoped tenant rows. Unauth `/api/*` → 401; `/chat` → 
   `infra/RUNBOOK.md`. REQUESTS queue: REQ-001..005 all DONE. Completion sprint (cycles 16-23):
   cube model + Cloud Map live, CI/CD OIDC pipeline, ECS Exec, GuardDuty/Config/SSM, worker image
   staged, rotation executed, TLS-cutover runbook authored, GHL-style landing shipped. Remaining
-  work is user-input-gated only (env-key, NS cutover, SNS confirm, Stripe/admin values).
+  work is user-input-gated only. CI/CD pipeline PROVEN end-to-end (prod runs current main). SNS
+  alarms confirmed. Four irreducible remainders need owner-only actions (BUILD_STATUS): env-key
+  Console click → worker; Squarespace NS → TLS; Stripe webhook secret → signup; Anthropic admin key.
 **Tooling:** `.claude/settings.json` enables the official-marketplace plugins so collaborators inherit
 them on clone+trust. Don't commit secrets to it.
 
