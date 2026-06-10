@@ -153,6 +153,35 @@ resource "aws_iam_role_policy" "worker_task_bedrock_embed" {
   })
 }
 
+# The signup plane's Cognito admin ops (signup/cognito_admin.py: create-unconfirmed user,
+# verify-confirm, set password, stamp the tenant claim) — EXACTLY the five calls the module
+# makes, scoped to the ONE pool. Live 500 on POST /signup without this (AdminCreateUser
+# AccessDenied, 2026-06-10).
+variable "cognito_user_pool_arn" {
+  type    = string
+  default = ""
+}
+
+resource "aws_iam_role_policy" "api_task_cognito_signup" {
+  count = var.cognito_user_pool_arn != "" ? 1 : 0
+  name  = "cognito-signup-admin"
+  role  = aws_iam_role.task["api"].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "cognito-idp:AdminCreateUser",
+        "cognito-idp:AdminGetUser",
+        "cognito-idp:AdminConfirmSignUp",
+        "cognito-idp:AdminSetUserPassword",
+        "cognito-idp:AdminUpdateUserAttributes",
+      ]
+      Resource = var.cognito_user_pool_arn
+    }]
+  })
+}
+
 # REQ-005: the api task starts provisioning executions — scoped to exactly ONE machine ARN.
 variable "provisioning_sfn_arn" {
   type    = string
