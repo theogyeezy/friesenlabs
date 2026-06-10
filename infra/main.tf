@@ -26,6 +26,20 @@ module "security" {
 module "iam" {
   source  = "./modules/iam"
   project = var.project
+  # REQ-003: exact platform-secret ARNs for the execution role (listed, not a wildcard widen).
+  extra_execution_secret_arns = [
+    data.aws_secretsmanager_secret.platform_stripe.arn,
+    data.aws_secretsmanager_secret.platform_resend.arn,
+  ]
+}
+
+# REQ-003: org-shared platform secrets created out-of-band (Lane Nick console/CLI) — referenced,
+# never managed here.
+data "aws_secretsmanager_secret" "platform_stripe" {
+  name = "friesenlabs/platform/shared/stripe-secret-key"
+}
+data "aws_secretsmanager_secret" "platform_resend" {
+  name = "friesenlabs/platform/shared/resend-api-key"
 }
 
 module "secrets" {
@@ -100,25 +114,32 @@ module "alb" {
 }
 
 module "api_service" {
-  source                       = "./modules/api_service"
-  project                      = var.project
-  region                       = var.aws_region
-  cluster_id                   = module.ecs.cluster_id
-  private_subnet_ids           = module.vpc.private_subnet_ids
-  security_group_id            = module.security.sg_api
-  target_group_arn             = module.alb.target_group_arn
-  execution_role_arn           = module.iam.ecs_task_execution_role_arn
-  task_role_arn                = module.iam.task_role_arns["api"]
-  db_secret_arn                = module.secrets.crm_app_db_secret_arn
-  anthropic_api_key_secret_arn = module.secrets.anthropic_api_key_secret_arn
-  env_id_secret_arn            = module.secrets.env_id_secret_arn
-  api_anthropic_env            = var.api_anthropic_env
-  cognito_user_pool_id         = module.auth.user_pool_id
-  cognito_client_id            = module.auth.user_pool_client_id
-  image                        = var.api_image
-  aurora_endpoint              = module.data.cluster_endpoint
-  aurora_master_secret_arn     = module.data.master_user_secret_arn
-  desired_count                = var.api_desired_count
+  source                         = "./modules/api_service"
+  project                        = var.project
+  region                         = var.aws_region
+  cluster_id                     = module.ecs.cluster_id
+  private_subnet_ids             = module.vpc.private_subnet_ids
+  security_group_id              = module.security.sg_api
+  target_group_arn               = module.alb.target_group_arn
+  execution_role_arn             = module.iam.ecs_task_execution_role_arn
+  task_role_arn                  = module.iam.task_role_arns["api"]
+  db_secret_arn                  = module.secrets.crm_app_db_secret_arn
+  anthropic_api_key_secret_arn   = module.secrets.anthropic_api_key_secret_arn
+  env_id_secret_arn              = module.secrets.env_id_secret_arn
+  api_anthropic_env              = var.api_anthropic_env
+  api_signup_env                 = var.api_signup_env
+  signup_real_deps               = var.signup_real_deps
+  stripe_key_arn                 = data.aws_secretsmanager_secret.platform_stripe.arn
+  resend_key_arn                 = data.aws_secretsmanager_secret.platform_resend.arn
+  stripe_webhook_secret_arn      = module.secrets.stripe_webhook_secret_arn
+  signup_token_secret_arn        = module.secrets.signup_token_secret_arn
+  anthropic_admin_key_secret_arn = module.secrets.anthropic_admin_key_secret_arn
+  cognito_user_pool_id           = module.auth.user_pool_id
+  cognito_client_id              = module.auth.user_pool_client_id
+  image                          = var.api_image
+  aurora_endpoint                = module.data.cluster_endpoint
+  aurora_master_secret_arn       = module.data.master_user_secret_arn
+  desired_count                  = var.api_desired_count
 }
 
 # --- Phase 8: Cortex scheduled retrain ---

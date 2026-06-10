@@ -27,6 +27,38 @@ variable "api_anthropic_env" {
   type    = bool
   default = false
 }
+
+# REQ-003, same safety gate rationale: flip ONLY after stripe-webhook-secret + signup-token-secret
+# + anthropic-admin-key hold values (the two platform secrets already do).
+variable "api_signup_env" {
+  type    = bool
+  default = false
+}
+# The deliberate signup go-live act (REQ-003 step 0) — separate from the wiring flag above.
+variable "signup_real_deps" {
+  type    = bool
+  default = false
+}
+variable "stripe_key_arn" {
+  type    = string
+  default = ""
+}
+variable "resend_key_arn" {
+  type    = string
+  default = ""
+}
+variable "stripe_webhook_secret_arn" {
+  type    = string
+  default = ""
+}
+variable "signup_token_secret_arn" {
+  type    = string
+  default = ""
+}
+variable "anthropic_admin_key_secret_arn" {
+  type    = string
+  default = ""
+}
 variable "cognito_user_pool_id" { type = string }
 variable "cognito_client_id" { type = string }
 variable "aurora_endpoint" {
@@ -74,7 +106,7 @@ resource "aws_ecs_task_definition" "api" {
       image        = var.image != "" ? var.image : "${var.project}-api:latest"
       essential    = true
       portMappings = [{ containerPort = 8000, protocol = "tcp" }]
-      environment = [
+      environment = concat([
         { name = "AWS_REGION", value = var.region },
         { name = "COGNITO_USER_POOL_ID", value = var.cognito_user_pool_id },
         { name = "COGNITO_CLIENT_ID", value = var.cognito_client_id },
@@ -83,7 +115,11 @@ resource "aws_ecs_task_definition" "api" {
         # For `python -m api.migrate` (one-off task): master + crm secret ARNs (read via boto3).
         { name = "AURORA_MASTER_SECRET_ARN", value = var.aurora_master_secret_arn },
         { name = "CRM_APP_SECRET_ARN", value = var.db_secret_arn },
-      ]
+        ],
+        # REQ-003 step 0: the master switch appears ONLY at the deliberate go-live act —
+        # without it build_signup_deps() boots all-stub even with every secret present.
+        var.signup_real_deps ? [{ name = "SIGNUP_REAL_DEPS", value = "1" }] : []
+      )
       secrets = concat(
         [
           # crm_app (non-owner) DB credentials so RLS applies.
@@ -96,6 +132,14 @@ resource "aws_ecs_task_definition" "api" {
         var.api_anthropic_env ? [
           { name = "ANTHROPIC_API_KEY", valueFrom = var.anthropic_api_key_secret_arn },
           { name = "UPLIFT_ENV_ID", valueFrom = var.env_id_secret_arn },
+        ] : [],
+        # REQ-003: signup/provisioning plane — API task ONLY; never the worker.
+        var.api_signup_env ? [
+          { name = "STRIPE_API_KEY", valueFrom = var.stripe_key_arn },
+          { name = "RESEND_API_KEY", valueFrom = var.resend_key_arn },
+          { name = "STRIPE_WEBHOOK_SECRET", valueFrom = var.stripe_webhook_secret_arn },
+          { name = "SIGNUP_TOKEN_SECRET_VALUE", valueFrom = var.signup_token_secret_arn },
+          { name = "ANTHROPIC_ADMIN_KEY", valueFrom = var.anthropic_admin_key_secret_arn },
         ] : []
       )
       logConfiguration = {
