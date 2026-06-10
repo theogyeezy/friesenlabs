@@ -359,6 +359,10 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
 - 2026-06-09 — Cycle 7 APPLIED @835d1c0: `uplift-live` dashboard live (list-dashboards ✓) +
   api-task xray-export policy attached (get-role-policy ✓). X-Ray still shows 0 segments —
   the api app emits no OTLP to the sidecar; handed to Lane Matt in TODO (202 PARTIAL). Edge 200.
+- 2026-06-09 — Cycle 8 authoring (cube/worker deploys PARKED: run-rate ~$185/mo vs the $200
+  ceiling — adding Fargate services needs Matt's cost call): IAM tightening P2 206 — api task
+  role scoped to the exact 2 ARNs migrate reads; SFN invoke de-wildcarded to the placeholder
+  ARN. Targeted plan = exactly 2 intended in-place changes.
 
 ## Lane Matt (app code) — log
 - 2026-06-09 — **Cycle 3 (real wiring + frontend honesty, 5 PRs + 1 fix-PR):** #34 real provisioning

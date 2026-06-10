@@ -60,13 +60,25 @@ resource "aws_iam_role" "task" {
   tags               = { Service = each.key }
 }
 
-# The api task role reads secrets at runtime (migrate reads the master + crm secrets via boto3).
+# The api task role reads secrets at runtime — ONLY migrate's boto3 reads (master + crm-app-db);
+# everything else is execution-role valueFrom injection. Scope to the exact ARNs when supplied
+# (TODO Sec/P2: no uplift/* runtime read surface); empty list falls back to the broad pattern so
+# validate/plan stay green in contexts that don't pass ARNs.
+variable "api_task_secret_arns" {
+  type    = list(string)
+  default = []
+}
+
 resource "aws_iam_role_policy" "api_task_secrets" {
   name = "read-secrets"
   role = aws_iam_role.task["api"].id
   policy = jsonencode({
-    Version   = "2012-10-17"
-    Statement = [{ Effect = "Allow", Action = ["secretsmanager:GetSecretValue"], Resource = local.secret_arns }]
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["secretsmanager:GetSecretValue"]
+      Resource = length(var.api_task_secret_arns) > 0 ? var.api_task_secret_arns : local.secret_arns
+    }]
   })
 }
 
