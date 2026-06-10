@@ -61,3 +61,24 @@ output "web_app_url" {
   description = "Live Amplify URL for the hosted web app (null until web hosting is enabled with a GitHub token)."
   value       = length(module.web_hosting) > 0 ? module.web_hosting[0].branch_url : null
 }
+
+# TODO P3 148: deterministic live endpoints — outputs + SSM mirror for web builds/scripts.
+output "api_edge_domain" { value = module.api_cdn.domain }
+
+resource "aws_ssm_parameter" "api_edge_domain" {
+  name  = "/uplift/live/api-edge-domain"
+  type  = "String"
+  value = module.api_cdn.domain
+}
+
+resource "aws_ssm_parameter" "alb_dns" {
+  name  = "/uplift/live/alb-dns"
+  type  = "String"
+  value = module.alb.alb_dns_name
+}
+
+resource "aws_ssm_parameter" "cube_endpoint" {
+  name  = "/uplift/live/cube-endpoint"
+  type  = "String"
+  value = "http://cube.uplift.local:4000"
+}
