@@ -3,6 +3,10 @@
 # Exposed ONLY internally (api + worker call it; never public). AUTHORED + VALIDATED ONLY.
 
 variable "project" { type = string }
+variable "log_retention_days" {
+  type    = number
+  default = 30 # one knob for every uplift log group (TODO Sec/P3 213)
+}
 variable "region" { type = string }
 variable "cluster_id" { type = string }
 variable "private_subnet_ids" { type = list(string) }
@@ -16,13 +20,13 @@ variable "cube_api_secret_arn" { type = string }
 
 resource "aws_cloudwatch_log_group" "cube" {
   name              = "/ecs/${var.project}-cube"
-  retention_in_days = 30
+  retention_in_days = var.log_retention_days
 }
 
 # ADOT (AWS Distro for OpenTelemetry) collector sidecar log group — see the sidecar container below.
 resource "aws_cloudwatch_log_group" "cube_otel" {
   name              = "/ecs/${var.project}-cube-otel"
-  retention_in_days = 30
+  retention_in_days = var.log_retention_days
 }
 
 resource "aws_ecs_task_definition" "cube" {

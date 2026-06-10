@@ -378,6 +378,14 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   encrypted bucket) + CloudTrail scoped uplift-* S3 data events + management re-stated.
   Premise correction: Secrets Manager has no data events (GetSecretValue = management event,
   already captured) — first apply's rejection documented, selector dropped in #53.
+- 2026-06-09 — Cycle 10 (TODO 213 DONE): single `log_retention_days` root knob across all 6
+  uplift log groups (zero-diff refactor at default 30; live groups verified consistent). KMS
+  deliberately deferred (cost/complexity vs single-account posture; revisit with HIPAA runtime).
+  QUEUE NOW: every remaining Lane Nick item is checked or parked — P0/P1s on Matt inputs
+  (Amplify PAT, notify_email, budget, cost calls, Stripe/Anthropic values, domain), P2/P3
+  remainder either cost-gated (143 NAT endpoints ~$35/mo, 214 GuardDuty ~cost), task-rolling
+  (212 ECS Exec — defer to a maintenance window), or authored-pending-window (204 rotation).
+  Lane loop dropping to long-sleep cadence: fetch/REQUESTS/PR checks only until new inputs land.
 
 ## Lane Matt (app code) — log
 - 2026-06-09 — **Cycle 3 (real wiring + frontend honesty, 5 PRs + 1 fix-PR):** #34 real provisioning
