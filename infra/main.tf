@@ -127,6 +127,9 @@ module "alb" {
   alb_security_group_id = module.security.sg_alb
   origin_verify_secret  = module.secrets.origin_verify_value
   enforce_origin_verify = var.alb_enforce_origin_verify
+  # The VALIDATED arn (empty until delegated + ISSUED) — issuance is a hard ordering gate.
+  certificate_arn     = (var.alb_tls && var.domain_name != "") ? module.dns[0].validated_certificate_arn : ""
+  retire_http_forward = var.alb_retire_http_forward
 }
 
 module "api_service" {
@@ -219,6 +222,7 @@ module "provisioning" {
 # CloudFront HTTPS edge in front of the API ALB (so Amplify can proxy /api/* to a valid HTTPS target).
 module "api_cdn" {
   source               = "./modules/api_cdn"
+  api_origin_domain    = var.api_cdn_origin_domain
   project              = var.project
   alb_dns              = module.alb.alb_dns_name
   origin_verify_secret = module.secrets.origin_verify_value
@@ -257,10 +261,12 @@ module "observability" {
 # Real domain (friesenlabs.com on Squarespace registrar): zone + cert; ALB TLS cutover follows
 # once var.dns_delegated is flipped and the cert is ISSUED.
 module "dns" {
-  count       = var.domain_name != "" ? 1 : 0
-  source      = "./modules/dns"
-  domain_name = var.domain_name
-  delegated   = var.dns_delegated
+  count        = var.domain_name != "" ? 1 : 0
+  source       = "./modules/dns"
+  domain_name  = var.domain_name
+  delegated    = var.dns_delegated
+  alb_dns_name = var.alb_tls ? module.alb.alb_dns_name : ""
+  alb_zone_id  = var.alb_tls ? module.alb.alb_zone_id : ""
 }
 
 # --- Phase 4: self-hosted tool-execution worker ---

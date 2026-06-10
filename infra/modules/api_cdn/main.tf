@@ -5,6 +5,11 @@
 
 variable "project" { type = string }
 variable "alb_dns" { type = string }
+variable "api_origin_domain" {
+  type    = string
+  default = "" # set to api.<domain> at TLS-cutover phase (b) — flips the origin to https-only
+}
+
 variable "origin_verify_secret" {
   type      = string
   default   = "" # Sec/P0 phase 1: when set, CloudFront stamps X-Origin-Verify on every origin request
@@ -168,12 +173,15 @@ resource "aws_cloudfront_distribution" "api" {
   }
 
   origin {
-    domain_name = var.alb_dns
+    # TLS cutover phase (b): when api_origin_domain is set (api.<domain>, covered by the ACM
+    # wildcard), CloudFront talks https-only to the ALB through it; the raw ELB hostname would
+    # fail cert validation, so https requires the named origin.
+    domain_name = var.api_origin_domain != "" ? var.api_origin_domain : var.alb_dns
     origin_id   = "alb"
     custom_origin_config {
       http_port              = 80
       https_port             = 443
-      origin_protocol_policy = "http-only" # ALB has no TLS cert; CloudFront terminates TLS at the edge
+      origin_protocol_policy = var.api_origin_domain != "" ? "https-only" : "http-only"
       origin_ssl_protocols   = ["TLSv1.2"]
     }
 

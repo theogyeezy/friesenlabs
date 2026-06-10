@@ -45,6 +45,34 @@ resource "aws_acm_certificate_validation" "this" {
   validation_record_fqdns = [for r in aws_route53_record.validation : r.fqdn]
 }
 
+# api.<domain> -> the ALB (created with the TLS cutover; CloudFront's https origin needs a name
+# the cert covers — the wildcard covers api.<domain>; the raw ELB hostname would fail TLS).
+variable "alb_dns_name" {
+  type    = string
+  default = ""
+}
+variable "alb_zone_id" {
+  type    = string
+  default = ""
+}
+
+resource "aws_route53_record" "api" {
+  count   = var.alb_dns_name != "" ? 1 : 0
+  zone_id = aws_route53_zone.this.zone_id
+  name    = "api.${var.domain_name}"
+  type    = "A"
+
+  alias {
+    name                   = var.alb_dns_name
+    zone_id                = var.alb_zone_id
+    evaluate_target_health = false
+  }
+}
+
 output "zone_id" { value = aws_route53_zone.this.zone_id }
 output "nameservers" { value = aws_route53_zone.this.name_servers }
 output "certificate_arn" { value = aws_acm_certificate.this.arn }
+# Empty until delegated + ISSUED — wiring the ALB to THIS arn makes issuance a hard ordering gate.
+output "validated_certificate_arn" {
+  value = try(aws_acm_certificate_validation.this[0].certificate_arn, "")
+}
