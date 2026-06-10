@@ -36,6 +36,7 @@ module "iam" {
   extra_execution_secret_arns = [
     data.aws_secretsmanager_secret.platform_stripe.arn,
     data.aws_secretsmanager_secret.platform_resend.arn,
+    data.aws_secretsmanager_secret.platform_posthog.arn, # REQ-006
   ]
 }
 
@@ -46,6 +47,9 @@ data "aws_secretsmanager_secret" "platform_stripe" {
 }
 data "aws_secretsmanager_secret" "platform_resend" {
   name = "friesenlabs/platform/shared/resend-api-key"
+}
+data "aws_secretsmanager_secret" "platform_posthog" {
+  name = "friesenlabs/platform/shared/posthog-project-key"
 }
 
 module "secrets" {
@@ -148,6 +152,9 @@ module "api_service" {
   anthropic_admin_key_secret_arn = module.secrets.anthropic_admin_key_secret_arn
   provisioning_sfn_arn           = var.api_provisioning_sfn ? module.provisioning.state_machine_arn : ""
   cube_endpoint                  = var.cube_endpoint
+  posthog_key_arn                = data.aws_secretsmanager_secret.platform_posthog.arn
+  posthog_host                   = var.posthog_host
+  integrations_real              = var.api_integrations_real
   cognito_user_pool_id           = module.auth.user_pool_id
   cognito_client_id              = module.auth.user_pool_client_id
   image                          = var.api_image
@@ -185,19 +192,21 @@ module "cortex" {
 # --- Phase 10: provisioning orchestration (Step Functions) ---
 # REQ-005: the Lambda the SFN invokes (count-gated on the pushed image).
 module "provisioning_lambda" {
-  source               = "./modules/provisioning_lambda"
-  project              = var.project
-  image_uri            = var.provisioning_lambda_image
-  private_subnet_ids   = module.vpc.private_subnet_ids
-  security_group_id    = module.security.sg_api
-  db_secret_arn        = module.secrets.crm_app_db_secret_arn
-  db_host              = module.data.cluster_endpoint
-  cognito_user_pool_id = module.auth.user_pool_id
-  resend_key_secret_id = data.aws_secretsmanager_secret.platform_resend.id
-  resend_from_email    = var.resend_from_email
-  verify_url_base      = var.signup_verify_url_base
-  admin_key_secret_id  = module.secrets.anthropic_admin_key_secret_arn
-  admin_key_available  = var.provisioning_admin_key_available
+  source                = "./modules/provisioning_lambda"
+  project               = var.project
+  image_uri             = var.provisioning_lambda_image
+  private_subnet_ids    = module.vpc.private_subnet_ids
+  security_group_id     = module.security.sg_api
+  db_secret_arn         = module.secrets.crm_app_db_secret_arn
+  db_host               = module.data.cluster_endpoint
+  cognito_user_pool_id  = module.auth.user_pool_id
+  resend_key_secret_id  = data.aws_secretsmanager_secret.platform_resend.id
+  resend_from_email     = var.resend_from_email
+  verify_url_base       = var.signup_verify_url_base
+  admin_key_secret_id   = module.secrets.anthropic_admin_key_secret_arn
+  admin_key_available   = var.provisioning_admin_key_available
+  posthog_key_secret_id = data.aws_secretsmanager_secret.platform_posthog.id
+  posthog_host          = var.posthog_host
 }
 
 module "provisioning" {

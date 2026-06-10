@@ -125,6 +125,26 @@ resource "aws_iam_role_policy" "api_task_sfn" {
   })
 }
 
+# REQ-008: the api task vaults per-tenant HubSpot tokens — write/existence-check on EXACTLY
+# the connector slots (never uplift/* broadly). Trailing wildcard = the SM random ARN suffix.
+# VERIFY on first live connect: CreateSecret resource-scoping matches the name pattern.
+resource "aws_iam_role_policy" "api_task_connector_write" {
+  name = "connector-write"
+  role = aws_iam_role.task["api"].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "secretsmanager:PutSecretValue",
+        "secretsmanager:CreateSecret",
+        "secretsmanager:DescribeSecret",
+      ]
+      Resource = "arn:aws:secretsmanager:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:secret:uplift/*/hubspot*"
+    }]
+  })
+}
+
 # ECS Exec (TODO Sec/P3 212): the api task opens SSM sessions for break-glass shells.
 resource "aws_iam_role_policy" "api_task_ssm_exec" {
   name = "ecs-exec-ssm"
