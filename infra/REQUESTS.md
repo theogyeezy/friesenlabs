@@ -30,6 +30,22 @@ Rules:
 
 ## Queue
 
+### REQ-002: GRANT crm_app DML on the pre-tenant signup tables (`accounts`, `stripe_events`)
+- **Status:** OPEN
+- **Requested by:** Lane Matt @feat/matt-signup-stores (PR "feat(signup): tokens + Aurora-backed account/event/OTP stores")
+- **Needed for:** TODO INT/P0 "Replace the in-memory `_AccountStore` with an Aurora-backed, RLS-correct store" + P1 "Persist webhook/provisioning idempotency across restarts" (`signup/store_pg.py` connects as crm_app)
+- **Env/secret names** (must already exist in shared/config.py): n/a (GRANT only; the token-signer secret ref `SIGNUP_TOKEN_SECRET` already landed in `shared/config.py` with the same PR — no infra resource needed for it yet)
+- **Spec:**
+  ```sql
+  -- For db/roles.sql (Lane Nick's file). Both tables are RLS-EXEMPT (pre-tenant): rows exist
+  -- before a tenant_id is provisioned; access is restricted to crm_app DML via GRANTs, not RLS
+  -- (see the table comments in db/schema.sql). No DELETE: accounts are parked/flipped, never
+  -- deleted by the app; the stripe_events ledger is append-only by design.
+  GRANT SELECT, INSERT, UPDATE ON accounts, stripe_events TO crm_app;
+  ```
+- **Done when:** connected as crm_app, `INSERT`/`SELECT`/`UPDATE` on `accounts` and `stripe_events` succeed (and the CI schema+roles load stays green). Until then the unit tests mock psycopg2 and integration fixtures GRANT locally.
+- **NOTE (review finding, medium):** main's `db/roles.sql` has `ALTER DEFAULT PRIVILEGES … GRANT SELECT, INSERT, UPDATE, DELETE` — the no-DELETE intent above needs an explicit `REVOKE DELETE` or it is silently superseded. Lane Nick to reconcile when implementing.
+
 ### REQ-001: AI-plane env wiring — `uplift/env-id` secret, worker task-def env, org Anthropic key to the API task ONLY
 - **Status:** OPEN
 - **Requested by:** Lane Matt @feat/matt-asgi-integration
