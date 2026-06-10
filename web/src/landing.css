@@ -762,3 +762,23 @@ textarea.lp-input { height: 92px; padding: 11px 13px; resize: none; }
   /* no z-travel; sections sit flat and readable */
   .lp-cinematic .lp-section, .lp-cinematic .lp-fullbleed, .lp-cinematic .lp-finalcta { transform: none !important; opacity: 1 !important; filter: none !important; }
 }
+
+/* ============================================================
+   FLY-THROUGH panels — pinned center-screen, moving only in Z
+   (positioning + transforms set by useSpaceFlight). Each panel
+   fills the viewport with its own background; the galaxy shows
+   through the dark glass and during the fly transitions.
+   ============================================================ */
+.lp-cinematic .lp-panel {
+  transform-origin: 50% 50%;
+  will-change: transform, opacity, filter;
+  overflow: hidden;
+  contain: layout paint;
+}
+/* a touch more glass-transparency so the galaxy reads behind the pinned panel */
+.lp-cinematic .lp-panel.lp-section { background: color-mix(in oklch, var(--bg) 74%, transparent); }
+.lp-flight-spacer { position: relative; z-index: 0; pointer-events: none; }
+@media (prefers-reduced-motion: reduce) {
+  /* fly-through off: panels were never fixed (hook returns early) — nothing to undo */
+  .lp-flight-spacer { display: none; }
+}
