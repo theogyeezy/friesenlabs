@@ -33,6 +33,14 @@ variable "admin_key_available" {
   type    = bool
   default = false
 }
+variable "posthog_key_secret_id" {
+  type    = string
+  default = "" # REQ-006: the platform posthog-project-key (has a value; read as env VALUE)
+}
+variable "posthog_host" {
+  type    = string
+  default = ""
+}
 
 data "aws_secretsmanager_secret_version" "db" {
   secret_id = var.db_secret_arn
@@ -45,6 +53,11 @@ data "aws_secretsmanager_secret_version" "resend" {
 data "aws_secretsmanager_secret_version" "admin_key" {
   count     = var.admin_key_available ? 1 : 0
   secret_id = var.admin_key_secret_id
+}
+
+data "aws_secretsmanager_secret_version" "posthog" {
+  count     = var.posthog_key_secret_id != "" ? 1 : 0
+  secret_id = var.posthog_key_secret_id
 }
 
 data "aws_iam_policy_document" "lambda_assume" {
@@ -97,7 +110,11 @@ resource "aws_lambda_function" "provisioning" {
       },
       var.admin_key_available ? {
         ANTHROPIC_ADMIN_KEY = data.aws_secretsmanager_secret_version.admin_key[0].secret_string
-      } : {}
+      } : {},
+      var.posthog_key_secret_id != "" ? {
+        POSTHOG_PROJECT_KEY_VALUE = data.aws_secretsmanager_secret_version.posthog[0].secret_string
+      } : {},
+      var.posthog_host != "" ? { POSTHOG_HOST = var.posthog_host } : {}
     )
   }
 }

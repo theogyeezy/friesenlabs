@@ -15,7 +15,7 @@ resource "aws_rds_cluster" "this" {
   cluster_identifier          = "${var.project}-aurora"
   engine                      = "aurora-postgresql"
   engine_mode                 = "provisioned" # required for Serverless v2
-  engine_version              = "16.8"        # ships pgvector 0.8.0
+  engine_version              = "16.11"       # ships pgvector 0.8.0; AWS auto-minor-upgrades — see lifecycle
   database_name               = "uplift"
   master_username             = "crmadmin"
   manage_master_user_password = true # master cred -> Secrets Manager (never echoed)
@@ -36,6 +36,12 @@ resource "aws_rds_cluster" "this" {
   skip_final_snapshot       = false
   final_snapshot_identifier = "${var.project}-aurora-final"
   copy_tags_to_snapshot     = true
+
+  # AWS auto-minor-upgrades the cluster out-of-band (caught live: 16.8 -> 16.11); without this,
+  # every plan after an upgrade proposes a dangerous DOWNGRADE back to the pinned minor.
+  lifecycle {
+    ignore_changes = [engine_version]
+  }
 }
 
 resource "aws_rds_cluster_instance" "this" {

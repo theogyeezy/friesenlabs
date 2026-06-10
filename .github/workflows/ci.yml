@@ -6,6 +6,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    - cron: "17 9 * * *" # nightly: the gated live signup e2e (REQ-007)
 
 jobs:
   python:
@@ -130,3 +132,22 @@ jobs:
           pip install -r requirements-dev.txt
       - name: Smoke (all features)
         run: bash scripts/smoke_all.sh
+
+  # REQ-007: gated live signup e2e (Stripe TEST mode). Separate job — the offline suite never
+  # depends on repo secrets. Runs on main pushes + the nightly cron, never on (fork) PRs;
+  # without the secrets every test self-skips and the job stays green.
+  live-signup-e2e:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.13" }
+      - run: pip install -r requirements-api.txt -r requirements-dev.txt
+      - run: python -m pytest tests/integration/test_signup_live_e2e.py -q
+        env:
+          STRIPE_TEST_SECRET_KEY: ${{ secrets.STRIPE_TEST_SECRET_KEY }}
+          STRIPE_TEST_WEBHOOK_SECRET: ${{ secrets.STRIPE_TEST_WEBHOOK_SECRET }}
+          STRIPE_TEST_PRICE_ID: ${{ secrets.STRIPE_TEST_PRICE_ID }}
+          SIGNUP_E2E_COGNITO_POOL_ID: ${{ secrets.SIGNUP_E2E_COGNITO_POOL_ID }}
+          SIGNUP_E2E_RESEND_API_KEY: ${{ secrets.SIGNUP_E2E_RESEND_API_KEY }}

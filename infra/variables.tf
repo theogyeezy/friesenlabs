@@ -220,3 +220,15 @@ variable "enable_crm_db_rotation" {
   default     = false # TODO 204: flip + apply, then run the RUNBOOK controlled-rotation procedure
   description = "Deploy the crm-app-db rotation Lambda (SAR) and attach the 30-day rotation."
 }
+
+variable "posthog_host" {
+  type        = string
+  default     = "" # REQ-006: only set to override the in-code ingestion default
+  description = "PostHog ingestion host override."
+}
+
+variable "api_integrations_real" {
+  type        = bool
+  default     = false # REQ-008 master switch: flip only after the connector-write IAM is applied
+  description = "Set INTEGRATIONS_REAL_SECRETS=1 on the API task."
+}

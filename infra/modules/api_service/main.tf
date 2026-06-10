@@ -72,6 +72,19 @@ variable "cube_endpoint" {
   type    = string
   default = "" # http://cube.uplift.local:4000 once Cloud Map is live
 }
+variable "posthog_key_arn" {
+  type    = string
+  default = "" # REQ-006: platform posthog-project-key ARN (rides the api_signup_env gate)
+}
+variable "posthog_host" {
+  type    = string
+  default = "" # only set to override the in-code default ingestion host
+}
+# REQ-008: the integrations master switch — unset = honest 503 stubs.
+variable "integrations_real" {
+  type    = bool
+  default = false
+}
 variable "cognito_user_pool_id" { type = string }
 variable "cognito_client_id" { type = string }
 variable "aurora_endpoint" {
@@ -133,7 +146,9 @@ resource "aws_ecs_task_definition" "api" {
         # without it build_signup_deps() boots all-stub even with every secret present.
         var.signup_real_deps ? [{ name = "SIGNUP_REAL_DEPS", value = "1" }] : [],
         var.provisioning_sfn_arn != "" ? [{ name = "PROVISIONING_SFN_ARN", value = var.provisioning_sfn_arn }] : [],
-        var.cube_endpoint != "" ? [{ name = "CUBE_ENDPOINT", value = var.cube_endpoint }] : []
+        var.cube_endpoint != "" ? [{ name = "CUBE_ENDPOINT", value = var.cube_endpoint }] : [],
+        var.posthog_host != "" ? [{ name = "POSTHOG_HOST", value = var.posthog_host }] : [],
+        var.integrations_real ? [{ name = "INTEGRATIONS_REAL_SECRETS", value = "1" }] : []
       )
       secrets = concat(
         [
@@ -149,6 +164,9 @@ resource "aws_ecs_task_definition" "api" {
           { name = "UPLIFT_ENV_ID", valueFrom = var.env_id_secret_arn },
         ] : [],
         # REQ-003: signup/provisioning plane — API task ONLY; never the worker.
+        var.api_signup_env && var.posthog_key_arn != "" ? [
+          { name = "POSTHOG_PROJECT_KEY_VALUE", valueFrom = var.posthog_key_arn },
+        ] : [],
         var.api_signup_env ? [
           { name = "STRIPE_API_KEY", valueFrom = var.stripe_key_arn },
           { name = "RESEND_API_KEY", valueFrom = var.resend_key_arn },
