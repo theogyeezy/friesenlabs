@@ -580,3 +580,11 @@ textarea.lp-input { height: 92px; padding: 11px 13px; resize: none; }
 @media (prefers-reduced-motion: reduce) {
   .lp-mnav, .lp-mnav-panel, .lp-totop { transition: none; }
 }
+
+/* Radar: widened viewBox (-72 -8 404 272) keeps the axis labels inside the
+   canvas so they never clip on narrow screens. Slightly smaller label type
+   and tighter max-width on phones. */
+@media (max-width: 560px) {
+  .vs-radar svg { max-width: 330px; }
+  .rad-lab { font-size: 9px; }
+}
