@@ -75,6 +75,32 @@ resource "aws_iam_role" "lambda" {
   assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
 }
 
+variable "cognito_user_pool_arn" {
+  type    = string
+  default = ""
+}
+
+# Provisioning stamps custom:tenant_id (and the parked-account retry path re-reads the user) —
+# the same five admin ops as the api task, same single-pool scope.
+resource "aws_iam_role_policy" "cognito_signup" {
+  count = var.cognito_user_pool_arn != "" ? 1 : 0
+  name  = "cognito-signup-admin"
+  role  = aws_iam_role.lambda.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "cognito-idp:AdminCreateUser",
+        "cognito-idp:AdminGetUser",
+        "cognito-idp:AdminConfirmSignUp",
+        "cognito-idp:AdminUpdateUserAttributes",
+      ]
+      Resource = var.cognito_user_pool_arn
+    }]
+  })
+}
+
 resource "aws_iam_role_policy_attachment" "vpc_access" {
   role       = aws_iam_role.lambda.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"

@@ -38,6 +38,7 @@ module "iam" {
     data.aws_secretsmanager_secret.platform_resend.arn,
     data.aws_secretsmanager_secret.platform_posthog.arn, # REQ-006
   ]
+  cognito_user_pool_arn = local.cognito_pool_arn
 }
 
 # REQ-003: org-shared platform secrets created out-of-band (Lane Nick console/CLI) — referenced,
@@ -117,6 +118,10 @@ module "auth" {
   project       = var.project
   callback_urls = var.web_callback_urls
   logout_urls   = var.web_logout_urls
+}
+
+locals {
+  cognito_pool_arn = module.auth.user_pool_arn
 }
 
 module "alb" {
@@ -203,6 +208,7 @@ module "provisioning_lambda" {
   db_secret_arn         = module.secrets.crm_app_db_secret_arn
   db_host               = module.data.cluster_endpoint
   cognito_user_pool_id  = module.auth.user_pool_id
+  cognito_user_pool_arn = local.cognito_pool_arn
   resend_key_secret_id  = data.aws_secretsmanager_secret.platform_resend.id
   resend_from_email     = var.resend_from_email
   verify_url_base       = var.signup_verify_url_base

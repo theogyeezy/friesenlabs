@@ -33,6 +33,12 @@ variable "cube_endpoint" {
   type    = string
   default = "" # REQ-001: safe "" default so validate/plan stay green before cube is deployed
 }
+variable "desired_count" {
+  type    = number
+  default = 2 # >=2: the SDK worker serves work items SEQUENTIALLY — one wedged/slow session
+  # starves the queue at 1 (#161, proven live 2026-06-10); 2 gives minimal head-of-line relief.
+}
+
 variable "image" {
   type    = string
   default = "" # set to the ECR worker image (uplift-worker) before apply
@@ -118,7 +124,7 @@ resource "aws_ecs_service" "worker" {
   name            = "${var.project}-worker"
   cluster         = var.cluster_id
   task_definition = aws_ecs_task_definition.worker.arn
-  desired_count   = 1
+  desired_count   = var.desired_count
   launch_type     = "FARGATE"
 
   # A broken task def auto-rolls back instead of draining the service to zero.

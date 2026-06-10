@@ -11,6 +11,8 @@ permissions:
   contents: read
 
 env:
+  # Node-20 actions are removed 2026-09; forced to 24 on 2026-06-16 — opt in now (#161-adjacent)
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   AWS_REGION: us-east-1
   ECR: 186052668426.dkr.ecr.us-east-1.amazonaws.com
 
@@ -20,10 +22,10 @@ jobs:
     outputs:
       image: ${{ steps.meta.outputs.image }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - id: meta
         run: echo "image=$ECR/uplift-api:${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: ${{ vars.DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
@@ -39,11 +41,11 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_wrapper: false
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: ${{ vars.DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
@@ -60,7 +62,7 @@ jobs:
           terraform plan -input=false -lock-timeout=120s \
             -var "api_image=${{ needs.build.outputs.image }}" -out=deploy.tfplan
           terraform show -no-color deploy.tfplan | tail -40
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: tfplan
           path: |
@@ -73,15 +75,15 @@ jobs:
     runs-on: ubuntu-latest
     environment: production # protection rule = the manual approval gate
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_wrapper: false
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: ${{ vars.DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: tfplan
           path: infra/
