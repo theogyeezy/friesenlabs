@@ -857,7 +857,7 @@ function HeroRoster() {
       <div className="hero-roster-chips">
         {HERO_ROSTER.map((r) => (
           <button key={r.id} className={"hr-chip" + (active === r.id ? " on" : "")} onClick={() => setActive(r.id)} aria-pressed={active === r.id}>
-            <span className="hr-emoji">{r.emoji}</span>{r.name}
+            <span className="hr-mono">{r.name[0]}</span>{r.name}
           </button>
         ))}
       </div>

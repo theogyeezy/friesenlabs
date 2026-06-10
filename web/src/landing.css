@@ -703,3 +703,54 @@ textarea.lp-input { height: 92px; padding: 11px 13px; resize: none; }
 .lp-trust span { display: inline-flex; align-items: center; gap: 7px; }
 .lp-trust svg { color: var(--green); flex-shrink: 0; }
 @media (max-width: 560px) { .lp .lp-h1 { font-size: 42px; } .lp-trust { gap: 12px 16px; font-size: 12.5px; } }
+
+/* ============================================================
+   EDITORIAL & WARM — the committed direction. Cream paper, warm
+   ink, ONE warm-clay accent, Fraunces serif display, hairline
+   rules, section numerals, generous air. Scoped to .lp so the
+   app keeps its own theme. Crafted, not templated.
+   ============================================================ */
+.lp {
+  --bg: oklch(0.968 0.017 74);            /* warm paper */
+  --surface: oklch(0.986 0.011 76);
+  --surface-2: oklch(0.946 0.019 71);
+  --ink: oklch(0.235 0.022 50);           /* warm near-black ink */
+  --ink-2: oklch(0.45 0.022 53);
+  --line: oklch(0.855 0.018 64);          /* warm hairline */
+  --accent: oklch(0.55 0.12 41);          /* warm clay */
+  --accent-ink: oklch(0.46 0.12 39);
+  --accent-soft: oklch(0.91 0.05 52);
+  --accent-softer: oklch(0.955 0.028 58);
+  background: var(--bg);
+  color: var(--ink);
+}
+/* paper, not glossy — the WebGL gradient drops to a faint warm wash */
+.lp .lp-webgl { opacity: 0.22; }
+/* serif display, editorial scale */
+.lp .lp-h1, .lp .lp-h2, .lp .lp-h3, .lp .lp-founder h3 { font-family: var(--display); font-optical-sizing: auto; color: var(--ink); }
+.lp .lp-h1 { font-size: clamp(48px, 7.4vw, 92px); line-height: 0.98; letter-spacing: -0.025em; font-weight: 500; }
+.lp .lp-h2 { font-size: clamp(32px, 4.6vw, 56px); line-height: 1.04; letter-spacing: -0.02em; font-weight: 460; }
+.lp .accentword { font-style: italic; font-weight: 480; color: var(--accent); }
+/* editorial eyebrow — small caps, letterspaced, leading rule */
+.lp .lp-eyebrow { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 11.5px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--accent-ink); font-weight: 600; display: inline-flex; align-items: center; gap: 11px; }
+.lp .lp-eyebrow::before { content: ""; width: 26px; height: 1px; background: var(--accent); }
+/* hairline rules + generous rhythm between sections */
+.lp .lp-section { border-top: 1px solid var(--line); }
+.lp .lp-section.alt { background: var(--surface-2); }
+.lp .lp-hero { border-top: none; }
+/* the live demo panel framed like an editorial plate, not a glossy card */
+.lp .lp-demo-stage, .lp .lp-hero-3d .lp-demo-stage { border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 30px 64px -44px oklch(0.3 0.04 48 / .35); }
+/* warm clay buttons, calmer radius */
+.lp .btn { border-radius: 8px; }
+.lp .btn-primary { box-shadow: none; }
+.lp .btn-ghost { background: transparent; border: 1px solid var(--line); color: var(--ink); }
+/* refined chips/pills — hairline, not heavy */
+.lp .lp-pill { background: var(--surface); border: 1px solid var(--line); color: var(--accent-ink); }
+.lp .hr-chip { background: var(--surface); border: 1px solid var(--line); }
+.lp .hr-chip.on { background: var(--ink); border-color: var(--ink); color: var(--bg); }
+.lp .lp-lead { color: var(--ink-2); }
+/* nav: paper, hairline underline on hover (editorial) */
+.lp .lp-nav { background: color-mix(in oklch, var(--bg) 86%, transparent); border-bottom: 1px solid var(--line); }
+/* refined initial monogram in roster chips (replaces emoji) */
+.lp .hr-mono { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 5px; background: var(--accent-softer); color: var(--accent-ink); font-family: "JetBrains Mono", monospace; font-size: 11px; font-weight: 700; }
+.lp .hr-chip.on .hr-mono { background: oklch(1 0 0 / .16); color: var(--bg); }
