@@ -656,47 +656,74 @@ function ProductPage({ id, onClose, onAdd, onBook }) {
 // onSignIn: wired by main.tsx to the Cognito Hosted UI signIn() when the
 // sign-in gate is active. Defaults to a no-op so the screen is render-safe
 // standalone.
-// Space-travel scroll: each section is positioned in DEPTH by its distance from screen center, so
-// scrolling dollies a camera THROUGH the page — a section approaches from far, snaps into focus at
-// center, then flies toward + past the viewer as the next emerges from behind it (and reverses on
-// scroll-up). Native scroll is preserved (so mobile / scrollbar / keyboard all work); we only add
-// per-section transform/opacity/blur driven by scroll. rAF-throttled. Off on reduced-motion.
 function smooth01(a, b, x) { const t = Math.max(0, Math.min(1, (x - a) / (b - a))); return t * t * (3 - 2 * t); }
-function useSpaceScroll() {
+// FLY-THROUGH scroll: every panel is PINNED dead-center (position:fixed) and moves ONLY in Z, so
+// there's no vertical scroll feeling at all — scrolling drives a camera that rushes each panel at
+// you from the depth, holds it filling the screen, then blasts it past the viewer as the next one
+// comes up from behind. A spacer provides the scroll distance (~1 screen per panel); the footer
+// reappears after the flight. Tall panels scale-to-fit. Off on reduced-motion (panels fall back to
+// normal flow). rAF-throttled.
+function useSpaceFlight() {
   useEffect(() => {
     if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    const sel = ".lp-cinematic .lp-section, .lp-cinematic .lp-fullbleed, .lp-cinematic .lp-finalcta";
-    const sections = Array.from(document.querySelectorAll(sel));
-    if (!sections.length) return;
+    const root = document.querySelector(".lp-cinematic");
+    if (!root) return;
+    const panels = Array.from(root.querySelectorAll(":scope > .lp-hero, :scope > .lp-section, :scope > .lp-fullbleed, :scope > .lp-finalcta"));
+    const footer = root.querySelector(":scope > .lp-footer");
+    if (panels.length < 2) return;
     const mobile = window.innerWidth < 760;
-    const DEPTH = mobile ? 460 : 600;   // px of z-travel
+    const DEPTH = mobile ? 900 : 1300;     // px of z each panel travels (toward viewer is dramatic)
+    const natH = [];
+
+    // 1) measure natural content heights while still in flow
+    panels.forEach((el) => natH.push(el.getBoundingClientRect().height));
+    // 2) pin every panel center-screen, out of flow
+    panels.forEach((el) => {
+      el.style.position = "fixed";
+      el.style.left = "0"; el.style.right = "0"; el.style.top = "0";
+      el.style.height = "100vh"; el.style.minHeight = "0";
+      el.style.display = "flex"; el.style.flexDirection = "column"; el.style.justifyContent = "center";
+      el.style.transformStyle = "preserve-3d";
+      el.style.backfaceVisibility = "hidden";
+      el.classList.add("lp-panel");
+    });
+    // 3) spacer gives the scroll runway (one screen of scroll per panel)
+    const spacer = document.createElement("div");
+    spacer.className = "lp-flight-spacer";
+    spacer.style.height = (panels.length) * 100 + "vh";
+    if (footer) root.insertBefore(spacer, footer); else root.appendChild(spacer);
+
     let raf = null;
     const update = () => {
       raf = null;
-      const vh = window.innerHeight, cy = vh / 2;
-      for (const el of sections) {
-        const r = el.getBoundingClientRect();
-        let p = (r.top + r.height / 2 - cy) / vh; // 0 = dead center, >0 ahead (below), <0 passed (above)
-        p = Math.max(-1.4, Math.min(1.4, p));
-        const ap = Math.abs(p);
-        // flat & readable while centered (ramp≈0); ramps into depth only as it enters/leaves center,
-        // so a section flies in from far, holds in focus, then flies toward + past the viewer.
-        const ramp = smooth01(0.12, 0.92, ap);
-        const tz = (p < 0 ? 1 : -1) * ramp * DEPTH;             // below center → away (deep); above → toward viewer
-        const op = 1 - smooth01(0.62, 1.15, ap);               // stays opaque through the focus zone
-        const bl = !mobile && ap > 0.68 ? Math.min(8, (ap - 0.68) * 18) : 0;
-        el.style.transform = "perspective(1250px) translateZ(" + tz.toFixed(0) + "px)";
+      const vh = window.innerHeight;
+      const prog = window.scrollY / vh;                 // camera position, in panel units
+      panels.forEach((el, i) => {
+        const d = i - prog;                             // 0 = this panel is centered at the camera
+        const ad = Math.abs(d);
+        if (ad > 1.35) { el.style.visibility = "hidden"; el.style.pointerEvents = "none"; return; }
+        el.style.visibility = "visible";
+        const fit = Math.max(0.5, Math.min(1, (vh * 0.92) / (natH[i] || vh)));
+        const tz = -d * DEPTH;                          // ahead (d>0) → deep/away; passed (d<0) → toward viewer
+        const op = 1 - smooth01(0.78, 1.3, ad);
+        const bl = !mobile && ad > 0.5 ? Math.min(7, (ad - 0.5) * 12) : 0;
+        el.style.transform = "perspective(1400px) translateZ(" + tz.toFixed(0) + "px) scale(" + fit.toFixed(3) + ")";
         el.style.opacity = op.toFixed(3);
         el.style.filter = bl > 0.2 ? "blur(" + bl.toFixed(1) + "px)" : "none";
-        el.style.zIndex = String(Math.round(40 - p * 12));      // nearer-the-viewer sections paint on top (under the nav)
-        el.style.pointerEvents = ap > 0.6 ? "none" : "auto";    // only the focused section is interactive
-      }
+        el.style.zIndex = String(Math.round(34 - d * 9)); // nearer the viewer paints on top (kept below the nav at z-50)
+        el.style.pointerEvents = ad > 0.4 ? "none" : "auto";
+      });
     };
     const onScroll = () => { if (raf == null) raf = requestAnimationFrame(update); };
+    const onResize = () => { natH.length = 0; panels.forEach((el) => { const t = el.style.transform; el.style.transform = "none"; natH.push(el.scrollHeight); el.style.transform = t; }); update(); };
     update();
     window.addEventListener("scroll", onScroll, { passive: true });
-    window.addEventListener("resize", onScroll);
-    return () => { window.removeEventListener("scroll", onScroll); window.removeEventListener("resize", onScroll); if (raf) cancelAnimationFrame(raf); };
+    window.addEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("scroll", onScroll); window.removeEventListener("resize", onResize); if (raf) cancelAnimationFrame(raf);
+      spacer.remove();
+      panels.forEach((el) => { el.style.cssText = ""; el.classList.remove("lp-panel"); });
+    };
   }, []);
 }
 // Magnetic pull for primary CTAs — the button leans toward the cursor.
@@ -1058,7 +1085,7 @@ function Landing({ onSignIn = () => {} } = {}) {
       if (prevTheme) root.setAttribute("data-theme", prevTheme); else root.removeAttribute("data-theme");
     };
   }, []);
-  useSpaceScroll();
+  useSpaceFlight();
   useMagnetic();
   useTilt3d();
   const [demoTab, setDemoTab] = useState("agents");
