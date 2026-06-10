@@ -1010,6 +1010,11 @@ function Landing({ onSignIn = () => {} } = {}) {
               <button className="btn btn-primary btn-lg" onClick={() => document.getElementById("pricing").scrollIntoView({ behavior: "smooth" })}><Icon name="bolt" size={17} />Build your suite</button>
               <button className="btn btn-ghost btn-lg" onClick={() => document.getElementById("demos").scrollIntoView({ behavior: "smooth" })}><Icon name="play" size={16} />See it in action</button>
             </div>
+            <div className="lp-trust">
+              <span><Icon name="check" size={14} sw={2.6} />No credit card to explore</span>
+              <span><Icon name="check" size={14} sw={2.6} />Live in a day</span>
+              <span><Icon name="check" size={14} sw={2.6} />Keep your CRM</span>
+            </div>
             <div className="lp-hero-note"><Icon name="link" size={15} /><span>Already have a CRM? <b style={{ color: "var(--ink)" }}>Keep it</b>, we plug right into HubSpot, Salesforce &amp; more.</span></div>
             <HeroRoster />
           </div>

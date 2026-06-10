@@ -678,3 +678,28 @@ textarea.lp-input { height: 92px; padding: 11px 13px; resize: none; }
 .lp-cinematic > .lp-mobar { z-index: 90 !important; }
 .lp-cinematic > .lp-totop { z-index: 80 !important; }
 .lp-cinematic > .lp-nav { z-index: 50 !important; }
+
+/* ============================================================
+   Warm-premium pass — editorial display serif (Fraunces),
+   warmer canvas, generous type + spacing, softer depth.
+   Clarity + warmth + restraint (premium, not flashy).
+   ============================================================ */
+.lp { --display: "Fraunces", Georgia, "Times New Roman", serif; background: oklch(0.987 0.013 78); }
+.lp .lp-h1, .lp .lp-h2 { font-family: var(--display); font-optical-sizing: auto; letter-spacing: -0.02em; }
+.lp .lp-h1 { font-size: clamp(46px, 7vw, 84px); line-height: 1.0; font-weight: 540; }
+.lp .lp-h2 { font-size: clamp(30px, 4.4vw, 52px); line-height: 1.06; font-weight: 500; }
+.lp .accentword { font-style: italic; font-weight: 480; } /* editorial italic accent */
+.lp .lp-founder h3, .lp .lp-modal h3 { font-family: var(--display); font-weight: 560; letter-spacing: -0.01em; }
+/* calmer, more generous reading */
+.lp .lp-lead { font-size: clamp(17px, 1.55vw, 21px); line-height: 1.62; }
+.lp .lp-sub { font-size: clamp(15px, 1.3vw, 18px); line-height: 1.6; }
+.lp .lp-section { padding-top: clamp(64px, 9vw, 120px); padding-bottom: clamp(64px, 9vw, 120px); }
+.lp .lp-eyebrow { letter-spacing: 0.14em; }
+/* softer, warmer buttons */
+.lp .btn { border-radius: 12px; }
+.lp .btn-lg { padding: 14px 22px; }
+/* hero trust strip — warm reassurance */
+.lp-trust { display: flex; flex-wrap: wrap; gap: 18px 22px; align-items: center; margin-top: 22px; font-size: 13px; font-weight: 560; color: var(--ink-2); }
+.lp-trust span { display: inline-flex; align-items: center; gap: 7px; }
+.lp-trust svg { color: var(--green); flex-shrink: 0; }
+@media (max-width: 560px) { .lp .lp-h1 { font-size: 42px; } .lp-trust { gap: 12px 16px; font-size: 12.5px; } }
