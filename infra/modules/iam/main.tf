@@ -122,6 +122,37 @@ resource "aws_iam_role_policy" "worker_task_metrics" {
   })
 }
 
+# RAG/grounding query-embedding calls Bedrock Titan to embed the query before pgvector retrieval.
+# The api task (conv-layer grounding path) and the worker task (the search_rag tool it executes)
+# both need bedrock:InvokeModel on the embed model — mirrors the ingest role's sync-embed grant
+# (infra/modules/ingest/main.tf). Surfaced live by scripts/verify_agent_plane.py step [3]
+# (AccessDenied on amazon.titan-embed-text-v2:0), 2026-06-10.
+resource "aws_iam_role_policy" "api_task_bedrock_embed" {
+  name = "bedrock-embed"
+  role = aws_iam_role.task["api"].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["bedrock:InvokeModel"]
+      Resource = "arn:aws:bedrock:${data.aws_region.current.region}::foundation-model/amazon.titan-embed-text-v2:0"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "worker_task_bedrock_embed" {
+  name = "bedrock-embed"
+  role = aws_iam_role.task["worker"].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["bedrock:InvokeModel"]
+      Resource = "arn:aws:bedrock:${data.aws_region.current.region}::foundation-model/amazon.titan-embed-text-v2:0"
+    }]
+  })
+}
+
 # REQ-005: the api task starts provisioning executions — scoped to exactly ONE machine ARN.
 variable "provisioning_sfn_arn" {
   type    = string
