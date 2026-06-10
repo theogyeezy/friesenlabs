@@ -233,6 +233,8 @@ module "web_hosting" {
   source              = "./modules/web_hosting"
   project             = var.project
   github_access_token = var.github_access_token
+  custom_domain       = var.web_custom_domain
+  zone_id             = var.domain_name != "" ? module.dns[0].zone_id : ""
   api_base_url        = var.web_api_base_url
   api_cdn_domain      = module.api_cdn.domain
   cognito_domain      = module.auth.hosted_ui_domain

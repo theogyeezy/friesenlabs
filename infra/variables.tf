@@ -155,6 +155,12 @@ variable "api_cdn_origin_domain" {
   description = "Named https origin for the API CloudFront distribution."
 }
 
+variable "web_custom_domain" {
+  type        = string
+  default     = "" # apex go-live: set to the real domain — Amplify domain association + apex/www records
+  description = "Serve the Amplify web app at this domain (apex + www)."
+}
+
 variable "dns_delegated" {
   type        = bool
   default     = false # flip AFTER Squarespace nameservers point at the Route53 zone
