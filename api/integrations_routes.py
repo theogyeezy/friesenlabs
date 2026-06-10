@@ -33,10 +33,38 @@ from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
 
 from api.auth import TenantClaims
-from ingest.connectors.base import Boto3SecretProvider, tenant_secret_ref
 from shared.config import ENV_INTEGRATIONS_REAL_SECRETS
 
 log = logging.getLogger("api.integrations")
+
+# --------------------------------------------------------------------------- #
+# HOTFIX (post-#67 adversarial review): the production API image (api/Dockerfile)
+# does NOT bundle ingest/, so a top-level `from ingest...` import here crash-looped
+# the deployed container at boot (ModuleNotFoundError — invisible to pytest, which
+# runs from the repo root where ingest/ exists). The two tiny helpers this module
+# needs are inlined below as exact mirrors of ingest.connectors.base; every other
+# ingest dependency is imported lazily behind try/except ImportError so the API
+# stays honest-unconfigured when the package is absent from the image fileset.
+# Keep these in sync with ingest/connectors/base.py (single-screen helpers).
+# --------------------------------------------------------------------------- #
+_PER_TENANT_SECRET_TEMPLATE = "uplift/{tenant_id}/{source}"
+
+
+def _tenant_secret_ref(tenant_id: str, source: str) -> str:
+    """Mirror of ingest.connectors.base.tenant_secret_ref (pure name formatter;
+    tenant_id arrives from the verified claim — THE TRUST RULE)."""
+    return _PER_TENANT_SECRET_TEMPLATE.format(tenant_id=tenant_id, source=source)
+
+
+def _aws_not_found(exc: Exception) -> bool:
+    """Mirror of ingest.connectors.base.Boto3SecretProvider._is_not_found."""
+    code = ""
+    response = getattr(exc, "response", None)
+    if isinstance(response, dict):
+        code = (response.get("Error") or {}).get("Code", "")
+    return code == "ResourceNotFoundException" or (
+        exc.__class__.__name__ == "ResourceNotFoundException"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -100,9 +128,10 @@ class Boto3SecretWriter:
             self._client = boto3.client("secretsmanager", region_name=region)
         return self._client
 
-    # Reuse the read-side not-found detection (botocore ClientError code OR a
-    # fake exception class named after the AWS error code).
-    _is_not_found = staticmethod(Boto3SecretProvider._is_not_found)
+    # Read-side not-found detection (botocore ClientError code OR a fake
+    # exception class named after the AWS error code) — inlined mirror, see
+    # the HOTFIX note at the top of this module.
+    _is_not_found = staticmethod(_aws_not_found)
 
     def put_secret(self, ref: str, value: str) -> None:
         client = self._sm()
@@ -156,7 +185,13 @@ def _build_sync_runner() -> Callable[[str, str], Any] | None:
     Lane Nick deliberately wires them (the EventBridge scheduler is the
     primary sync path).
     """
-    from ingest.run_sync import real_mode  # noqa: PLC0415 — import-safe, kept lazy for clarity
+    try:
+        # Lazy AND absence-tolerant: the production API image does not bundle
+        # ingest/ (see the HOTFIX note above) — no module = no runner = the
+        # route answers its honest 503.
+        from ingest.run_sync import real_mode  # noqa: PLC0415
+    except ImportError:
+        return None
 
     if not real_mode():
         return None
@@ -226,7 +261,7 @@ def mount_integrations(app: FastAPI, deps: IntegrationsDeps, current_tenant) -> 
         for name, meta in KNOWN_INTEGRATIONS.items():
             connected: bool | None = None
             if secrets_configured:
-                ref = tenant_secret_ref(claims.tenant_id, meta["source"])  # claims ONLY
+                ref = _tenant_secret_ref(claims.tenant_id, meta["source"])  # claims ONLY
                 try:
                     connected = bool(deps.secret_writer.secret_exists(ref))
                 except Exception as exc:  # noqa: BLE001 — a status read must not 500 the listing
@@ -261,7 +296,7 @@ def mount_integrations(app: FastAPI, deps: IntegrationsDeps, current_tenant) -> 
             raise HTTPException(status_code=422, detail="token must be non-empty")
         # THE TRUST RULE: the vault slot is derived from the VERIFIED claim only —
         # a tenant id smuggled in the body is ignored by construction.
-        ref = tenant_secret_ref(claims.tenant_id, meta["source"])
+        ref = _tenant_secret_ref(claims.tenant_id, meta["source"])
         try:
             # Stored untouched (a vault must not mutate the secret).
             deps.secret_writer.put_secret(ref, body.token)
@@ -273,12 +308,35 @@ def mount_integrations(app: FastAPI, deps: IntegrationsDeps, current_tenant) -> 
 
     @app.post("/integrations/{name}/sync")
     def kick_sync(name: str, claims: TenantClaims = Depends(current_tenant)):
-        _known_or_404(name)
+        meta = _known_or_404(name)
         if deps.sync_runner is None:
             # Honest unconfigured answer — never a fake zero-record "success".
             raise HTTPException(status_code=503, detail=(
                 "sync not configured — the ingestion plane is not wired on this task "
                 "(INGEST_REAL_STORES unset; see infra/REQUESTS.md REQ-004/REQ-006)"
+            ))
+        # GUARD (post-#67 review MEDIUM): an API-kicked sync must NEVER ride the
+        # deprecated SHARED HubSpot token fallback — that would ingest another
+        # customer's portal into this tenant's rows. Require the tenant's OWN
+        # vaulted credential, verifiably: no writer to check with, or no
+        # per-tenant secret, means no API-triggered sync. The scheduled path
+        # (operator-controlled INGEST_TENANTS) is unaffected.
+        if deps.secret_writer is None:
+            raise HTTPException(status_code=503, detail=(
+                "sync requires verifiable per-tenant credentials — secret storage "
+                "is not configured on this task (REQ-006)"
+            ))
+        ref = _tenant_secret_ref(claims.tenant_id, meta["source"])
+        try:
+            connected = bool(deps.secret_writer.secret_exists(ref))
+        except Exception as exc:  # noqa: BLE001 — fail CLOSED on status errors
+            log.error("integrations: pre-sync credential check failed for %s (%s)",
+                      ref, type(exc).__name__)
+            raise HTTPException(status_code=502, detail="credential check failed")
+        if not connected:
+            raise HTTPException(status_code=409, detail=(
+                f"connect {name} first — no per-tenant credential is vaulted; "
+                "API-triggered syncs never use the shared fallback token"
             ))
         try:
             res = deps.sync_runner(claims.tenant_id, name)  # tenant from the VERIFIED claim only
