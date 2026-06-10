@@ -17,10 +17,15 @@ import {
   type Approval,
   type ChatResponse,
   type DecideBody,
+  type Integration,
+  type IntegrationCredentialsBody,
+  type IntegrationSyncResponse,
+  type ListIntegrationsResponse,
   type SaveViewBody,
   type SavedViewRow,
   type SignupResponse,
   type SignupState,
+  type StoreCredentialsResponse,
 } from "./client";
 
 const MOCK_TENANT = "tenant-demo";
@@ -102,6 +107,24 @@ function seedViews(): SavedViewRow[] {
   ];
 }
 
+// Mirrors api/integrations_routes.py KNOWN_INTEGRATIONS. Starts not_connected
+// so the mock walks the same connect -> sync arc as the real API (incl. the
+// 409 "connect first" on a premature sync).
+function seedIntegrations(): Integration[] {
+  return [
+    {
+      name: "hubspot",
+      label: "HubSpot",
+      category: "CRM & Marketing",
+      description:
+        "Sync companies, contacts, deals and notes from HubSpot CRM into your " +
+        "Uplift data plane (read-only — Uplift never writes back).",
+      connected: false,
+      status: "not_connected",
+    },
+  ];
+}
+
 function cannedChat(_message: string): ChatResponse {
   return {
     answer:
@@ -152,6 +175,10 @@ export class MockApi {
   private approvals: Approval[] = seedApprovals();
   private views: SavedViewRow[] = seedViews();
   private signupState: MockSignup | null = null;
+  private integrations: Integration[] = seedIntegrations();
+  // Names with a "vaulted" credential. The token VALUE is never retained —
+  // the mock honors the write-only contract (no echo, no storage, no logging).
+  private integrationVault = new Set<string>();
 
   listApprovals(): Approval[] {
     return this.approvals.filter((a) => a.status === "pending").map((a) => ({ ...a }));
@@ -221,6 +248,57 @@ export class MockApi {
       };
     }
     return { status: "executed", decision: "auto", detail: "", approval: null, result: { ok: true } };
+  }
+
+  // --- integrations ----------------------------------------------------------
+
+  listIntegrations(): ListIntegrationsResponse {
+    return {
+      integrations: this.integrations.map((i) => ({ ...i })),
+      secrets_configured: true,
+      sync_configured: true,
+    };
+  }
+
+  storeIntegrationCredentials(
+    name: string,
+    body: IntegrationCredentialsBody,
+  ): StoreCredentialsResponse {
+    const rec = this.requireIntegration(name);
+    if (!body.token || !body.token.trim()) {
+      throw new ApiError(422, "token must be non-empty");
+    }
+    // Vault the FACT of a credential only — never the token itself.
+    this.integrationVault.add(rec.name);
+    rec.connected = true;
+    rec.status = "connected";
+    return {
+      name: rec.name,
+      secret_ref: `uplift/${MOCK_TENANT}/${rec.name}`,
+      stored: true,
+      status: "connected",
+    };
+  }
+
+  kickIntegrationSync(name: string): IntegrationSyncResponse {
+    const rec = this.requireIntegration(name);
+    if (!this.integrationVault.has(rec.name)) {
+      // Mirrors the API's guard: no vaulted per-tenant credential = no sync.
+      throw new ApiError(
+        409,
+        `connect ${rec.name} first — no per-tenant credential is vaulted`,
+      );
+    }
+    return {
+      name: rec.name,
+      result: { pulled: 4, landed_rows: 4, chunks: 9, embedded: 9, skipped: 0 },
+    };
+  }
+
+  private requireIntegration(name: string): Integration {
+    const rec = this.integrations.find((i) => i.name === name);
+    if (!rec) throw new ApiError(404, `unknown integration: ${name}`);
+    return rec;
   }
 
   // --- signup funnel ---------------------------------------------------------
