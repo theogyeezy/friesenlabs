@@ -265,6 +265,7 @@ module "dns" {
 
 # --- Phase 4: self-hosted tool-execution worker ---
 module "worker" {
+  count              = var.worker_deployed ? 1 : 0
   source             = "./modules/worker"
   project            = var.project
   region             = var.aws_region
