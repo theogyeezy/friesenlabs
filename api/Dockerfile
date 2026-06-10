@@ -20,6 +20,9 @@ COPY signup/ ./signup/
 COPY ml/ ./ml/
 # db/ holds schema.sql + roles.sql, used by `python -m api.migrate`
 COPY db/ ./db/
+# scripts/ holds isolation_test.py — run as a one-off Fargate task against live Aurora
+# as crm_app (TODO Sec/P0): `python scripts/isolation_test.py` with UPLIFT_DB_URL set.
+COPY scripts/ ./scripts/
 
 # Non-root.
 RUN useradd --create-home --uid 10001 appuser
