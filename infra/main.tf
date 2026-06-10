@@ -108,6 +108,8 @@ module "api_service" {
   task_role_arn                = module.iam.task_role_arns["api"]
   db_secret_arn                = module.secrets.crm_app_db_secret_arn
   anthropic_api_key_secret_arn = module.secrets.anthropic_api_key_secret_arn
+  env_id_secret_arn            = module.secrets.env_id_secret_arn
+  api_anthropic_env            = var.api_anthropic_env
   cognito_user_pool_id         = module.auth.user_pool_id
   cognito_client_id            = module.auth.user_pool_client_id
   image                        = var.api_image
@@ -175,4 +177,8 @@ module "worker" {
   execution_role_arn = module.iam.ecs_task_execution_role_arn
   task_role_arn      = module.iam.task_role_arns["worker"]
   env_key_secret_arn = module.secrets.env_key_secret_arn
+  env_id_secret_arn  = module.secrets.env_id_secret_arn
+  db_secret_arn      = module.secrets.crm_app_db_secret_arn
+  db_host            = module.data.cluster_endpoint
+  cube_endpoint      = var.cube_endpoint
 }

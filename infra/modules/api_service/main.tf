@@ -16,6 +16,17 @@ variable "image" {
 }
 variable "db_secret_arn" { type = string }
 variable "anthropic_api_key_secret_arn" { type = string }
+variable "env_id_secret_arn" {
+  type    = string
+  default = ""
+}
+# REQ-001 part 3, SAFETY-GATED: injecting valueFrom on an EMPTY secret blocks task startup
+# (ResourceInitializationError) and would take the live API down. Flip to true in tfvars ONLY
+# after `uplift/anthropic-api-key` + `uplift/env-id` hold real values.
+variable "api_anthropic_env" {
+  type    = bool
+  default = false
+}
 variable "cognito_user_pool_id" { type = string }
 variable "cognito_client_id" { type = string }
 variable "aurora_endpoint" {
@@ -73,12 +84,20 @@ resource "aws_ecs_task_definition" "api" {
         { name = "AURORA_MASTER_SECRET_ARN", value = var.aurora_master_secret_arn },
         { name = "CRM_APP_SECRET_ARN", value = var.db_secret_arn },
       ]
-      secrets = [
-        # crm_app (non-owner) DB credentials so RLS applies. (Anthropic key omitted — AI parked,
-        # and an unset secret would block task startup.)
-        { name = "DB_USER", valueFrom = "${var.db_secret_arn}:username::" },
-        { name = "DB_PASS", valueFrom = "${var.db_secret_arn}:password::" },
-      ]
+      secrets = concat(
+        [
+          # crm_app (non-owner) DB credentials so RLS applies.
+          { name = "DB_USER", valueFrom = "${var.db_secret_arn}:username::" },
+          { name = "DB_PASS", valueFrom = "${var.db_secret_arn}:password::" },
+        ],
+        # REQ-001: org Anthropic key + env-id fallback — API task ONLY (never the worker), and
+        # only once the secrets hold values (see var.api_anthropic_env). UPLIFT_ENV_KEY must
+        # never appear here.
+        var.api_anthropic_env ? [
+          { name = "ANTHROPIC_API_KEY", valueFrom = var.anthropic_api_key_secret_arn },
+          { name = "UPLIFT_ENV_ID", valueFrom = var.env_id_secret_arn },
+        ] : []
+      )
       logConfiguration = {
         logDriver = "awslogs"
         options = {

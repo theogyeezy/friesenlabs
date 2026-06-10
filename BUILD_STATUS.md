@@ -321,6 +321,13 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   `available`. TODO 123/136/197 checked off. Also: 3-lens adversarial verify REFUTED the PR-20
   RLS-blocker claim (fail-closed + unreachable; empirical repro) and 3-lens review of PR-18 came
   back MERGE/no-blockers — both recorded as PR comments post-merge (merged by diffusion23).
+- 2026-06-09 — REQ-001 + REQ-002 authored (feat/nick-req-001-002): `uplift/env-id` secret, full
+  worker env/secret wiring, API org-key injection SAFETY-GATED behind `api_anthropic_env`
+  (default false — valueFrom on an empty secret kills task startup). roles.sql: GRANT no-DELETE
+  DML on accounts/stripe_events + explicit REVOKE (default-privileges hazard reconciled).
+  3-agent verification: asymmetry proven (flag-on plan = exactly 2 api_service actions, flag-off
+  = zero; worker has no org key), grants proven empirically on pgvector/pg16 (CI's image; DELETE
+  denied, REVOKE wins, idempotent), env-name contract matches shared/config.py + worker.run().
 
 ## Lane Matt (app code) — log
 - 2026-06-09 — **Cycle 2 (asgi integration + provisioning foundations, 4 PRs + 1 fix, all reviewed PASS):**

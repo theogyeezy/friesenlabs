@@ -30,8 +30,16 @@ resource "aws_secretsmanager_secret" "env_key" {
   description = "Managed Agents ENVIRONMENT key — authenticates the worker to the queue (NOT the org API key)."
 }
 
+# REQ-001: Managed Agents self-hosted ENVIRONMENT ID (not a credential, but task defs read it
+# via valueFrom alongside the env key). Value written after the live create_environment run.
+resource "aws_secretsmanager_secret" "env_id" {
+  name        = "${var.project}/env-id"
+  description = "Managed Agents environment id — single-tenant fallback; per-tenant rows take precedence."
+}
+
 output "anthropic_api_key_secret_arn" { value = aws_secretsmanager_secret.anthropic_api_key.arn }
 output "connectors_secret_arn" { value = aws_secretsmanager_secret.connectors.arn }
 output "crm_app_db_secret_arn" { value = aws_secretsmanager_secret.crm_app_db.arn }
 output "cube_api_secret_arn" { value = aws_secretsmanager_secret.cube_api_secret.arn }
 output "env_key_secret_arn" { value = aws_secretsmanager_secret.env_key.arn }
+output "env_id_secret_arn" { value = aws_secretsmanager_secret.env_id.arn }

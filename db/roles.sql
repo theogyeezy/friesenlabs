@@ -40,3 +40,14 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public
 -- For tenant-filtered ANN so results don't under-return (pgvector 0.8.0 iterative scans):
 --   SET hnsw.iterative_scan = 'relaxed_order';
 --   SET hnsw.max_scan_tuples = 20000;
+
+-- ---------------------------------------------------------------------------
+-- Pre-tenant signup tables (REQ-002): RLS-EXEMPT by design — rows exist before
+-- a tenant_id is provisioned, so access control is GRANT-based, not RLS.
+-- crm_app gets DML *without DELETE*: accounts are parked/flipped (never deleted
+-- by the app) and stripe_events is an append-only idempotency ledger.
+GRANT SELECT, INSERT, UPDATE ON accounts, stripe_events TO crm_app;
+-- The ALTER DEFAULT PRIVILEGES block above hands DELETE to crm_app on any table
+-- created later by the migration role — including these two. Revoke it
+-- explicitly or the no-DELETE intent is silently superseded.
+REVOKE DELETE ON accounts, stripe_events FROM crm_app;
