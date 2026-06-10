@@ -704,3 +704,17 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   by the parallel lane — reopened as the one-commit v6 diff) merged to main @3f68c0c with CI
   green. All three credential steps in `deploy.yml` now `@v6`; the next prod deploy no longer
   depends on the `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24` runner override.
+- 2026-06-10 — **Cycle 14 (post-run follow-up batch):** (1) **Live signup 500 FIXED** — the signup
+  plane had ZERO cognito-idp grants (AdminCreateUser AccessDenied); the exact four admin ops now
+  granted to the api task + provisioning Lambda, single-pool-scoped (#168, review dropped the
+  call-site-less AdminSetUserPassword); live re-probe: /signup 200 {account_id, state:created}.
+  FORCE_CHANGE_PASSWORD confirm path still unimplemented (app lane — new users can't password-login
+  yet). (2) **Apex authored+applied** (#166, review-hardened: ' CNAME ' parse, trimsuffix,
+  allow_overwrite, try() count-0): Cognito callbacks extended, records created — association
+  **FAILED on a FOREIGN CloudFront distro (djvyqxdhlili4, not this account) still claiming
+  friesenlabs.com** (the deleted rogue zone's target — likely Nick's personal AWS); apex+www blocked
+  until that alias is released, then re-run via -replace on the domain association. (3) **#161
+  hardening landed+rolled** (#167 + the user's v6 credscredentials fix): worker INFO logging LIVE
+  (poller trail in CloudWatch), desired_count=2 codified, ensure() pinning constraint documented,
+  Node-24 actions forced ahead of the 6/16 flip. (4) api_cdn retirement: RECOMMEND AGAINST (TODO
+  note) — it stamps X-Origin-Verify + carries the WAF; Amplify proxy can't add headers.
