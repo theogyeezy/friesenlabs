@@ -113,3 +113,74 @@ resource "aws_cloudtrail" "org" {
 
 output "cloudtrail_bucket" { value = aws_s3_bucket.trail.id }
 output "cloudtrail_name" { value = aws_cloudtrail.org.name }
+
+# GuardDuty (TODO Sec/P3 214): threat detection for the account holding tenant data. Cheap at
+# this CloudTrail/VPC-flow volume (~$1-5/mo).
+resource "aws_guardduty_detector" "this" {
+  enable = true
+}
+
+# AWS Config recorder + delivery channel (TODO P3 147): account-level baseline (the SCP half
+# still needs an AWS Org). Records resource configuration history into the trail bucket.
+data "aws_iam_policy_document" "config_assume" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["config.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "config" {
+  name               = "${var.project}-config-recorder"
+  assume_role_policy = data.aws_iam_policy_document.config_assume.json
+}
+
+resource "aws_iam_role_policy_attachment" "config" {
+  role       = aws_iam_role.config.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWS_ConfigRole"
+}
+
+resource "aws_iam_role_policy" "config_s3" {
+  name = "config-delivery"
+  role = aws_iam_role.config.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect    = "Allow"
+        Action    = ["s3:PutObject"]
+        Resource  = "${aws_s3_bucket.trail.arn}/config/AWSLogs/*"
+        Condition = { StringEquals = { "s3:x-amz-acl" = "bucket-owner-full-control" } }
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["s3:GetBucketAcl"]
+        Resource = aws_s3_bucket.trail.arn
+      }
+    ]
+  })
+}
+
+resource "aws_config_configuration_recorder" "this" {
+  name     = "${var.project}-recorder"
+  role_arn = aws_iam_role.config.arn
+  recording_group {
+    all_supported                 = true
+    include_global_resource_types = true
+  }
+}
+
+resource "aws_config_delivery_channel" "this" {
+  name           = "${var.project}-config"
+  s3_bucket_name = aws_s3_bucket.trail.id
+  s3_key_prefix  = "config"
+  depends_on     = [aws_config_configuration_recorder.this]
+}
+
+resource "aws_config_configuration_recorder_status" "this" {
+  name       = aws_config_configuration_recorder.this.name
+  is_enabled = true
+  depends_on = [aws_config_delivery_channel.this]
+}
