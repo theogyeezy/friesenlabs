@@ -183,6 +183,11 @@ resource "aws_cloudfront_distribution" "api" {
       https_port             = 443
       origin_protocol_policy = var.api_origin_domain != "" ? "https-only" : "http-only"
       origin_ssl_protocols   = ["TLSv1.2"]
+      # /chat turns now resolve AUTO tool calls in-request (query_cube etc.) — multi-round
+      # model+tool turns exceed the 30s default and 504 at the edge (hit live 2026-06-10).
+      # 60s is the no-quota-request maximum.
+      origin_read_timeout      = 60
+      origin_keepalive_timeout = 5
     }
 
     # Sec/P0: prove to the ALB that traffic came through OUR distribution — the SG prefix-list
