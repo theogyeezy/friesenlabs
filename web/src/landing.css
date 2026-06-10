@@ -762,7 +762,7 @@ textarea.lp-input { height: 92px; padding: 11px 13px; resize: none; }
 /* numbered sections: 01 — , 02 — , … in the eyebrow */
 .lp { counter-reset: lpsec; }
 .lp .lp-section { counter-increment: lpsec; }
-.lp .lp-section .lp-eyebrow::before { content: counter(lpsec, decimal-leading-zero) "  —"; width: auto; height: auto; background: none; font-variant-numeric: tabular-nums; letter-spacing: 0.06em; }
+.lp .lp-section .lp-eyebrow::before { content: counter(lpsec, decimal-leading-zero) "  ·"; width: auto; height: auto; background: none; font-variant-numeric: tabular-nums; letter-spacing: 0.06em; }
 /* asymmetric, left-aligned section heads with an editorial measure */
 .lp .lp-section > .lp-wrap > .lp-eyebrow,
 .lp .lp-section > .lp-wrap > .lp-h2,

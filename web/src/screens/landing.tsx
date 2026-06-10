@@ -212,16 +212,16 @@ const VS_LENSES = [
   { id: "own", label: "Own my data & stack", rows: ["byocrm", "models", "knowledge"] },
 ];
 const VS_ROWS = [
-  { id: "agents", f: "Autonomous AI agents that research, draft, send & book — around the clock", g: "Automation templates & drip workflows you assemble yourself", fHas: true, gHas: "partial" },
-  { id: "approvals", f: "Greenlight: every risky action waits for your one-tap approval", g: "No human-in-the-loop layer — automations just run", fHas: true, gHas: false },
-  { id: "kill", f: "One-tap kill switch + tiered autonomy (suggest → ask-first → autonomous)", g: "Pause individual campaigns by hand", fHas: true, gHas: "partial" },
-  { id: "byocrm", f: "Keep HubSpot / Salesforce / Pipedrive — agents work inside YOUR system of record", g: "Built around moving onto their CRM", fHas: true, gHas: false },
-  { id: "models", f: "Cortex: private models trained on your own outcomes — a moat nobody can copy", g: "Generic AI features shared by every customer", fHas: true, gHas: false },
+  { id: "agents", f: "Autonomous AI agents that research, draft, send, and book around the clock", g: "Drip templates and workflows you build and run yourself", fHas: true, gHas: "partial" },
+  { id: "approvals", f: "Greenlight: every risky action waits for your one-tap approval", g: "No approval step. Automations just fire on their own", fHas: true, gHas: false },
+  { id: "kill", f: "A one tap kill switch, and autonomy you dial from suggest to ask first to fully on its own", g: "Pause individual campaigns by hand", fHas: true, gHas: "partial" },
+  { id: "byocrm", f: "Keep HubSpot, Salesforce, or Pipedrive. Agents work inside your own system of record", g: "Built around moving onto their CRM", fHas: true, gHas: false },
+  { id: "models", f: "Private models that learn from your own outcomes, a moat nobody else can copy", g: "The same generic AI that every customer gets", fHas: true, gHas: false },
   { id: "knowledge", f: "Hosted knowledge bases ground every agent answer on YOUR docs", g: "Basic bot training on FAQs", fHas: true, gHas: "partial" },
-  { id: "support", f: "Frontline: support desk that deflects routine tickets itself", g: "Shared inbox + chatbot you script", fHas: true, gHas: "partial" },
-  { id: "audit", f: "Full audit trail — every agent action logged, anomalies auto-paused", g: "Activity history on contacts", fHas: true, gHas: "partial" },
-  { id: "compound", f: "Gets smarter every week — prediction → outcome → retrain flywheel", g: "Static: same product until the next release", fHas: true, gHas: false },
-  { id: "funnels", f: "Ad dashboards, traffic analytics & content calendar — on the roadmap", g: "Funnels, sites & ad tools today", fHas: "partial", gHas: true },
+  { id: "support", f: "Frontline: support desk that deflects routine tickets itself", g: "A shared inbox and a chatbot you script", fHas: true, gHas: "partial" },
+  { id: "audit", f: "A full audit trail. Every agent action is logged and anomalies pause on their own", g: "Activity history on contacts", fHas: true, gHas: "partial" },
+  { id: "compound", f: "Gets sharper every week as your own outcomes train the model", g: "The same product until their next release", fHas: true, gHas: false },
+  { id: "funnels", f: "Ad dashboards, traffic analytics, and a content calendar, all on the roadmap", g: "Funnels, sites, and ad tools today", fHas: "partial", gHas: true },
 ];
 
 function useReveal() {
@@ -300,7 +300,7 @@ function VsSection() {
       <div className="lp-wrap">
         <div className="lp-eyebrow">Why not just use GoHighLevel?</div>
         <h2 className="lp-h2">Marketing automation sends the email.<br />Agents close the loop.</h2>
-        <p className="lp-sub">GoHighLevel is a great funnel machine. Friesen is a workforce. Pick what matters to you and see the difference.</p>
+        <p className="lp-sub">GoHighLevel builds your funnels. Friesen does the work for you. See what changes when agents run your business.</p>
         <CapabilityRadar />
         <div className="vs-lenses">
           {VS_LENSES.map((l) => (
@@ -320,7 +320,7 @@ function VsSection() {
           ))}
         </div>
         <div className="vs-score">
-          <CountUp value={fWins} /> of {VS_ROWS.length} rounds to the agents — and we&apos;ll say it plainly: if you want funnels today, they&apos;re ahead <i>(ours are on the roadmap above)</i>.
+          <CountUp value={fWins} /> of {VS_ROWS.length} rounds go to the agents. We&apos;ll say it plainly: if you want funnels today, GoHighLevel is still ahead <i>(ours are on the roadmap above)</i>.
         </div>
       </div>
     </section>
@@ -481,8 +481,8 @@ function NiceToHave() {
     <section className="lp-section" id="nice">
       <div className="lp-wrap">
         <div className="lp-eyebrow">On the roadmap</div>
-        <h2 className="lp-h2">Nice-to-have products</h2>
-        <p className="lp-sub">Optional hubs we'll stand up for you as the suite grows. Same private instance, same agents, more of your business in one place.</p>
+        <h2 className="lp-h2">More of your business, handled for you.</h2>
+        <p className="lp-sub">Optional add ons your agents run as you grow. Same private instance, same crew, more taken off your plate.</p>
         <div className="lp-demo-tabs">
           {LP_NICE.map((n) => <button key={n.id} className={"lp-demo-tab" + (tab === n.id ? " active" : "")} onClick={() => setTab(n.id)}><LpIcon name={n.icon} size={15} style={{ marginRight: 7, verticalAlign: "-2px" }} />{n.tab}</button>)}
         </div>
@@ -930,7 +930,7 @@ function RoiCalculator() {
       <div className="lp-wrap">
         <div className="lp-eyebrow">Run the numbers</div>
         <h2 className="lp-h2">What would a crew of agents save you?</h2>
-        <p className="lp-sub">Drag the sliders. The math is live — busywork hours your agents absorb vs. what those hours cost you today.</p>
+        <p className="lp-sub">Move the sliders. See the busywork hours your agents take off your plate, and what those hours cost you today.</p>
         <div className="roi-grid">
           <div className="roi-controls">
             {[
@@ -950,7 +950,7 @@ function RoiCalculator() {
               <div className="roi-bar"><span className="roi-bar-lab">Doing it by hand</span><div className="roi-bar-track"><div className="roi-bar-fill manual" style={{ width: "100%" }}><b>${manualMo.toLocaleString()}</b></div></div></div>
               <div className="roi-bar"><span className="roi-bar-lab">With Friesen agents</span><div className="roi-bar-track"><div className="roi-bar-fill friesen" style={{ width: barF + "%" }}><b>${friesenMo.toLocaleString()}</b></div></div></div>
             </div>
-            <div className="roi-foot">{(weekly * 4.33).toFixed(0)} hours of busywork a month — handed to agents that don't clock out. <i>Illustrative; your suite price depends on the modules you pick.</i></div>
+            <div className="roi-foot">{(weekly * 4.33).toFixed(0)} hours of busywork a month, handed to agents that don't clock out. <i>Illustrative; your suite price depends on the modules you pick.</i></div>
           </div>
         </div>
       </div>
@@ -1074,7 +1074,7 @@ function Landing({ onSignIn = () => {} } = {}) {
           <div>
             <span className="lp-pill"><span className="live-dot" style={{ width: 6, height: 6 }} />Meet your AI back office</span>
             <h1 className="lp-h1">Your business, run by <span className="accentword">agents</span>. Watched by you.</h1>
-            <p className="lp-lead">Friesen Labs gives small teams a crew of AI agents that research, reach out, quote, follow up and book, inside one calm command center. You approve the moments that matter.</p>
+            <p className="lp-lead">Get a crew of AI agents that does the busywork for you. They research leads, send outreach, write quotes, chase follow ups, and book the meeting around the clock. You stay in control and approve anything important.</p>
             <div className="lp-hero-cta">
               <a className="btn btn-primary btn-lg" href={SIGNUP_HREF}><LpIcon name="bolt" size={17} />Build your suite</a>
               <button className="btn btn-ghost btn-lg" onClick={() => go("demos")}><LpIcon name="play" size={16} />See it in action</button>
@@ -1097,7 +1097,7 @@ function Landing({ onSignIn = () => {} } = {}) {
         <div className="lp-proof-marquee" aria-hidden="true">
           <div className="lp-marquee-track">
             {[...LP_TESTIMONIALS, ...LP_TESTIMONIALS].map((t, i) => (
-              <span className="lp-proof-chip" key={i}><b>{t.metric}</b> — {t.role}</span>
+              <span className="lp-proof-chip" key={i}><b>{t.metric}</b> · {t.role}</span>
             ))}
           </div>
         </div>
@@ -1108,7 +1108,7 @@ function Landing({ onSignIn = () => {} } = {}) {
         <div className="lp-wrap lp-head-left">
           <div className="lp-eyebrow">One system, not nine tools</div>
           <h2 className="lp-h2">Eleven products. One agentic stack.</h2>
-          <p className="lp-sub">Five layers that snap together. Tap any product to explore it.</p>
+          <p className="lp-sub">Five layers that work as one system. Tap any product to see what it does for you.</p>
           <div className="lp-stack">
             {LP_STACK.map((L, li) => (
               <React.Fragment key={L.h}>
@@ -1140,8 +1140,8 @@ function Landing({ onSignIn = () => {} } = {}) {
       <section className="lp-section" id="demos">
         <div className="lp-wrap">
           <div className="lp-eyebrow">See it in action</div>
-          <h2 className="lp-h2">Don't take our word for it. Try it.</h2>
-          <p className="lp-sub">These demos are the real product, running right here.</p>
+          <h2 className="lp-h2">See exactly what your agents do.</h2>
+          <p className="lp-sub">This is the real product, running live right here. Click around.</p>
           <div className="lp-demo-tabs">
             {LP_DEMOS.map((d) => <button key={d.id} className={"lp-demo-tab" + (demoTab === d.id ? " active" : "")} onClick={() => setDemoTab(d.id)}>{d.tab}</button>)}
           </div>
@@ -1231,7 +1231,7 @@ function Landing({ onSignIn = () => {} } = {}) {
         <div className="lp-wrap">
           <div className="lp-eyebrow">Loved by small businesses</div>
           <h2 className="lp-h2">Owners are getting their time back.</h2>
-          <p className="lp-sub">Real operators, running leaner with a crew of agents behind them.</p>
+          <p className="lp-sub">Real owners who got their nights and weekends back.</p>
           <div className="lp-testi-grid">
             {LP_TESTIMONIALS.slice(0, 5).map((t, i) => (
               <figure className={"lp-testi" + (i === 0 ? " lp-testi-lead" : "")} key={t.name}>
@@ -1256,7 +1256,7 @@ function Landing({ onSignIn = () => {} } = {}) {
         <div className="lp-wrap">
           <div className="lp-eyebrow">Pricing</div>
           <h2 className="lp-h2">Pay for work done, not for seats.</h2>
-          <p className="lp-sub">Pay for the work your agents do, not for seats.</p>
+          <p className="lp-sub">One monthly plan with agent credits included. No per seat fees, ever.</p>
 
           <div className="lp-model3" style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16, margin: "40px 0 8px" }}>
             {[["grid", "A monthly plan", "Pick your products and get a predictable monthly fee with a bucket of agent credits included. No surprises."], ["bolt", "Credits = agent work", "Every meaningful action, a workflow run, a prediction, an outreach, a knowledge answer, spends credits. Always transparent."], ["trend", "Overage only if you exceed", "Go over your bucket and it's a simple per-credit rate. Quiet month? You're never overpaying."]].map(([ic, h, p], i) => (
@@ -1449,7 +1449,7 @@ function Landing({ onSignIn = () => {} } = {}) {
         <div className="lp-wrap">
           <div className="lp-eyebrow">Meet the team</div>
           <h2 className="lp-h2">Built by people who root for small business.</h2>
-          <p className="lp-sub">Friesen Labs is a two-founder, nonprofit team on a mission to put agentic tools in every small business.</p>
+          <p className="lp-sub">A two founder nonprofit putting agentic tools in the hands of every small business.</p>
           <div className="lp-cred">
             <div className="lp-cred-ico"><LpIcon name="shield" size={22} /></div>
             <p>We're not n8n hobbyists or tech bros chasing a trend. Our team has shipped <b>agentic AI in production at some of the world's largest companies</b>, work that has delivered <b>hundreds of millions of dollars in measurable revenue and cost savings</b>. We're bringing that same enterprise-grade muscle to small business.</p>
