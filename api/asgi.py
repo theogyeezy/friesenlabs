@@ -284,8 +284,11 @@ def build_app():
         workspace_store: WorkspaceStore | None = PgWorkspaceStore(dsn)
         crm = PgCrmClient(dsn)
         rag = PgRagClient(dsn)
-        # Governed metrics: live only when CUBE_ENDPOINT + CUBEJS_API_SECRET_VALUE are both
-        # injected (api_cube_env flag) — None otherwise, boots byte-identical.
+        # Governed metrics: live only when CUBE_ENDPOINT + CUBEJS_API_SECRET_VALUE are BOTH
+        # injected (api_cube_env flag). None only when both are unset; endpoint-without-secret
+        # (cube_endpoint wired, flag not yet flipped — the live state at this commit) yields the
+        # DEGRADED client: every call returns {"status": "unconfigured", rows: []} instead of the
+        # bare empty-rows shape — visible misconfiguration by design, not byte-identical.
         cube = cube_client_from_env()
         # Real tool executor: registry dispatch with tenant-bound clients (RLS via SET LOCAL).
         executor = make_executor(greenlight=greenlight, crm=crm, rag=rag, cube=cube,
