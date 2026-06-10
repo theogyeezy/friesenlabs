@@ -166,6 +166,31 @@ def test_managed_session_requires_environment():
 
 
 @pytest.mark.unit
+def test_managed_session_binds_per_tenant_environment():
+    # The caller resolves THIS tenant's persisted env id (WorkspaceStore row) and passes it per
+    # session — it must win over any instance-level id (no instance-global serving every tenant).
+    r = ManagedAgentsRuntime(api_key="test-key", environment_id="env_global")
+    r._client = _mock_client()
+    r.create_session("coord_1", tenant_id="tenant-b", environment_id="env_tenant_b")
+    assert r._client.beta.sessions.create.call_args.kwargs["environment_id"] == "env_tenant_b"
+
+    # And with NO instance-level id at all, the per-tenant id alone is sufficient.
+    r2 = _managed()
+    r2.create_session("coord_1", tenant_id="tenant-c", environment_id="env_tenant_c")
+    assert r2._client.beta.sessions.create.call_args.kwargs["environment_id"] == "env_tenant_c"
+
+
+@pytest.mark.unit
+def test_managed_create_environment_refuses_to_overwrite_configured_id():
+    # A runtime bound to a persisted (per-tenant) environment id must not be silently repointed.
+    r = ManagedAgentsRuntime(api_key="test-key", environment_id="env_persisted")
+    r._client = _mock_client()
+    with pytest.raises(RuntimeError, match="already bound to environment"):
+        r.create_environment("uplift-vpc")
+    r._client.beta.environments.create.assert_not_called()  # refused before any live call
+
+
+@pytest.mark.unit
 def test_managed_session_carries_tenant_and_vault_metadata():
     r = _managed()
     r.create_environment("uplift-vpc")

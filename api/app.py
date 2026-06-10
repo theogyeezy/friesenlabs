@@ -147,7 +147,8 @@ def create_app(deps: ApiDeps) -> FastAPI:
             raise HTTPException(status_code=400, detail=f"unknown tool: {body.name}")
         meta = tool_meta(body.name)
         action = Action(
-            name=body.name, agent=claims.sub, side_effecting=meta["side_effecting"],
+            name=body.name, tenant_id=claims.tenant_id,  # tenant from the VERIFIED claim only
+            agent=claims.sub, side_effecting=meta["side_effecting"],
             channel=meta["channel"], payload=body.payload, reasoning=body.reasoning,
             value_at_stake=body.value_at_stake, discount=body.discount,
         )

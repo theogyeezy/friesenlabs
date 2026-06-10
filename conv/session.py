@@ -67,7 +67,16 @@ class Turn:
 
 
 class Conversation:
-    """One MA session per conversation. Thin client; everything injected."""
+    """One MA session per conversation. Thin client; everything injected.
+
+    Per-tenant provisioning is HOISTED OUT of the request path: `coordinator_id` /
+    `environment_id` are the tenant's persisted ids, resolved by the caller from a
+    `agents.workspace_store.WorkspaceStore` row (written once at provisioning) — a Conversation
+    never rebuilds the roster per request. The only exception is a clearly-gated test/dev
+    fallback: with no `coordinator_id` AND a FakeRuntime, the standard roster is registered
+    in-memory so the offline facade keeps simulating delegations. On any real runtime a missing
+    coordinator_id raises — the tenant simply is not provisioned.
+    """
 
     def __init__(
         self,
@@ -76,6 +85,7 @@ class Conversation:
         today: date,
         runtime: Any = None,
         coordinator_id: str | None = None,
+        environment_id: str | None = None,
         vault_id: str | None = None,
         rag: Any = None,
         crm: Any = None,
@@ -101,16 +111,29 @@ class Conversation:
         self.analytics = analytics
         self.agent = agent
 
-        # If a coordinator id was not provided, register the standard roster on the runtime so the
-        # FakeRuntime can simulate delegations. (Pure orchestration; no network on FakeRuntime.)
+        # TEST/DEV FALLBACK ONLY (clearly gated): with no persisted coordinator id, register the
+        # standard roster in-memory so the offline facade can simulate delegations. This is the
+        # per-request provisioning the WorkspaceStore exists to avoid — it is allowed ONLY on
+        # FakeRuntime; a real runtime without a coordinator_id means the tenant isn't provisioned.
         if coordinator_id is None:
-            from agents import coordinator as _coord  # local import keeps module import cheap
+            from agents.runtime import FakeRuntime  # noqa: PLC0415 — local import keeps module cheap
+
+            if not isinstance(self.runtime, FakeRuntime):
+                raise RuntimeError(
+                    "coordinator_id is required on a non-fake runtime — resolve the tenant's "
+                    "persisted id from the WorkspaceStore (is this tenant provisioned?); "
+                    "rebuilding the roster per request is not allowed"
+                )
+            from agents import coordinator as _coord  # noqa: PLC0415
 
             coordinator_id = _coord.build(self.runtime)
         self.coordinator_id = coordinator_id
+        self.environment_id = environment_id
 
+        # The session binds THIS tenant's persisted environment (per-tenant, never instance-global).
         self.session: Session = self.runtime.create_session(
-            self.coordinator_id, tenant_id=tenant_id, vault_id=vault_id
+            self.coordinator_id, tenant_id=tenant_id, vault_id=vault_id,
+            environment_id=environment_id,
         )
 
     # ------------------------------------------------------------------ helpers

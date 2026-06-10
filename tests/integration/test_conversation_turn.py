@@ -110,6 +110,31 @@ def test_action_question_surfaces_pending_approval_via_greenlight():
 
 
 @pytest.mark.integration
+def test_conversation_requires_persisted_coordinator_on_real_runtime():
+    # The per-request roster build is a clearly-gated FakeRuntime-only fallback: on any non-fake
+    # runtime, a missing coordinator_id means the tenant isn't provisioned -> raise, never build.
+    class NotFake:
+        def create_session(self, *a, **k):  # pragma: no cover — must never be reached
+            raise AssertionError("session must not be created without a persisted coordinator")
+
+    with pytest.raises(RuntimeError, match="coordinator_id is required"):
+        Conversation(tenant_id="tenant-A", today=TODAY, runtime=NotFake())
+
+
+@pytest.mark.integration
+def test_conversation_uses_persisted_ids_without_rebuilding_roster():
+    rt = get_runtime({"runtime": "fake"})
+    convo = Conversation(
+        tenant_id="tenant-A", today=TODAY, runtime=rt,
+        coordinator_id="coord-A", environment_id="env-A",
+    )
+    # Provisioning was hoisted out of the request path: nothing was (re)built on the runtime.
+    assert rt.environments == [] and rt.coordinators == {}
+    assert convo.session.coordinator_id == "coord-A"
+    assert convo.session.metadata["environment_id"] == "env-A"  # per-tenant env binding
+
+
+@pytest.mark.integration
 def test_action_turn_resolves_date_slot_deterministically():
     gl = Greenlight()
     convo = Conversation(tenant_id="tenant-A", today=TODAY, greenlight=gl)

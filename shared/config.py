@@ -14,6 +14,34 @@ MA_BETA_HEADER = "managed-agents-2026-04-01"
 # Titan Text Embeddings V2 dimensionality (Build Guide §Step 10 — documents.embedding vector(1024)).
 EMBEDDING_DIM = 1024
 
+# --- AI-plane env-var NAMES (the single source for names; values come from the task definition /
+# --- Secrets Manager — see infra/REQUESTS.md REQ-001). Safe default everywhere is "unset" = stub.
+ENV_ANTHROPIC_API_KEY = "ANTHROPIC_API_KEY"   # org key — API task ONLY, never the worker
+ENV_UPLIFT_ENV_ID = "UPLIFT_ENV_ID"           # MA self-hosted environment id (secret: uplift/env-id)
+ENV_UPLIFT_ENV_KEY = "UPLIFT_ENV_KEY"         # environment-scoped worker key — worker task ONLY
+ENV_CLOUDWATCH_METRICS = "CLOUDWATCH_METRICS" # "1" enables the worker heartbeat metric
+ENV_CUBE_ENDPOINT = "CUBE_ENDPOINT"           # governed-metrics API base URL (unset = no cube client)
+# crm_app DSN: either the single URL, or the discrete parts (user/pass from Secrets Manager).
+ENV_UPLIFT_DB_URL = "UPLIFT_DB_URL"
+ENV_DB_USER, ENV_DB_PASS = "DB_USER", "DB_PASS"
+ENV_DB_HOST, ENV_DB_NAME, ENV_DB_PORT = "DB_HOST", "DB_NAME", "DB_PORT"
+
+
+def dsn_from_env() -> str | None:
+    """Build the crm_app DSN from `UPLIFT_DB_URL`, or the discrete DB_* parts (DB_USER/DB_PASS from
+    Secrets Manager + DB_HOST/DB_NAME). Returns None when no DB is configured — callers must degrade
+    to their stub behavior (the deployed API without creds boots for /healthz only)."""
+    if os.environ.get(ENV_UPLIFT_DB_URL):
+        return os.environ[ENV_UPLIFT_DB_URL]
+    user = os.environ.get(ENV_DB_USER)
+    pw = os.environ.get(ENV_DB_PASS)
+    host = os.environ.get(ENV_DB_HOST)
+    if user and pw and host:
+        name = os.environ.get(ENV_DB_NAME, "uplift")
+        port = os.environ.get(ENV_DB_PORT, "5432")
+        return f"postgresql://{user}:{pw}@{host}:{port}/{name}"
+    return None
+
 
 @dataclass(frozen=True)
 class Config:
@@ -26,6 +54,9 @@ class Config:
     aurora_master_secret: str = os.environ.get(
         "AURORA_MASTER_SECRET", "uplift/aurora-master"
     )
+    # The Managed Agents self-hosted environment id (REQ-001 — the worker + API task read the
+    # resolved value from the UPLIFT_ENV_ID env var; this is the Secrets Manager reference name).
+    env_id_secret: str = os.environ.get("UPLIFT_ENV_ID_SECRET", "uplift/env-id")
     # Non-owner role used by the app so Postgres RLS actually applies (Build Guide red box).
     db_app_role: str = os.environ.get("DB_APP_ROLE", "uplift_app")
 

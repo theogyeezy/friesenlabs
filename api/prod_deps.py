@@ -51,7 +51,14 @@ class _StubCognito:
 
 
 class _Noop:
-    """Email (Resend) / SMS (SNS) sender stub — real delivery needs Nick."""
+    """Email (Resend) / SMS (SNS) / agent-plane stub — real delivery/creation needs Nick."""
+
+    def ensure(self, **_kw):
+        # Agent-plane stub: stable stub ids so provisioning can upsert a tenant_workspaces row
+        # offline (the conversation factory then resolves them; FakeRuntime accepts any ids).
+        # The real agent plane returns the LIVE workspace/environment/coordinator ids.
+        return {"workspace_id": "stub-ws", "environment_id": "stub-env",
+                "coordinator_id": "stub-coord"}
 
     def __getattr__(self, _name):
         def _f(*a, **k):
@@ -72,13 +79,15 @@ class _StubStripe:
         raise NotImplementedError("Stripe not configured — needs Nick")
 
 
-def build_signup_deps() -> SignupDeps:
+def build_signup_deps(workspace_store=None) -> SignupDeps:
+    """`workspace_store` (optional `agents.workspace_store.WorkspaceStore`) persists the per-tenant
+    Managed Agents ids at provisioning time; None (default) skips persistence (DB unconfigured)."""
     store = _AccountStore()
     accounts = AccountService(store, _StubCognito(), _Noop(), _Noop())
     provisioner = Provisioner(
         store=store, mint_tenant_id=lambda aid: str(uuid.uuid4()), db=_Noop(),
         anthropic_admin=_Noop(), secrets=_Noop(), cognito=_StubCognito(), cube=_Noop(),
-        resend=_Noop(), agent_plane=_Noop(),
+        resend=_Noop(), agent_plane=_Noop(), workspace_store=workspace_store,
     )
     payment = PaymentService(_StubStripe(), accounts, on_paid=provisioner.provision)
     return SignupDeps(
