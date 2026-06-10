@@ -227,3 +227,11 @@ DROP POLICY IF EXISTS tenant_isolation ON tenant_workspaces;
 CREATE POLICY tenant_isolation ON tenant_workspaces
     USING (tenant_id = current_setting('app.current_tenant', true)::uuid)
     WITH CHECK (tenant_id = current_setting('app.current_tenant', true)::uuid);
+
+-- stripe_events.released_at — claim tombstone (appended per the Matt-append rule).
+-- A FAILED webhook attempt RELEASES its claim by setting released_at (signup/store_pg.py
+-- PgStripeEventLedger.release) so the event stays retryable; the next claim re-takes the row via
+-- INSERT .. ON CONFLICT (event_id) DO UPDATE SET released_at = NULL WHERE released_at IS NOT NULL.
+-- A tombstone, NOT a DELETE: the crm_app grant surface on this ledger is append-only
+-- (REQ-002 — SELECT/INSERT/UPDATE, no DELETE), and the released row keeps the audit trail.
+ALTER TABLE stripe_events ADD COLUMN IF NOT EXISTS released_at timestamptz;

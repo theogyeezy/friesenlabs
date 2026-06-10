@@ -80,14 +80,23 @@ Rules:
   ```
 - **Done when:** `terraform validate` green with the new secret + variables (safe `""` defaults); the worker task definition shows UPLIFT_ENV_ID / UPLIFT_ENV_KEY / CLOUDWATCH_METRICS=1 / CUBE_ENDPOINT / DB_* and NO `ANTHROPIC_API_KEY`; the API task definition shows `ANTHROPIC_API_KEY` (from `uplift/anthropic-api-key`) and NO `UPLIFT_ENV_KEY`.
 
-### REQ-003: API task env for the live provisioning deps — Stripe/Resend secrets, webhook secret, Cognito pool id
+### REQ-003: API task env for the live provisioning deps — master switch, Stripe/Resend secrets, webhook secret, Cognito pool id, token-signer + Anthropic admin key
 - **Status:** OPEN
-- **Requested by:** Lane Matt @feat/matt-signup-prod-deps (PR "feat(signup): real provisioning deps end-to-end (env-guarded, draft-gated)")
-- **Needed for:** TODO INT/P0s "real Stripe adapter" / "real Resend email client" / "real Cognito admin ops" / "real email verification" — `api/prod_deps.build_signup_deps()` now selects the real adapters off these env vars (unset = byte-identical stub boot)
-- **Env/secret names** (must already exist in shared/config.py): `STRIPE_API_KEY`, `RESEND_API_KEY`, `STRIPE_WEBHOOK_SECRET`, `COGNITO_USER_POOL_ID` (all read in `shared/config.py` `Config`)
+- **Requested by:** Lane Matt @feat/matt-signup-prod-deps (PR "feat(signup): real provisioning deps end-to-end (env-guarded, draft-gated)"; amended by the same PR after the adversarial review — added the `SIGNUP_REAL_DEPS` master switch + the two names the PR notes flagged as missing)
+- **Needed for:** TODO INT/P0s "real Stripe adapter" / "real Resend email client" / "real Cognito admin ops" / "real email verification" — `api/prod_deps.build_signup_deps()` selects the real adapters off these env vars, but ONLY underneath the `SIGNUP_REAL_DEPS` master switch (unset = byte-identical stub boot regardless of what else is present)
+- **Env/secret names** (must already exist in shared/config.py): `SIGNUP_REAL_DEPS`, `STRIPE_API_KEY`, `RESEND_API_KEY`, `STRIPE_WEBHOOK_SECRET`, `COGNITO_USER_POOL_ID`, `SIGNUP_TOKEN_SECRET_VALUE`, `ANTHROPIC_ADMIN_KEY` (all read in `shared/config.py` `Config`)
 - **Spec:**
   ```hcl
   # API task definition ONLY (none of these ever reach the worker task).
+
+  # 0) MASTER SWITCH — plain (non-secret) env var on the API task:
+  #    SIGNUP_REAL_DEPS = "1"
+  #    Deploy invariance (adversarial finding, HIGH): the API task ALREADY injects
+  #    COGNITO_USER_POOL_ID (JWKS) and DB_* (request-path stores) for other features, so without
+  #    this flag a mere image deploy of api/prod_deps.py would flip real Cognito admin calls +
+  #    live-Aurora signup state. build_signup_deps selects NO real adapter unless it is exactly
+  #    "true"/"1". LEAVE IT UNSET until REQ-002 (crm_app grants) is DONE and the secrets below
+  #    are populated — setting it is the deliberate go-live act for the signup plane.
 
   # 1) EXISTING shared platform secrets -> task-def `secrets` (valueFrom):
   #    STRIPE_API_KEY <- friesenlabs/platform/shared/stripe-secret-key
@@ -106,8 +115,25 @@ Rules:
   #    (api/asgi.py already reads the same name for JWKS; prod_deps reuses it for the admin ops —
   #    the api task role additionally needs cognito-idp Admin* IAM, tracked in TODO INT, not here.)
 
+  # 4) NEW secret container for the signup verification token-signing secret (HMAC key bytes;
+  #    value minted by Lane Nick, e.g. `openssl rand -hex 32` — never committed anywhere).
+  #    Config.signup_token_secret already names the ref ("uplift/signup-token-secret").
+  resource "aws_secretsmanager_secret" "signup_token_secret" {
+    name = "uplift/signup-token-secret"
+  }
+  #    SIGNUP_TOKEN_SECRET_VALUE <- valueFrom aws_secretsmanager_secret.signup_token_secret
+  #    (empty/absent = email+phone verification stays hardcoded OFF; may_pay never flips)
+
+  # 5) EXISTING uplift/anthropic-admin-key secret (Config.anthropic_admin_key_secret) -> task-def
+  #    `secrets`:
+  #    ANTHROPIC_ADMIN_KEY <- valueFrom uplift/anthropic-admin-key
+  #    (the sk-ant-admin... ADMIN key, distinct from the inference key; API task ONLY — and note
+  #    the # VERIFY'd workspace/key-create endpoints in signup/anthropic_admin.py must be
+  #    confirmed before this is populated.)
+
   # IAM: grant the api task execution role GetSecretValue on the two shared platform secret ARNs
-  # + the new uplift/stripe-webhook-secret ARN explicitly (TODO P2 wants uplift/* scoping
-  # TIGHTENED — list these ARNs, do not widen a wildcard).
+  # + the new uplift/stripe-webhook-secret + uplift/signup-token-secret ARNs + the existing
+  # uplift/anthropic-admin-key ARN explicitly (TODO P2 wants uplift/* scoping TIGHTENED — list
+  # these ARNs, do not widen a wildcard).
   ```
-- **Done when:** `terraform validate` green; the API task definition shows `STRIPE_API_KEY` + `RESEND_API_KEY` + `STRIPE_WEBHOOK_SECRET` under `secrets` and `COGNITO_USER_POOL_ID` under `environment`; the worker task definition shows NONE of them; with values present `api.prod_deps.build_signup_deps()` selects StripeAdapter / ResendEmailSender / CognitoAdminClient (and with them absent the deploy boots byte-identically — /healthz 200). `ALLOW_REAL_SENDS` stays unset/"false" (draft-gate) — flipping it is a separate, deliberate Lane Nick act.
+- **Done when:** `terraform validate` green; the API task definition shows `STRIPE_API_KEY` + `RESEND_API_KEY` + `STRIPE_WEBHOOK_SECRET` + `SIGNUP_TOKEN_SECRET_VALUE` + `ANTHROPIC_ADMIN_KEY` under `secrets` and `SIGNUP_REAL_DEPS` + `COGNITO_USER_POOL_ID` under `environment`; the worker task definition shows NONE of them; with `SIGNUP_REAL_DEPS=1` + values present `api.prod_deps.build_signup_deps()` selects StripeAdapter / ResendEmailSender / CognitoAdminClient / the token services — and with `SIGNUP_REAL_DEPS` absent the deploy boots byte-identically all-stub even though `COGNITO_USER_POOL_ID`/`DB_*` are present (/healthz 200). `ALLOW_REAL_SENDS` stays unset/"false" (draft-gate) — flipping it is a separate, deliberate Lane Nick act.

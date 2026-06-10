@@ -5,8 +5,16 @@ definition — infra/REQUESTS.md REQ-003). EVERY guard falls back to the origina
 unconfigured deploy boots byte-identically to before this wiring existed: /healthz 200, routes
 mounted, account creation in-memory, verification off, checkout 400s "needs configuration".
 
-  guard (env)                 real adapter (else the stub)
-  --------------------------  -----------------------------------------------------------------
+MASTER SWITCH — SIGNUP_REAL_DEPS (deploy invariance; adversarial finding, HIGH): the live API
+task ALREADY injects COGNITO_USER_POOL_ID (JWKS) and DB_HOST/DB_NAME/DB_USER/DB_PASS (the
+request-path stores) for OTHER features, so the per-adapter guards below, alone, would flip real
+Cognito admin calls + live-Aurora signup state on a mere image deploy. NO real adapter is
+selected unless `Config.signup_real_deps` is on (env exactly 'true'/'1' — a deliberate Lane Nick
+act, REQ-003); without it the build is all-stub and byte-identical no matter what other env vars
+happen to be present. The individual guards below sit UNDERNEATH the master switch.
+
+  guard (env, under SIGNUP_REAL_DEPS)  real adapter (else the stub)
+  -----------------------------------  ------------------------------------------------------------
   STRIPE_API_KEY              signup.stripe_adapter.StripeAdapter        (else _StubStripe)
   COGNITO_USER_POOL_ID        signup.cognito_admin.CognitoAdminClient    (else _StubCognito)
   RESEND_API_KEY              signup.resend_sender.ResendEmailSender     (else _Noop)
@@ -159,7 +167,13 @@ def build_signup_deps(workspace_store=None, *, now=time.time) -> SignupDeps:
     per-tenant Managed Agents ids at provisioning time; None (default) skips persistence
     (DB unconfigured). `now` is the clock injected into the token/OTP services (test seam)."""
     cfg = load()
-    dsn = dsn_from_env()
+    # THE MASTER SWITCH (module docstring): no real adapter — Stripe, Cognito admin, senders,
+    # Anthropic admin, Pg stores, token services — is selected unless SIGNUP_REAL_DEPS is set
+    # exactly 'true'/'1'. The env vars the per-adapter guards key off (COGNITO_USER_POOL_ID,
+    # DB_*) are already present on the live API task for OTHER features; without this flag a
+    # mere image deploy must boot byte-identically all-stub.
+    real = cfg.signup_real_deps
+    dsn = dsn_from_env() if real else None
 
     # --- stores: Aurora-backed when the crm_app DSN is configured (shared across the 2 Fargate
     # --- tasks + survives restarts); else the per-task in-memory fallback.
@@ -175,7 +189,7 @@ def build_signup_deps(workspace_store=None, *, now=time.time) -> SignupDeps:
     # --- identity plane ---
     cognito = (
         CognitoAdminClient(cfg.cognito_user_pool_id, region=cfg.aws_region)
-        if cfg.cognito_user_pool_id else _StubCognito()
+        if real and cfg.cognito_user_pool_id else _StubCognito()
     )
 
     # --- outbound senders (BOTH refuse real delivery until ALLOW_REAL_SENDS=true) ---
@@ -186,12 +200,12 @@ def build_signup_deps(workspace_store=None, *, now=time.time) -> SignupDeps:
             allow_real_sends=cfg.allow_real_sends,
             verify_url_base=cfg.signup_verify_url_base,
         )
-        if cfg.resend_api_key else _Noop()
+        if real and cfg.resend_api_key else _Noop()
     )
     sms_sender = SnsSmsOtpSender(cfg.aws_region, allow_real_sends=cfg.allow_real_sends)
 
     # --- verification credentials: issued at create, verified by the /verify-* endpoints ---
-    if cfg.signup_token_secret_value:
+    if real and cfg.signup_token_secret_value:
         email_tokens = EmailTokenService(
             cfg.signup_token_secret_value,
             ttl_seconds=cfg.signup_email_token_ttl_s,
@@ -210,7 +224,7 @@ def build_signup_deps(workspace_store=None, *, now=time.time) -> SignupDeps:
         sms_code_ok = otp.verify
         account_email = _VerificationMailer(email_sender, email_tokens)
     else:
-        # No signing secret resolved -> verification stays OFF (the safe pre-wire behavior:
+        # Master switch off / no signing secret -> verification stays OFF (the safe pre-wire:
         # nothing can be minted OR verified, may_pay never flips, checkout 400s). The accounts
         # service gets a _Noop mailer — without a token there is nothing valid to email.
         otp = None
@@ -226,7 +240,7 @@ def build_signup_deps(workspace_store=None, *, now=time.time) -> SignupDeps:
     # --- so live provisioning stays BLOCKED: Lane Nick until those seams land.
     anthropic_admin = (
         AnthropicAdminClient(cfg.anthropic_admin_key)
-        if cfg.anthropic_admin_key else _Noop()
+        if real and cfg.anthropic_admin_key else _Noop()
     )
     provisioner = Provisioner(
         store=store, mint_tenant_id=lambda aid: str(uuid.uuid4()), db=_Noop(),
@@ -242,7 +256,7 @@ def build_signup_deps(workspace_store=None, *, now=time.time) -> SignupDeps:
             success_url=cfg.stripe_success_url,
             cancel_url=cfg.stripe_cancel_url,
         )
-        if cfg.stripe_api_key else _StubStripe()
+        if real and cfg.stripe_api_key else _StubStripe()
     )
     payment = PaymentService(
         stripe, accounts, on_paid=provisioner.provision, event_ledger=event_ledger

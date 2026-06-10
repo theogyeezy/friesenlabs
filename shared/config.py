@@ -56,6 +56,14 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
+def _switch_env(name: str) -> bool:
+    """A DELIBERATE boolean switch: True only when the env var is exactly 'true' or '1'.
+
+    No strip/lower/yes/on leniency — a master switch guarding real side-effecting adapters must
+    fail CLOSED on anything that isn't the documented value (typos, 'True', stray whitespace)."""
+    return os.environ.get(name, "") in ("true", "1")
+
+
 @dataclass(frozen=True)
 class Config:
     aws_region: str = os.environ.get("AWS_REGION", "us-east-1")
@@ -90,6 +98,15 @@ class Config:
     signup_otp_send_window_s: int = _int_env("SIGNUP_OTP_SEND_WINDOW_S", 3600)  # 1 h
 
     # --- Signup / payment / identity plane (Build Guide Phase 10) -------------------------
+    # MASTER SWITCH for the real signup/provisioning adapters (api/prod_deps.build_signup_deps).
+    # DEPLOY INVARIANCE (adversarial finding, HIGH): the live API task ALREADY injects
+    # COGNITO_USER_POOL_ID (for JWKS) and DB_HOST/DB_NAME/DB_USER/DB_PASS (for the request-path
+    # stores) for OTHER features — so the per-adapter guards below, alone, would flip real
+    # Cognito admin calls + live-Aurora signup state on a mere image deploy (with REQ-002 grants
+    # still OPEN). Every real adapter therefore ALSO requires this deliberate flag — exactly
+    # "true" or "1", wired as plain env on the API task (infra/REQUESTS.md REQ-003). Unset (or
+    # anything else) = all stubs, byte-identical boot, regardless of what other env is present.
+    signup_real_deps: bool = _switch_env("SIGNUP_REAL_DEPS")
     # Key MATERIAL arrives via the task environment (LANE NICK wires Secrets Manager
     # `friesenlabs/platform/shared/stripe-*` into the task-def `secrets` block); adapters read it
     # injected/from here and NEVER fetch Secrets Manager themselves. Safe default: empty string =

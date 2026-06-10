@@ -133,6 +133,24 @@ def test_cannot_pay_before_verified():
 
 
 @pytest.mark.unit
+def test_unconfigured_plan_is_a_payment_error_not_a_500():
+    # StripeAdapter raises ValueError for a plan with no Price ID wired; start_checkout maps it
+    # to PaymentError so the checkout route answers a client-fixable 400, not an opaque 500.
+    class _NoPlanStripe:
+        def create_customer(self, email, idempotency_key):
+            return {"id": "cus_1"}
+
+        def create_checkout_session(self, **kw):
+            raise ValueError("unknown plan 'pro'; configured plans: none")
+
+    svc = _account_service()
+    _verified_account(svc)
+    pay = PaymentService(stripe=_NoPlanStripe(), accounts=svc, on_paid=lambda a: None)
+    with pytest.raises(PaymentError, match="unknown plan"):
+        pay.start_checkout("a1", "pro", "idem1")
+
+
+@pytest.mark.unit
 def test_create_is_idempotent():
     svc = _account_service()
     a = svc.create("a1", "u@x.com", "+1555")
@@ -203,12 +221,18 @@ class Ledger:
         self.rows[event_id] = account_id
         return True
 
+    def release(self, event_id):
+        self.rows.pop(event_id, None)
+
 
 @pytest.mark.unit
-def test_replayed_event_id_short_circuits_across_two_tasks():
+def test_same_event_id_racing_two_tasks_provisions_exactly_once():
     # Two PaymentService instances with SEPARATE account stores (two Fargate tasks whose
-    # in-memory state can't see each other) sharing ONE event ledger: the re-delivered event id
-    # must short-circuit on the second task BEFORE any state mutation.
+    # in-memory state can't see each other) sharing ONE event ledger — and the deliveries
+    # actually INTERLEAVE: Stripe re-delivers the SAME event id to task B while task A is still
+    # mid-provision (claim taken, work not finished). Task B must lose the atomic claim and
+    # no-op. The old shape (is_handled check first, mark AFTER the work) passed the check on
+    # BOTH tasks at exactly this interleaving and provisioned twice.
     ledger = Ledger()
     event = {"id": "evt_1", "type": "checkout.session.completed",
              "data": {"object": {"client_reference_id": "a1"}}}
@@ -216,28 +240,42 @@ def test_replayed_event_id_short_circuits_across_two_tasks():
     _verified_account(svc_a)
     _verified_account(svc_b)  # in prod both tasks see the same Aurora row
     provisioned_a, provisioned_b = [], []
-    task_a = PaymentService(Stripe(event), svc_a,
-                            on_paid=lambda a: provisioned_a.append(a.id), event_ledger=ledger)
     task_b = PaymentService(Stripe(event), svc_b,
                             on_paid=lambda a: provisioned_b.append(a.id), event_ledger=ledger)
 
+    def provision_and_interleave(acct):
+        # Mid-provision on task A: the same event lands on task B and must short-circuit on
+        # the claim alone (task A hasn't finished — only the claim protects this window).
+        assert task_b.handle_webhook(b"{}", "good-sig", "whsec") == {
+            "handled": True, "idempotent": True, "event_id": "evt_1",
+        }
+        provisioned_a.append(acct.id)
+
+    task_a = PaymentService(Stripe(event), svc_a,
+                            on_paid=provision_and_interleave, event_ledger=ledger)
     assert task_a.handle_webhook(b"{}", "good-sig", "whsec") == {
         "handled": True, "account_id": "a1",
     }
-    assert provisioned_a == ["a1"] and ledger.rows == {"evt_1": "a1"}
+    assert provisioned_a == ["a1"] and provisioned_b == []
+    assert ledger.rows == {"evt_1": "a1"}
+    assert svc_b.store.get("a1").state is State.PHONE_VERIFIED  # b's store never touched
 
-    # Stripe re-delivers the SAME event id to the other task.
+    # And the plain post-completion re-delivery still short-circuits.
     assert task_b.handle_webhook(b"{}", "good-sig", "whsec") == {
         "handled": True, "idempotent": True, "event_id": "evt_1",
     }
     assert provisioned_b == []
-    assert svc_b.store.get("a1").state is State.PHONE_VERIFIED  # untouched — never flipped PAID
 
 
 @pytest.mark.unit
-def test_event_is_marked_after_the_work_not_before():
-    # A crash inside on_paid leaves the event UNCLAIMED, so Stripe's retry gets to run it again
-    # (check-before / mark-after = at-least-once; account-state idempotency absorbs the rest).
+def test_failed_on_paid_releases_the_claim():
+    # The claim is taken BEFORE the work (that's what closes the two-task race above); when
+    # on_paid raises, the claim is RELEASED so Stripe's retry is not silently dropped. Honest
+    # scope: the retry re-runs handle_webhook, and what it does depends on the state the failure
+    # left behind — here the PAID flip already persisted, so the retry lands in the
+    # account-state idempotency branch (a safe no-op, no double charge), and recovery of the
+    # half-done provision is operational. A PROCESS DEATH between claim and release would leave
+    # the event claimed forever (documented in signup/payment.py).
     ledger = Ledger()
     event = {"id": "evt_2", "type": "checkout.session.completed",
              "data": {"object": {"client_reference_id": "a1"}}}
@@ -250,7 +288,13 @@ def test_event_is_marked_after_the_work_not_before():
     pay = PaymentService(Stripe(event), svc, on_paid=boom, event_ledger=ledger)
     with pytest.raises(RuntimeError):
         pay.handle_webhook(b"{}", "good-sig", "whsec")
-    assert ledger.rows == {}  # not claimed — the retry will re-run the work
+    assert ledger.rows == {}  # the claim was released — the event id is not burned
+
+    # The retry is accepted (not dropped); the persisted PAID state absorbs it as idempotent.
+    assert pay.handle_webhook(b"{}", "good-sig", "whsec") == {
+        "handled": True, "idempotent": True, "account_id": "a1",
+    }
+    assert ledger.rows == {"evt_2": "a1"}  # and is now recorded as handled
 
 
 # ---------------- provisioning idempotency + rollback ----------------

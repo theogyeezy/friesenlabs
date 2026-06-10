@@ -1,7 +1,10 @@
 """Unit: api/prod_deps.build_signup_deps — env-guarded REAL adapters with stub fallbacks.
 
 Proves the wiring contract (TODO INT/P0s):
-  * every guard selects its real adapter only when the config is present;
+  * the SIGNUP_REAL_DEPS MASTER SWITCH (deploy invariance, adversarial finding HIGH): the live
+    API task already injects COGNITO_USER_POOL_ID + DB_* for other features — without the
+    deliberate switch those must select NOTHING real (all stubs, byte-identical boot);
+  * every per-adapter guard, UNDER the switch, selects its real adapter only when present;
   * an unconfigured build is byte-identical to the old all-stub wiring (boots, verification OFF);
   * the verification stack drives create -> email-token -> verify-email -> OTP -> verify-phone ->
     may_pay=True on a FAKE CLOCK, with expiry/replay/rate-limit enforced;
@@ -64,7 +67,8 @@ class RecordingSender:
 
 def _verifying_deps(monkeypatch, clock, **overrides):
     """Build deps with the token stack live + recorders on both delivery seams."""
-    _cfg(monkeypatch, signup_token_secret_value="test-signing-secret", **overrides)
+    _cfg(monkeypatch, signup_real_deps=True,
+         signup_token_secret_value="test-signing-secret", **overrides)
     deps = prod_deps.build_signup_deps(now=clock)
     rec = RecordingSender()
     deps.accounts.email.sender = rec  # the _VerificationMailer's delivery seam
@@ -95,7 +99,8 @@ def test_unconfigured_build_is_all_stubs_and_boots(monkeypatch):
 @pytest.mark.unit
 def test_stripe_guard_selects_real_adapter(monkeypatch):
     monkeypatch.setenv("STRIPE_PRICE_ID_STARTER", "price_123")
-    _cfg(monkeypatch, stripe_api_key="sk_test_x", stripe_webhook_secret="whsec_x")
+    _cfg(monkeypatch, signup_real_deps=True,
+         stripe_api_key="sk_test_x", stripe_webhook_secret="whsec_x")
     deps = prod_deps.build_signup_deps()
     assert isinstance(deps.payment.stripe, StripeAdapter)
     assert deps.payment.stripe._price_ids == {"starter": "price_123"}
@@ -104,7 +109,7 @@ def test_stripe_guard_selects_real_adapter(monkeypatch):
 
 @pytest.mark.unit
 def test_cognito_guard_selects_real_client_everywhere(monkeypatch):
-    _cfg(monkeypatch, cognito_user_pool_id="us-east-1_Pool")
+    _cfg(monkeypatch, signup_real_deps=True, cognito_user_pool_id="us-east-1_Pool")
     deps = prod_deps.build_signup_deps()
     provisioner = deps.payment.on_paid.__self__
     assert isinstance(deps.accounts.cognito, CognitoAdminClient)
@@ -113,7 +118,8 @@ def test_cognito_guard_selects_real_client_everywhere(monkeypatch):
 
 @pytest.mark.unit
 def test_resend_guard_selects_real_sender_still_draft_gated(monkeypatch):
-    _cfg(monkeypatch, resend_api_key="re_x", resend_from_email="hello@uplift.example",
+    _cfg(monkeypatch, signup_real_deps=True,
+         resend_api_key="re_x", resend_from_email="hello@uplift.example",
          signup_token_secret_value="sssh", signup_verify_url_base="https://app.example/verify")
     deps = prod_deps.build_signup_deps()
     mailer = deps.accounts.email
@@ -129,11 +135,12 @@ def test_resend_guard_selects_real_sender_still_draft_gated(monkeypatch):
 
 @pytest.mark.unit
 def test_anthropic_admin_guard(monkeypatch):
-    _cfg(monkeypatch, anthropic_admin_key="sk-ant-admin-x")
+    _cfg(monkeypatch, signup_real_deps=True, anthropic_admin_key="sk-ant-admin-x")
     provisioner = prod_deps.build_signup_deps().payment.on_paid.__self__
     assert isinstance(provisioner.admin, AnthropicAdminClient)
     assert provisioner.admin.admin_key == "sk-ant-admin-x"
-    _cfg(monkeypatch)
+    # The individual guard sits UNDER the master switch: switch on + no key is still the stub.
+    _cfg(monkeypatch, signup_real_deps=True)
     assert isinstance(prod_deps.build_signup_deps().payment.on_paid.__self__.admin,
                       prod_deps._Noop)
 
@@ -152,11 +159,79 @@ def test_dsn_guard_selects_aurora_backed_stores(monkeypatch):
     monkeypatch.setattr(psycopg2.pool, "ThreadedConnectionPool",
                         lambda minc, maxc, dsn: _FakePool())
     _cfg(monkeypatch, dsn="postgresql://crm_app:x@db.example/uplift",
-         signup_token_secret_value="sssh")
+         signup_real_deps=True, signup_token_secret_value="sssh")
     deps = prod_deps.build_signup_deps()
     assert isinstance(deps.accounts.store, PgAccountStore)
     assert isinstance(deps.payment.event_ledger, PgStripeEventLedger)
     assert isinstance(deps.accounts.otp._store, PgOtpStore)  # OTP state shared across tasks
+
+
+# ------------------------------------------------- the SIGNUP_REAL_DEPS master switch
+@pytest.mark.unit
+def test_master_switch_absent_keeps_all_stubs_despite_live_env(monkeypatch):
+    """THE deploy-invariance regression (adversarial finding, HIGH).
+
+    The live API task ALREADY injects COGNITO_USER_POOL_ID (for JWKS) and DB_* (for the
+    request-path stores) for other features — and here even the full credential set is present.
+    Without the deliberate SIGNUP_REAL_DEPS master switch a mere image deploy must still select
+    NOTHING real: no Cognito admin client, no Aurora-backed signup state (REQ-002 grants OPEN),
+    no Stripe/Resend/Anthropic-admin, verification hardcoded OFF.
+    """
+    import psycopg2.pool
+
+    def _no_pool(*a, **k):
+        raise AssertionError("master switch off — no Pg pool may even be constructed")
+
+    monkeypatch.setattr(psycopg2.pool, "ThreadedConnectionPool", _no_pool)
+    _cfg(monkeypatch,
+         dsn="postgresql://crm_app:x@db.example/uplift",  # DB_* present (already on the task)
+         cognito_user_pool_id="us-east-1_Pool",           # present for JWKS already
+         stripe_api_key="sk_live_x", stripe_webhook_secret="whsec_x",
+         resend_api_key="re_x", resend_from_email="hello@uplift.example",
+         anthropic_admin_key="sk-ant-admin-x",
+         signup_token_secret_value="sssh")                # signup_real_deps deliberately ABSENT
+    deps = prod_deps.build_signup_deps()
+    provisioner = deps.payment.on_paid.__self__
+    assert isinstance(deps.payment.stripe, prod_deps._StubStripe)
+    assert isinstance(deps.accounts.cognito, prod_deps._StubCognito)
+    assert isinstance(provisioner.cognito, prod_deps._StubCognito)
+    assert isinstance(deps.accounts.email, prod_deps._Noop)
+    assert isinstance(provisioner.admin, prod_deps._Noop)
+    assert isinstance(deps.accounts.store, prod_deps._AccountStore)
+    assert deps.payment.event_ledger is None
+    assert deps.accounts.otp is None
+    # Verification stays hardcoded OFF — exactly the unconfigured boot.
+    assert deps.email_token_ok("a", "anything") is False
+    assert deps.sms_code_ok("a", "123456") is False
+
+
+@pytest.mark.unit
+def test_master_switch_alone_selects_nothing_real(monkeypatch):
+    """The switch is necessary, not sufficient: each per-adapter guard still applies under it."""
+    _cfg(monkeypatch, signup_real_deps=True)
+    deps = prod_deps.build_signup_deps()
+    assert isinstance(deps.payment.stripe, prod_deps._StubStripe)
+    assert isinstance(deps.accounts.cognito, prod_deps._StubCognito)
+    assert isinstance(deps.accounts.email, prod_deps._Noop)
+    assert isinstance(deps.accounts.store, prod_deps._AccountStore)
+    assert deps.payment.event_ledger is None
+    assert deps.accounts.otp is None
+    assert deps.email_token_ok("a", "t") is False
+
+
+@pytest.mark.unit
+def test_master_switch_env_parsing_is_exact(monkeypatch):
+    """Config.signup_real_deps flips ONLY on exactly 'true'/'1' (fail-closed on near-misses)."""
+    from shared.config import _switch_env
+
+    for junk in ("", "True", "TRUE", " true", "true ", "yes", "on", "0", "false", "2"):
+        monkeypatch.setenv("SIGNUP_REAL_DEPS", junk)
+        assert _switch_env("SIGNUP_REAL_DEPS") is False, junk
+    monkeypatch.delenv("SIGNUP_REAL_DEPS")
+    assert _switch_env("SIGNUP_REAL_DEPS") is False
+    for ok in ("true", "1"):
+        monkeypatch.setenv("SIGNUP_REAL_DEPS", ok)
+        assert _switch_env("SIGNUP_REAL_DEPS") is True, ok
 
 
 # ---------------------------------------------------------------- the fake-clock verify flow
