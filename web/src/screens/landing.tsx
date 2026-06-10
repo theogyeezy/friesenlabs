@@ -672,7 +672,8 @@ function useSpaceFlight() {
     const footer = root.querySelector(":scope > .lp-footer");
     if (panels.length < 2) return;
     const mobile = window.innerWidth < 760;
-    const DEPTH = mobile ? 900 : 1300;     // px of z each panel travels (toward viewer is dramatic)
+    const DEPTH = mobile ? 1500 : 2400;    // px of z each panel travels — deep: panels come from far + fly close
+    const PERSP = mobile ? 1000 : 1050;    // smaller perspective = stronger foreshortening = more depth
     const natH = [];
 
     // 1) measure natural content heights while still in flow
@@ -704,17 +705,20 @@ function useSpaceFlight() {
         const ad = Math.abs(d);
         // only the panel near focus is solid — neighbors fade out fast so you fly through clean
         // space (the galaxy) between panels instead of seeing them overlap.
-        if (ad > 0.9) { el.style.visibility = "hidden"; el.style.pointerEvents = "none"; return; }
+        if (ad > 1.05) { el.style.visibility = "hidden"; el.style.pointerEvents = "none"; return; }
         el.style.visibility = "visible";
         const fit = Math.max(0.55, Math.min(1, (vh * 0.94) / (natH[i] || vh)));
         const tz = -d * DEPTH;                          // ahead (d>0) → deep/away; passed (d<0) → toward viewer
-        const op = 1 - smooth01(0.34, 0.72, ad);        // solid near center; gone by ~0.72 of a panel away
-        const bl = !mobile && ad > 0.28 ? Math.min(8, (ad - 0.28) * 16) : 0;
-        el.style.transform = "perspective(1400px) translateZ(" + tz.toFixed(0) + "px) scale(" + fit.toFixed(3) + ")";
+        // Asymmetric fade: an INCOMING panel (d>0) stays faintly visible while it's far away, so it
+        // emerges from deep space; a PASSING panel (d<0) fades out fast — before its Z crosses the
+        // camera plane (tz≈PERSP) — so it whooshes past instead of glitching through the lens.
+        const op = d > 0 ? (1 - smooth01(0.55, 1.02, ad)) : (1 - smooth01(0.16, 0.44, ad));
+        const bl = !mobile && ad > 0.22 ? Math.min(11, (ad - 0.22) * 20) : 0;
+        el.style.transform = "perspective(" + PERSP + "px) translateZ(" + tz.toFixed(0) + "px) scale(" + fit.toFixed(3) + ")";
         el.style.opacity = op.toFixed(3);
         el.style.filter = bl > 0.2 ? "blur(" + bl.toFixed(1) + "px)" : "none";
         el.style.zIndex = String(Math.round(34 - d * 9)); // nearer the viewer paints on top (kept below the nav at z-50)
-        el.style.pointerEvents = ad > 0.35 ? "none" : "auto";
+        el.style.pointerEvents = ad > 0.3 ? "none" : "auto";
       });
     };
     const onScroll = () => { if (raf == null) raf = requestAnimationFrame(update); };
