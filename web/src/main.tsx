@@ -52,6 +52,7 @@ const PipelineBoard = React.lazy(() => import("./api/PipelineBoard"));
 const ContactsDirectory = React.lazy(() => import("./api/ContactsDirectory"));
 const AgentsRoster = React.lazy(() => import("./api/AgentsRoster"));
 const WorkflowsView = React.lazy(() => import("./api/WorkflowsView"));
+const ReportsView = React.lazy(() => import("./api/ReportsView"));
 const SignupFlow = React.lazy(() => import("./signup/SignupFlow"));
 
 // Demo/wiring seams reachable via ?view=. The normal SPA shell renders otherwise.
@@ -198,6 +199,12 @@ function Root() {
       return (
         <Gated seam>
           <React.Suspense fallback={null}><WorkflowsView /></React.Suspense>
+        </Gated>
+      );
+    case "reports":
+      return (
+        <Gated seam>
+          <React.Suspense fallback={null}><ReportsView /></React.Suspense>
         </Gated>
       );
   }

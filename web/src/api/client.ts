@@ -66,6 +66,11 @@ export interface SaveViewBody {
   source_prompt?: string;
 }
 
+/** Body for POST /views/{id}/refine — the NL "ask for a chart" instruction. */
+export interface RefineViewBody {
+  instruction: string;
+}
+
 export interface Citation {
   claim: string;
   source_ref: string;
@@ -797,6 +802,26 @@ export class ApiClient {
       return (await this.mockApi()).saveView(body);
     }
     return this.request<SavedViewRow>("POST", "/views", body);
+  }
+
+  /**
+   * NL refine of a saved view ("ask for a chart"): the agent patches the
+   * existing spec ("make it a line chart, last 90 days") and the new version is
+   * persisted server-side. Returns the new SavedViewRow.
+   *
+   * The real route (POST /views/{id}/refine) answers 501 when the agent runtime
+   * (view_patcher) isn't wired on this deployment — the caller renders that as
+   * an honest "not live yet" state, never a hard error.
+   */
+  async refineView(viewId: string, body: RefineViewBody): Promise<SavedViewRow> {
+    if (this.mock) {
+      return (await this.mockApi()).refineView(viewId, body);
+    }
+    return this.request<SavedViewRow>(
+      "POST",
+      `/views/${encodeURIComponent(viewId)}/refine`,
+      body,
+    );
   }
 
   async chat(message: string): Promise<ChatResponse> {
