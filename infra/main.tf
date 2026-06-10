@@ -49,9 +49,12 @@ data "aws_secretsmanager_secret" "platform_resend" {
 }
 
 module "secrets" {
-  source               = "./modules/secrets"
-  project              = var.project
-  enable_origin_verify = var.enable_origin_verify
+  source                     = "./modules/secrets"
+  project                    = var.project
+  enable_origin_verify       = var.enable_origin_verify
+  enable_crm_db_rotation     = var.enable_crm_db_rotation
+  rotation_subnet_ids        = module.vpc.private_subnet_ids
+  rotation_security_group_id = module.security.sg_api
 }
 
 module "ecr" {
