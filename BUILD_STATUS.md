@@ -386,6 +386,13 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   remainder either cost-gated (143 NAT endpoints ~$35/mo, 214 GuardDuty ~cost), task-rolling
   (212 ECS Exec — defer to a maintenance window), or authored-pending-window (204 rotation).
   Lane loop dropping to long-sleep cadence: fetch/REQUESTS/PR checks only until new inputs land.
+- 2026-06-09 — BIG UNBLOCK (user supplied: Amplify PAT via gh token, notify_email, cube/worker
+  cost go-ahead, domain friesenlabs.com @ Squarespace): baseline plan now CLEAN (0 destroys —
+  Amplify hazard gone); budget notification live (subscriber confirmed via direct CLI after a
+  terraform/Budgets-API consistency quirk); 4 alarms + SNS live (subscription PendingConfirmation
+  — user must click); cube-api-secret minted. Cycle-11 PR: cube digest pin (amd64), worker_absent
+  gated on worker_deployed, billing alarm wired to the alarms topic, new dns module (Route53 zone
+  + wildcard ACM cert for friesenlabs.com; validation waits gated on dns_delegated).
 
 ## Lane Matt (app code) — log
 - 2026-06-09 — **Cycle 3 (real wiring + frontend honesty, 5 PRs + 1 fix-PR):** #34 real provisioning

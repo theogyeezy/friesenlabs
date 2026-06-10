@@ -41,7 +41,7 @@ resource "aws_ecs_task_definition" "cube" {
   container_definitions = jsonencode([
     {
       name         = "cube"
-      image        = "cubejs/cube:latest" # pin a digest before apply (verify)
+      image        = "cubejs/cube:latest@sha256:3e3715ccad21ba7914203c5a0e1c011f829200738d77ed9cb4012f67caa05ee4" # linux/amd64, pinned 2026-06-09
       essential    = true
       portMappings = [{ containerPort = 4000, protocol = "tcp" }]
       environment = [
