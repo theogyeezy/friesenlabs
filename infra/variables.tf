@@ -94,3 +94,15 @@ variable "api_anthropic_env" {
   default     = false # REQ-001 safety gate: flip ONLY after uplift/anthropic-api-key + uplift/env-id hold values
   description = "Inject ANTHROPIC_API_KEY + UPLIFT_ENV_ID into the API task def (never the worker)."
 }
+
+variable "enable_origin_verify" {
+  type        = bool
+  default     = false # Sec/P0 phase 1: generate the X-Origin-Verify secret + stamp it at CloudFront
+  description = "Create the uplift/origin-verify secret value and send the header from the API edge."
+}
+
+variable "alb_enforce_origin_verify" {
+  type        = bool
+  default     = false # Sec/P0 phase 2: flip ONLY after the distro shows Deployed with the header
+  description = "ALB :80 default becomes 403; only requests with the matching X-Origin-Verify forward."
+}

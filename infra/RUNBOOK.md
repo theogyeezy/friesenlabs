@@ -83,6 +83,20 @@ resolved, any apply must be `-target`ed at pure-add modules only.
   DELETE → InsufficientPrivilege on accounts + stripe_events.
 - Post-run sanity: edge /healthz 200; uplift-api 1/1.
 
+## X-Origin-Verify rollout procedure — authored 2026-06-09 (Sec/P0)
+
+Two flags in the gitignored `prod.auto.tfvars`; NEVER flip both in one apply:
+1. **Phase 1** `enable_origin_verify = true` → `apply -target=module.secrets -target=module.api_cdn`
+   (creates the uplift/origin-verify value + stamps the header at CloudFront; ALB untouched).
+   Wait `get-distribution` Status=Deployed, verify edge `/healthz` 200.
+2. **Phase 2** `alb_enforce_origin_verify = true` → `apply -target=module.alb`
+   (listener default → 403; priority-10 rule forwards only on header match). Verify edge 200.
+   Negative-path: config-level only (`describe-rules` shows 403 default + header rule) — a true
+   stranger's-distro probe would need a second CloudFront distro; the SG prefix-list already
+   blocks non-CloudFront sources.
+Rotation: taint `random_password.origin_verify` → phase-1 apply → wait Deployed → phase-2 apply.
+ROLLBACK: flip `alb_enforce_origin_verify=false`, `apply -target=module.alb` (instant).
+
 ### Apply discipline (until the baseline is clean)
 1. No full `terraform apply`.
 2. Pure-add module deploys go via `terraform apply -target=module.<cube|worker|observability> baseline-style plan first`.
