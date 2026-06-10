@@ -301,7 +301,7 @@ export function SignupFlow({ client, analytics, pollMs = 600 }: SignupFlowProps)
   return (
     <div style={wrap} data-testid="signup-flow" data-step={step}>
       <div style={{ marginBottom: 16, textAlign: "center" }}>
-        <div style={stepLabel}>Get started with Uplift</div>
+        <div style={stepLabel}>Get started with Friesen Labs</div>
       </div>
 
       <div style={card}>

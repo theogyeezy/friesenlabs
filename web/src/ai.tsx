@@ -60,7 +60,7 @@ function bizContext(): string {
   const agents = Object.values(s.agents || {}).map((a: any) => `${a.name} (${a.role})`).join(", ");
   const top = deals.slice().sort((a: any, b: any) => b.value - a.value).slice(0, 5).map((d: any) => `${d.co} $${d.value.toLocaleString()} [${d.stage}]`).join("; ");
   return [
-    "You are the assistant inside the Uplift agentic operations app, used by a small-business owner named Jordan.",
+    "You are the assistant inside the Friesen Labs agentic operations app, used by a small-business owner named Jordan.",
     "Be warm, concise and specific. Answer in 1 to 3 short sentences, plain text (no markdown headers).",
     "LIVE workspace data you can reference:",
     `- Open pipeline: $${pipeline.toLocaleString()} across ${open.length} deals`,

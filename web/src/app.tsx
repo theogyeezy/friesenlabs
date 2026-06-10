@@ -52,7 +52,7 @@ const ComingSoon = ({ title, icon }) => (
       </div>
       <h2 style={{ fontSize: 21, fontWeight: 720, letterSpacing: "-.02em" }}>{title} isn&rsquo;t live yet</h2>
       <p style={{ color: "var(--ink-3)", fontSize: 14, marginTop: 8, lineHeight: 1.55 }}>
-        Uplift is rolling out surface by surface. <b style={{ color: "var(--ink)" }}>Command Center</b>, <b style={{ color: "var(--ink)" }}>Pipeline</b>, <b style={{ color: "var(--ink)" }}>Contacts</b>, <b style={{ color: "var(--ink)" }}>Agents</b>, <b style={{ color: "var(--ink)" }}>Greenlight</b>, <b style={{ color: "var(--ink)" }}>Ask agents</b> and <b style={{ color: "var(--ink)" }}>Switchboard</b> are live today; this area is still being built.
+        Friesen Labs is rolling out surface by surface. <b style={{ color: "var(--ink)" }}>Command Center</b>, <b style={{ color: "var(--ink)" }}>Pipeline</b>, <b style={{ color: "var(--ink)" }}>Contacts</b>, <b style={{ color: "var(--ink)" }}>Agents</b>, <b style={{ color: "var(--ink)" }}>Greenlight</b>, <b style={{ color: "var(--ink)" }}>Ask agents</b> and <b style={{ color: "var(--ink)" }}>Switchboard</b> are live today; this area is still being built.
       </p>
     </div>
   </div>
