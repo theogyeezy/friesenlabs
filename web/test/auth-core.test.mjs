@@ -20,11 +20,13 @@ import {
   fetchWithAuthRetry,
   idTokenRemainingMs,
   loadTokens,
+  mergeRefreshedTokens,
   newState,
   parseCallbackParams,
   randomUrlSafeString,
   savePkce,
   saveTokens,
+  singleFlight,
   takePkce,
   validateState,
 } from "../src/auth/core.js";
@@ -281,4 +283,130 @@ test("no refreshAuth wired (mock/unconfigured) means no retry", async () => {
   }, undefined);
   assert.equal(res.status, 401);
   assert.equal(fetches, 1);
+});
+
+// --- rotation-tolerant refresh merge ---------------------------------------------
+
+const CURRENT = { id_token: "old.id.tok", access_token: "old-at", refresh_token: "old-rt" };
+
+test("mergeRefreshedTokens stores a ROTATED refresh token when the endpoint returns one", () => {
+  const merged = mergeRefreshedTokens(CURRENT, {
+    id_token: "new.id.tok",
+    access_token: "new-at",
+    refresh_token: "rotated-rt",
+  });
+  assert.deepEqual(merged, {
+    id_token: "new.id.tok",
+    access_token: "new-at",
+    refresh_token: "rotated-rt",
+  });
+});
+
+test("mergeRefreshedTokens keeps the current refresh/access tokens when the response omits them", () => {
+  // Cognito's default (rotation off): the refresh grant returns only id+access.
+  const merged = mergeRefreshedTokens(CURRENT, { id_token: "new.id.tok", access_token: "new-at" });
+  assert.deepEqual(merged, {
+    id_token: "new.id.tok",
+    access_token: "new-at",
+    refresh_token: "old-rt",
+  });
+  // Absent access_token keeps the old one too.
+  const idOnly = mergeRefreshedTokens(CURRENT, { id_token: "new.id.tok" });
+  assert.deepEqual(idOnly, {
+    id_token: "new.id.tok",
+    access_token: "old-at",
+    refresh_token: "old-rt",
+  });
+});
+
+test("mergeRefreshedTokens ignores empty-string rotations (never store an unusable token)", () => {
+  const merged = mergeRefreshedTokens(CURRENT, {
+    id_token: "new.id.tok",
+    access_token: "",
+    refresh_token: "",
+  });
+  assert.deepEqual(merged, {
+    id_token: "new.id.tok",
+    access_token: "old-at",
+    refresh_token: "old-rt",
+  });
+});
+
+test("mergeRefreshedTokens fails closed without a usable id_token", () => {
+  assert.equal(mergeRefreshedTokens(CURRENT, { refresh_token: "rotated-rt" }), null);
+  assert.equal(mergeRefreshedTokens(CURRENT, { id_token: "" }), null);
+  assert.equal(mergeRefreshedTokens(CURRENT, { id_token: 42 }), null);
+  assert.equal(mergeRefreshedTokens(CURRENT, null), null);
+  assert.equal(mergeRefreshedTokens(CURRENT, "nope"), null);
+});
+
+test("a rotated token round-trips through storage for the NEXT refresh", () => {
+  const s = memoryStorage();
+  saveTokens(s, CURRENT);
+  const merged = mergeRefreshedTokens(loadTokens(s), {
+    id_token: "new.id.tok",
+    refresh_token: "rotated-rt",
+  });
+  saveTokens(s, merged);
+  // The next refresh reads the rotated token, never the dead predecessor.
+  assert.equal(loadTokens(s).refresh_token, "rotated-rt");
+});
+
+// --- single-flight refresh ----------------------------------------------------------
+
+test("singleFlight: concurrent callers share ONE in-flight invocation", async () => {
+  let calls = 0;
+  let release;
+  const gate = new Promise((r) => {
+    release = r;
+  });
+  const fn = singleFlight(async () => {
+    calls += 1;
+    await gate;
+    return "refreshed";
+  });
+  // Three "concurrent 401s" all grab the same promise.
+  const a = fn();
+  const b = fn();
+  const c = fn();
+  assert.equal(a, b);
+  assert.equal(b, c);
+  release();
+  assert.deepEqual(await Promise.all([a, b, c]), ["refreshed", "refreshed", "refreshed"]);
+  assert.equal(calls, 1);
+});
+
+test("singleFlight: the slot clears after settle, so later calls re-invoke", async () => {
+  let calls = 0;
+  const fn = singleFlight(async () => {
+    calls += 1;
+    return calls;
+  });
+  assert.equal(await fn(), 1);
+  assert.equal(await fn(), 2);
+  assert.equal(calls, 2);
+});
+
+test("singleFlight: a rejection is shared by concurrent callers, then clears the slot", async () => {
+  let calls = 0;
+  const fn = singleFlight(async () => {
+    calls += 1;
+    if (calls === 1) throw new Error("token endpoint down");
+    return "recovered";
+  });
+  const p1 = fn();
+  const p2 = fn();
+  await assert.rejects(p1, /token endpoint down/);
+  await assert.rejects(p2, /token endpoint down/);
+  assert.equal(calls, 1);
+  // The failed flight is not cached: the next call tries again.
+  assert.equal(await fn(), "recovered");
+  assert.equal(calls, 2);
+});
+
+test("singleFlight wraps a synchronous throw into the shared rejected promise", async () => {
+  const fn = singleFlight(() => {
+    throw new Error("sync boom");
+  });
+  await assert.rejects(fn(), /sync boom/);
 });
