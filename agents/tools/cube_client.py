@@ -42,6 +42,9 @@ DEFAULT_TIMEOUT_S = 30.0
 # Cube can answer 200 + {"error": "Continue wait"} while a query warms; bounded retries only.
 CONTINUE_WAIT_RETRIES = 3
 CONTINUE_WAIT_SLEEP_S = 1.0
+# Bound on a dimension-values catalog query (conv/slots.py scans these for free-text matches):
+# a runaway high-cardinality dimension must never stream an unbounded result into slot resolution.
+DIMENSION_VALUES_LIMIT = 1000
 
 # Defense in depth on the tenant parameter (same charset as ml/registry.py): the verified claim is
 # a UUID, but reject anything that couldn't be a sane id BEFORE it is signed into a token.
@@ -158,6 +161,8 @@ class CubeClient:
     Matches the `ctx.cube` protocol the tools already use:
       - `load(tenant_id=..., query=...)`  -> {"status": "ok"|"unconfigured"|"error", "rows": [...]}
       - `members(tenant_id=...)`          -> ["Deals.count", ...]  ([] when unconfigured/erroring)
+      - `dimension_values(tenant_id, dimension)` -> ["West", ...]  (the `conv.slots.CubeCatalog`
+        leg; [] when unconfigured/erroring)
 
     Deliberately NO `set_tenant` method: the tenant is a per-call parameter from the verified
     claim, never shared mutable state on the client (no cross-call races, nothing to forget).
@@ -243,6 +248,39 @@ class CubeClient:
                     if isinstance(name, str):
                         names.append(name)
         return names
+
+    def dimension_values(self, tenant_id: str, dimension: str) -> list[str]:
+        """Distinct values of ONE governed dimension, as `tenant_id` — the `conv.slots.CubeCatalog`
+        leg (`_dimension_candidates` calls `dimension_values(tenant_id, dimension)` positionally,
+        hence the non-keyword signature). A dimensions-only Cube REST load (Cube groups by the
+        requested dimension, so rows arrive de-duplicated server-side), bounded by
+        DIMENSION_VALUES_LIMIT, over the SAME per-request tenant JWT mint as `load`/`members`.
+
+        Degrades to [] on unconfigured/error/junk-dimension — slot resolution then simply finds no
+        dimension candidates (fail closed, never crash); the tenant guard still raises on a junk
+        tenant even unconfigured (THE TRUST RULE's local check, same as the other methods)."""
+        _assert_tenant(tenant_id)
+        if not isinstance(dimension, str) or not dimension.strip():
+            return []
+        result = self.load(
+            tenant_id=tenant_id,
+            query={"dimensions": [dimension], "limit": DIMENSION_VALUES_LIMIT},
+        )
+        if result.get("status") != "ok":
+            return []   # 'unconfigured' / 'error' -> no candidates (visible in load()'s result)
+        values: list[str] = []
+        seen: set[str] = set()
+        for row in result.get("rows") or []:
+            if not isinstance(row, dict):
+                continue
+            v = row.get(dimension)
+            if v is None:
+                continue
+            s = str(v)
+            if s and s not in seen:
+                seen.add(s)
+                values.append(s)
+        return values
 
     # ------------------------------------------------------------------ internals
     def _request(self, path: str, *, tenant_id: str, body: bytes | None) -> tuple[int, bytes]:

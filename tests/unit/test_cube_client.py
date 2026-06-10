@@ -8,6 +8,7 @@ import pytest
 from agents.tools.base import ToolContext
 from agents.tools.build_view import BuildView
 from agents.tools.cube_client import (
+    DIMENSION_VALUES_LIMIT,
     CubeClient,
     CubeTokenError,
     _b64url_decode,
@@ -205,6 +206,69 @@ def test_members_lists_measures_and_dimensions_from_meta():
 @pytest.mark.unit
 def test_members_degrades_to_empty_on_error():
     assert _client(FakeTransport([(500, b"boom")])).members(tenant_id=TENANT) == []
+
+
+# ---------------------------------------------------------------------------- dimension values
+
+
+@pytest.mark.unit
+def test_dimension_values_runs_a_bounded_dimensions_only_query_with_the_tenant_jwt():
+    rows = [{"Deals.region": "West"}, {"Deals.region": "East"},
+            {"Deals.region": "West"},      # defensive dedupe (Cube groups, but never trust it)
+            {"Deals.region": None},        # null dimension value -> skipped
+            {"Deals.region": 42},          # non-string value -> stringified for the catalog
+            "not-a-row"]                   # junk row shape -> skipped
+    transport = FakeTransport([(200, json.dumps({"data": rows}).encode())])
+    client = _client(transport)
+
+    # Positional call — the exact `conv.slots.CubeCatalog` protocol shape slots.py uses.
+    assert client.dimension_values(TENANT, "Deals.region") == ["West", "East", "42"]
+    call = transport.calls[0]
+    assert call["url"] == "http://cube.local:4000/cubejs-api/v1/load"
+    assert json.loads(call["body"]) == {
+        "query": {"dimensions": ["Deals.region"], "limit": DIMENSION_VALUES_LIMIT}
+    }
+    payload = decode_verified(call["headers"]["Authorization"], SECRET, now=lambda: T0 + 1)
+    assert payload["tenant_id"] == TENANT  # same per-request mint as load/members
+
+
+@pytest.mark.unit
+def test_dimension_values_degrades_to_empty_on_unconfigured_error_or_junk_dimension():
+    assert CubeClient().dimension_values(TENANT, "Deals.region") == []  # unconfigured, no network
+    assert _client(FakeTransport([(500, b"boom")])).dimension_values(TENANT, "Deals.region") == []
+    transport = FakeTransport([])
+    client = _client(transport)
+    for junk in ("", "   ", None, 42, ["Deals.region"]):
+        assert client.dimension_values(TENANT, junk) == []
+    assert transport.calls == []  # junk dimensions never reach the network
+
+
+@pytest.mark.unit
+def test_dimension_values_enforces_the_tenant_guard_even_unconfigured():
+    with pytest.raises(CubeTokenError):
+        CubeClient().dimension_values("", "Deals.region")
+
+
+@pytest.mark.unit
+def test_dimension_values_satisfies_the_slots_cube_catalog_protocol():
+    """The review-LOW closure proof: conv/slots._dimension_candidates can resolve a free-text
+    dimension value through a real CubeClient (mocked transport) once a later cycle wires the
+    client into SlotContext.cube."""
+    from datetime import date
+
+    from conv.slots import SlotContext, resolve_slots
+
+    rows = [{"Deals.region": "Riverside"}, {"Deals.region": "Downtown"}]
+    transport = FakeTransport([(200, json.dumps({"data": rows}).encode())])
+    ctx = SlotContext(tenant_id=TENANT, today=date(2026, 6, 9), cube=_client(transport),
+                      dimension_catalog=["Deals.region"])
+    out = resolve_slots("pipeline for Riverside this month", ctx)
+
+    assert out.slots["dimension"] == {"dimension": "Deals.region", "value": "Riverside"}
+    assert not out.needs_disambiguation
+    # The catalog scan went out as the verified-claim tenant, signed per-request.
+    sent = decode_verified(transport.calls[0]["headers"]["Authorization"], SECRET, now=lambda: T0 + 1)
+    assert sent["tenant_id"] == TENANT
 
 
 # ---------------------------------------------------------------------------- env factory

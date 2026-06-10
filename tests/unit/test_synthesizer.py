@@ -134,6 +134,47 @@ def test_malformed_claim_entries_are_skipped_not_fatal():
     assert out["claims"] == [{"text": "good claim", "source_refs": ["doc:1"]}]
 
 
+@pytest.mark.unit
+def test_int_refs_are_normalized_via_str_on_both_sides():
+    # The non-string-ref edge: _call_model shows the model str(ref), so chunks whose refs are
+    # ints (raw row ids) must still match — whether the model echoes the string form OR emits a
+    # raw JSON number. Both sides of the filter normalize via str().
+    int_chunks = [
+        {"ref": 1, "snippet": "Acme renewed for $50k in Q1."},
+        {"ref": 2, "snippet": "Open deal: expansion, $20k."},
+    ]
+    client = FakeAnthropic(
+        payloads=[
+            _payload(
+                [
+                    {"text": "Acme renewed.", "source_refs": ["1"]},               # echoed string
+                    {"text": "There is an expansion deal.", "source_refs": [2]},   # raw JSON int
+                    {"text": "Deduped either way.", "source_refs": [1, "1"]},      # both forms
+                    {"text": "Hallucinated.", "source_refs": [404, "404"]},        # not retrieved
+                ]
+            )
+        ]
+    )
+    out = AnthropicSynthesizer(client=client).synthesize(question="q", chunks=int_chunks)
+    assert out["claims"] == [
+        {"text": "Acme renewed.", "source_refs": ["1"]},
+        {"text": "There is an expansion deal.", "source_refs": ["2"]},
+        {"text": "Deduped either way.", "source_refs": ["1"]},
+    ]
+
+
+@pytest.mark.unit
+def test_refless_chunks_are_never_citable():
+    # A chunk with no ref serializes as "" in the prompt; an empty proposed ref must not be
+    # able to cite it (the retrieved set discards the empty marker).
+    chunks = [{"ref": "doc:1", "snippet": "real"}, {"snippet": "ref-less"}]
+    client = FakeAnthropic(
+        payloads=[_payload([{"text": "sneaky empty-ref claim.", "source_refs": [""]}])]
+    )
+    out = AnthropicSynthesizer(client=client).synthesize(question="q", chunks=chunks)
+    assert out["claims"] == []
+
+
 # --------------------------------------------------------------------------- graceful degradation
 @pytest.mark.unit
 def test_non_json_model_output_falls_back_to_extractive():
