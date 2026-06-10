@@ -341,13 +341,13 @@ function VsSection() {
         </div>
         <div className="vs-table" role="table">
           <div className="vs-head" role="row">
-            <div className="vs-cell-f"><div className="vs-brand us"><div className="brand-mark"><Logo size={15} /></div>Friesen Labs</div></div>
-            <div className="vs-cell-g"><div className="vs-brand them">GoHighLevel</div></div>
+            <div className="vs-cell-f" role="columnheader"><div className="vs-brand us"><div className="brand-mark"><Logo size={15} /></div>Friesen Labs</div></div>
+            <div className="vs-cell-g" role="columnheader"><div className="vs-brand them">GoHighLevel</div></div>
           </div>
           {VS_ROWS.map((r, i) => (
             <div key={r.id} className={"lp-vs-row vs-row" + (hot ? (hot.includes(r.id) ? " hot" : " dim") : "")} style={{ "--d": i * 45 + "ms" }} role="row">
-              <div className="vs-cell-f"><VsMark v={r.fHas} /><span>{r.f}</span></div>
-              <div className="vs-cell-g"><VsMark v={r.gHas} /><span>{r.g}</span></div>
+              <div className="vs-cell-f" role="cell"><VsMark v={r.fHas} /><span>{r.f}</span></div>
+              <div className="vs-cell-g" role="cell"><VsMark v={r.gHas} /><span>{r.g}</span></div>
             </div>
           ))}
         </div>
@@ -1102,7 +1102,7 @@ function Landing({ onSignIn = () => {} } = {}) {
       document.body)}
 
       {/* hero */}
-      <section className="lp-hero" id="main">
+      <section className="lp-hero" id="main" role="main">
         <div className="lp-wrap lp-hero-grid">
           <div>
             <span className="lp-pill"><span className="live-dot" style={{ width: 6, height: 6 }} />Meet your AI back office</span>
