@@ -17,6 +17,10 @@ variable "aurora_endpoint" { type = string }
 variable "redis_endpoint" { type = string }
 variable "db_secret_arn" { type = string }
 variable "cube_api_secret_arn" { type = string }
+variable "namespace_id" {
+  type    = string
+  default = "" # Cloud Map namespace; "" = no registry (pre-discovery behavior)
+}
 variable "image" {
   type    = string
   default = "" # custom uplift-cube image (semantic/ baked in); "" = the pinned public image
@@ -91,12 +95,35 @@ resource "aws_ecs_task_definition" "cube" {
   ])
 }
 
+# Cloud Map registry: cube.uplift.local → task IPs. NOTE adding service_registries REPLACES the
+# ECS service (brief outage; nothing consumes cube yet) — intended, one-time.
+resource "aws_service_discovery_service" "cube" {
+  count = var.namespace_id != "" ? 1 : 0
+  name  = "cube"
+
+  dns_config {
+    namespace_id   = var.namespace_id
+    routing_policy = "MULTIVALUE"
+    dns_records {
+      type = "A"
+      ttl  = 10
+    }
+  }
+}
+
 resource "aws_ecs_service" "cube" {
   name            = "${var.project}-cube"
   cluster         = var.cluster_id
   task_definition = aws_ecs_task_definition.cube.arn
   desired_count   = 1
   launch_type     = "FARGATE"
+
+  dynamic "service_registries" {
+    for_each = var.namespace_id != "" ? [1] : []
+    content {
+      registry_arn = aws_service_discovery_service.cube[0].arn
+    }
+  }
 
   network_configuration {
     subnets          = var.private_subnet_ids # private only — never public

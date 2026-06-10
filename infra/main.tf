@@ -101,6 +101,7 @@ module "cube" {
   cube_api_secret_arn = module.secrets.cube_api_secret_arn
   log_retention_days  = var.log_retention_days
   image               = var.cube_image
+  namespace_id        = module.vpc.service_discovery_namespace_id
 }
 
 # --- Phase 9: auth + ALB + api service ---
