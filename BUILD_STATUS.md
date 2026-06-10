@@ -426,6 +426,19 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   (user granted standing merge approval; autonomous completion mode).
 
 ## Lane Matt (app code) — log
+- 2026-06-09 — **Cycles 5-6 (lane tail) + LANE MATT COMPLETE:** #67(+hotfix #73: the prod image
+  bundles no ingest/ — top-level import would have crash-looped the deployed API; caught by
+  adversarial review AFTER an early merge → draft-PR discipline adopted; also closed the shared-
+  token cross-tenant sync risk with a 409 connect-first guard) · #68 SelfHostedToolUseRuntime
+  (HIPAA seam) + scripts/verify_agent_plane.py (offline-PLAN default, UPLIFT_LIVE_VERIFY-gated) ·
+  #70 PostHog funnel + tenant_settings defaults + retry-provision route · #78 typed Integrations
+  panel (honest states, token hygiene, 11 offline e2e vs the real bundle) · #80 gated live signup
+  e2e (skips w/o STRIPE_TEST_*) + cube dimension_values + synthesizer ref normalization.
+  Suite 601→607 passed / 5 skipped (new skip = the gated e2e, by design).
+  **Lane Matt queue: every item checked or parked.** Single park: agent_plane.ensure() real impl
+  awaits the eager-vs-lazy per-tenant agent-provisioning decision (seam + stub-guard in place).
+  Everything else awaiting-live belongs to Lane Nick: REQ-001..007 applies, live verify script run,
+  Cube secret wiring, Resend domain, MA env-key rotation.
 - 2026-06-09 — **Cycle 4 (deep wiring + remaining provisioning, PRs #42/#47/#50/#56):** #42 cortex+
   spec-gen wired into asgi/worker, coordinator-driven routing (regex gated to FakeRuntime), /api/me ·
   #47 per-request Cube JWT minted from the verified claim (TRUST RULE Cube leg) · #50 ingest
