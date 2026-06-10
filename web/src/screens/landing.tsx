@@ -1,6 +1,8 @@
 // @ts-nocheck
 import React from "react";
 import "../globals";
+import mattPhoto from "../assets/matt-yee.jpg";
+import nickPhoto from "../assets/nick-friesen.jpg";
 const { useState, useEffect, useRef, useMemo, useCallback, useLayoutEffect, useReducer, useContext, useImperativeHandle, useId } = React;
 const { Icon, Logo, FL_DATA, FLStore, useStore, askClaude, bizContext, confettiBurst, XPBadge, useCountUp, CountUp, AreaChart, Sparkline, LoadBars, Donut, SlideOver, CommandPalette, HEAT, fmtMoney, StatCard, ToneIco, FLflag, useTweaks, TweaksPanel, TweakSection, TweakRow, TweakSlider, TweakToggle, TweakRadio, TweakSelect, TweakText, TweakNumber, TweakColor, TweakButton, FoxDemo, KanbanDemo, WorkflowDemo, GreenlightDemo, CommandDemo, IntegrationDemo, SupportDemo, SecurityDemo, SidecarDemo, CortexDemo } = window as any;
 // landing.jsx, Friesen Labs marketing site
@@ -141,26 +143,20 @@ const LP_TESTIMONIALS = [
 ];
 const LP_FOUNDERS = [
   { id: "matt", name: "Matt Yee", title: "Tinkerer of things",
-    bio: "Rocket scientist turned AI/ML engineer, Matt has spent his career solving problems most people consider impossible. At ServiceNow, one of the leading AI autonomous companies, he brought agentic workflows to life for some of the largest enterprises in the world. From there, he went on to manage satellite fleet operations for Amazon Kuiper's low-earth orbit constellation and build moonshot technology at Google X, bringing an aerospace-grade approach to designing agentic AI systems, LLM-powered copilots, and defense-grade cloud infrastructure. Along the way, Matt was part of the New York Mets organization as a bullpen catcher and a catcher with the Cosmic Baseball organization, fueling his belief that the best AI doesn't just automate tasks, it unlocks human potential. He holds an active TS/SCI clearance, has led engineering teams of 30+, and is a Stanford University alumnus based in Austin, Texas.",
+    bio: "Rocket scientist turned AI/ML engineer, Matt has spent his career solving problems most people consider impossible. He managed satellite fleet operations for Amazon Kuiper's low-earth orbit constellation and built moonshot technology at Google X, bringing an aerospace-grade approach to designing agentic AI systems, LLM-powered copilots, and defense-grade cloud infrastructure. Today he's at ServiceNow, one of the leading AI autonomous companies, bringing agentic workflows to life for some of the largest enterprises in the world. Along the way, Matt was part of the New York Mets organization as a bullpen catcher and a catcher with the Cosmic Baseball organization, fueling his belief that the best AI doesn't just automate tasks, it unlocks human potential. He holds an active TS/SCI clearance, has led engineering teams of 30+, and is a Stanford University alumnus based in Austin, Texas.",
     linkedin: "https://www.linkedin.com/in/mattyee92/", instagram: "https://www.instagram.com/themattyee/" },
   { id: "nick", name: "Nick Friesen", title: "Machine Learning enthusiast",
     bio: "Nick doesn't wait for the future, he builds it. A self-taught machine learning engineer and serial founder, Nick has spent his career turning bold ideas into reality, from scaling photography businesses that redefine first impressions to training identity-preserving AI image models at Fibb AI that make photorealistic human likeness indistinguishable from the real thing. Today, Nick is pushing the boundaries of what AI can do, applying machine learning and agentic systems to some of the most fascinating frontiers imaginable: dog aging, piano composition, cinema, and personal context memory. He's a North Dakota State University alumnus based in Austin, Texas.",
     linkedin: "https://www.linkedin.com/in/nicholasfriesen/", instagram: "https://www.instagram.com/wanderinginatx/" },
 ];
 
-// Founder photos are MOCK-BUILD-ONLY demo assets. The gate is BUILD-TIME (Vite
-// statically replaces import.meta.env.VITE_API_MOCK with a literal), so real
-// builds carry neither these /public paths nor the images themselves —
-// vite.config.ts additionally drops publicDir from real builds, keeping
-// matt-yee.jpeg / nick-friesen.png out of a production dist entirely. Real
-// builds render initials avatars in the team section instead.
-let LP_FOUNDER_PHOTOS = {};
-if (import.meta.env.VITE_API_MOCK !== "0" && import.meta.env.VITE_API_MOCK !== "false") {
-  LP_FOUNDER_PHOTOS = {
-    matt: { src: "/matt-yee.jpeg", pos: "50% 12%" },
-    nick: { src: "/nick-friesen.png", pos: "50% 35%" },
-  };
-}
+// Founder photos — optimized (~32KB), imported as bundled, content-hashed assets so they ship in
+// REAL builds too via Vite's asset pipeline (publicDir is dropped in real builds, so /public paths
+// would 404 — these src imports don't depend on it). Already public in the repo, so no new exposure.
+const LP_FOUNDER_PHOTOS = {
+  matt: { src: mattPhoto, pos: "50% 12%" },
+  nick: { src: nickPhoto, pos: "50% 35%" },
+};
 
 // ---- Friesen vs GoHighLevel (interactive comparison) ----
 const VS_LENSES = [
