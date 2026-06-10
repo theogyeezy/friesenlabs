@@ -673,6 +673,34 @@ function useMagnetic() {
   }, []);
 }
 
+// Interactive agent roster — click a crew member, the hero line rewrites to what they do.
+const HERO_ROSTER = [
+  { id: "margo", emoji: "💬", name: "Margo", role: "Sales", line: "quotes every inbound lead before your coffee's cold, then chases the follow-up." },
+  { id: "pip", emoji: "🐧", name: "Pip", role: "Support", line: "answers the routine tickets the moment they land, and routes the tricky ones to you." },
+  { id: "nadia", emoji: "📅", name: "Nadia", role: "Scheduling", line: "books discovery calls from a link customers self-serve, with reminders handled." },
+  { id: "ledger", emoji: "🧾", name: "Ledger", role: "Billing", line: "sends quotes, invoices, and politely nudges the overdue ones until they're paid." },
+  { id: "echo", emoji: "⭐", name: "Echo", role: "Reputation", line: "asks happy customers for reviews at exactly the right moment and tracks referrals." },
+  { id: "scout", emoji: "🔎", name: "Scout", role: "Research", line: "enriches every new contact with the context your team needs before the first call." },
+];
+function HeroRoster() {
+  const [active, setActive] = useState("margo");
+  const a = HERO_ROSTER.find((r) => r.id === active);
+  return (
+    <div className="hero-roster">
+      <div className="hero-roster-chips">
+        {HERO_ROSTER.map((r) => (
+          <button key={r.id} className={"hr-chip" + (active === r.id ? " on" : "")} onClick={() => setActive(r.id)} aria-pressed={active === r.id}>
+            <span className="hr-emoji">{r.emoji}</span>{r.name}
+          </button>
+        ))}
+      </div>
+      <div className="hero-roster-line" key={active}>
+        <b>{a.name}</b> <span className="hr-role">{a.role}</span> {a.line}
+      </div>
+    </div>
+  );
+}
+
 // Live ROI calculator — sliders drive an animated monthly-savings readout + a bar race.
 function RoiCalculator() {
   const [team, setTeam] = useState(4);
@@ -790,6 +818,7 @@ function Landing({ onSignIn = () => {} } = {}) {
               <button className="btn btn-ghost btn-lg" onClick={() => document.getElementById("demos").scrollIntoView({ behavior: "smooth" })}><Icon name="play" size={16} />See it in action</button>
             </div>
             <div className="lp-hero-note"><Icon name="link" size={15} /><span>Already have a CRM? <b style={{ color: "var(--ink)" }}>Keep it</b>, we plug right into HubSpot, Salesforce &amp; more.</span></div>
+            <HeroRoster />
           </div>
           <div className="lp-demo-stage" style={{ gridTemplateColumns: "1fr", minHeight: 0, boxShadow: "var(--shadow-xl)" }}>
             <div className="lp-demo-canvas" style={{ borderRight: "none" }}><FoxDemo /></div>
