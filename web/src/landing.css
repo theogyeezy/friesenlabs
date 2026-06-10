@@ -389,8 +389,8 @@ textarea.lp-input { height: 92px; padding: 11px 13px; resize: none; }
 .lp-proof-chip b { color: var(--accent-ink); font-weight: 760; }
 
 /* scroll reveals (additive; sections fade-rise once) */
-.rv { opacity: 0; transform: perspective(1300px) translateY(46px) translateZ(-70px) rotateX(7deg) scale(.97); filter: blur(9px); transition: opacity .8s cubic-bezier(.16,.7,.2,1), transform .9s cubic-bezier(.16,.7,.2,1), filter .8s ease; transition-delay: var(--d, 0ms); transform-origin: 50% 100%; }
-.rv-in { opacity: 1; transform: perspective(1300px) translateY(0) translateZ(0) rotateX(0) scale(1); filter: none; }
+.rv { opacity: 0; transform: translateY(22px); transition: opacity .65s cubic-bezier(.2,.65,.25,1), transform .65s cubic-bezier(.2,.65,.25,1); transition-delay: var(--d, 0ms); }
+.rv-in { opacity: 1; transform: none; }
 
 /* primary CTA shimmer sweep */
 .lp-hero-cta .btn-primary { position: relative; overflow: hidden; }
@@ -632,16 +632,11 @@ textarea.lp-input { height: 92px; padding: 11px 13px; resize: none; }
 /* Cinematic depth on the dark sections + final CTA */
 .lp-vs, .lp-finalcta { box-shadow: inset 0 60px 80px -60px oklch(0 0 0 / .6), inset 0 -60px 80px -60px oklch(0 0 0 / .6); }
 
-@media (prefers-reduced-motion: reduce) {
+@media (hover: none), (prefers-reduced-motion: reduce) {
   .tilt3d { transform: none !important; }
   .tilt3d-glare { display: none; }
   .lp-grid3d-floor { animation: none; }
   .lp-grain { display: none; }
-}
-@media (hover: none) {
-  /* no cursor on touch — only the tilt is disabled; the field, grain, dark hero + constellation stay */
-  .tilt3d { transform: none !important; }
-  .tilt3d-glare { display: none; }
 }
 
 /* ============================================================
@@ -666,119 +661,10 @@ textarea.lp-input { height: 92px; padding: 11px 13px; resize: none; }
 /* cards/surfaces get a touch more opacity so content reads cleanly over the moving field */
 .lp-cinematic .lp-demo-side, .lp-cinematic .lp-testi, .lp-cinematic .roi-controls, .lp-cinematic .lp-build, .lp-cinematic .lp-founder { background-color: color-mix(in oklch, var(--surface) 92%, transparent); }
 
-@media (prefers-reduced-motion: reduce) {
-  /* only reduced-motion drops the WebGL atmosphere — restore solid, fast surfaces */
+@media (hover: none), (prefers-reduced-motion: reduce) {
+  /* no WebGL atmosphere on touch/reduced-motion — restore solid, fast surfaces */
   .lp-webgl { display: none; }
   .lp-cinematic .lp-section { background: var(--bg); backdrop-filter: none; }
   .lp-cinematic .lp-section.alt { background: var(--surface-2); }
   .lp-cinematic .lp-footer { background: var(--surface-2); backdrop-filter: none; }
-}
-
-/* ============================================================
-   Dramatic DARK cinematic hero + three.js constellation.
-   The hero becomes deep space; the glowing 3D agent network +
-   bloom + grid read against it. Content sections below stay
-   luminous (the WebGL field) — a dark→light cinematic cut.
-   ============================================================ */
-.lp-three { position: fixed; inset: 0; z-index: 0; pointer-events: none; }
-.lp-three canvas { position: fixed !important; inset: 0; width: 100vw !important; height: 100vh !important; display: block; }
-
-.lp-cinematic .lp-hero { background: radial-gradient(125% 130% at 50% -12%, oklch(0.27 0.07 278) 0%, oklch(0.17 0.05 277) 46%, oklch(0.11 0.035 274) 100%); }
-.lp-cinematic .lp-hero .lp-wrap { z-index: 2; }
-.lp-cinematic .lp-hero .lp-grid3d, .lp-cinematic .lp-hero .lp-vignette, .lp-cinematic .lp-hero .lp-aurora { z-index: 1; }
-.lp-cinematic .lp-hero .lp-three-wrap { z-index: 0; }
-.lp-cinematic .lp-hero .lp-grid3d { opacity: .72; }
-.lp-cinematic .lp-hero .lp-aurora { opacity: .4; mix-blend-mode: screen; }
-
-/* text flips to light, with cinematic glow */
-.lp-cinematic .lp-hero .lp-h1 { color: #fff; text-shadow: 0 2px 50px oklch(0.5 0.18 278 / .45); }
-.lp-cinematic .lp-hero .lp-h1 .accentword { color: oklch(0.82 0.15 282); text-shadow: 0 0 30px oklch(0.66 0.22 282 / .75); }
-.lp-cinematic .lp-hero .lp-lead { color: oklch(0.87 0.02 277); }
-.lp-cinematic .lp-hero .lp-pill { background: oklch(1 0 0 / .08); border-color: oklch(1 0 0 / .18); color: oklch(0.92 0.04 282); }
-.lp-cinematic .lp-hero .lp-hero-note { color: oklch(0.8 0.02 277); }
-.lp-cinematic .lp-hero .lp-hero-note b { color: #fff !important; }
-.lp-cinematic .lp-hero .btn-ghost { background: oklch(1 0 0 / .06); border-color: oklch(1 0 0 / .22); color: #fff; }
-.lp-cinematic .lp-hero .hr-chip { background: oklch(1 0 0 / .07); border-color: oklch(1 0 0 / .16); color: oklch(0.9 0.02 282); }
-.lp-cinematic .lp-hero .hr-chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
-.lp-cinematic .lp-hero .hero-roster-line { color: oklch(0.84 0.02 277); }
-.lp-cinematic .lp-hero .hero-roster-line b { color: #fff; }
-.lp-cinematic .lp-hero .hero-roster-line .hr-role { background: oklch(1 0 0 / .12); color: oklch(0.9 0.05 282); }
-
-/* proof marquee chips on the dark hero */
-.lp-cinematic .lp-proof-marquee .lp-proof-chip { background: oklch(1 0 0 / .07); border-color: oklch(1 0 0 / .15); color: oklch(0.87 0.02 277); box-shadow: none; }
-.lp-cinematic .lp-proof-marquee .lp-proof-chip b { color: oklch(0.83 0.15 282); }
-
-/* the live demo panel glows like a screen in the dark */
-.lp-cinematic .lp-hero .lp-demo-stage { box-shadow: 0 50px 130px -35px oklch(0.5 0.2 282 / .6), 0 0 0 1px oklch(1 0 0 / .07); }
-
-/* primary CTA bloom (everywhere) */
-.lp-cinematic .btn-primary { box-shadow: 0 8px 30px -8px color-mix(in oklch, var(--accent) 60%, transparent); }
-.lp-cinematic .lp-hero .btn-primary { box-shadow: 0 0 40px -6px oklch(0.6 0.2 282 / .7), 0 10px 30px -8px oklch(0.5 0.2 282 / .6); }
-
-/* headline + big-number bloom for cinematic weight */
-.lp-cinematic .lp-h2 { text-shadow: 0 1px 30px color-mix(in oklch, var(--accent) 16%, transparent); }
-
-@media (max-width: 760px) {
-  /* phones: keep the dark hero + constellation; slightly more opaque content glass for readability */
-  .lp-cinematic .lp-section { background: color-mix(in oklch, var(--bg) 86%, transparent); }
-  .lp-cinematic .lp-section.alt { background: color-mix(in oklch, var(--surface-2) 88%, transparent); }
-}
-
-/* ============================================================
-   "Flight through space" — the dark cinematic theme tuning.
-   The constellation (.lp-three) + nebula field (.lp-webgl) are
-   fixed behind dark-glass sections, so scrolling flies the
-   camera through a living 3D agent-galaxy behind every section.
-   ============================================================ */
-/* hero lets the constellation + field show (semi-transparent void glow) */
-.lp-cinematic .lp-hero { background: radial-gradient(120% 125% at 50% -5%, oklch(0.24 0.06 278 / .6), oklch(0.12 0.035 274 / .25) 58%, transparent 100%) !important; }
-/* dark-glass content sections — field/constellation breathe through, light text stays readable */
-.lp-cinematic .lp-section { background: color-mix(in oklch, var(--bg) 80%, transparent); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); }
-.lp-cinematic .lp-section.alt { background: color-mix(in oklch, var(--surface) 78%, transparent); }
-.lp-cinematic .lp-footer { background: color-mix(in oklch, var(--surface) 82%, transparent); }
-/* dark sections become near-transparent glass so the galaxy pours through them */
-.lp-cinematic .lp-vs { background: color-mix(in oklch, oklch(0.16 0.03 277) 78%, transparent); }
-.lp-cinematic .lp-finalcta { background: color-mix(in oklch, oklch(0.13 0.03 277) 70%, transparent); }
-.lp-cinematic .lp-fullbleed { background: color-mix(in oklch, oklch(0.16 0.035 277) 76%, transparent); }
-/* nav as dark frosted glass over the galaxy */
-.lp-cinematic .lp-nav { background: color-mix(in oklch, var(--bg) 70%, transparent); }
-/* cards lift off the galaxy with a faint glow rim */
-.lp-cinematic .lp-testi, .lp-cinematic .roi-controls, .lp-cinematic .lp-build, .lp-cinematic .lp-founder, .lp-cinematic .lp-demo-side, .lp-cinematic .lp-layer { box-shadow: 0 20px 60px -28px oklch(0 0 0 / .6), 0 0 0 1px oklch(1 0 0 / .05); }
-/* eyebrow + heading glow for cinematic weight in dark */
-.lp-cinematic .lp-eyebrow { text-shadow: 0 0 18px color-mix(in oklch, var(--accent) 45%, transparent); }
-
-/* ============================================================
-   Space-travel scroll — sections are depth-transformed by JS
-   (useSpaceScroll). These just prep them for cheap GPU 3D.
-   ============================================================ */
-.lp-cinematic .lp-section, .lp-cinematic .lp-fullbleed, .lp-cinematic .lp-finalcta {
-  transform-origin: 50% 50%;
-  will-change: transform, opacity;
-  backface-visibility: hidden;
-}
-/* the old one-shot reveal is replaced by the continuous travel — neutralize any leftover .rv */
-.lp-cinematic .rv, .lp-cinematic .rv-in { opacity: 1 !important; transform: none !important; filter: none !important; transition: none !important; }
-@media (prefers-reduced-motion: reduce) {
-  /* no z-travel; sections sit flat and readable */
-  .lp-cinematic .lp-section, .lp-cinematic .lp-fullbleed, .lp-cinematic .lp-finalcta { transform: none !important; opacity: 1 !important; filter: none !important; }
-}
-
-/* ============================================================
-   FLY-THROUGH panels — pinned center-screen, moving only in Z
-   (positioning + transforms set by useSpaceFlight). Each panel
-   fills the viewport with its own background; the galaxy shows
-   through the dark glass and during the fly transitions.
-   ============================================================ */
-.lp-cinematic .lp-panel {
-  transform-origin: 50% 50%;
-  will-change: transform, opacity, filter;
-  overflow: hidden;
-  contain: layout paint;
-}
-/* a touch more glass-transparency so the galaxy reads behind the pinned panel */
-.lp-cinematic .lp-panel.lp-section { background: color-mix(in oklch, var(--bg) 74%, transparent); }
-.lp-flight-spacer { position: relative; z-index: 0; pointer-events: none; }
-@media (prefers-reduced-motion: reduce) {
-  /* fly-through off: panels were never fixed (hook returns early) — nothing to undo */
-  .lp-flight-spacer { display: none; }
 }

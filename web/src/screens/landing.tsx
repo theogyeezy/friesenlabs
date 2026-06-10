@@ -656,83 +656,6 @@ function ProductPage({ id, onClose, onAdd, onBook }) {
 // onSignIn: wired by main.tsx to the Cognito Hosted UI signIn() when the
 // sign-in gate is active. Defaults to a no-op so the screen is render-safe
 // standalone.
-function smooth01(a, b, x) { const t = Math.max(0, Math.min(1, (x - a) / (b - a))); return t * t * (3 - 2 * t); }
-// FLY-THROUGH scroll: every panel is PINNED dead-center (position:fixed) and moves ONLY in Z, so
-// there's no vertical scroll feeling at all — scrolling drives a camera that rushes each panel at
-// you from the depth, holds it filling the screen, then blasts it past the viewer as the next one
-// comes up from behind. A spacer provides the scroll distance (~1 screen per panel); the footer
-// reappears after the flight. Tall panels scale-to-fit. Off on reduced-motion (panels fall back to
-// normal flow). rAF-throttled.
-function useSpaceFlight() {
-  useEffect(() => {
-    if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    const root = document.querySelector(".lp-cinematic");
-    if (!root) return;
-    const panels = Array.from(root.querySelectorAll(":scope > .lp-hero, :scope > .lp-section, :scope > .lp-fullbleed, :scope > .lp-finalcta"));
-    const footer = root.querySelector(":scope > .lp-footer");
-    if (panels.length < 2) return;
-    const mobile = window.innerWidth < 760;
-    const DEPTH = mobile ? 1500 : 2400;    // px of z each panel travels — deep: panels come from far + fly close
-    const PERSP = mobile ? 1000 : 1050;    // smaller perspective = stronger foreshortening = more depth
-    const natH = [];
-
-    // 1) measure natural content heights while still in flow
-    panels.forEach((el) => natH.push(el.getBoundingClientRect().height));
-    // 2) pin every panel center-screen, out of flow
-    panels.forEach((el) => {
-      el.style.position = "fixed";
-      el.style.left = "0"; el.style.right = "0"; el.style.top = "0";
-      el.style.height = "100vh"; el.style.minHeight = "0";
-      el.style.display = "flex"; el.style.flexDirection = "column"; el.style.justifyContent = "center";
-      el.style.transformStyle = "preserve-3d";
-      el.style.backfaceVisibility = "hidden";
-      el.classList.add("lp-panel");
-    });
-    // 3) spacer gives the scroll runway (~one screen of scroll per panel)
-    const STEPF = 0.9;                                  // fraction of a screen of scroll per panel
-    const spacer = document.createElement("div");
-    spacer.className = "lp-flight-spacer";
-    spacer.style.height = Math.round(panels.length * STEPF * 100) + "vh";
-    if (footer) root.insertBefore(spacer, footer); else root.appendChild(spacer);
-
-    let raf = null;
-    const update = () => {
-      raf = null;
-      const vh = window.innerHeight;
-      const prog = window.scrollY / (vh * STEPF);       // camera position, in panel units
-      panels.forEach((el, i) => {
-        const d = i - prog;                             // 0 = this panel is centered at the camera
-        const ad = Math.abs(d);
-        // only the panel near focus is solid — neighbors fade out fast so you fly through clean
-        // space (the galaxy) between panels instead of seeing them overlap.
-        if (ad > 1.05) { el.style.visibility = "hidden"; el.style.pointerEvents = "none"; return; }
-        el.style.visibility = "visible";
-        const fit = Math.max(0.55, Math.min(1, (vh * 0.94) / (natH[i] || vh)));
-        const tz = -d * DEPTH;                          // ahead (d>0) → deep/away; passed (d<0) → toward viewer
-        // Asymmetric fade: an INCOMING panel (d>0) stays faintly visible while it's far away, so it
-        // emerges from deep space; a PASSING panel (d<0) fades out fast — before its Z crosses the
-        // camera plane (tz≈PERSP) — so it whooshes past instead of glitching through the lens.
-        const op = d > 0 ? (1 - smooth01(0.55, 1.02, ad)) : (1 - smooth01(0.16, 0.44, ad));
-        const bl = !mobile && ad > 0.22 ? Math.min(11, (ad - 0.22) * 20) : 0;
-        el.style.transform = "perspective(" + PERSP + "px) translateZ(" + tz.toFixed(0) + "px) scale(" + fit.toFixed(3) + ")";
-        el.style.opacity = op.toFixed(3);
-        el.style.filter = bl > 0.2 ? "blur(" + bl.toFixed(1) + "px)" : "none";
-        el.style.zIndex = String(Math.round(34 - d * 9)); // nearer the viewer paints on top (kept below the nav at z-50)
-        el.style.pointerEvents = ad > 0.3 ? "none" : "auto";
-      });
-    };
-    const onScroll = () => { if (raf == null) raf = requestAnimationFrame(update); };
-    const onResize = () => { natH.length = 0; panels.forEach((el) => { const t = el.style.transform; el.style.transform = "none"; natH.push(el.scrollHeight); el.style.transform = t; }); update(); };
-    update();
-    window.addEventListener("scroll", onScroll, { passive: true });
-    window.addEventListener("resize", onResize);
-    return () => {
-      window.removeEventListener("scroll", onScroll); window.removeEventListener("resize", onResize); if (raf) cancelAnimationFrame(raf);
-      spacer.remove();
-      panels.forEach((el) => { el.style.cssText = ""; el.classList.remove("lp-panel"); });
-    };
-  }, []);
-}
 // Magnetic pull for primary CTAs — the button leans toward the cursor.
 function useMagnetic() {
   useEffect(() => {
@@ -796,22 +719,26 @@ function WebGLBackdrop() {
       "float fbm(vec2 p){ float v=0.0, a=0.5; for(int i=0;i<5;i++){ v+=a*noise(p); p=p*2.0+vec2(1.7,9.2); a*=0.5; } return v; }",
       "void main(){",
       "  vec2 uv = gl_FragCoord.xy/u_res.xy;",
-      "  vec2 p = uv; p.x *= u_res.x/u_res.y; p *= 1.55;",
-      "  float t = u_time*0.035;",
+      "  vec2 p = uv; p.x *= u_res.x/u_res.y;",
+      "  float ang = -0.5; p = mat2(cos(ang),-sin(ang),sin(ang),cos(ang))*p; p *= 1.5;", // diagonal tilt
+      "  float t = u_time*0.04;",
       "  vec2 q = vec2(fbm(p+vec2(0.0,t)), fbm(p+vec2(5.2,1.3)-t));",
-      "  vec2 r = vec2(fbm(p+2.0*q+vec2(1.7+u_mouse.x*0.4,9.2)+t*0.5), fbm(p+2.0*q+vec2(8.3,2.8)+u_scroll*0.45));",
-      "  float f = fbm(p+1.8*r);",
-      "  vec3 base = vec3(0.055,0.05,0.11);",          // deep space
-      "  vec3 c1 = vec3(0.42,0.34,0.98);",             // indigo
-      "  vec3 c2 = vec3(0.66,0.30,0.95);",             // violet
-      "  vec3 c3 = vec3(0.25,0.78,0.92);",             // cyan
+      "  vec2 r = vec2(fbm(p+2.0*q+vec2(1.7+u_mouse.x*0.4,9.2)+t*0.5), fbm(p+2.0*q+vec2(8.3,2.8)+u_scroll*0.4));",
+      "  float f = fbm(p+1.9*r);",
+      "  vec3 base   = vec3(0.99,0.985,1.0);",   // near-white
+      "  vec3 cBlue  = vec3(0.36,0.45,0.98);",   // indigo-blue
+      "  vec3 cViolet= vec3(0.62,0.36,0.96);",   // violet
+      "  vec3 cPink  = vec3(0.97,0.43,0.72);",   // pink
+      "  vec3 cPeach = vec3(0.99,0.66,0.45);",   // peach
+      "  vec3 cCyan  = vec3(0.40,0.82,0.95);",   // cyan
       "  vec3 col = base;",
-      "  col = mix(col, c1, clamp(f*f*1.7,0.0,1.0)*0.6);",
-      "  col = mix(col, c3, clamp(r.x*r.x,0.0,1.0)*0.4);",
-      "  col = mix(col, c2, clamp(q.y,0.0,1.0)*0.32);",
-      "  col += pow(clamp(f,0.0,1.0),3.0)*0.12;",       // soft bloom in the bright wisps
-      "  float vig = smoothstep(1.3,0.25,length(uv-0.5));",
-      "  col *= 0.72+0.4*vig;",
+      "  col = mix(col, cBlue,   clamp(f*f*1.6,0.0,1.0)*0.55);",
+      "  col = mix(col, cViolet, clamp(q.y,0.0,1.0)*0.42);",
+      "  col = mix(col, cPink,   clamp(r.x*r.x,0.0,1.0)*0.40);",
+      "  col = mix(col, cPeach,  clamp(r.y,0.0,1.0)*0.30);",
+      "  col = mix(col, cCyan,   clamp(q.x*0.8,0.0,1.0)*0.26);",
+      "  float vig = smoothstep(1.3,0.3,length(uv-0.5));",
+      "  col *= 0.94+0.1*vig;",
       "  gl_FragColor = vec4(col, 1.0);",
       "}",
     ].join("\n");
@@ -847,108 +774,6 @@ function WebGLBackdrop() {
     return () => { running = false; cancelAnimationFrame(raf); window.removeEventListener("resize", resize); window.removeEventListener("mousemove", onMove); window.removeEventListener("scroll", onScroll); document.removeEventListener("visibilitychange", onVis); };
   }, []);
   return <canvas ref={ref} className="lp-webgl" aria-hidden="true" />;
-}
-
-// A soft radial glow sprite for the constellation points.
-function glowSprite(THREE) {
-  const c = document.createElement("canvas"); c.width = c.height = 64;
-  const g = c.getContext("2d");
-  const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32);
-  grad.addColorStop(0, "rgba(255,255,255,1)");
-  grad.addColorStop(0.25, "rgba(185,175,255,0.92)");
-  grad.addColorStop(1, "rgba(120,110,235,0)");
-  g.fillStyle = grad; g.fillRect(0, 0, 64, 64);
-  return new THREE.CanvasTexture(c);
-}
-
-// three.js hero showpiece — a glowing 3D "agent constellation": points + proximity links drifting
-// in dark space, with mouse / device-tilt parallax and additive bloom. LAZY-loaded (dynamic
-// import("three") — never blocks first paint) and tuned down on phones (fewer nodes, DPR 1).
-// Skipped only on reduced-motion. This is the real 3D geometry layer the WebGL field can't give.
-function ThreeHero() {
-  const ref = useRef(null);
-  useEffect(() => {
-    if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    let alive = true, cleanup = () => {};
-    import("three").then((THREE) => {
-      if (!alive || !ref.current) return;
-      const el = ref.current;
-      const mobile = window.innerWidth < 760;
-      let w = window.innerWidth, h = window.innerHeight;
-      const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: !mobile, powerPreference: "low-power" });
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio, mobile ? 1 : 1.5));
-      renderer.setSize(w, h);
-      el.appendChild(renderer.domElement);
-      const scene = new THREE.Scene();
-      scene.fog = new THREE.FogExp2(0x07070f, 0.03);
-      const camera = new THREE.PerspectiveCamera(64, w / h, 0.1, 120);
-      camera.position.z = 12;
-      // A long tunnel of glowing agent-nodes spread through depth — the camera flies forward
-      // through it as the page scrolls, so the whole scroll is a flight through 3D space.
-      const N = mobile ? 150 : 360;
-      const pos = new Float32Array(N * 3), nodes = [];
-      for (let i = 0; i < N; i++) {
-        const a = i * 2.399963; // golden angle
-        const rad = 3.5 + 10.0 * Math.sqrt((i % 60) / 60);
-        const x = Math.cos(a) * rad * (0.55 + 0.45 * Math.sin(i * 1.7));
-        const yy = Math.sin(a) * rad * (0.55 + 0.45 * Math.cos(i * 2.1));
-        const z = 9.0 - (i / N) * 84.0;
-        pos[i * 3] = x; pos[i * 3 + 1] = yy; pos[i * 3 + 2] = z; nodes.push([x, yy, z]);
-      }
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
-      const sprite = glowSprite(THREE);
-      const pmat = new THREE.PointsMaterial({ size: mobile ? 0.62 : 0.5, map: sprite, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, color: 0x9b8bff });
-      const points = new THREE.Points(geo, pmat);
-      scene.add(points);
-      const linePos = [], maxLinks = mobile ? 3.4 : 3.8;
-      for (let i = 0; i < N; i++) for (let j = i + 1; j < N; j++) {
-        const dx = nodes[i][0] - nodes[j][0], dy = nodes[i][1] - nodes[j][1], dz = nodes[i][2] - nodes[j][2];
-        if (dx * dx + dy * dy + dz * dz < maxLinks * maxLinks) linePos.push(nodes[i][0], nodes[i][1], nodes[i][2], nodes[j][0], nodes[j][1], nodes[j][2]);
-      }
-      const lgeo = new THREE.BufferGeometry();
-      lgeo.setAttribute("position", new THREE.Float32BufferAttribute(linePos, 3));
-      const lmat = new THREE.LineBasicMaterial({ color: 0x6f5fe0, transparent: true, opacity: 0.16, blending: THREE.AdditiveBlending, depthWrite: false });
-      const lines = new THREE.LineSegments(lgeo, lmat);
-      scene.add(lines);
-      let mx = 0, my = 0, scrollP = 0, camZ = 12, raf, running = true;
-      const onMove = (e) => { mx = e.clientX / window.innerWidth - 0.5; my = e.clientY / window.innerHeight - 0.5; };
-      const onTilt = (e) => { if (e.gamma != null) { mx = Math.max(-0.5, Math.min(0.5, e.gamma / 45)); my = Math.max(-0.5, Math.min(0.5, (e.beta - 45) / 45)); } };
-      const onScroll = () => { const m = document.documentElement.scrollHeight - window.innerHeight; scrollP = m > 0 ? window.scrollY / m : 0; };
-      const onResize = () => { w = window.innerWidth; h = window.innerHeight; renderer.setSize(w, h); camera.aspect = w / h; camera.updateProjectionMatrix(); };
-      window.addEventListener("mousemove", onMove, { passive: true });
-      window.addEventListener("deviceorientation", onTilt, { passive: true });
-      window.addEventListener("scroll", onScroll, { passive: true });
-      window.addEventListener("resize", onResize);
-      onScroll();
-      const t0 = performance.now();
-      const loop = () => {
-        if (!running) return;
-        const t = (performance.now() - t0) / 1000;
-        points.rotation.y = lines.rotation.y = t * 0.018;
-        // the camera flies forward through the tunnel as the page scrolls (works on mobile —
-        // it's driven by scroll position, not the cursor)
-        camZ += ((12 - scrollP * 86) - camZ) * 0.06;
-        camera.position.z = camZ;
-        camera.position.x += (mx * 4.0 - camera.position.x) * 0.04;
-        camera.position.y += (-my * 2.6 - camera.position.y) * 0.04;
-        camera.lookAt(camera.position.x * 0.35, camera.position.y * 0.35, camZ - 14);
-        renderer.render(scene, camera);
-        raf = requestAnimationFrame(loop);
-      };
-      loop();
-      const onVis = () => { running = !document.hidden; if (running) loop(); };
-      document.addEventListener("visibilitychange", onVis);
-      cleanup = () => {
-        running = false; cancelAnimationFrame(raf);
-        window.removeEventListener("mousemove", onMove); window.removeEventListener("deviceorientation", onTilt); window.removeEventListener("scroll", onScroll); window.removeEventListener("resize", onResize); document.removeEventListener("visibilitychange", onVis);
-        geo.dispose(); lgeo.dispose(); pmat.dispose(); lmat.dispose(); sprite.dispose(); renderer.dispose();
-        if (renderer.domElement.parentNode) renderer.domElement.parentNode.removeChild(renderer.domElement);
-      };
-    }).catch(() => {});
-    return () => { alive = false; cleanup(); };
-  }, []);
-  return <div ref={ref} className="lp-three" aria-hidden="true" />;
 }
 
 // Section anchors shared by the desktop nav + the mobile menu.
@@ -1082,17 +907,9 @@ function Landing({ onSignIn = () => {} } = {}) {
   // whole page is scroll-locked in real (production) builds.
   useEffect(() => {
     document.body.classList.add("lp-body");
-    // The marketing landing is a dark cinematic experience — force the dark palette while it's
-    // mounted (the app fully supports data-theme="dark"; embedded demos adapt), restore on unmount.
-    const root = document.documentElement;
-    const prevTheme = root.getAttribute("data-theme");
-    root.setAttribute("data-theme", "dark");
-    return () => {
-      document.body.classList.remove("lp-body");
-      if (prevTheme) root.setAttribute("data-theme", prevTheme); else root.removeAttribute("data-theme");
-    };
+    return () => document.body.classList.remove("lp-body");
   }, []);
-  useSpaceFlight();
+  useReveal();
   useMagnetic();
   useTilt3d();
   const [demoTab, setDemoTab] = useState("agents");
@@ -1139,7 +956,6 @@ function Landing({ onSignIn = () => {} } = {}) {
   return (
     <div className="lp lp-cinematic">
       <WebGLBackdrop />
-      <ThreeHero />
       <Grain />
       <ScrollProgress />
       {/* nav */}
