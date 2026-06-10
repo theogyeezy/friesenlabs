@@ -96,21 +96,10 @@ resource "aws_cloudtrail" "org" {
     }
   }
 
-  advanced_event_selector {
-    name = "uplift-secrets-reads"
-    field_selector {
-      field  = "eventCategory"
-      equals = ["Data"]
-    }
-    field_selector {
-      field  = "resources.type"
-      equals = ["AWS::SecretsManager::Secret"]
-    }
-    field_selector {
-      field       = "resources.ARN"
-      starts_with = ["arn:aws:secretsmanager:us-east-1:${data.aws_caller_identity.current.account_id}:secret:${var.project}/"]
-    }
-  }
+  # NOTE: Secrets Manager has no CloudTrail DATA events — GetSecretValue is a MANAGEMENT event
+  # and is already captured by this trail (PutEventSelectors rejects
+  # resources.type=AWS::SecretsManager::Secret; verified live 2026-06-09). The TODO item's
+  # "Secrets" half is therefore satisfied by the management selector below.
 
   # Management events stay on (the default when any advanced selector is present must re-state it).
   advanced_event_selector {
