@@ -52,14 +52,68 @@ const search = window.location.search;
 const viewMatch = /[?&]view=([a-z0-9-]+)/.exec(search);
 const view = viewMatch ? viewMatch[1] : null;
 
+// The focused sign-in gate for deep links into gated surfaces (?view=…).
+// A signed-out visitor who deep-links into the app gets this minimal gate —
+// not the full marketing page — with the Sign in control wired to the SPA's
+// PKCE signIn() (auth/cognito.ts). Never a bare Hosted-UI URL: without the
+// stashed PKCE state the callback would fail the state (CSRF) check.
+function SignInGate() {
+  const auth = useAuth();
+  const center: React.CSSProperties = {
+    display: "grid",
+    placeItems: "center",
+    minHeight: "100vh",
+    fontFamily: "system-ui, sans-serif",
+  };
+  return (
+    <div style={center} data-testid="signin-gate">
+      <div style={{ textAlign: "center", maxWidth: 380, padding: 24 }}>
+        <h1 style={{ fontSize: 18, fontWeight: 700 }}>Sign in to continue</h1>
+        <p style={{ fontSize: 14, color: "#8a8278", margin: "10px 0 18px", lineHeight: 1.5 }}>
+          This part of Uplift needs your workspace session.
+        </p>
+        {/* a.lp-signin is the sign-in-gate contract the auth e2e asserts. */}
+        <a
+          className="lp-signin"
+          href="/"
+          onClick={(e) => {
+            e.preventDefault();
+            auth.signIn();
+          }}
+          style={{
+            display: "inline-block",
+            padding: "9px 18px",
+            borderRadius: 10,
+            background: "#2a2622",
+            color: "#fff",
+            fontSize: 13.5,
+            fontWeight: 650,
+            textDecoration: "none",
+            cursor: "pointer",
+          }}
+        >
+          Sign in
+        </a>
+        <p style={{ marginTop: 14 }}>
+          <a href="/" style={{ fontSize: 13, color: "#8a8278" }}>
+            Back to home
+          </a>
+        </p>
+      </div>
+    </div>
+  );
+}
+
 // Sign-in gate. Only active when Cognito is configured AND the API is real
-// (isAuthEnabled): signed-out visitors get the marketing landing with its
-// Sign in controls wired to the Hosted UI; signed-in users get the wrapped
-// surface. Inert in mock/unconfigured builds (dev, tests, Playwright).
-function Gated({ children }: { children: React.ReactElement }) {
+// (isAuthEnabled): signed-in users get the wrapped surface; signed-out
+// visitors get the marketing landing (its Sign in / Get started controls are
+// the conversion paths) — except on gated ?view= seams, where the SPA takes
+// precedence over the marketing page and the focused SignInGate renders
+// (#120). Inert in mock/unconfigured builds (dev, tests, Playwright).
+function Gated({ children, seam = false }: { children: React.ReactElement; seam?: boolean }) {
   const auth = useAuth();
   if (!isAuthEnabled() || auth.isAuthenticated) return children;
-  return <Landing onSignIn={auth.signIn} />;
+  return seam ? <SignInGate /> : <Landing onSignIn={auth.signIn} />;
 }
 
 function Root() {
@@ -89,28 +143,29 @@ function Root() {
     case "signup":
       return <SignupFlow />;
     // API-wired surfaces — gated like the default shell, or a real build would
-    // mount them signed-out and 401 on every call.
+    // mount them signed-out and 401 on every call. seam: a deep link gets the
+    // focused SignInGate when signed out, never the marketing page.
     case "greenlight":
       return (
-        <Gated>
+        <Gated seam>
           <GreenlightQueue />
         </Gated>
       );
     case "chat":
       return (
-        <Gated>
+        <Gated seam>
           <ChatDock />
         </Gated>
       );
     case "dashboard":
       return (
-        <Gated>
+        <Gated seam>
           <DashboardView />
         </Gated>
       );
     case "integrations":
       return (
-        <Gated>
+        <Gated seam>
           <IntegrationsPanel />
         </Gated>
       );
