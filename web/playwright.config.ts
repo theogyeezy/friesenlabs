@@ -31,7 +31,7 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      testIgnore: [/realmode\.spec\.ts/, /integrations\.spec\.ts/, /auth\.spec\.ts/],
+      testIgnore: [/realmode\.spec\.ts/, /integrations\.spec\.ts/, /auth\.spec\.ts/, /conversion\.spec\.ts/],
       use: { ...devices["Desktop Chrome"], baseURL: "http://localhost:4173" },
     },
     {
@@ -41,7 +41,7 @@ export default defineConfig({
     },
     {
       name: "chromium-auth",
-      testMatch: /auth\.spec\.ts/,
+      testMatch: /(auth|conversion)\.spec\.ts/,
       use: { ...devices["Desktop Chrome"], baseURL: "http://localhost:4175" },
     },
   ],

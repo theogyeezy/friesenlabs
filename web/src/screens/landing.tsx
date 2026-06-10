@@ -783,6 +783,17 @@ const NAV_LINKS = [
   ["team", "Team"], ["research", "Research"], ["about", "About"],
 ];
 
+// Conversion destinations (#120). The signup funnel (signup/SignupFlow.tsx) is
+// mounted by main.tsx at the pre-auth ?view=signup seam — every "Get started" /
+// "Build your suite" CTA routes there as a REAL link (href), so middle-click,
+// keyboard and crawlers all work.
+const SIGNUP_HREF = "/?view=signup";
+// Href fallback for the Sign in anchors: a gated surface, which renders the
+// focused sign-in gate when unauthenticated (main.tsx). The CLICK is always
+// intercepted to run the SPA's PKCE signIn() — never a bare Hosted-UI URL,
+// which would fail the state (CSRF) check on the callback.
+const SIGNIN_HREF = "/?view=dashboard";
+
 // Back-to-top button — appears once you've scrolled past the first screen.
 function BackToTop() {
   const [show, setShow] = useState(false);
@@ -810,7 +821,7 @@ function ScrollProgress() {
 }
 
 // Bold closing CTA band — the last beat before the footer.
-function FinalCta({ onBuild, onBook }) {
+function FinalCta({ onBook }) {
   return (
     <section className="lp-finalcta">
       <div className="lp-aurora" aria-hidden="true"><span /><span /><span /></div>
@@ -819,7 +830,7 @@ function FinalCta({ onBuild, onBook }) {
         <h2 className="fc-h">Stop doing the busywork.<br />Put a crew on it tonight.</h2>
         <p className="fc-sub">Build your suite in minutes, keep the CRM you love, and approve only what matters. Live by this afternoon.</p>
         <div className="fc-cta">
-          <button className="btn btn-primary btn-lg" onClick={onBuild}><Icon name="bolt" size={17} />Build your suite</button>
+          <a className="btn btn-primary btn-lg" href={SIGNUP_HREF}><Icon name="bolt" size={17} />Build your suite</a>
           <button className="btn btn-glass btn-lg" onClick={onBook}><Icon name="calendar" size={16} />Book a 15-min call</button>
         </div>
         <div className="fc-trust">{["Live in a day", "Keep your CRM", "One-tap kill switch", "Cancel anytime"].map((t) => <span key={t}><Icon name="check" size={14} sw={2.6} />{t}</span>)}</div>
@@ -922,8 +933,16 @@ function Landing({ onSignIn = () => {} } = {}) {
   const [paper, setPaper] = useState(null);
   const [navOpen, setNavOpen] = useState(false);
 
-  // Scroll to a section and close the mobile menu.
-  const go = (id) => { setNavOpen(false); const el = document.getElementById(id); if (el) el.scrollIntoView({ behavior: "smooth" }); };
+  // Scroll to a section, reflect it in the URL hash, and close the mobile menu.
+  const go = (id) => { setNavOpen(false); const el = document.getElementById(id); if (el) { el.scrollIntoView({ behavior: "smooth" }); window.history.replaceState(null, "", "#" + id); } };
+  // Section-anchor props (#120): a REAL href (so no anchor is ever dead — the
+  // native #id jump is the no-JS fallback) with the click intercepted for
+  // smooth scrolling.
+  const sectionLink = (id) => ({ href: "#" + id, onClick: (e) => { e.preventDefault(); go(id); } });
+  // Anchors that act as buttons (sign-in, in-page modals): carry an href so
+  // they're focusable + probe-visible, but the action runs in the SPA.
+  const signInClick = (e) => { e.preventDefault(); setNavOpen(false); onSignIn(); };
+  const actionLink = (fn) => ({ href: "#", role: "button", onClick: (e) => { e.preventDefault(); fn(); } });
   // Lock body scroll while the mobile menu is open.
   useEffect(() => {
     if (!navOpen) return;
@@ -966,11 +985,11 @@ function Landing({ onSignIn = () => {} } = {}) {
             <b>Friesen Labs</b>
           </div>
           <div className="lp-nav-links">
-            {NAV_LINKS.map(([id, label]) => <a key={id} onClick={() => go(id)}>{label}</a>)}
+            {NAV_LINKS.map(([id, label]) => <a key={id} {...sectionLink(id)}>{label}</a>)}
           </div>
           <div className="lp-nav-cta">
-            <a className="lp-signin" onClick={onSignIn}>Sign in</a>
-            <button className="btn btn-primary" onClick={() => go("pricing")}>Get started</button>
+            <a className="lp-signin" href={SIGNIN_HREF} onClick={signInClick}>Sign in</a>
+            <a className="btn btn-primary" href={SIGNUP_HREF}>Get started</a>
           </div>
           <button className="lp-burger" aria-label="Open menu" aria-expanded={navOpen} onClick={() => setNavOpen((v) => !v)}>
             <span /><span /><span />
@@ -986,12 +1005,12 @@ function Landing({ onSignIn = () => {} } = {}) {
             <button className="lp-mnav-x" aria-label="Close menu" onClick={() => setNavOpen(false)}><Icon name="x" size={20} /></button>
           </div>
           <div className="lp-mnav-links">
-            {NAV_LINKS.map(([id, label]) => <a key={id} onClick={() => go(id)}>{label}<Icon name="arrowRight" size={15} sw={2} style={{ opacity: .4 }} /></a>)}
+            {NAV_LINKS.map(([id, label]) => <a key={id} {...sectionLink(id)}>{label}<Icon name="arrowRight" size={15} sw={2} style={{ opacity: .4 }} /></a>)}
           </div>
           <div className="lp-mnav-cta">
-            <button className="btn btn-primary btn-lg" onClick={() => go("pricing")}><Icon name="bolt" size={16} />Build your suite</button>
+            <a className="btn btn-primary btn-lg" href={SIGNUP_HREF}><Icon name="bolt" size={16} />Build your suite</a>
             <button className="btn btn-ghost btn-lg" onClick={() => { setNavOpen(false); setModal("book"); }}><Icon name="calendar" size={15} />Book a call</button>
-            <a className="lp-mnav-signin" onClick={() => { setNavOpen(false); onSignIn(); }}>Sign in</a>
+            <a className="lp-mnav-signin" href={SIGNIN_HREF} onClick={signInClick}>Sign in</a>
           </div>
         </div>
       </div>
@@ -1007,8 +1026,8 @@ function Landing({ onSignIn = () => {} } = {}) {
             <h1 className="lp-h1">Your business, run by <span className="accentword">agents</span>. Watched by you.</h1>
             <p className="lp-lead">Friesen Labs gives small teams a crew of AI agents that research, reach out, quote, follow up and book, inside one calm command center. You approve the moments that matter.</p>
             <div className="lp-hero-cta">
-              <button className="btn btn-primary btn-lg" onClick={() => document.getElementById("pricing").scrollIntoView({ behavior: "smooth" })}><Icon name="bolt" size={17} />Build your suite</button>
-              <button className="btn btn-ghost btn-lg" onClick={() => document.getElementById("demos").scrollIntoView({ behavior: "smooth" })}><Icon name="play" size={16} />See it in action</button>
+              <a className="btn btn-primary btn-lg" href={SIGNUP_HREF}><Icon name="bolt" size={17} />Build your suite</a>
+              <button className="btn btn-ghost btn-lg" onClick={() => go("demos")}><Icon name="play" size={16} />See it in action</button>
             </div>
             <div className="lp-hero-note"><Icon name="link" size={15} /><span>Already have a CRM? <b style={{ color: "var(--ink)" }}>Keep it</b>, we plug right into HubSpot, Salesforce &amp; more.</span></div>
             <HeroRoster />
@@ -1120,7 +1139,7 @@ function Landing({ onSignIn = () => {} } = {}) {
             <div className="lp-eyebrow">How it works</div>
             <h2 className="lp-h2">Live in an afternoon.</h2>
             <p className="lp-sub" style={{ marginTop: 14 }}>No rip-and-replace, no consultants. Three steps and your agents are working.</p>
-            <button className="btn btn-primary btn-lg" style={{ marginTop: 22 }} onClick={() => document.getElementById("pricing").scrollIntoView({ behavior: "smooth" })}><Icon name="bolt" size={16} />Build your suite</button>
+            <a className="btn btn-primary btn-lg" style={{ marginTop: 22 }} href={SIGNUP_HREF}><Icon name="bolt" size={16} />Build your suite</a>
           </div>
           <div className="lp-hiw-steps">
             {[["01", "Connect your stack", "Plug in your CRM, inbox, calendar and payments, or start fresh with Uplift.", "plug"], ["02", "Hire your agents", "Pick your crew, give them names and faces, and set how much they can do on their own.", "spark"], ["03", "Approve & go", "Agents work 24/7. The judgment calls land in Greenlight for your one-tap sign-off.", "checkCircle"]].map(([n, h, p, ic], i, arr) => (
@@ -1272,7 +1291,7 @@ function Landing({ onSignIn = () => {} } = {}) {
           <div style={{ display: "flex", alignItems: "center", gap: 14, marginTop: 26, padding: "18px 22px", background: "var(--surface)", border: "1px solid var(--line)", borderRadius: "var(--r-lg)", boxShadow: "var(--shadow-sm)", flexWrap: "wrap" }}>
             <div style={{ width: 44, height: 44, borderRadius: 12, background: "var(--green-soft)", color: "oklch(0.42 0.12 152)", display: "grid", placeItems: "center", flexShrink: 0 }}><Icon name="trend" size={22} /></div>
             <p style={{ flex: 1, minWidth: 240, fontSize: 14.5, color: "var(--ink-2)", lineHeight: 1.55 }}><b style={{ color: "var(--ink)" }}>Money back in your pocket, time back in your day.</b> Cut the cost of busywork, grow revenue without growing payroll, and reinvest both into the business, and yourself.</p>
-            <button className="btn btn-primary" onClick={() => document.getElementById("pricing").scrollIntoView({ behavior: "smooth" })}><Icon name="bolt" size={16} />See the plans</button>
+            <button className="btn btn-primary" onClick={() => go("pricing")}><Icon name="bolt" size={16} />See the plans</button>
           </div>
           <p style={{ fontSize: 11.5, color: "var(--ink-4)", textAlign: "center", marginTop: 14 }}>Figures are typical outcomes for small teams and vary by business.</p>
         </div>
@@ -1355,7 +1374,7 @@ function Landing({ onSignIn = () => {} } = {}) {
           <p className="lp-sub">Open research is a program of the <a href="Foundation.html" style={{ color: "var(--accent-ink)", fontWeight: 600 }}>Friesen Labs Foundation</a>, our independent nonprofit wing. It's released publicly so any small business can benefit. Here's what we've been studying.</p>
           <div className="lp-research-grid">
             {LP_RESEARCH.map((r) => (
-              <a key={r.title} className="lp-research" onClick={() => setPaper(r)}>
+              <a key={r.title} className="lp-research" {...actionLink(() => setPaper(r))}>
                 <div className="lp-research-top"><span className="lp-research-tag">{r.tag}</span><span className="lp-research-date">{r.date} · {r.readTime}</span></div>
                 <h3>{r.title}</h3>
                 <p>{r.blurb}</p>
@@ -1407,7 +1426,7 @@ function Landing({ onSignIn = () => {} } = {}) {
             <h2>Put your busywork on autopilot.</h2>
             <p>Spin up your agentic workspace today, or talk to a human about what you're trying to automate.</p>
             <div className="lp-cta-row">
-              <button className="btn btn-lg btn-onink" onClick={() => document.getElementById("pricing").scrollIntoView({ behavior: "smooth" })}><Icon name="bolt" size={16} />Get started free</button>
+              <a className="btn btn-lg btn-onink" href={SIGNUP_HREF}><Icon name="bolt" size={16} />Get started free</a>
               <button className="btn btn-lg btn-onink-ghost" onClick={() => setModal("book")}><Icon name="calendar" size={16} />Book a call</button>
               <button className="btn btn-lg btn-onink-ghost" onClick={() => setModal("email")}><Icon name="mail" size={16} />Email us</button>
             </div>
@@ -1431,7 +1450,7 @@ function Landing({ onSignIn = () => {} } = {}) {
       </section>
 
       {/* closing CTA band */}
-      <FinalCta onBuild={() => document.getElementById("pricing").scrollIntoView({ behavior: "smooth" })} onBook={() => setModal("book")} />
+      <FinalCta onBook={() => setModal("book")} />
 
       <footer className="lp-footer">
         <div className="lp-wrap">
@@ -1447,24 +1466,24 @@ function Landing({ onSignIn = () => {} } = {}) {
             <div className="lp-foot-cols">
               <div className="lp-foot-col">
                 <h5>Product</h5>
-                <a onClick={() => document.getElementById("products").scrollIntoView({ behavior: "smooth" })}>Products</a>
-                <a onClick={() => document.getElementById("pricing").scrollIntoView({ behavior: "smooth" })}>Pricing</a>
-                <a onClick={() => document.getElementById("demos").scrollIntoView({ behavior: "smooth" })}>See it work</a>
-                <a onClick={onSignIn}>Sign in</a>
+                <a {...sectionLink("products")}>Products</a>
+                <a {...sectionLink("pricing")}>Pricing</a>
+                <a {...sectionLink("demos")}>See it work</a>
+                <a href={SIGNIN_HREF} onClick={signInClick}>Sign in</a>
               </div>
               <div className="lp-foot-col">
                 <h5>Organization</h5>
                 <a href="Foundation.html">Foundation</a>
-                <a onClick={() => document.getElementById("research").scrollIntoView({ behavior: "smooth" })}>Research</a>
-                <a onClick={() => document.getElementById("team").scrollIntoView({ behavior: "smooth" })}>Team</a>
-                <a onClick={() => setDoc("Form 990")}>Form 990</a>
+                <a {...sectionLink("research")}>Research</a>
+                <a {...sectionLink("team")}>Team</a>
+                <a {...actionLink(() => setDoc("Form 990"))}>Form 990</a>
               </div>
               <div className="lp-foot-col">
                 <h5>Legal</h5>
-                <a onClick={() => setDoc("Privacy Policy")}>Privacy Policy</a>
-                <a onClick={() => setDoc("Terms of Service")}>Terms of Service</a>
-                <a onClick={() => setDoc("Donor Privacy Policy")}>Donor privacy</a>
-                <a onClick={() => setDoc("Accessibility Statement")}>Accessibility</a>
+                <a {...actionLink(() => setDoc("Privacy Policy"))}>Privacy Policy</a>
+                <a {...actionLink(() => setDoc("Terms of Service"))}>Terms of Service</a>
+                <a {...actionLink(() => setDoc("Donor Privacy Policy"))}>Donor privacy</a>
+                <a {...actionLink(() => setDoc("Accessibility Statement"))}>Accessibility</a>
               </div>
             </div>
           </div>
@@ -1561,8 +1580,8 @@ function Landing({ onSignIn = () => {} } = {}) {
 
       {/* sticky mobile CTA — always-reachable primary action */}
       <div className="lp-mobar">
-        <button className="btn btn-primary" onClick={() => go("pricing")}><Icon name="bolt" size={16} />Build your suite</button>
-        <a className="lp-mobar-signin" onClick={onSignIn}>Sign in</a>
+        <a className="btn btn-primary" href={SIGNUP_HREF}><Icon name="bolt" size={16} />Build your suite</a>
+        <a className="lp-mobar-signin" href={SIGNIN_HREF} onClick={signInClick}>Sign in</a>
       </div>
     </div>
   );
