@@ -9,7 +9,6 @@ import "./landing.css";
 // the prototype's original load order. Must run before <App/> renders.
 import "./globals";
 
-import App from "./app";
 
 // Offline demo surfaces (?view=dashboard-demo / ?view=safehtml-demo) — MOCK
 // BUILDS ONLY. The gate below is BUILD-TIME: Vite statically replaces
@@ -29,15 +28,6 @@ if (import.meta.env.VITE_API_MOCK !== "0" && import.meta.env.VITE_API_MOCK !== "
 // defaults to mock mode so these mount fully offline. They share the same
 // ?view= seam pattern as the dashboard demo and never touch the converted
 // (@ts-nocheck) shell.
-import GreenlightQueue from "./api/GreenlightQueue";
-import ChatDock from "./api/ChatDock";
-import DashboardView from "./api/DashboardView";
-import IntegrationsPanel from "./api/IntegrationsPanel";
-import PipelineBoard from "./api/PipelineBoard";
-import ContactsDirectory from "./api/ContactsDirectory";
-import AgentsRoster from "./api/AgentsRoster";
-import WorkflowsView from "./api/WorkflowsView";
-import SignupFlow from "./signup/SignupFlow";
 
 // Auth (Cognito Hosted UI, PKCE). The provider and the gate are fully inert
 // when auth is disabled (mock mode / Cognito unconfigured), so dev and
@@ -50,6 +40,19 @@ import { handleCallback, isAuthEnabled, signIn } from "./auth/cognito";
 // landing-demos MUST be imported (evaluated) before landing.
 import "./screens/landing-demos";
 import Landing from "./screens/landing";
+
+// Code-split: the authed app shell + gated panels are never rendered on the marketing
+// landing, so lazy-load them. Keeps Vega/dashboards/CRM out of the landing chunk.
+const App = React.lazy(() => import("./app"));
+const GreenlightQueue = React.lazy(() => import("./api/GreenlightQueue"));
+const ChatDock = React.lazy(() => import("./api/ChatDock"));
+const DashboardView = React.lazy(() => import("./api/DashboardView"));
+const IntegrationsPanel = React.lazy(() => import("./api/IntegrationsPanel"));
+const PipelineBoard = React.lazy(() => import("./api/PipelineBoard"));
+const ContactsDirectory = React.lazy(() => import("./api/ContactsDirectory"));
+const AgentsRoster = React.lazy(() => import("./api/AgentsRoster"));
+const WorkflowsView = React.lazy(() => import("./api/WorkflowsView"));
+const SignupFlow = React.lazy(() => import("./signup/SignupFlow"));
 
 // Demo/wiring seams reachable via ?view=. The normal SPA shell renders otherwise.
 const search = window.location.search;
@@ -145,63 +148,63 @@ function Root() {
       break;
     // Pre-auth by design: the signup funnel runs before any tenant or token exists.
     case "signup":
-      return <SignupFlow />;
+      return <React.Suspense fallback={null}><SignupFlow /></React.Suspense>;
     // API-wired surfaces — gated like the default shell, or a real build would
     // mount them signed-out and 401 on every call. seam: a deep link gets the
     // focused SignInGate when signed out, never the marketing page.
     case "greenlight":
       return (
         <Gated seam>
-          <GreenlightQueue />
+          <React.Suspense fallback={null}><GreenlightQueue /></React.Suspense>
         </Gated>
       );
     case "chat":
       return (
         <Gated seam>
-          <ChatDock />
+          <React.Suspense fallback={null}><ChatDock /></React.Suspense>
         </Gated>
       );
     case "dashboard":
       return (
         <Gated seam>
-          <DashboardView />
+          <React.Suspense fallback={null}><DashboardView /></React.Suspense>
         </Gated>
       );
     case "integrations":
       return (
         <Gated seam>
-          <IntegrationsPanel />
+          <React.Suspense fallback={null}><IntegrationsPanel /></React.Suspense>
         </Gated>
       );
     case "pipeline":
       return (
         <Gated seam>
-          <PipelineBoard />
+          <React.Suspense fallback={null}><PipelineBoard /></React.Suspense>
         </Gated>
       );
     case "contacts":
       return (
         <Gated seam>
-          <ContactsDirectory />
+          <React.Suspense fallback={null}><ContactsDirectory /></React.Suspense>
         </Gated>
       );
     case "agents":
       return (
         <Gated seam>
-          <AgentsRoster />
+          <React.Suspense fallback={null}><AgentsRoster /></React.Suspense>
         </Gated>
       );
     case "workflows":
       return (
         <Gated seam>
-          <WorkflowsView />
+          <React.Suspense fallback={null}><WorkflowsView /></React.Suspense>
         </Gated>
       );
   }
   // Default shell — also the fall-through for demo ?view= ids in real builds.
   return (
     <Gated>
-      <App />
+      <React.Suspense fallback={null}><App /></React.Suspense>
     </Gated>
   );
 }
