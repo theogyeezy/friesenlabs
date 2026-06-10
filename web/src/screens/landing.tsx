@@ -724,16 +724,17 @@ function WebGLBackdrop() {
       "  vec2 q = vec2(fbm(p+vec2(0.0,t)), fbm(p+vec2(5.2,1.3)-t));",
       "  vec2 r = vec2(fbm(p+2.0*q+vec2(1.7+u_mouse.x*0.4,9.2)+t*0.5), fbm(p+2.0*q+vec2(8.3,2.8)+u_scroll*0.45));",
       "  float f = fbm(p+1.8*r);",
-      "  vec3 base = vec3(0.965,0.962,0.992);",
-      "  vec3 c1 = vec3(0.45,0.39,0.96);",
-      "  vec3 c2 = vec3(0.64,0.34,0.92);",
-      "  vec3 c3 = vec3(0.36,0.80,0.86);",
+      "  vec3 base = vec3(0.055,0.05,0.11);",          // deep space
+      "  vec3 c1 = vec3(0.42,0.34,0.98);",             // indigo
+      "  vec3 c2 = vec3(0.66,0.30,0.95);",             // violet
+      "  vec3 c3 = vec3(0.25,0.78,0.92);",             // cyan
       "  vec3 col = base;",
-      "  col = mix(col, c1, clamp(f*f*1.5,0.0,1.0)*0.55);",
-      "  col = mix(col, c3, clamp(r.x,0.0,1.0)*0.30);",
-      "  col = mix(col, c2, clamp(q.y,0.0,1.0)*0.22);",
-      "  float vig = smoothstep(1.25,0.32,length(uv-0.5));",
-      "  col *= 0.90+0.14*vig;",
+      "  col = mix(col, c1, clamp(f*f*1.7,0.0,1.0)*0.6);",
+      "  col = mix(col, c3, clamp(r.x*r.x,0.0,1.0)*0.4);",
+      "  col = mix(col, c2, clamp(q.y,0.0,1.0)*0.32);",
+      "  col += pow(clamp(f,0.0,1.0),3.0)*0.12;",       // soft bloom in the bright wisps
+      "  float vig = smoothstep(1.3,0.25,length(uv-0.5));",
+      "  col *= 0.72+0.4*vig;",
       "  gl_FragColor = vec4(col, 1.0);",
       "}",
     ].join("\n");
@@ -796,21 +797,25 @@ function ThreeHero() {
       if (!alive || !ref.current) return;
       const el = ref.current;
       const mobile = window.innerWidth < 760;
-      let w = el.clientWidth || window.innerWidth, h = el.clientHeight || 600;
+      let w = window.innerWidth, h = window.innerHeight;
       const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: !mobile, powerPreference: "low-power" });
       renderer.setPixelRatio(Math.min(window.devicePixelRatio, mobile ? 1 : 1.5));
       renderer.setSize(w, h);
       el.appendChild(renderer.domElement);
       const scene = new THREE.Scene();
-      scene.fog = new THREE.FogExp2(0x0a0a1f, 0.055);
-      const camera = new THREE.PerspectiveCamera(62, w / h, 0.1, 100);
-      camera.position.z = 15;
-      const N = mobile ? 90 : 230;
+      scene.fog = new THREE.FogExp2(0x07070f, 0.03);
+      const camera = new THREE.PerspectiveCamera(64, w / h, 0.1, 120);
+      camera.position.z = 12;
+      // A long tunnel of glowing agent-nodes spread through depth — the camera flies forward
+      // through it as the page scrolls, so the whole scroll is a flight through 3D space.
+      const N = mobile ? 150 : 360;
       const pos = new Float32Array(N * 3), nodes = [];
       for (let i = 0; i < N; i++) {
-        const r = 7.5 * Math.cbrt((i + 1) / N), a = i * 2.399963, y = 1 - (i / (N - 1)) * 2;
-        const rad = Math.sqrt(Math.max(0, 1 - y * y));
-        const x = Math.cos(a) * rad * 7.5, yy = y * 5.2, z = Math.sin(a) * rad * 7.5;
+        const a = i * 2.399963; // golden angle
+        const rad = 3.5 + 10.0 * Math.sqrt((i % 60) / 60);
+        const x = Math.cos(a) * rad * (0.55 + 0.45 * Math.sin(i * 1.7));
+        const yy = Math.sin(a) * rad * (0.55 + 0.45 * Math.cos(i * 2.1));
+        const z = 9.0 - (i / N) * 84.0;
         pos[i * 3] = x; pos[i * 3 + 1] = yy; pos[i * 3 + 2] = z; nodes.push([x, yy, z]);
       }
       const geo = new THREE.BufferGeometry();
@@ -819,7 +824,7 @@ function ThreeHero() {
       const pmat = new THREE.PointsMaterial({ size: mobile ? 0.62 : 0.5, map: sprite, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, color: 0x9b8bff });
       const points = new THREE.Points(geo, pmat);
       scene.add(points);
-      const linePos = [], maxLinks = mobile ? 1.8 : 2.1;
+      const linePos = [], maxLinks = mobile ? 3.4 : 3.8;
       for (let i = 0; i < N; i++) for (let j = i + 1; j < N; j++) {
         const dx = nodes[i][0] - nodes[j][0], dy = nodes[i][1] - nodes[j][1], dz = nodes[i][2] - nodes[j][2];
         if (dx * dx + dy * dy + dz * dz < maxLinks * maxLinks) linePos.push(nodes[i][0], nodes[i][1], nodes[i][2], nodes[j][0], nodes[j][1], nodes[j][2]);
@@ -829,22 +834,28 @@ function ThreeHero() {
       const lmat = new THREE.LineBasicMaterial({ color: 0x6f5fe0, transparent: true, opacity: 0.16, blending: THREE.AdditiveBlending, depthWrite: false });
       const lines = new THREE.LineSegments(lgeo, lmat);
       scene.add(lines);
-      let mx = 0, my = 0, raf, running = true;
+      let mx = 0, my = 0, scrollP = 0, camZ = 12, raf, running = true;
       const onMove = (e) => { mx = e.clientX / window.innerWidth - 0.5; my = e.clientY / window.innerHeight - 0.5; };
       const onTilt = (e) => { if (e.gamma != null) { mx = Math.max(-0.5, Math.min(0.5, e.gamma / 45)); my = Math.max(-0.5, Math.min(0.5, (e.beta - 45) / 45)); } };
-      const onResize = () => { w = el.clientWidth || window.innerWidth; h = el.clientHeight || 600; renderer.setSize(w, h); camera.aspect = w / h; camera.updateProjectionMatrix(); };
+      const onScroll = () => { const m = document.documentElement.scrollHeight - window.innerHeight; scrollP = m > 0 ? window.scrollY / m : 0; };
+      const onResize = () => { w = window.innerWidth; h = window.innerHeight; renderer.setSize(w, h); camera.aspect = w / h; camera.updateProjectionMatrix(); };
       window.addEventListener("mousemove", onMove, { passive: true });
       window.addEventListener("deviceorientation", onTilt, { passive: true });
+      window.addEventListener("scroll", onScroll, { passive: true });
       window.addEventListener("resize", onResize);
+      onScroll();
       const t0 = performance.now();
       const loop = () => {
         if (!running) return;
         const t = (performance.now() - t0) / 1000;
-        points.rotation.y = lines.rotation.y = t * 0.045;
-        points.rotation.x = lines.rotation.x = Math.sin(t * 0.12) * 0.12;
-        camera.position.x += (mx * 3.4 - camera.position.x) * 0.035;
-        camera.position.y += (-my * 2.2 - camera.position.y) * 0.035;
-        camera.lookAt(0, 0, 0);
+        points.rotation.y = lines.rotation.y = t * 0.018;
+        // the camera flies forward through the tunnel as the page scrolls (works on mobile —
+        // it's driven by scroll position, not the cursor)
+        camZ += ((12 - scrollP * 86) - camZ) * 0.06;
+        camera.position.z = camZ;
+        camera.position.x += (mx * 4.0 - camera.position.x) * 0.04;
+        camera.position.y += (-my * 2.6 - camera.position.y) * 0.04;
+        camera.lookAt(camera.position.x * 0.35, camera.position.y * 0.35, camZ - 14);
         renderer.render(scene, camera);
         raf = requestAnimationFrame(loop);
       };
@@ -853,7 +864,7 @@ function ThreeHero() {
       document.addEventListener("visibilitychange", onVis);
       cleanup = () => {
         running = false; cancelAnimationFrame(raf);
-        window.removeEventListener("mousemove", onMove); window.removeEventListener("deviceorientation", onTilt); window.removeEventListener("resize", onResize); document.removeEventListener("visibilitychange", onVis);
+        window.removeEventListener("mousemove", onMove); window.removeEventListener("deviceorientation", onTilt); window.removeEventListener("scroll", onScroll); window.removeEventListener("resize", onResize); document.removeEventListener("visibilitychange", onVis);
         geo.dispose(); lgeo.dispose(); pmat.dispose(); lmat.dispose(); sprite.dispose(); renderer.dispose();
         if (renderer.domElement.parentNode) renderer.domElement.parentNode.removeChild(renderer.domElement);
       };
@@ -994,7 +1005,15 @@ function Landing({ onSignIn = () => {} } = {}) {
   // whole page is scroll-locked in real (production) builds.
   useEffect(() => {
     document.body.classList.add("lp-body");
-    return () => document.body.classList.remove("lp-body");
+    // The marketing landing is a dark cinematic experience — force the dark palette while it's
+    // mounted (the app fully supports data-theme="dark"; embedded demos adapt), restore on unmount.
+    const root = document.documentElement;
+    const prevTheme = root.getAttribute("data-theme");
+    root.setAttribute("data-theme", "dark");
+    return () => {
+      document.body.classList.remove("lp-body");
+      if (prevTheme) root.setAttribute("data-theme", prevTheme); else root.removeAttribute("data-theme");
+    };
   }, []);
   useReveal();
   useMagnetic();
@@ -1043,6 +1062,7 @@ function Landing({ onSignIn = () => {} } = {}) {
   return (
     <div className="lp lp-cinematic">
       <WebGLBackdrop />
+      <ThreeHero />
       <Grain />
       <ScrollProgress />
       {/* nav */}
@@ -1086,7 +1106,6 @@ function Landing({ onSignIn = () => {} } = {}) {
       {/* hero */}
       <section className="lp-hero">
         <div className="lp-aurora" aria-hidden="true"><span /><span /><span /></div>
-        <div className="lp-three-wrap" aria-hidden="true"><ThreeHero /></div>
         <div className="lp-grid3d" aria-hidden="true"><div className="lp-grid3d-floor" /></div>
         <div className="lp-vignette" aria-hidden="true" />
         <div className="lp-wrap lp-hero-grid">

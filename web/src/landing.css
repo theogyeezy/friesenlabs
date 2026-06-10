@@ -389,8 +389,8 @@ textarea.lp-input { height: 92px; padding: 11px 13px; resize: none; }
 .lp-proof-chip b { color: var(--accent-ink); font-weight: 760; }
 
 /* scroll reveals (additive; sections fade-rise once) */
-.rv { opacity: 0; transform: translateY(34px) scale(.985); filter: blur(7px); transition: opacity .75s cubic-bezier(.2,.65,.25,1), transform .75s cubic-bezier(.2,.65,.25,1), filter .75s ease; transition-delay: var(--d, 0ms); }
-.rv-in { opacity: 1; transform: none; filter: none; }
+.rv { opacity: 0; transform: perspective(1300px) translateY(46px) translateZ(-70px) rotateX(7deg) scale(.97); filter: blur(9px); transition: opacity .8s cubic-bezier(.16,.7,.2,1), transform .9s cubic-bezier(.16,.7,.2,1), filter .8s ease; transition-delay: var(--d, 0ms); transform-origin: 50% 100%; }
+.rv-in { opacity: 1; transform: perspective(1300px) translateY(0) translateZ(0) rotateX(0) scale(1); filter: none; }
 
 /* primary CTA shimmer sweep */
 .lp-hero-cta .btn-primary { position: relative; overflow: hidden; }
@@ -680,9 +680,8 @@ textarea.lp-input { height: 92px; padding: 11px 13px; resize: none; }
    bloom + grid read against it. Content sections below stay
    luminous (the WebGL field) — a dark→light cinematic cut.
    ============================================================ */
-.lp-three-wrap { position: absolute; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; }
-.lp-three { position: absolute; inset: 0; }
-.lp-three canvas { position: absolute !important; inset: 0; width: 100% !important; height: 100% !important; display: block; }
+.lp-three { position: fixed; inset: 0; z-index: 0; pointer-events: none; }
+.lp-three canvas { position: fixed !important; inset: 0; width: 100vw !important; height: 100vh !important; display: block; }
 
 .lp-cinematic .lp-hero { background: radial-gradient(125% 130% at 50% -12%, oklch(0.27 0.07 278) 0%, oklch(0.17 0.05 277) 46%, oklch(0.11 0.035 274) 100%); }
 .lp-cinematic .lp-hero .lp-wrap { z-index: 2; }
@@ -724,3 +723,26 @@ textarea.lp-input { height: 92px; padding: 11px 13px; resize: none; }
   .lp-cinematic .lp-section { background: color-mix(in oklch, var(--bg) 86%, transparent); }
   .lp-cinematic .lp-section.alt { background: color-mix(in oklch, var(--surface-2) 88%, transparent); }
 }
+
+/* ============================================================
+   "Flight through space" — the dark cinematic theme tuning.
+   The constellation (.lp-three) + nebula field (.lp-webgl) are
+   fixed behind dark-glass sections, so scrolling flies the
+   camera through a living 3D agent-galaxy behind every section.
+   ============================================================ */
+/* hero lets the constellation + field show (semi-transparent void glow) */
+.lp-cinematic .lp-hero { background: radial-gradient(120% 125% at 50% -5%, oklch(0.24 0.06 278 / .6), oklch(0.12 0.035 274 / .25) 58%, transparent 100%) !important; }
+/* dark-glass content sections — field/constellation breathe through, light text stays readable */
+.lp-cinematic .lp-section { background: color-mix(in oklch, var(--bg) 80%, transparent); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); }
+.lp-cinematic .lp-section.alt { background: color-mix(in oklch, var(--surface) 78%, transparent); }
+.lp-cinematic .lp-footer { background: color-mix(in oklch, var(--surface) 82%, transparent); }
+/* dark sections become near-transparent glass so the galaxy pours through them */
+.lp-cinematic .lp-vs { background: color-mix(in oklch, oklch(0.16 0.03 277) 78%, transparent); }
+.lp-cinematic .lp-finalcta { background: color-mix(in oklch, oklch(0.13 0.03 277) 70%, transparent); }
+.lp-cinematic .lp-fullbleed { background: color-mix(in oklch, oklch(0.16 0.035 277) 76%, transparent); }
+/* nav as dark frosted glass over the galaxy */
+.lp-cinematic .lp-nav { background: color-mix(in oklch, var(--bg) 70%, transparent); }
+/* cards lift off the galaxy with a faint glow rim */
+.lp-cinematic .lp-testi, .lp-cinematic .roi-controls, .lp-cinematic .lp-build, .lp-cinematic .lp-founder, .lp-cinematic .lp-demo-side, .lp-cinematic .lp-layer { box-shadow: 0 20px 60px -28px oklch(0 0 0 / .6), 0 0 0 1px oklch(1 0 0 / .05); }
+/* eyebrow + heading glow for cinematic weight in dark */
+.lp-cinematic .lp-eyebrow { text-shadow: 0 0 18px color-mix(in oklch, var(--accent) 45%, transparent); }
