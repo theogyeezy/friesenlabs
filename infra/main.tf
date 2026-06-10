@@ -151,6 +151,7 @@ module "api_service" {
   anthropic_api_key_secret_arn   = module.secrets.anthropic_api_key_secret_arn
   env_id_secret_arn              = module.secrets.env_id_secret_arn
   api_anthropic_env              = var.api_anthropic_env
+  cube_api_secret_arn            = var.api_cube_env ? module.secrets.cube_api_secret_arn : ""
   api_signup_env                 = var.api_signup_env
   signup_real_deps               = var.signup_real_deps
   stripe_key_arn                 = data.aws_secretsmanager_secret.platform_stripe.arn

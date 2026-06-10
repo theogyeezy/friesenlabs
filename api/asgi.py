@@ -30,6 +30,7 @@ from fastapi import HTTPException
 
 from agents.runtime import FakeRuntime, get_runtime
 from agents.tools.base import ToolContext
+from agents.tools.cube_client import cube_client_from_env
 from agents.tools.spec_generator import AnthropicSpecGenerator
 from agents.workspace_store import PgWorkspaceStore, WorkspaceStore
 from api.agents_routes import AgentsDeps
@@ -139,6 +140,7 @@ def make_conversation_factory(
     rag: Any = None,
     crm: Any = None,
     rag_crm: Any = None,
+    cube: Any = None,
     cortex: Any = None,
     synthesizer: Any = None,
     spec_generator: Any = None,
@@ -190,6 +192,7 @@ def make_conversation_factory(
             rag=rag,
             crm=db,
             rag_crm=rag_crm,
+            cube=cube,
             cortex=cortex,                  # persistent Cortex registry -> run_model scores live
             synthesizer=synthesizer,
             spec_generator=spec_generator,  # default ctx.extra['generate_spec'] for build_view
@@ -281,8 +284,11 @@ def build_app():
         workspace_store: WorkspaceStore | None = PgWorkspaceStore(dsn)
         crm = PgCrmClient(dsn)
         rag = PgRagClient(dsn)
+        # Governed metrics: live only when CUBE_ENDPOINT + CUBEJS_API_SECRET_VALUE are both
+        # injected (api_cube_env flag) — None otherwise, boots byte-identical.
+        cube = cube_client_from_env()
         # Real tool executor: registry dispatch with tenant-bound clients (RLS via SET LOCAL).
-        executor = make_executor(greenlight=greenlight, crm=crm, rag=rag,
+        executor = make_executor(greenlight=greenlight, crm=crm, rag=rag, cube=cube,
                                  cortex=cortex, spec_generator=spec_generator)
     else:
         greenlight = Greenlight()
@@ -303,6 +309,7 @@ def build_app():
             greenlight=greenlight,
             rag=rag,
             crm=crm,
+            cube=cube,
             cortex=cortex,
             synthesizer=AnthropicSynthesizer(api_key=api_key),
             spec_generator=spec_generator,
