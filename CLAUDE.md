@@ -60,8 +60,10 @@ app shell → real RLS-scoped tenant rows. Unauth `/api/*` → 401; **`/chat` is
   initially FAILED (CNAMEAlreadyExists): a stale us-east-2 Amplify app ("friesenlabs", branch
   `prod`, served 404 — same dangling `djvyqxdhlili4` CloudFront target as the deleted rogue zone)
   held the CNAMEs. That app + its association were deleted, the uplift-web association re-created,
-  and Route53 apex/www repointed to the new Amplify CloudFront target — verification propagating.
-  ALB TLS cutover is now unblocked (RUNBOOK sequence; the hourly sweep auto-runs it on ISSUED).
+  and Route53 apex/www repointed to the new Amplify CloudFront target — association **AVAILABLE**;
+  **https://friesenlabs.com is LIVE + verified** (apex+www 200 over the `*.friesenlabs.com` cert,
+  correct landing page). Remaining: the ALB TLS cutover for `api.friesenlabs.com` (RUNBOOK
+  sequence; the hourly sweep auto-runs it on ISSUED).
 - ✅ **Signup/provisioning go-live DONE:** `api_signup_env` + `signup_real_deps` flipped; Stripe/Resend/
   Anthropic-admin/webhook secrets present on the API task; the real provisioning clients are wired (no
   `_Stub`/`_Noop`). Worker deployed (env-key present). (SNS email sub CONFIRMED.)

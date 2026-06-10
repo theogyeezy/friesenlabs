@@ -731,3 +731,8 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   minted Amplify CloudFront target (dz0mzuwjm2p3n). Association in AWAITING_APP_CNAME →
   propagating at write time; a retry loop watches it to AVAILABLE. With the cert ISSUED, the ALB
   TLS cutover (RUNBOOK) is now executable — nothing remains owner-gated for the domain.
+- 2026-06-10 — **Domain LIVE (follow-up to the root-cause entry, #172):** the re-created uplift-web
+  domain association reached **AVAILABLE** on attempt 1; **https://friesenlabs.com + www verified
+  live** (200 over the `*.friesenlabs.com` cert, correct landing title). Remaining domain work is
+  the ALB TLS cutover for `api.friesenlabs.com` only (RUNBOOK sequence / hourly sweep — pre-reqs
+  all satisfied).
