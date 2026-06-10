@@ -77,7 +77,7 @@ function SignInGate() {
       <div style={{ textAlign: "center", maxWidth: 380, padding: 24 }}>
         <h1 style={{ fontSize: 18, fontWeight: 700 }}>Sign in to continue</h1>
         <p style={{ fontSize: 14, color: "#8a8278", margin: "10px 0 18px", lineHeight: 1.5 }}>
-          This part of Uplift needs your workspace session.
+          This part of Friesen Labs needs your workspace session.
         </p>
         {/* a.lp-signin is the sign-in-gate contract the auth e2e asserts. */}
         <a
