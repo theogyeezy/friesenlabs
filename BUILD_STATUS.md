@@ -695,3 +695,12 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   Live path now: browser → Amplify → CloudFront → **HTTPS** → ALB(443, real cert) → API.
   Remaining (not steps): apex/www records decision (owner), api_cdn retirement (TODO 210/211),
   #161 hardening, Node-20 actions bump.
+- 2026-06-10 — **Node-24 actions bump COMPLETE (closes the cycle-13 remainder):** the #161
+  hardening PR (#167) had bumped `configure-aws-credentials` v4→v5, but a Codex P2 review comment
+  caught that v5 still declares `runs.using: node20` — the node24-native major is v6 (verified
+  against the action manifests; v6.0.0's only breaking change is the runtime, needs runner
+  ≥ v2.327.1, satisfied by `ubuntu-latest`). Fix authored on `feat/nick-creds-node24` (#169),
+  squashed into the #167 branch, then #167 (closed unmerged after its content was pushed to main
+  by the parallel lane — reopened as the one-commit v6 diff) merged to main @3f68c0c with CI
+  green. All three credential steps in `deploy.yml` now `@v6`; the next prod deploy no longer
+  depends on the `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24` runner override.
