@@ -31,7 +31,7 @@ Rules:
 ## Queue
 
 ### REQ-002: GRANT crm_app DML on the pre-tenant signup tables (`accounts`, `stripe_events`)
-- **Status:** IN-PROGRESS (Nick) — authored+merged @6d5a210 (#36), empirically CI-proven (DML yes / DELETE denied / REVOKE beats default-privs / idempotent). Live GRANT pending the cycle-4 one-off `api.migrate` Fargate task with a fresh image (live `e0794bc` bundles the pre-grant roles.sql)
+- **Status:** DONE @dc7a352 — grants are LIVE on Aurora: one-off `api.migrate` task (image `uplift-api:dc7a352`, task 5165fb07…) exited 0 ('schema + roles loaded'); live probe as crm_app: INSERT/SELECT/UPDATE ok, DELETE → InsufficientPrivilege on both tables; privilege matrix DELETE=false. Evidence in `infra/RUNBOOK.md`
 - **Requested by:** Lane Matt @feat/matt-signup-stores (PR "feat(signup): tokens + Aurora-backed account/event/OTP stores")
 - **Needed for:** TODO INT/P0 "Replace the in-memory `_AccountStore` with an Aurora-backed, RLS-correct store" + P1 "Persist webhook/provisioning idempotency across restarts" (`signup/store_pg.py` connects as crm_app)
 - **Env/secret names** (must already exist in shared/config.py): n/a (GRANT only; the token-signer secret ref `SIGNUP_TOKEN_SECRET` already landed in `shared/config.py` with the same PR — no infra resource needed for it yet)
