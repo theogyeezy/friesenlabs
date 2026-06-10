@@ -11,7 +11,6 @@
 import React from "react";
 import { ApiClient, ApiError, defaultClient, friendlyErrorMessage } from "./client";
 import { SpecRenderer, type LoadData } from "../dashboard/SpecRenderer";
-import { sampleLoadData } from "../dashboard/sample";
 import { Spinner } from "./Spinner";
 
 const { useState, useEffect, useCallback } = React;
@@ -22,6 +21,15 @@ const { useState, useEffect, useCallback } = React;
 // sampleLoadData here: canned demo numbers on a real tenant's dashboard are a
 // lie. When the semantic layer ships, this becomes the real query client.
 const noLiveData: LoadData = async () => [];
+
+// Mock-build data loader: the offline sampleLoadData fixture, lazily loaded
+// behind a BUILD-TIME gate (Vite replaces import.meta.env.VITE_API_MOCK with a
+// literal). Real-mode bundles fold this branch away, so the demo fixture
+// numbers in ../dashboard/sample are never emitted into a production bundle.
+let mockLoadData: LoadData = noLiveData;
+if (import.meta.env.VITE_API_MOCK !== "0" && import.meta.env.VITE_API_MOCK !== "false") {
+  mockLoadData = async (query) => (await import("../dashboard/sample")).sampleLoadData(query);
+}
 
 export interface DashboardViewProps {
   client?: ApiClient;
@@ -177,7 +185,7 @@ export function DashboardView({ client, viewId = "demo_pipeline" }: DashboardVie
       )}
 
       {!loading && spec && (
-        <SpecRenderer spec={spec} loadData={api.isMock() ? sampleLoadData : noLiveData} />
+        <SpecRenderer spec={spec} loadData={api.isMock() ? mockLoadData : noLiveData} />
       )}
     </div>
   );

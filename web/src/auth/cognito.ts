@@ -33,10 +33,12 @@ import {
   createPkcePair,
   idTokenRemainingMs,
   loadTokens,
+  mergeRefreshedTokens,
   newState,
   parseCallbackParams,
   savePkce,
   saveTokens,
+  singleFlight,
   takePkce,
   validateState,
 } from "./core.js";
@@ -207,22 +209,17 @@ async function exchangeCallbackCode(): Promise<void> {
   notifyAuthChanged();
 }
 
-// Single-flight: concurrent callers (interval tick + an API 401) share one
-// refresh request instead of racing the token endpoint.
-let _refreshing: Promise<boolean> | null = null;
-
 /**
  * grant_type=refresh_token at the token endpoint. Resolves true when a new
  * ID token was stored. Never throws; failures resolve false.
+ *
+ * SINGLE-FLIGHT (core.js singleFlight): concurrent callers — the interval
+ * tick plus any number of API requests 401ing at once — share ONE in-flight
+ * refresh promise instead of racing the token endpoint. With rotation enabled
+ * a second concurrent refresh would carry the just-invalidated predecessor
+ * token and kill the session; the shared promise makes that impossible.
  */
-export function refreshTokens(): Promise<boolean> {
-  if (_refreshing === null) {
-    _refreshing = doRefresh().finally(() => {
-      _refreshing = null;
-    });
-  }
-  return _refreshing;
-}
+export const refreshTokens: () => Promise<boolean> = singleFlight(doRefresh);
 
 async function doRefresh(): Promise<boolean> {
   if (!isAuthEnabled()) return false;
@@ -240,14 +237,13 @@ async function doRefresh(): Promise<boolean> {
       }).toString(),
     });
     if (!res.ok) return false;
-    const data = (await res.json()) as Partial<StoredTokens>;
-    if (typeof data.id_token !== "string" || data.id_token === "") return false;
-    // Cognito does not rotate the refresh token on this grant; keep the old one.
-    saveTokens(window.localStorage, {
-      id_token: data.id_token,
-      access_token: data.access_token ?? tokens.access_token,
-      refresh_token: tokens.refresh_token,
-    });
+    const data = (await res.json()) as unknown;
+    // ROTATION-TOLERANT: when the endpoint returns a rotated refresh_token,
+    // store it (the predecessor is dead server-side); otherwise keep the
+    // current one. See mergeRefreshedTokens in core.js.
+    const merged = mergeRefreshedTokens(tokens, data) as StoredTokens | null;
+    if (!merged) return false;
+    saveTokens(window.localStorage, merged);
     notifyAuthChanged();
     return true;
   } catch {
@@ -258,8 +254,9 @@ async function doRefresh(): Promise<boolean> {
 /**
  * The token the API client attaches per request: the stored ID token if it
  * has more than 5 minutes left, otherwise the result of one refresh attempt.
- * A failed refresh signs out LOCALLY (clear + notify — no redirect, so there
- * is no sign-in loop) and resolves null.
+ * A failed refresh means the session is over: clear it and land the user on
+ * the sign-in route (sessionExpired — no Hosted-UI redirect, so there is no
+ * sign-in loop) and resolve null.
  */
 export async function getValidIdToken(): Promise<string | null> {
   const tokens = getStoredTokens();
@@ -269,17 +266,18 @@ export async function getValidIdToken(): Promise<string | null> {
     const fresh = getStoredTokens();
     return fresh ? fresh.id_token : null;
   }
-  localSignOut();
+  sessionExpired();
   return null;
 }
 
 /**
- * 401-retry hook for the API client: one refresh attempt; failure drops the
- * local session so the UI flips to signed-out when the 401 surfaces.
+ * 401-retry hook for the API client: one refresh attempt; failure ends the
+ * session (sessionExpired) so the UI flips to the sign-in gate when the 401
+ * surfaces.
  */
 export async function refreshAuthForRetry(): Promise<boolean> {
   const ok = await refreshTokens();
-  if (!ok) localSignOut();
+  if (!ok) sessionExpired();
   return ok;
 }
 
@@ -287,6 +285,21 @@ export async function refreshAuthForRetry(): Promise<boolean> {
 export function localSignOut(): void {
   clearTokens(window.localStorage);
   notifyAuthChanged();
+}
+
+/**
+ * The session is over (refresh failed, or a 401 survived refresh+retry):
+ * clear the local session, then return the SPA to the sign-in route — the
+ * root, where the gate renders the marketing landing with its Sign in
+ * controls. history.replaceState (not navigation) keeps this loop-free and
+ * strips any stale ?view=/callback state from the URL; the auth-changed
+ * event re-renders the gate immediately.
+ */
+export function sessionExpired(): void {
+  localSignOut();
+  if (window.location.pathname !== "/" || window.location.search !== "") {
+    window.history.replaceState(null, "", "/");
+  }
 }
 
 /**

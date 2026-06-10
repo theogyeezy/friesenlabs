@@ -140,13 +140,27 @@ const LP_TESTIMONIALS = [
   { name: "Marcus Liu", role: "Tidewater Dental", init: "TD", color: "oklch(0.6 0.15 200)", metric: "9 hrs/week saved", quote: "Friesen does the follow-ups I always meant to do and never did. The pipeline basically moves itself while I'm chairside." },
 ];
 const LP_FOUNDERS = [
-  { id: "matt", name: "Matt Yee", title: "Tinkerer of things", slot: "founder-matt", photo: "/matt-yee.jpeg", photoPos: "50% 12%",
+  { id: "matt", name: "Matt Yee", title: "Tinkerer of things",
     bio: "Rocket scientist turned AI/ML engineer, Matt has spent his career solving problems most people consider impossible. At ServiceNow, one of the leading AI autonomous companies, he brought agentic workflows to life for some of the largest enterprises in the world. From there, he went on to manage satellite fleet operations for Amazon Kuiper's low-earth orbit constellation and build moonshot technology at Google X, bringing an aerospace-grade approach to designing agentic AI systems, LLM-powered copilots, and defense-grade cloud infrastructure. Along the way, Matt was part of the New York Mets organization as a bullpen catcher and a catcher with the Cosmic Baseball organization, fueling his belief that the best AI doesn't just automate tasks, it unlocks human potential. He holds an active TS/SCI clearance, has led engineering teams of 30+, and is a Stanford University alumnus based in Austin, Texas.",
     linkedin: "https://www.linkedin.com/in/mattyee92/", instagram: "https://www.instagram.com/themattyee/" },
-  { id: "nick", name: "Nick Friesen", title: "Machine Learning enthusiast", slot: "founder-nick", photo: "/nick-friesen.png", photoPos: "50% 35%",
+  { id: "nick", name: "Nick Friesen", title: "Machine Learning enthusiast",
     bio: "Nick doesn't wait for the future, he builds it. A self-taught machine learning engineer and serial founder, Nick has spent his career turning bold ideas into reality, from scaling photography businesses that redefine first impressions to training identity-preserving AI image models at Fibb AI that make photorealistic human likeness indistinguishable from the real thing. Today, Nick is pushing the boundaries of what AI can do, applying machine learning and agentic systems to some of the most fascinating frontiers imaginable: dog aging, piano composition, cinema, and personal context memory. He's a North Dakota State University alumnus based in Austin, Texas.",
     linkedin: "https://www.linkedin.com/in/nicholasfriesen/", instagram: "https://www.instagram.com/wanderinginatx/" },
 ];
+
+// Founder photos are MOCK-BUILD-ONLY demo assets. The gate is BUILD-TIME (Vite
+// statically replaces import.meta.env.VITE_API_MOCK with a literal), so real
+// builds carry neither these /public paths nor the images themselves —
+// vite.config.ts additionally drops publicDir from real builds, keeping
+// matt-yee.jpeg / nick-friesen.png out of a production dist entirely. Real
+// builds render initials avatars in the team section instead.
+let LP_FOUNDER_PHOTOS = {};
+if (import.meta.env.VITE_API_MOCK !== "0" && import.meta.env.VITE_API_MOCK !== "false") {
+  LP_FOUNDER_PHOTOS = {
+    matt: { src: "/matt-yee.jpeg", pos: "50% 12%" },
+    nick: { src: "/nick-friesen.png", pos: "50% 35%" },
+  };
+}
 
 // ---- "Nice to have" preview products (roadmap add-ons) ----
 const LP_NICE = [
@@ -946,11 +960,11 @@ function Landing({ onSignIn = () => {} } = {}) {
             <p>We're not n8n hobbyists or tech bros chasing a trend. Our team has shipped <b>agentic AI in production at some of the world's largest companies</b>, work that has delivered <b>hundreds of millions of dollars in measurable revenue and cost savings</b>. We're bringing that same enterprise-grade muscle to small business.</p>
           </div>
           <div className="lp-team-grid">
-            {LP_FOUNDERS.map((f) => (
+            {LP_FOUNDERS.map((f) => { const photo = LP_FOUNDER_PHOTOS[f.id]; return (
               <div className="lp-founder" key={f.id}>
-                {f.photo
-                  ? <div style={{ width: 104, height: 104, borderRadius: 99, overflow: "hidden", flexShrink: 0, boxShadow: "var(--shadow-sm)" }}><img src={f.photo} alt={f.name} style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: f.photoPos || "50% 30%", display: "block" }} /></div>
-                  : <image-slot id={f.slot} shape="circle" fit="cover" placeholder="Drop photo" style={{ width: "104px", height: "104px", flexShrink: 0 }}></image-slot>}
+                {photo
+                  ? <div style={{ width: 104, height: 104, borderRadius: 99, overflow: "hidden", flexShrink: 0, boxShadow: "var(--shadow-sm)" }}><img src={photo.src} alt={f.name} style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: photo.pos || "50% 30%", display: "block" }} /></div>
+                  : <div aria-hidden="true" style={{ width: 104, height: 104, borderRadius: 99, flexShrink: 0, display: "grid", placeItems: "center", fontSize: 30, fontWeight: 720, color: "#fff", background: "linear-gradient(145deg, var(--accent), var(--accent-press))", boxShadow: "var(--shadow-sm)" }}>{f.name.split(" ").map((w) => w[0]).slice(0, 2).join("")}</div>}
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <h3>{f.name}</h3>
                   <div className="lp-founder-title">{f.title}</div>
@@ -961,7 +975,7 @@ function Landing({ onSignIn = () => {} } = {}) {
                   </div>
                 </div>
               </div>
-            ))}
+            ); })}
           </div>
         </div>
       </section>

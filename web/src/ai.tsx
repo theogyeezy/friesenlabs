@@ -7,28 +7,36 @@
 
 type ClaudeHelper = { complete: (prompt: string) => Promise<string> };
 
-// A tiny deterministic-ish simulated completion. It reflects a few words from
-// the prompt back so responses feel contextual, without any real model call.
-function simulatedComplete(prompt: string): Promise<string> {
-  const p = String(prompt || "");
-  const lower = p.toLowerCase();
-  let reply: string;
-  if (lower.includes("pipeline") || lower.includes("deal")) {
-    reply = "Your pipeline looks healthy. I would focus on the top open deals first, the agents have already drafted next steps for each.";
-  } else if (lower.includes("approve") || lower.includes("greenlight")) {
-    reply = "There are a few actions waiting on your sign-off. Most are routine follow-ups, so you can clear them quickly from Greenlight.";
-  } else if (lower.includes("agent")) {
-    reply = "Your agents are online and working. I can hand any task to one of them and surface the result here.";
-  } else {
-    reply = "Here is what I would do next, prioritize the highest-value open work, then let the agents handle the routine follow-ups.";
+// Install the simulated window.claude helper — MOCK BUILDS ONLY. The outer
+// gate is BUILD-TIME (Vite statically replaces import.meta.env.VITE_API_MOCK),
+// so real-mode production bundles contain neither the stub installation nor
+// the canned replies: a deployed app must never answer "as the model" from a
+// hard-coded script, and a console-poking visitor must not find a fake
+// window.claude seam. Production wires window.claude.complete to the Managed
+// runtime seam instead.
+if (import.meta.env.VITE_API_MOCK !== "0" && import.meta.env.VITE_API_MOCK !== "false") {
+  // A tiny deterministic-ish simulated completion. It reflects a few words
+  // from the prompt back so responses feel contextual, without any real call.
+  const simulatedComplete = (prompt: string): Promise<string> => {
+    const p = String(prompt || "");
+    const lower = p.toLowerCase();
+    let reply: string;
+    if (lower.includes("pipeline") || lower.includes("deal")) {
+      reply = "Your pipeline looks healthy. I would focus on the top open deals first, the agents have already drafted next steps for each.";
+    } else if (lower.includes("approve") || lower.includes("greenlight")) {
+      reply = "There are a few actions waiting on your sign-off. Most are routine follow-ups, so you can clear them quickly from Greenlight.";
+    } else if (lower.includes("agent")) {
+      reply = "Your agents are online and working. I can hand any task to one of them and surface the result here.";
+    } else {
+      reply = "Here is what I would do next, prioritize the highest-value open work, then let the agents handle the routine follow-ups.";
+    }
+    // small async tick to mimic a real call
+    return new Promise((resolve) => setTimeout(() => resolve(reply), 220));
+  };
+  // Install the simulated helper if nothing else has.
+  if (typeof window !== "undefined" && !window.claude) {
+    (window as any).claude = { complete: simulatedComplete } as ClaudeHelper;
   }
-  // small async tick to mimic a real call
-  return new Promise((resolve) => setTimeout(() => resolve(reply), 220));
-}
-
-// Install the simulated helper if nothing else has (production may override).
-if (typeof window !== "undefined" && !window.claude) {
-  (window as any).claude = { complete: simulatedComplete } as ClaudeHelper;
 }
 
 // real LLM helper (window.claude) with graceful fallback + business context

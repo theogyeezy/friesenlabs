@@ -23,9 +23,13 @@ __pycache__/
 # --- Node / web ---
 node_modules/
 web/dist/
+web/dist-auth/
 web/.next/
 web/out/
 web/node_modules/
+# node_modules as a SYMLINK (shared-install worktrees): the trailing-slash
+# pattern above matches directories only, so cover the link form too.
+web/node_modules
 *.tsbuildinfo
 playwright-report/
 test-results/
