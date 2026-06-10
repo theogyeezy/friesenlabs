@@ -22,6 +22,7 @@ exactly as today (`/chat` 503, `/healthz` 200, executor noop):
 from __future__ import annotations
 
 import os
+import threading
 from datetime import date
 from typing import Any, Callable
 
@@ -62,6 +63,71 @@ def _verifier() -> JwtVerifier:
             raise RuntimeError("auth not configured")
 
     return _RejectAll()
+
+
+class _CachedConversation:
+    """Per-tenant send() proxy over a cached Conversation (see _TenantConversationCache)."""
+
+    def __init__(self, cache: "_TenantConversationCache", tenant_id: str):
+        self._cache = cache
+        self._tenant_id = tenant_id
+
+    def send(self, message: str, **kwargs: Any):
+        _, lock = self._cache.entry(self._tenant_id)
+        # Per-tenant serialization: two concurrent turns on ONE MA session would interleave
+        # two stream-drains; chat turns are seconds-long and per-tenant, so a lock is cheap.
+        with lock:
+            # Re-read UNDER the lock: a concurrent turn may have rebuilt the conversation
+            # while we waited (review finding — avoids a stale ref + a wasted second rebuild).
+            convo, _ = self._cache.entry(self._tenant_id)
+            try:
+                return convo.send(message, **kwargs)
+            except RuntimeError as e:
+                if "terminated" not in str(e):
+                    raise
+                # The cached session died (irreversible) — rebuild ONCE on a fresh session.
+                convo, _ = self._cache.rebuild(self._tenant_id)
+                return convo.send(message, **kwargs)
+
+
+class _TenantConversationCache:
+    """tenant_id -> ONE long-lived Conversation (#147 fix, turn continuity).
+
+    A fresh Conversation per request creates a fresh MA session per turn, so async thread
+    reports — resolved by the self-hosted worker BETWEEN turns — return into sessions no later
+    turn ever reads: the answer is orphaned and every turn re-delegates from scratch. Caching
+    per tenant keeps the MA session alive across turns; the follow-up turn then surfaces the
+    completed report. Safe to share per tenant: the tool clients are tenant-scoped and every
+    DB access runs its own SET LOCAL transaction (the pooled-store pattern).
+    """
+
+    def __init__(self, build: Callable[[str], Any]):
+        self._build = build
+        self._lock = threading.Lock()
+        self._convos: dict[str, Any] = {}
+        self._locks: dict[str, threading.Lock] = {}
+
+    def __call__(self, tenant_id: str):
+        with self._lock:
+            if tenant_id not in self._convos:
+                convo = self._build(tenant_id)
+                if convo is None:
+                    return None  # not provisioned — never cached, /chat 503s
+                self._convos[tenant_id] = convo
+                self._locks[tenant_id] = threading.Lock()
+        return _CachedConversation(self, tenant_id)
+
+    def entry(self, tenant_id: str):
+        with self._lock:
+            return self._convos[tenant_id], self._locks[tenant_id]
+
+    def rebuild(self, tenant_id: str):
+        with self._lock:
+            convo = self._build(tenant_id)
+            if convo is None:
+                raise HTTPException(status_code=503, detail="tenant agent plane unavailable")
+            self._convos[tenant_id] = convo
+            return convo, self._locks[tenant_id]
 
 
 def make_conversation_factory(
@@ -227,7 +293,10 @@ def build_app():
     # /chat factory needs BOTH the DB (workspace rows + tool clients) and the org Anthropic key
     # (API task only — never the worker). Without either, /chat keeps returning the graceful 503.
     if dsn and api_key and workspace_store is not None:
-        conversation_factory = make_conversation_factory(
+        # #147: wrap in the per-tenant cache — ONE Conversation (one MA session) per tenant
+        # across requests, so worker-resolved thread reports are read by the NEXT turn instead
+        # of being orphaned in a session nothing revisits.
+        conversation_factory = _TenantConversationCache(make_conversation_factory(
             workspace_store=workspace_store,
             runtime_factory=_managed_runtime_factory(api_key),
             greenlight=greenlight,
@@ -236,7 +305,7 @@ def build_app():
             cortex=cortex,
             synthesizer=AnthropicSynthesizer(api_key=api_key),
             spec_generator=spec_generator,
-        )
+        ))
     else:
         conversation_factory = lambda tenant_id: None  # noqa: E731 — unconfigured: /chat 503
 

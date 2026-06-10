@@ -118,9 +118,10 @@ def test_managed_serializes_tools_via_to_spec():
     r = _managed()
     r.create_agent(SCOUT)
     tools = r._client.beta.agents.create.call_args.kwargs["tools"]
-    # Built-in toolset first, then each named tool serialized via Tool.to_spec().
-    assert tools[0] == {"type": AGENT_TOOLSET}
-    customs = tools[1:]
+    # CUSTOM TOOLS ONLY — the built-in toolset is deliberately absent (#147: nothing serves
+    # native calls; a granted toolset wedges sessions the first time the model reaches for bash).
+    assert {"type": AGENT_TOOLSET} not in tools
+    customs = tools
     assert [t["name"] for t in customs] == SCOUT.tools
     for t in customs:
         assert t["type"] == "custom"
