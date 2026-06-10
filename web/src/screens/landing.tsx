@@ -1173,13 +1173,20 @@ function Landing({ onSignIn = () => {} } = {}) {
           <div className="lp-demo-tabs">
             {LP_DEMOS.map((d) => <button key={d.id} className={"lp-demo-tab" + (demoTab === d.id ? " active" : "")} onClick={() => setDemoTab(d.id)}>{d.tab}</button>)}
           </div>
-          <div className="lp-demo-stage">
-            <div className="lp-demo-canvas">{activeDemo.Demo()}</div>
-            <div className="lp-demo-side">
-              <span className="cat">{activeDemo.cat}</span>
-              <h3>{activeDemo.title}</h3>
-              <p>{activeDemo.desc}</p>
-              <ul>{activeDemo.bullets.map((b) => <li key={b}><LpIcon name="check" size={16} sw={2.4} style={{ color: "var(--accent)", flexShrink: 0, marginTop: 1 }} />{b}</li>)}</ul>
+          <div className="lp-demo-window">
+            <div className="lp-demo-chrome">
+              <span className="lp-demo-dots"><i /><i /><i /></span>
+              <span className="lp-demo-addr">{activeDemo.cat.toLowerCase()}.friesenlabs.com</span>
+              <span className="lp-demo-live"><span className="dot" />Live</span>
+            </div>
+            <div className="lp-demo-stage">
+              <div className="lp-demo-canvas">{activeDemo.Demo()}</div>
+              <div className="lp-demo-side">
+                <span className="cat">{activeDemo.cat}</span>
+                <h3>{activeDemo.title}</h3>
+                <p>{activeDemo.desc}</p>
+                <ul>{activeDemo.bullets.map((b) => <li key={b}><LpIcon name="check" size={16} sw={2.4} style={{ color: "var(--accent)", flexShrink: 0, marginTop: 1 }} />{b}</li>)}</ul>
+              </div>
             </div>
           </div>
         </div>
