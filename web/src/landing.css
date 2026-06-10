@@ -588,3 +588,53 @@ textarea.lp-input { height: 92px; padding: 11px 13px; resize: none; }
   .vs-radar svg { max-width: 330px; }
   .rad-lab { font-size: 9px; }
 }
+
+/* ============================================================
+   Cinematic & 3D layer — perspective hero, tilt cards, grain,
+   vignette, receding grid floor. GPU-cheap CSS (no WebGL).
+   Desktop tilt only; flat + fast on touch / reduced-motion.
+   ============================================================ */
+.lp-cinematic { position: relative; }
+
+/* Film grain — fixed, subtle, cinematic texture over everything */
+.lp-grain { position: fixed; inset: 0; z-index: 95; pointer-events: none; opacity: .05; mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 160px 160px; }
+
+/* Receding 3D grid floor in the hero — depth + a synthwave-cinematic horizon */
+.lp-grid3d { position: absolute; left: 50%; bottom: -2%; width: 220%; height: 60%; transform: translateX(-50%); perspective: 380px; perspective-origin: 50% 0%; z-index: 0; pointer-events: none; overflow: hidden; opacity: .5; }
+.lp-grid3d-floor { position: absolute; inset: -50% 0 -10% 0; transform: rotateX(74deg); transform-origin: 50% 100%;
+  background-image:
+    linear-gradient(to right, color-mix(in oklch, var(--accent) 38%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in oklch, var(--accent) 38%, transparent) 1px, transparent 1px);
+  background-size: 56px 56px;
+  -webkit-mask-image: linear-gradient(to top, #000 0%, #000 18%, transparent 72%);
+  mask-image: linear-gradient(to top, #000 0%, #000 18%, transparent 72%);
+  animation: gridRun 7s linear infinite; }
+@keyframes gridRun { to { background-position: 0 56px; } }
+
+/* Hero vignette — cinematic darkened edges focusing the eye */
+.lp-vignette { position: absolute; inset: 0; z-index: 0; pointer-events: none;
+  background: radial-gradient(120% 90% at 50% 32%, transparent 45%, color-mix(in oklch, var(--ink) 16%, transparent) 100%); }
+
+/* 3D tilt card — driven by --rx/--ry from useTilt3d */
+.tilt3d { transform-style: preserve-3d; transform: perspective(1100px) rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg)); transition: transform .35s cubic-bezier(.2,.7,.2,1), box-shadow .35s; will-change: transform; position: relative; }
+.tilt3d.tilting { transition: transform .08s linear; box-shadow: 0 40px 90px -30px oklch(0 0 0 / .45), 0 8px 24px -10px color-mix(in oklch, var(--accent) 40%, transparent); }
+.tilt3d > * { transform: translateZ(0.01px); }
+.tilt3d-glare { position: absolute; inset: 0; border-radius: inherit; pointer-events: none; opacity: 0; transition: opacity .35s; z-index: 3;
+  background: radial-gradient(60% 55% at var(--gx, 50%) var(--gy, 0%), oklch(1 0 0 / .28), transparent 60%); mix-blend-mode: soft-light; }
+.tilt3d.tilting .tilt3d-glare { opacity: 1; }
+
+/* Hero demo panel floats in 3D space with depth */
+.lp-hero-3d { perspective: 1400px; }
+.lp-hero-3d .lp-demo-stage { box-shadow: 0 50px 110px -40px oklch(0 0 0 / .5), 0 10px 30px -12px color-mix(in oklch, var(--accent) 30%, transparent); border-radius: var(--r-lg, 20px); overflow: hidden; }
+
+/* Cinematic depth on the dark sections + final CTA */
+.lp-vs, .lp-finalcta { box-shadow: inset 0 60px 80px -60px oklch(0 0 0 / .6), inset 0 -60px 80px -60px oklch(0 0 0 / .6); }
+
+@media (hover: none), (prefers-reduced-motion: reduce) {
+  .tilt3d { transform: none !important; }
+  .tilt3d-glare { display: none; }
+  .lp-grid3d-floor { animation: none; }
+  .lp-grain { display: none; }
+}
