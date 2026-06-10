@@ -420,6 +420,10 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   module (count-gated, env-value secrets, admin-key gated), ECR repo #4, exact-ARN StartExecution
   policy, gated PROVISIONING_SFN_ARN. Validate green. ⚠ AWS SESSION CREDS EXPIRED mid-cycle —
   plan/apply/image-build parked until the user re-authenticates; all AWS verification blocked.
+- 2026-06-09 — REQ-005 DONE @e55dcc4: Lambda live (arm64 image), SFN pinned, StartExecution
+  smoked (clean invoke + retries + Catch park on a nonexistent account; duplicate name →
+  ExecutionAlreadyExists). Cycle 15: README + CLAUDE.md status sections refreshed to reality
+  (user granted standing merge approval; autonomous completion mode).
 
 ## Lane Matt (app code) — log
 - 2026-06-09 — **Cycle 4 (deep wiring + remaining provisioning, PRs #42/#47/#50/#56):** #42 cortex+

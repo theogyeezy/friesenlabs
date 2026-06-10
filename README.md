@@ -52,11 +52,17 @@ Everything that can be built and tested offline is done, and a final adversarial
 
 | State | Component | Why | Unblocked by |
 |-------|-----------|-----|--------------|
-| ✅ **Live & working** | Amplify → CloudFront → ALB → arm64 Fargate API → Aurora (FORCE'd RLS); Cognito JWKS auth | deployed + **verified** (`/api/healthz` 200, `/api/approvals` 401) | — |
-| ✅ **Live & working** | Web UI with real login (Hosted-UI PKCE, `web/src/auth/`) | deployed real-mode build, **browser-verified end-to-end**: sign-in gate → Hosted UI → code exchange → app shell → real RLS-scoped rows from Aurora | — |
-| ⛔ **Not live** | AI / agent plane (chat, tools) | `runtime.py` stub, `/chat` 503, noop executor | Anthropic Managed Agents creds |
-| ⛔ **Not live** | cube/worker, observability, provisioning (Stripe/Resend), cortex | authored, not applied / stubbed | deploy + Stripe/Resend/Admin creds |
-| ✅ **Reconciled** | Terraform state | out-of-band SG rules imported, ECR back to IMMUTABLE; full plan = 0 change/destroy to live resources (only the unapplied modules show as adds) | — |
+| ✅ **Live & working** | Amplify → CloudFront → ALB → arm64 Fargate API → Aurora (FORCE'd RLS); Cognito JWKS auth | deployed + **verified** (`/healthz` 200, unauth API 401) | — |
+| ✅ **Live & working** | Web UI with real login (Hosted-UI PKCE, `web/src/auth/`) | browser-verified end-to-end | — |
+| ✅ **Live & working** | Edge hardening: X-Origin-Verify shared secret (CloudFront → ALB 403-default) | applied two-phase, zero downtime | — |
+| ✅ **Live & working** | Cube semantic service (1/1, `/readyz` 200 internally) | digest-pinned, memory driver (Cube 1.x), SG self-rule | data model image (semantic/ bake) next |
+| ✅ **Live & working** | Observability: 4 CloudWatch alarms + SNS + billing-alarm action + `uplift-live` dashboard; budget notification subscribed | applied | email sub PendingConfirmation (click) |
+| ✅ **Live & working** | Audit: CloudTrail scoped S3 data events; ALB access logs (encrypted bucket, delivering) | applied + verified | — |
+| ✅ **Live & working** | Provisioning Lambda + Step Functions (pinned ARNs, idempotent executions) | applied + smoked all-stub | signup go-live values (Stripe/Resend/admin key) |
+| 🟙 **Half-live** | AI / agent plane: MA environment live, org key + env-id on the API task, `/chat` reaches auth (401) | MA SDK shapes verified; env `uplift-prod` created | env-key Console click (worker), conversation wiring (app) |
+| 🟙 **Authored, gated** | Ingest scheduler (nightly EventBridge → Fargate `run_sync`) | applied, rule DISABLED | `ingest_tenants` + enable flip |
+| ⛔ **Not live** | Worker service; signup real-deps (Stripe/Resend/Cognito admin) | gated flags off | env-key + webhook-secret + admin-key values |
+| 🟙 **Pending** | friesenlabs.com TLS (Route53 zone + wildcard ACM applied) | cert PENDING_VALIDATION | Squarespace NS cutover, then ALB TLS cutover |
 
 Applied to AWS account 186052668426 (us-east-1) under a $200 budget alarm; Terraform state in S3 (KMS).
 **Security:** a 37-agent adversarial audit (2026-06-09) found + we **fixed a critical cross-tenant data leak** (the request-path stores shared one DB connection + a session-level tenant GUC, racing across the threadpool) — now pooled per-request connections + `SET LOCAL`, proven on live Aurora under concurrency. Aurora durability (deletion protection + 7-day backups) on. The remaining 25 findings (2 high, 7 medium, 17 low) are tracked in TODO.md.
