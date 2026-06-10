@@ -638,3 +638,33 @@ textarea.lp-input { height: 92px; padding: 11px 13px; resize: none; }
   .lp-grid3d-floor { animation: none; }
   .lp-grain { display: none; }
 }
+
+/* ============================================================
+   WebGL shader backdrop — the living cinematic atmosphere the
+   whole page sits in. Sections go translucent so the field
+   breathes through every nook; tuned high enough for readability.
+   ============================================================ */
+.lp-webgl { position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: 0; pointer-events: none; display: block; }
+/* content rides above the field */
+.lp-cinematic { background: transparent; }
+.lp-cinematic > *:not(.lp-webgl):not(.lp-grain) { position: relative; z-index: 1; }
+/* light sections: translucent glass so the field shows but text stays crisp */
+.lp-cinematic .lp-hero { background: transparent; }
+.lp-cinematic .lp-section { background: color-mix(in oklch, var(--bg) 78%, transparent); -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px); }
+.lp-cinematic .lp-section.alt { background: color-mix(in oklch, var(--surface-2) 80%, transparent); }
+.lp-cinematic .lp-footer { background: color-mix(in oklch, var(--surface-2) 84%, transparent); -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px); }
+/* dark sections stay rich but let a hint of the field bleed at their edges */
+.lp-cinematic .lp-vs { background: color-mix(in oklch, oklch(0.205 0.03 277) 92%, transparent); }
+.lp-cinematic .lp-finalcta { background: color-mix(in oklch, oklch(0.2 0.03 277) 92%, transparent); }
+/* the WebGL field is now the primary hero atmosphere — soften the CSS aurora to a supporting glow */
+.lp-cinematic .lp-aurora { opacity: .24; }
+/* cards/surfaces get a touch more opacity so content reads cleanly over the moving field */
+.lp-cinematic .lp-demo-side, .lp-cinematic .lp-testi, .lp-cinematic .roi-controls, .lp-cinematic .lp-build, .lp-cinematic .lp-founder { background-color: color-mix(in oklch, var(--surface) 92%, transparent); }
+
+@media (hover: none), (prefers-reduced-motion: reduce) {
+  /* no WebGL atmosphere on touch/reduced-motion — restore solid, fast surfaces */
+  .lp-webgl { display: none; }
+  .lp-cinematic .lp-section { background: var(--bg); backdrop-filter: none; }
+  .lp-cinematic .lp-section.alt { background: var(--surface-2); }
+  .lp-cinematic .lp-footer { background: var(--surface-2); backdrop-filter: none; }
+}
