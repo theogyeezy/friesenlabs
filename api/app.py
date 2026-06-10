@@ -22,6 +22,7 @@ from api.control.greenlight import Greenlight
 from api.control.killswitch import KillSwitch
 from api.control.traces import InMemoryTraceStore, TraceStore
 from api.control.types import Action
+from api.deals_routes import DealsDeps
 from api.integrations_routes import IntegrationsDeps, build_integrations_deps
 from api.views import SavedViews
 
@@ -43,6 +44,12 @@ class ApiDeps:
     # status "unknown"); real adapters ride ONLY the deliberate INTEGRATIONS_REAL_SECRETS /
     # INGEST_REAL_STORES switches. Pass None to skip mounting the routes entirely.
     integrations: IntegrationsDeps | None = field(default_factory=build_integrations_deps)
+    # /deals deps (the real Pipeline board). The default is the INERT all-None stub — every
+    # endpoint answers the honest 503 and constructing deps never opens a DB pool. The real
+    # reader is wired ONLY by api/asgi.py, which passes the SAME PgCrmClient the executor/chat
+    # tools use (one pool, the dsn_from_env guard the /approvals//views stores ride). Pass None
+    # to skip mounting the routes entirely.
+    deals: DealsDeps | None = field(default_factory=DealsDeps)
 
 
 # --- request bodies (note: NONE carry tenant_id — the trust rule forbids it) ---
@@ -184,6 +191,14 @@ def create_app(deps: ApiDeps) -> FastAPI:
     if deps.integrations is not None:
         from api.integrations_routes import mount_integrations
         mount_integrations(app, deps.integrations, current_tenant)
+
+    # Authed per-tenant deals/pipeline endpoints (the real Pipeline board). Claims-bound like
+    # everything above; gate_deps hands the move-stage route THIS app's gate pieces so a stage
+    # move runs the exact /actions pipeline (one Greenlight queue, one autonomy policy, one
+    # kill switch). Unconfigured deps answer honest 503s, never invented rows.
+    if deps.deals is not None:
+        from api.deals_routes import mount_deals
+        mount_deals(app, deps.deals, current_tenant, gate_deps=deps)
 
     # Public, pre-tenant signup + Stripe webhook routes (optional).
     if deps.signup is not None:

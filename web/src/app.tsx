@@ -5,18 +5,19 @@ import { SafeHtml } from "./lib/SafeHtml";
 import { useAuth } from "./auth/AuthContext";
 // API-wired surfaces (real mode). When the build runs against the real control
 // plane (VITE_API_MOCK=0), the API-backed surfaces — Command Center
-// (DashboardView), Greenlight (GreenlightQueue), Ask agents (ChatDock),
-// Switchboard (IntegrationsPanel) — mount with honest loading/empty/error
-// states. EVERY other route renders an explicit "isn't live yet" panel in real
-// mode: no FLStore prototype screen, demo number, fake badge/feed/agent-rail,
-// or prototype overlay (palette, intake, marketplace, onboarding/tour) is
-// reachable when the build is real. The full FLStore prototype experience
-// exists only in mock builds.
+// (DashboardView), Pipeline (PipelineBoard), Greenlight (GreenlightQueue),
+// Ask agents (ChatDock), Switchboard (IntegrationsPanel) — mount with honest
+// loading/empty/error states. EVERY other route renders an explicit "isn't
+// live yet" panel in real mode: no FLStore prototype screen, demo number, fake
+// badge/feed/agent-rail, or prototype overlay (palette, intake, marketplace,
+// onboarding/tour) is reachable when the build is real. The full FLStore
+// prototype experience exists only in mock builds.
 import { isApiMock } from "./api/client";
 import GreenlightQueue from "./api/GreenlightQueue";
 import DashboardView from "./api/DashboardView";
 import ChatDock from "./api/ChatDock";
 import IntegrationsPanel from "./api/IntegrationsPanel";
+import PipelineBoard from "./api/PipelineBoard";
 const { useState, useEffect, useRef, useMemo, useCallback, useLayoutEffect, useReducer, useContext, useImperativeHandle, useId } = React;
 const { Icon, Logo, FL_DATA, FLStore, useStore, askClaude, bizContext, confettiBurst, XPBadge, useCountUp, CountUp, AreaChart, Sparkline, LoadBars, Donut, SlideOver, CommandPalette, HEAT, fmtMoney, StatCard, ToneIco, FLflag, useTweaks, TweaksPanel, TweakSection, TweakRow, TweakSlider, TweakToggle, TweakRadio, TweakSelect, TweakText, TweakNumber, TweakColor, TweakButton, FoxDemo, KanbanDemo, WorkflowDemo, GreenlightDemo, CommandDemo, IntegrationDemo, SupportDemo, SecurityDemo, SidecarDemo, CortexDemo } = window as any;
 // app.jsx, shell: sidebar, topbar, routing, tweaks, palette
@@ -47,7 +48,7 @@ const ComingSoon = ({ title, icon }) => (
       </div>
       <h2 style={{ fontSize: 21, fontWeight: 720, letterSpacing: "-.02em" }}>{title} isn&rsquo;t live yet</h2>
       <p style={{ color: "var(--ink-3)", fontSize: 14, marginTop: 8, lineHeight: 1.55 }}>
-        Uplift is rolling out surface by surface. <b style={{ color: "var(--ink)" }}>Command Center</b>, <b style={{ color: "var(--ink)" }}>Greenlight</b>, <b style={{ color: "var(--ink)" }}>Ask agents</b> and <b style={{ color: "var(--ink)" }}>Switchboard</b> are live today; this area is still being built.
+        Uplift is rolling out surface by surface. <b style={{ color: "var(--ink)" }}>Command Center</b>, <b style={{ color: "var(--ink)" }}>Pipeline</b>, <b style={{ color: "var(--ink)" }}>Greenlight</b>, <b style={{ color: "var(--ink)" }}>Ask agents</b> and <b style={{ color: "var(--ink)" }}>Switchboard</b> are live today; this area is still being built.
       </p>
     </div>
   </div>
@@ -408,9 +409,12 @@ function App() {
             // prototype screen, which would pass demo numbers off as real.
             <>
               {route === "dashboard" && <DashboardView />}
+              {/* Pipeline is LIVE in real mode: RLS-scoped deals from GET /deals;
+                  stage moves queue through Greenlight (never a direct write). */}
+              {route === "crm" && <PipelineBoard onOpenGreenlight={() => navTo("approvals")} />}
               {route === "approvals" && <GreenlightQueue />}
               {route === "integrations" && <IntegrationsPanel />}
-              {route !== "dashboard" && route !== "approvals" && route !== "integrations" && (
+              {route !== "dashboard" && route !== "crm" && route !== "approvals" && route !== "integrations" && (
                 <ComingSoon title={meta.h1} icon={navIconFor(route)} />
               )}
             </>

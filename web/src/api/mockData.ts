@@ -16,11 +16,17 @@ import {
   type ActionResponse,
   type Approval,
   type ChatResponse,
+  type DealCard,
+  type DealDetailResponse,
+  type DealStageGroup,
   type DecideBody,
   type Integration,
   type IntegrationCredentialsBody,
   type IntegrationSyncResponse,
+  type ListDealsResponse,
   type ListIntegrationsResponse,
+  type MoveStageBody,
+  type MoveStageResponse,
   type SaveViewBody,
   type SavedViewRow,
   type SignupResponse,
@@ -125,6 +131,56 @@ function seedIntegrations(): Integration[] {
   ];
 }
 
+// Mirrors api/deals_routes.py STAGE_ORDER/STAGE_LABELS — the canonical column
+// spine the mock board groups into, same shape as the real GET /deals.
+const STAGE_ORDER = ["new", "qualified", "proposal", "negotiation", "closed_won", "closed_lost"];
+const STAGE_LABELS: Record<string, string> = {
+  new: "New",
+  qualified: "Qualified",
+  proposal: "Proposal",
+  negotiation: "Negotiation",
+  closed_won: "Closed won",
+  closed_lost: "Closed lost",
+};
+
+function seedDeals(): DealCard[] {
+  return [
+    {
+      id: "d0000000-0000-0000-0000-000000000001",
+      title: "Birchwood platform expansion",
+      stage: "negotiation",
+      amount: 84000,
+      currency: "USD",
+      company_id: "c-1",
+      contact_id: "p-1",
+      company_name: "Birchwood Capital",
+      created_at: "2026-06-01T00:00:00+00:00",
+    },
+    {
+      id: "d0000000-0000-0000-0000-000000000002",
+      title: "Halcyon fleet rollout",
+      stage: "qualified",
+      amount: 132000,
+      currency: "USD",
+      company_id: "c-2",
+      contact_id: "p-2",
+      company_name: "Halcyon Logistics",
+      created_at: "2026-06-02T00:00:00+00:00",
+    },
+    {
+      id: "d0000000-0000-0000-0000-000000000003",
+      title: "Mesa Verde pilot",
+      stage: "new",
+      amount: 9500,
+      currency: "USD",
+      company_id: "c-3",
+      contact_id: "p-3",
+      company_name: "Mesa Verde Health",
+      created_at: "2026-06-03T00:00:00+00:00",
+    },
+  ];
+}
+
 function cannedChat(_message: string): ChatResponse {
   return {
     answer:
@@ -174,6 +230,7 @@ interface MockSignup {
 export class MockApi {
   private approvals: Approval[] = seedApprovals();
   private views: SavedViewRow[] = seedViews();
+  private deals: DealCard[] = seedDeals();
   private signupState: MockSignup | null = null;
   private integrations: Integration[] = seedIntegrations();
   // Names with a "vaulted" credential. The token VALUE is never retained —
@@ -248,6 +305,84 @@ export class MockApi {
       };
     }
     return { status: "executed", decision: "auto", detail: "", approval: null, result: { ok: true } };
+  }
+
+  // --- deals / pipeline --------------------------------------------------------
+
+  listDeals(): ListDealsResponse {
+    const byStage = new Map<string, DealCard[]>(STAGE_ORDER.map((s) => [s, []]));
+    for (const d of this.deals) {
+      const list = byStage.get(d.stage) ?? [];
+      byStage.set(d.stage, list);
+      list.push({ ...d });
+    }
+    const order = [...STAGE_ORDER, ...[...byStage.keys()].filter((s) => !STAGE_ORDER.includes(s)).sort()];
+    const stages: DealStageGroup[] = order.map((stage) => {
+      const deals = byStage.get(stage) ?? [];
+      return {
+        stage,
+        label: STAGE_LABELS[stage] ?? stage,
+        deals,
+        count: deals.length,
+        total_amount: deals.reduce((sum, d) => sum + (d.amount ?? 0), 0),
+      };
+    });
+    return { stages, total: this.deals.length, stage_order: [...STAGE_ORDER] };
+  }
+
+  getDeal(dealId: string): DealDetailResponse {
+    const d = this.deals.find((row) => row.id === dealId);
+    if (!d) throw new ApiError(404, "no such deal");
+    return {
+      deal: { ...d, contact_name: "Dana Whitfield", contact_email: "dana@example.com" },
+      activities: [
+        {
+          id: "act-1",
+          kind: "call",
+          body: "Walked through the security review; they want the RLS docs.",
+          occurred_at: "2026-06-05T00:00:00+00:00",
+        },
+        {
+          id: "act-2",
+          kind: "email",
+          body: "Sent the revised order form (net-45 -> net-30).",
+          occurred_at: "2026-06-04T00:00:00+00:00",
+        },
+      ],
+    };
+  }
+
+  moveDealStage(dealId: string, body: MoveStageBody): MoveStageResponse {
+    const d = this.deals.find((row) => row.id === dealId);
+    if (!d) throw new ApiError(404, "no such deal");
+    const to = (body.to_stage ?? "").trim();
+    if (!to) throw new ApiError(422, "to_stage must be non-empty");
+    if (to === d.stage) throw new ApiError(409, `deal is already in stage '${d.stage}'`);
+    // Mirrors the real API: the deal is NOT moved — a Greenlight proposal is
+    // queued and the stage stays put until a human approves it there.
+    const approvalId = Math.max(0, ...this.approvals.map((a) => a.id)) + 1;
+    this.approvals.push({
+      id: approvalId,
+      tenant_id: MOCK_TENANT,
+      proposed_action: {
+        action: "update_deal",
+        deal_id: d.id,
+        changes: { stage: to },
+        from_stage: d.stage,
+      },
+      agent: "demo-user",
+      reasoning: `Move deal '${d.title}' from stage '${d.stage}' to '${to}' (requested on the pipeline board).`,
+      value_at_stake: d.amount,
+      status: "pending",
+    });
+    return {
+      queued: true,
+      approval_id: approvalId,
+      status: "pending_approval",
+      from_stage: d.stage,
+      to_stage: to,
+      detail: `queued for approval in Greenlight — the deal stays in '${d.stage}' until a human approves`,
+    };
   }
 
   // --- integrations ----------------------------------------------------------

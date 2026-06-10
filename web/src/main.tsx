@@ -33,6 +33,7 @@ import GreenlightQueue from "./api/GreenlightQueue";
 import ChatDock from "./api/ChatDock";
 import DashboardView from "./api/DashboardView";
 import IntegrationsPanel from "./api/IntegrationsPanel";
+import PipelineBoard from "./api/PipelineBoard";
 import SignupFlow from "./signup/SignupFlow";
 
 // Auth (Cognito Hosted UI, PKCE). The provider and the gate are fully inert
@@ -167,6 +168,12 @@ function Root() {
       return (
         <Gated seam>
           <IntegrationsPanel />
+        </Gated>
+      );
+    case "pipeline":
+      return (
+        <Gated seam>
+          <PipelineBoard />
         </Gated>
       );
   }
