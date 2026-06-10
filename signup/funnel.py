@@ -1,15 +1,18 @@
 """Full-funnel tracking (Build Guide Phase 10, Step 56).
 
 The signup funnel: landing_view -> signup_started -> email_verified -> phone_verified ->
-payment_submitted -> payment_succeeded -> instance_provisioned -> first_login. Revenue events are
+payment_submitted -> payment_succeeded -> instance_provisioned -> first_login — plus the
+terminal-failure branch `provisioning_failed` (emitted by Provisioner.park_failed: a charged
+customer whose instance never came up is the funnel's most expensive drop-off). Revenue events are
 captured SERVER-side (from the Stripe webhook) so ad-blockers can't drop them. The PostHog client is
-injected; tests use a recorder.
+injected (prod: signup/posthog_client.PostHogClient); tests use a recorder.
 """
 from __future__ import annotations
 
 FUNNEL = [
     "landing_view", "signup_started", "email_verified", "phone_verified",
-    "payment_submitted", "payment_succeeded", "instance_provisioned", "first_login",
+    "payment_submitted", "payment_succeeded", "instance_provisioned", "provisioning_failed",
+    "first_login",
 ]
 
 

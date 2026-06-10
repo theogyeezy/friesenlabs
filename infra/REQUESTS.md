@@ -258,6 +258,38 @@ Rules:
   ```
 - **Done when:** `terraform validate` green with the new function + pinned `provisioning_lambda_arn` (the SFN role + every Task state reference the real function ARN, not the placeholder); the api task role policy lists `states:StartExecution` on exactly the machine ARN; the API task env shows `PROVISIONING_SFN_ARN` (once deliberately set) and the worker shows none of this; a test StartExecution with `{"account_id": <verified+paid test account>}` drives PAID -> ACTIVE through the execution history (or parks via the Catch-all on an injected failure), and a second StartExecution with the same name answers ExecutionAlreadyExists.
 
+### REQ-006: Server-side PostHog funnel env (POSTHOG_PROJECT_KEY_VALUE / POSTHOG_HOST) + tenant_settings migrate note
+- **Status:** OPEN
+- **Requested by:** Lane Matt @feat/matt-signup-posthog-tenant-defaults (PR "feat(signup): server-side PostHog funnel + tenant defaults + retry-provision route")
+- **Needed for:** TODO INT/P3 "Wire the server-side PostHog funnel client" (payment_succeeded / instance_provisioned / provisioning_failed captured server-side, grouped by tenant) + INT/P2 "Provisioning tenant-context correctness" (the new `tenant_settings` table seeded at provisioning step 5)
+- **Env/secret names** (must already exist in shared/config.py): `POSTHOG_PROJECT_KEY_VALUE`, `POSTHOG_HOST` (both appended with this PR); `COGNITO_CLIENT_ID` (EXISTING name api/asgi.py already reads — now also surfaced via `Config.cognito_client_id` for the retry-provision claims gate; no new wiring needed if it is already on the task env)
+- **Spec:**
+  ```hcl
+  # 1) API task definition + the provisioning Lambda env (REQ-005), `secrets` block:
+  #    POSTHOG_PROJECT_KEY_VALUE <- valueFrom the EXISTING shared platform secret
+  #        friesenlabs/platform/shared/posthog-project-key   (THE SOURCE of the key — the
+  #        resolved VALUE lands under this NEW deliberate env name; never the SM reference,
+  #        never committed). IAM: add this one secret ARN to the execution role's
+  #        GetSecretValue list (keep the scoping TIGHT — list ARNs, no wildcards).
+  #    Deploy invariance: signup/posthog_client.py is selected ONLY under the SIGNUP_REAL_DEPS
+  #    master switch AND this env — unset, the build stays byte-identical (funnel = None).
+  #    A PostHog project key is write-only for event capture (not an account credential), but
+  #    treat it as a secret anyway: it rides the shared platform secret, not plain env.
+
+  # 2) OPTIONAL plain (non-secret) env on the same two runtimes:
+  #    POSTHOG_HOST = "https://us.i.posthog.com"   # the in-code default; set only to override
+  #                                                # (EU cloud / self-hosted ingestion)
+
+  # 3) NO new GRANT for tenant_settings: db/roles.sql's ALTER DEFAULT PRIVILEGES already hands
+  #    crm_app SELECT/INSERT/UPDATE/DELETE on new tables in schema public. ORDERING NOTE: the
+  #    next one-off `api.migrate` Fargate task must run (creates tenant_settings + FORCE'd RLS
+  #    policy) BEFORE the signup plane goes live with a DSN — provisioning step 5 INSERTs into
+  #    it under SIGNUP_REAL_DEPS, and a missing table parks the account (rollback-safe, but
+  #    operational noise). Worth a live probe after migrate: as crm_app with
+  #    `SET app.current_tenant`, INSERT + SELECT a tenant_settings row; without the GUC, 0 rows.
+  ```
+- **Done when:** the API task definition + provisioning Lambda show `POSTHOG_PROJECT_KEY_VALUE` under `secrets` (and the worker/cube/ingest tasks show it NOWHERE); with SIGNUP_REAL_DEPS=1 + the key populated, a staging payment produces `payment_succeeded` + `instance_provisioned` grouped under the tenant in PostHog (the INT/P3 done-when) and a forced failure produces `provisioning_failed`; `api.migrate` has been re-run and the crm_app tenant_settings probe above passes; with the key absent the deploy boots byte-identically (funnel None, no network).
+
 ### REQ-006: api-task IAM Secrets Manager WRITE on the per-tenant connector slots (`uplift/*/hubspot`) + `INTEGRATIONS_REAL_SECRETS` env
 - **Status:** OPEN
 - **Requested by:** Lane Matt @feat/matt-integrations-api (PR "feat(api): integrations endpoints — list/credentials/sync (claims-bound, gated)")

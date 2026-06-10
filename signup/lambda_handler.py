@@ -17,6 +17,9 @@ RETRY ENTRYPOINT (TODO INT/P2, operator-invoked — NOT an SFN state): invoking 
 directly with ``{"account_id": ..., "step": "retry"}`` re-provisions a parked
 (provisioning_failed) account in-process via the idempotent full pipeline. It is itself
 idempotent: an ACTIVE account is a skip, any other non-parked state is a structured refusal.
+The logic lives in `signup.provisioning.Provisioner.retry` — ONE implementation shared with
+the gated POST /signup/{account_id}/retry-provision route (api/signup_routes.py) so the two
+retry surfaces can never drift.
 
 COLD START builds the clients from env exactly once, via `api.prod_deps.build_provisioner` —
 the SAME selection path the API task uses, so the SIGNUP_REAL_DEPS master switch is honored:
@@ -62,26 +65,11 @@ def handler(event, context=None):
         raise ValueError(f"no such account: {account_id}")
 
     if step == "retry":
-        result = _retry(prov, account)
+        # Idempotent operator retry — Provisioner.retry (shared with the gated
+        # /signup/{account_id}/retry-provision route; module docstring).
+        result = prov.retry(account)
     else:
         result = prov.run_step(account, step)
     log.info("provisioning step %s for account %s -> %s", step, account_id,
              result.get("status"))
     return {"account_id": account_id, **result}
-
-
-def _retry(prov, account) -> dict:
-    """Idempotent operator retry: provisioning_failed -> re-provision (module docstring)."""
-    from signup.accounts import State  # noqa: PLC0415 — keep module import dependency-free
-
-    if account.state is State.ACTIVE:
-        return {"step": "retry", "status": "skipped", "reason": "already_active",
-                "state": account.state.value, "tenant_id": account.tenant_id}
-    if account.state is not State.PROVISIONING_FAILED:
-        return {"step": "retry", "status": "refused",
-                "reason": f"state is {account.state.value}, not provisioning_failed",
-                "state": account.state.value, "tenant_id": account.tenant_id}
-    res = prov.provision(account)   # the idempotent full pipeline (check-then-create steps)
-    return {"step": "retry", "status": "ok" if res.ok else "failed",
-            "state": account.state.value, "tenant_id": res.tenant_id,
-            "failed_step": res.failed_step, "steps_done": res.steps_done}

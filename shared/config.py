@@ -172,6 +172,22 @@ class Config:
     # and even when set, the trigger is selected only UNDER the SIGNUP_REAL_DEPS master switch.
     provisioning_sfn_arn: str = os.environ.get("PROVISIONING_SFN_ARN", "")
 
+    # --- Server-side PostHog funnel (signup/posthog_client.py via api/prod_deps.py; REQ-006) ---
+    # The RESOLVED PostHog project API key VALUE — Lane Nick wires Secrets Manager
+    # `friesenlabs/platform/shared/posthog-project-key` (the source of the key) into the API
+    # task / provisioning Lambda env under THIS name. A NEW, deliberate env name (deploy
+    # invariance: server-side analytics must never key off env the live task already injects).
+    # Empty (default) = no funnel client is ever built — and even when set, the client is
+    # selected only UNDER the SIGNUP_REAL_DEPS master switch. Never the SM reference.
+    posthog_project_key_value: str = os.environ.get("POSTHOG_PROJECT_KEY_VALUE", "")
+    # PostHog ingestion host (plain, non-secret; US-cloud default — override for EU/self-host).
+    posthog_host: str = os.environ.get("POSTHOG_HOST", "https://us.i.posthog.com")
+    # Cognito app-client id — the SAME name api/asgi.py already reads to build the API's JWKS
+    # verifier; surfaced through Config so api/prod_deps.py can build the retry-provision
+    # claims gate (verified `custom:tenant_id` match) from one source. Pre-existing env on the
+    # live task — which is why the gate ALSO sits under SIGNUP_REAL_DEPS (deploy invariance).
+    cognito_client_id: str = os.environ.get("COGNITO_CLIENT_ID", "")
+
 
 # plan id -> env var that carries its Stripe Price ID (values land via task secrets, never here).
 STRIPE_PRICE_ID_ENV = {
