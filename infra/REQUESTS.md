@@ -257,3 +257,37 @@ Rules:
   #    stripe_events ledger claim. Never on the worker task.
   ```
 - **Done when:** `terraform validate` green with the new function + pinned `provisioning_lambda_arn` (the SFN role + every Task state reference the real function ARN, not the placeholder); the api task role policy lists `states:StartExecution` on exactly the machine ARN; the API task env shows `PROVISIONING_SFN_ARN` (once deliberately set) and the worker shows none of this; a test StartExecution with `{"account_id": <verified+paid test account>}` drives PAID -> ACTIVE through the execution history (or parks via the Catch-all on an injected failure), and a second StartExecution with the same name answers ExecutionAlreadyExists.
+
+### REQ-006: api-task IAM Secrets Manager WRITE on the per-tenant connector slots (`uplift/*/hubspot`) + `INTEGRATIONS_REAL_SECRETS` env
+- **Status:** OPEN
+- **Requested by:** Lane Matt @feat/matt-integrations-api (PR "feat(api): integrations endpoints — list/credentials/sync (claims-bound, gated)")
+- **Needed for:** TODO INT/P2 "Build the real integrations/connect UI + backend" — the api half (`api/integrations_routes.py`): `POST /integrations/{name}/credentials` vaults a tenant's HubSpot token into `uplift/{tenant_id}/hubspot` (the `ingest/connectors/base.py tenant_secret_ref` slot the REQ-004 ingest task already READS); `GET /integrations` answers connection status via DescribeSecret (never the value).
+- **Env/secret names** (must already exist in shared/config.py): `INTEGRATIONS_REAL_SECRETS` (NEW, landed in `shared/config.py` with this PR). Safe default UNSET = the writer is a stub: credentials POST answers an honest 503, status reads "unknown" — byte-identical boot regardless of what other env the task carries.
+- **Spec:**
+  ```hcl
+  # 1) API-TASK IAM: write + existence-check on EXACTLY the per-tenant hubspot slots — never
+  #    uplift/* broadly (the env-id/admin-key/demo-user secrets stay out of reach). Secrets
+  #    Manager appends a random 6-char suffix to secret ARNs, hence the trailing wildcard.
+  #    # VERIFY on first live connect: CreateSecret resource-scoping matches the name pattern.
+  statement {
+    actions = [
+      "secretsmanager:PutSecretValue",   # rotate path (slot already exists)
+      "secretsmanager:CreateSecret",     # first-connect path (slot does not exist yet)
+      "secretsmanager:DescribeSecret",   # GET /integrations status — existence only, no value
+    ]
+    resources = ["arn:aws:secretsmanager:${var.region}:${data.aws_caller_identity.current.account_id}:secret:uplift/*/hubspot*"]
+  }
+
+  # 2) API task definition env (plain, non-secret): the deliberate master switch —
+  #    INTEGRATIONS_REAL_SECRETS = "1"
+  #    Safe default: LEAVE IT UNSET until this REQ's IAM is applied; unset keeps the all-stub
+  #    behavior (honest 503s). Exactly "true"/"1" — anything else fails closed. API task ONLY,
+  #    never the worker.
+
+  # 3) NO INGEST_* names on the API task (unchanged — REQ-004 done-when stands). The new
+  #    POST /integrations/{name}/sync therefore answers an honest 503 on the live API; the
+  #    EventBridge-scheduled one-off task stays the primary sync path. Wiring API-kicked syncs
+  #    (INGEST_REAL_STORES + DB_* + bedrock:InvokeModel on the API task) is a SEPARATE,
+  #    deliberate future REQ — do not flip it as part of this one.
+  ```
+- **Done when:** `terraform validate` green; the api task role policy lists exactly the three actions above scoped to `uplift/*/hubspot*` (and the worker/ingest roles are unchanged); with `INTEGRATIONS_REAL_SECRETS=1` on the API task, `POST /integrations/hubspot/credentials` (authed) creates/updates `uplift/<that tenant>/hubspot` in Secrets Manager, `GET /integrations` flips that tenant's hubspot status to `connected`, and the next REQ-004 scheduled ingest run for that tenant resolves the per-tenant secret WITHOUT the deprecated shared-token fallback warning.
