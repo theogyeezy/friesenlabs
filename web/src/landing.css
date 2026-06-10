@@ -780,3 +780,25 @@ textarea.lp-input { height: 92px; padding: 11px 13px; resize: none; }
 .lp .lp-testi:hover, .lp .lp-layer:hover, .lp .lp-nice-card:hover { box-shadow: 0 14px 40px -30px oklch(0.3 0.04 48 / .35) !important; transform: none; }
 /* serif titles on cards/products/modules */
 .lp .lp-testi blockquote, .lp .lp-layer h4, .lp .lp-nice-card h3, .lp .lp-prod-name, .lp .lp-mod-name { font-family: var(--display); letter-spacing: -0.01em; }
+
+/* ============================================================
+   Editorial propagation — product detail pages + pricing rows.
+   ============================================================ */
+/* product icon tiles: flat, calmer radius (keep the soft tone for layer colour-coding) */
+.lp .lp-prod-ico, .lp .lp-mod-ico { border-radius: 8px !important; box-shadow: none; }
+/* feature cards: hairline plate, serif title, mono numeral — drop the gradient bar + glow blob */
+.lp .lp-feat { border: 1px solid var(--line) !important; box-shadow: none !important; border-radius: 8px !important; background: var(--surface); padding: 26px 24px; }
+.lp .lp-feat::before, .lp .lp-feat::after { display: none !important; }
+.lp .lp-feat:hover { transform: none; box-shadow: 0 14px 40px -32px oklch(0.3 0.04 48 / .35) !important; border-color: var(--line) !important; }
+.lp .lp-feat-num { font-family: "JetBrains Mono", ui-monospace, monospace; color: var(--accent); font-weight: 700; letter-spacing: 0.06em; font-size: 12px; }
+.lp .lp-feat h3 { font-family: var(--display); font-weight: 540; letter-spacing: -0.01em; font-size: 19px; margin-top: 10px; }
+.lp .lp-feat p { color: var(--ink-2); }
+/* pricing module rows: hairline, serif name, mono price */
+.lp .lp-mod { border: 1px solid var(--line) !important; border-radius: 8px !important; background: var(--surface); box-shadow: none !important; }
+.lp .lp-mod.on { border-color: var(--accent) !important; background: color-mix(in oklch, var(--accent-softer) 55%, var(--surface)); }
+.lp .lp-mod .m-info b { font-family: var(--display); font-weight: 540; letter-spacing: -0.01em; font-size: 16px; }
+.lp .m-price { font-family: "JetBrains Mono", ui-monospace, monospace; font-weight: 600; letter-spacing: 0.01em; }
+/* the big price + summary plate: serif numeral, hairline */
+.lp .lp-price { font-family: var(--display); font-weight: 520; letter-spacing: -0.02em; }
+.lp .lp-summary { border: 1px solid var(--line) !important; box-shadow: none !important; border-radius: 10px !important; background: var(--surface); }
+.lp .lp-plan-chips .chip, .lp .lp-plan-chip { border-radius: 999px; }
