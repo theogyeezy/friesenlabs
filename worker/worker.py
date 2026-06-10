@@ -21,6 +21,7 @@ from agents.tools.base import ToolContext
 from agents.tools.readonly import QueryCube, ReadCrm, SearchRag
 from agents.tools.sideeffecting import DraftEmail, IssueQuote, SendEmail, UpdateDeal
 from shared.config import (
+    ENV_ANTHROPIC_API_KEY,
     ENV_CLOUDWATCH_METRICS,
     ENV_CUBE_ENDPOINT,
     ENV_UPLIFT_ENV_ID,
@@ -59,6 +60,13 @@ def build_clients_from_env() -> dict:
       PgRagClient (ToolContext.rag), and a PgApprovalStore-backed Greenlight — all on the FIXED RLS
       pattern (pooled per-op conn + SET LOCAL app.current_tenant in a transaction).
     - CUBE_ENDPOINT: recorded for the (not-yet-built) Cube client; None until that client exists.
+    - CORTEX_S3_BUCKET / CORTEX_LOCAL_DIR: the persistent Cortex model registry
+      (`ml.registry.registry_from_env`) -> ToolContext.cortex, so `run_model` scores with the
+      tenant's durable champion. All-unset keeps the key ABSENT (unconfigured boots stay
+      byte-identical; run_model degrades to "no model registry configured").
+    - ANTHROPIC_API_KEY: default build_view spec generator. In the prod posture this key is
+      NEVER on the worker (org key is API-task-only — shared/config.py), so this stays absent
+      and build_view keeps its explicit raise; the guard exists for dev parity only.
     THE TRUST RULE: these clients take tenant_id per call from the session metadata the API stamped
     from the verified JWT claim — never from this host's env.
     """
@@ -74,6 +82,18 @@ def build_clients_from_env() -> dict:
     # Cube client not built yet; keep the endpoint visible for the future client + REQ-001 wiring.
     if os.environ.get(ENV_CUBE_ENDPOINT):
         clients["cube"] = None  # TODO(cube): governed-metrics client over CUBE_ENDPOINT
+    # Persistent Cortex registry — the real factory now exists (ml/registry.py). Lazy + offline-
+    # safe: S3Registry defers boto3 to first blob access; LocalFs is the dev/tests fallback.
+    from ml.registry import registry_from_env  # noqa: PLC0415 — lazy, import-safe either way
+
+    cortex = registry_from_env()
+    if cortex is not None:
+        clients["cortex"] = cortex
+    # Default view-spec generator (env-guarded; see the docstring — absent in the prod posture).
+    if os.environ.get(ENV_ANTHROPIC_API_KEY):
+        from agents.tools.spec_generator import AnthropicSpecGenerator  # noqa: PLC0415 — lazy
+
+        clients["spec_generator"] = AnthropicSpecGenerator()
     return clients
 
 
@@ -88,6 +108,10 @@ def build_context(session_metadata: dict, clients: dict) -> ToolContext:
     db = clients.get("db")
     if hasattr(db, "binding"):
         db = db.binding()
+    # Fresh extra dict per call — tool invocations must never share mutable context state.
+    extra: dict = {}
+    if clients.get("spec_generator") is not None:
+        extra["generate_spec"] = clients["spec_generator"]
     return ToolContext(
         tenant_id=session_metadata["tenant_id"],
         agent=session_metadata.get("agent"),
@@ -96,6 +120,7 @@ def build_context(session_metadata: dict, clients: dict) -> ToolContext:
         rag=clients.get("rag"),
         cortex=clients.get("cortex"),
         greenlight=clients.get("greenlight"),
+        extra=extra,
     )
 
 

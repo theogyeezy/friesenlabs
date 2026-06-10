@@ -77,6 +77,17 @@ def create_app(deps: ApiDeps) -> FastAPI:
     def healthz():
         return {"status": "ok"}
 
+    @app.get("/me")
+    @app.get("/api/me")
+    def me(claims: TenantClaims = Depends(current_tenant)):
+        # SPA identity bootstrap (TODO FE/P2). Everything comes from the VERIFIED claims only
+        # (THE TRUST RULE) — unauth/invalid tokens 401 via the current_tenant dependency.
+        # Registered at both paths: the deployed Amplify rewrite strips the /api prefix
+        # (infra web_hosting custom_rule "/api/<*>" -> "/<*>"), so the browser's /api/me lands on
+        # /me; /api/me also answers for direct callers. `name` is null until TenantClaims carries
+        # the claim (api/auth.py is outside this cycle's module-A file set) — shape stays stable.
+        return {"email": claims.email, "tenant_id": claims.tenant_id, "name": None}
+
     @app.get("/approvals")
     def list_approvals(claims: TenantClaims = Depends(current_tenant)):
         return {"approvals": deps.greenlight.list_pending(claims.tenant_id)}
