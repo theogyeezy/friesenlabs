@@ -15,11 +15,157 @@ variable "origin_verify_secret" {
 data "aws_cloudfront_cache_policy" "disabled" { name = "Managed-CachingDisabled" }
 data "aws_cloudfront_origin_request_policy" "all_viewer" { name = "Managed-AllViewerExceptHostHeader" }
 
+data "aws_caller_identity" "current" {}
+
+# WAFv2 (CLOUDFRONT scope → must live in us-east-1) — managed rule sets + a per-IP rate limit on
+# the public multi-tenant API edge.
+resource "aws_wafv2_web_acl" "api" {
+  name        = "${var.project}-api-edge"
+  scope       = "CLOUDFRONT"
+  description = "Common + KnownBadInputs managed rules + rate limit for the API edge."
+  default_action {
+    allow {}
+  }
+
+  rule {
+    name     = "common"
+    priority = 1
+    override_action {
+      none {}
+    }
+    statement {
+      managed_rule_group_statement {
+        name        = "AWSManagedRulesCommonRuleSet"
+        vendor_name = "AWS"
+      }
+    }
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "common"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  rule {
+    name     = "bad-inputs"
+    priority = 2
+    override_action {
+      none {}
+    }
+    statement {
+      managed_rule_group_statement {
+        name        = "AWSManagedRulesKnownBadInputsRuleSet"
+        vendor_name = "AWS"
+      }
+    }
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "bad_inputs"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  rule {
+    name     = "rate-limit"
+    priority = 3
+    action {
+      block {}
+    }
+    statement {
+      rate_based_statement {
+        limit              = 2000 # requests / 5-min / IP
+        aggregate_key_type = "IP"
+      }
+    }
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "rate_limit"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  visibility_config {
+    cloudwatch_metrics_enabled = true
+    metric_name                = "${var.project}-api-edge"
+    sampled_requests_enabled   = true
+  }
+}
+
+# Standard access logs → an encrypted, ACL-enabled bucket (CloudFront logging requires bucket ACLs).
+resource "aws_s3_bucket" "cf_logs" {
+  bucket        = "${var.project}-cf-logs-${data.aws_caller_identity.current.account_id}"
+  force_destroy = false
+}
+resource "aws_s3_bucket_ownership_controls" "cf_logs" {
+  bucket = aws_s3_bucket.cf_logs.id
+  rule {
+    object_ownership = "BucketOwnerPreferred"
+  }
+}
+resource "aws_s3_bucket_acl" "cf_logs" {
+  depends_on = [aws_s3_bucket_ownership_controls.cf_logs]
+  bucket     = aws_s3_bucket.cf_logs.id
+  acl        = "private"
+}
+resource "aws_s3_bucket_server_side_encryption_configuration" "cf_logs" {
+  bucket = aws_s3_bucket.cf_logs.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+resource "aws_s3_bucket_public_access_block" "cf_logs" {
+  bucket                  = aws_s3_bucket.cf_logs.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+resource "aws_s3_bucket_lifecycle_configuration" "cf_logs" {
+  bucket = aws_s3_bucket.cf_logs.id
+  rule {
+    id     = "expire-90d"
+    status = "Enabled"
+    filter {}
+    expiration { days = 90 }
+  }
+}
+
+# Response-headers policy: HSTS + the standard security header set at the edge.
+resource "aws_cloudfront_response_headers_policy" "sec" {
+  name = "${var.project}-sec-headers"
+  security_headers_config {
+    strict_transport_security {
+      access_control_max_age_sec = 31536000
+      include_subdomains         = true
+      preload                    = true
+      override                   = true
+    }
+    content_type_options { override = true }
+    frame_options {
+      frame_option = "DENY"
+      override     = true
+    }
+    referrer_policy {
+      referrer_policy = "strict-origin-when-cross-origin"
+      override        = true
+    }
+  }
+}
+
 resource "aws_cloudfront_distribution" "api" {
   enabled         = true
   comment         = "${var.project} API edge (HTTPS -> ALB HTTP)"
   http_version    = "http2"
   is_ipv6_enabled = true
+  price_class     = "PriceClass_100" # NA + EU (audience); lowers per-GB once traffic starts
+  web_acl_id      = aws_wafv2_web_acl.api.arn
+
+  logging_config {
+    bucket = aws_s3_bucket.cf_logs.bucket_domain_name
+    prefix = "cf/"
+  }
 
   origin {
     domain_name = var.alb_dns
@@ -43,12 +189,13 @@ resource "aws_cloudfront_distribution" "api" {
   }
 
   default_cache_behavior {
-    target_origin_id         = "alb"
-    viewer_protocol_policy   = "https-only"
-    allowed_methods          = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
-    cached_methods           = ["GET", "HEAD"]
-    cache_policy_id          = data.aws_cloudfront_cache_policy.disabled.id
-    origin_request_policy_id = data.aws_cloudfront_origin_request_policy.all_viewer.id
+    target_origin_id           = "alb"
+    viewer_protocol_policy     = "https-only"
+    allowed_methods            = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
+    cached_methods             = ["GET", "HEAD"]
+    cache_policy_id            = data.aws_cloudfront_cache_policy.disabled.id
+    origin_request_policy_id   = data.aws_cloudfront_origin_request_policy.all_viewer.id
+    response_headers_policy_id = aws_cloudfront_response_headers_policy.sec.id
   }
 
   restrictions {

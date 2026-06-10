@@ -12,3 +12,5 @@ node_modules/
 logs/*.log
 .DS_Store
 docs/*.pdf
+# Confidential build-guide text (match .gitignore; keep off Syncthing)
+docs/*.txt

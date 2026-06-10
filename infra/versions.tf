@@ -4,7 +4,7 @@ terraform {
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = ">= 5.40"
+      version = "~> 6.49" # bounded: lock resolved 6.49.x; prevents init -upgrade jumping majors
     }
     random = {
       source  = "hashicorp/random"
