@@ -687,31 +687,34 @@ function useSpaceFlight() {
       el.style.backfaceVisibility = "hidden";
       el.classList.add("lp-panel");
     });
-    // 3) spacer gives the scroll runway (one screen of scroll per panel)
+    // 3) spacer gives the scroll runway (~one screen of scroll per panel)
+    const STEPF = 0.9;                                  // fraction of a screen of scroll per panel
     const spacer = document.createElement("div");
     spacer.className = "lp-flight-spacer";
-    spacer.style.height = (panels.length) * 100 + "vh";
+    spacer.style.height = Math.round(panels.length * STEPF * 100) + "vh";
     if (footer) root.insertBefore(spacer, footer); else root.appendChild(spacer);
 
     let raf = null;
     const update = () => {
       raf = null;
       const vh = window.innerHeight;
-      const prog = window.scrollY / vh;                 // camera position, in panel units
+      const prog = window.scrollY / (vh * STEPF);       // camera position, in panel units
       panels.forEach((el, i) => {
         const d = i - prog;                             // 0 = this panel is centered at the camera
         const ad = Math.abs(d);
-        if (ad > 1.35) { el.style.visibility = "hidden"; el.style.pointerEvents = "none"; return; }
+        // only the panel near focus is solid — neighbors fade out fast so you fly through clean
+        // space (the galaxy) between panels instead of seeing them overlap.
+        if (ad > 0.9) { el.style.visibility = "hidden"; el.style.pointerEvents = "none"; return; }
         el.style.visibility = "visible";
-        const fit = Math.max(0.5, Math.min(1, (vh * 0.92) / (natH[i] || vh)));
+        const fit = Math.max(0.55, Math.min(1, (vh * 0.94) / (natH[i] || vh)));
         const tz = -d * DEPTH;                          // ahead (d>0) → deep/away; passed (d<0) → toward viewer
-        const op = 1 - smooth01(0.78, 1.3, ad);
-        const bl = !mobile && ad > 0.5 ? Math.min(7, (ad - 0.5) * 12) : 0;
+        const op = 1 - smooth01(0.34, 0.72, ad);        // solid near center; gone by ~0.72 of a panel away
+        const bl = !mobile && ad > 0.28 ? Math.min(8, (ad - 0.28) * 16) : 0;
         el.style.transform = "perspective(1400px) translateZ(" + tz.toFixed(0) + "px) scale(" + fit.toFixed(3) + ")";
         el.style.opacity = op.toFixed(3);
         el.style.filter = bl > 0.2 ? "blur(" + bl.toFixed(1) + "px)" : "none";
         el.style.zIndex = String(Math.round(34 - d * 9)); // nearer the viewer paints on top (kept below the nav at z-50)
-        el.style.pointerEvents = ad > 0.4 ? "none" : "auto";
+        el.style.pointerEvents = ad > 0.35 ? "none" : "auto";
       });
     };
     const onScroll = () => { if (raf == null) raf = requestAnimationFrame(update); };
