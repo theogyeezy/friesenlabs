@@ -70,8 +70,8 @@ app shell → real RLS-scoped tenant rows. Unauth `/api/*` → 401; **`/chat` is
   Anthropic-admin/webhook secrets present on the API task; the real provisioning clients are wired (no
   `_Stub`/`_Noop`). Worker deployed (env-key present). (SNS email sub CONFIRMED.)
 - ✅ **NS delegation DONE (2026-06-10):** `friesenlabs.com` NS point at the 4 Route53 nameservers
-  and the cert is ISSUED — the ALB TLS cutover is executable (sequence in RUNBOOK; the hourly
-  Lane-Nick sweep auto-runs it, then repoints `og:image` + canonical to the real domain).
+  and the cert is ISSUED — the ALB TLS cutover was auto-run by the hourly Lane-Nick sweep and is
+  verified DONE (see the Domain bullet above; `og:image` + canonical repoint to the real domain).
 - **Ops:** state in S3 (KMS); machine-local `infra/prod.auto.tfvars` carries the live values +
   go-live flags — full applies allowed only against a re-verified clean plan; targeted applies
   are the norm. One-off tasks run via the `uplift-migrate-oneoff` task-def family. Runbook:
@@ -86,7 +86,7 @@ app shell → real RLS-scoped tenant rows. Unauth `/api/*` → 401; **`/chat` is
   swept (25 done items checked off + a Lane-Nick completion-status block). **All four owner-gated
   remainders are now satisfied** (env-key → worker live 2/2; Stripe webhook secret + Anthropic
   admin key → signup go-live done; Squarespace NS delegated 2026-06-10 → cert ISSUED → TLS
-  cutover executable via the sweep).
+  cutover executed by the sweep + verified).
 **Tooling:** `.claude/settings.json` enables the official-marketplace plugins so collaborators inherit
 them on clone+trust. Don't commit secrets to it.
 
