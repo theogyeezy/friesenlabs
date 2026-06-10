@@ -888,3 +888,7 @@ textarea.lp-input { height: 92px; padding: 11px 13px; resize: none; }
 /* the inner stage drops its own frame; the window provides it */
 .lp .lp-demo-window .lp-demo-stage { border: none !important; border-radius: 0 !important; box-shadow: none !important; }
 @media (prefers-reduced-motion: reduce) { .lp-demo-live .dot { animation: none; } }
+
+/* roadmap demos use the same window chrome but an honest "Preview" badge (clay, no live pulse) */
+.lp-demo-live.preview { color: var(--accent-ink); }
+.lp-demo-live.preview .dot { background: var(--accent); box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent) 22%, transparent); animation: none; }

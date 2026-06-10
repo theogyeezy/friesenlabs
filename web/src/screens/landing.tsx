@@ -518,6 +518,12 @@ function NiceToHave() {
         <div className="lp-demo-tabs">
           {LP_NICE.map((n) => <button key={n.id} className={"lp-demo-tab" + (tab === n.id ? " active" : "")} onClick={() => setTab(n.id)}><LpIcon name={n.icon} size={15} style={{ marginRight: 7, verticalAlign: "-2px" }} />{n.tab}</button>)}
         </div>
+        <div className="lp-demo-window">
+        <div className="lp-demo-chrome">
+          <span className="lp-demo-dots"><i /><i /><i /></span>
+          <span className="lp-demo-addr">on the roadmap</span>
+          <span className="lp-demo-live preview"><span className="dot" />Preview</span>
+        </div>
         <div className="lp-demo-stage">
           <div className="lp-demo-canvas">
             {tab === "ads" && <NiceAdsDemo accent={accent} />}
@@ -531,6 +537,7 @@ function NiceToHave() {
             <ul>{active.bullets.map((b) => <li key={b}><LpIcon name="check" size={16} sw={2.4} style={{ color: accent, flexShrink: 0, marginTop: 1 }} />{b}</li>)}</ul>
             <span style={{ display: "inline-flex", alignItems: "center", gap: 7, marginTop: 4, fontSize: 12.5, fontWeight: 600, color: "var(--ink-4)" }}><LpIcon name="clock" size={14} />Coming as the suite grows</span>
           </div>
+        </div>
         </div>
       </div>
     </section>
