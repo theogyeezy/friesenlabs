@@ -83,7 +83,15 @@ resource "aws_cloudwatch_metric_alarm" "redis_evictions" {
 }
 
 # Worker: no worker polling the queue (workers_polling == 0) — a custom metric the API emits.
+# Gated: missing data = breaching by design, so creating this BEFORE the worker service exists
+# would alarm forever. Flip var.worker_deployed with the worker deploy.
+variable "worker_deployed" {
+  type    = bool
+  default = false
+}
+
 resource "aws_cloudwatch_metric_alarm" "worker_absent" {
+  count               = var.worker_deployed ? 1 : 0
   alarm_name          = "${var.project}-workers-polling-zero"
   comparison_operator = "LessThanThreshold"
   evaluation_periods  = 2
