@@ -161,6 +161,12 @@ variable "web_custom_domain" {
   description = "Serve the Amplify web app at this domain (apex + www)."
 }
 
+variable "api_cube_env" {
+  type        = bool
+  default     = false # flip to inject the cube signing secret into the API task (query_cube live)
+  description = "Inject CUBEJS_API_SECRET_VALUE into the api task from uplift/cube-api-secret."
+}
+
 variable "dns_delegated" {
   type        = bool
   default     = false # flip AFTER Squarespace nameservers point at the Route53 zone
