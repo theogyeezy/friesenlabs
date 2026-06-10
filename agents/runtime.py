@@ -370,13 +370,32 @@ class FakeRuntime(AgentRuntime):
 
 
 def get_runtime(config: dict[str, Any] | None = None) -> AgentRuntime:
-    """Factory: pick the runtime impl. Defaults to fake unless explicitly configured 'managed'."""
+    """Factory: pick the runtime impl. Defaults to fake unless explicitly configured:
+
+    - 'managed': Claude Managed Agents (the standard tenancy path);
+    - 'self_hosted': the HIPAA fallback — a direct Anthropic Messages tool-use loop over the
+      SAME registry tools with the SAME Greenlight ALWAYS_ASK routing, no Managed Agents
+      (MA-on-Bedrock does not exist; see agents/runtime_selfhosted.py for the decision record).
+    """
     config = config or {}
     kind = config.get("runtime", "fake")
     if kind == "managed":
         return ManagedAgentsRuntime(
             api_key=config.get("api_key"),
             environment_id=config.get("environment_id"),  # the persisted per-tenant env id
+        )
+    if kind == "self_hosted":
+        # Lazy import keeps this module's import cost unchanged for the fake/managed paths.
+        from .runtime_selfhosted import DEFAULT_MAX_TURNS, SelfHostedToolUseRuntime  # noqa: PLC0415
+
+        return SelfHostedToolUseRuntime(
+            api_key=config.get("api_key"),
+            workspace_store=config.get("workspace_store"),
+            tenant_id=config.get("tenant_id"),
+            greenlight=config.get("greenlight"),
+            tool_context_factory=config.get("tool_context_factory"),
+            model=config.get("model"),
+            max_turns=config.get("max_turns") or DEFAULT_MAX_TURNS,
         )
     if kind == "fake":
         return FakeRuntime()
