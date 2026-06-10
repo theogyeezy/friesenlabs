@@ -316,6 +316,11 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   cluster already at retention=7 + deletion_protection=true (verified). Authored the 2 real gaps
   (copy_tags_to_snapshot, performance_insights_enabled); `plan -target=module.data` = 0 add /
   2 in-place change / 0 destroy, exactly those attrs. Apply follows merge (intended-change rule).
+- 2026-06-09 — Aurora hardening APPLIED from main @866328b (#23): re-planned (still exactly 2
+  in-place attrs), applied `-target=module.data`, live-verified copyTags=true + PI=true, both
+  `available`. TODO 123/136/197 checked off. Also: 3-lens adversarial verify REFUTED the PR-20
+  RLS-blocker claim (fail-closed + unreachable; empirical repro) and 3-lens review of PR-18 came
+  back MERGE/no-blockers — both recorded as PR comments post-merge (merged by diffusion23).
 
 ## Lane Matt (app code) — log
 - 2026-06-09 — **Cycle 2 (asgi integration + provisioning foundations, 4 PRs + 1 fix, all reviewed PASS):**

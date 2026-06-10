@@ -66,6 +66,8 @@ resolved, any apply must be `-target`ed at pure-add modules only.
 - **Intended-change apply** (explicitly named by TODO items 123/136): apply
   `-target=module.data` from merged main, then re-verify with
   `describe-db-clusters` / `describe-db-instances`.
+- **APPLIED 2026-06-09 from main @866328b** (re-planned first: still exactly the 2 attrs).
+  Live-verified: `copyTags=true`, `PerformanceInsightsEnabled=true`, cluster + instance `available`.
 
 ### Apply discipline (until the baseline is clean)
 1. No full `terraform apply`.
