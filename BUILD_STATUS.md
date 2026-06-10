@@ -374,6 +374,10 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
 - 2026-06-09 — Cycle 9 authoring: CloudTrail scoped data events (uplift buckets + uplift/*
   secrets, management re-stated) + ALB access logging to a new encrypted bucket (SSE-S3, PAB,
   90d expiry, ELB 127311923021 delivery policy). Plan = 5 adds + 2 intended changes (trail, ALB).
+- 2026-06-09 — Cycle 9 DONE (TODO 205): ALB access logs live (test file delivered to the
+  encrypted bucket) + CloudTrail scoped uplift-* S3 data events + management re-stated.
+  Premise correction: Secrets Manager has no data events (GetSecretValue = management event,
+  already captured) — first apply's rejection documented, selector dropped in #53.
 
 ## Lane Matt (app code) — log
 - 2026-06-09 — **Cycle 3 (real wiring + frontend honesty, 5 PRs + 1 fix-PR):** #34 real provisioning
