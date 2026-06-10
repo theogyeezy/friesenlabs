@@ -487,6 +487,33 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   cost-parked / maintenance-window / Lane-Matt. Caught + fixed a latent tfvars drift (api_image
   still e0794bc would have reverted the live 14524b0) and refreshed the deploy secret. Edge 200
   throughout.
+- 2026-06-10 — Landing EDITORIAL overhaul + audit hardening (user-directed; the GHL/cinematic
+  experiments logged above were reverted as unusable — three.js removed). Shipped an "Editorial &
+  warm" system (cream paper, Fraunces serif, warm-clay accent, hairline rules/cards, a bespoke
+  product-grounded line-icon set), benefit-first dash/arrow/slop-free copy, Apple-style cinematics
+  (hero load-in assembly, staggered card reveals, hero-plate parallax — reduced-motion safe), and
+  product-WINDOW framing of the live demos across all four surfaces (hero + "see it in action" +
+  product-detail + roadmap, with honest LIVE vs clay PREVIEW badges). Then a 4-lens audit
+  (theme/copy/a11y/SEO via a 4-agent workflow, 46 findings) folded in and verified on the LIVE site:
+  • SEO: real `<title>`/meta/OG+Twitter/canonical/theme-color, brand favicon, and a generated
+    1200×630 og:image card emitted by an inline Vite plugin (survives `publicDir:false`), served at
+    `/og.png`. og:image + canonical point at the Amplify URL FOR NOW — repoint to
+    `https://friesenlabs.com/` at the TLS cutover.
+  • a11y: WCAG-AA contrast tokens, keyboard-operable pricing rows/BYO toggle/product pills, dialog
+    roles + global Escape-to-close, skip-link + `role=main`, completed vs-table ARIA, heading order,
+    44px touch targets, reduced-motion guards → **Lighthouse ~100 (a11y/SEO/best-practices/agentic)
+    DESKTOP + MOBILE**.
+  • Perf: lazy-loaded the authed app (App + DashboardView→vega + every gated panel) off the landing
+    path → first-load **560KB → 247KB gz**.
+  • Theme: removed the cinematic-era cool leftovers (indigo WebGL field, synthwave grid, vignette,
+    grain, glow-blobs); dropped the unused three.js dep; warmed `--accent-press` + the vs/finalcta
+    sections. Brand: swept 4 platform-level "Uplift" refs → "Friesen Labs" (kept every "Uplift CRM").
+  Verified end-to-end: web unit **28/0**, Playwright e2e **7/7** (incl. zero-dead-anchors +
+  lazy-load conversion paths + focus-visible), browser QA (all 13 demo tabs render, mobile hamburger
+  ok, zero console errors). Living docs (CLAUDE/README/TODO) de-drifted from the removed cinematic
+  prose. DOMAIN staged to the single user step: Route53 zone + ACM validation CNAME are already in
+  place; cert is PENDING only because `friesenlabs.com` NS aren't yet delegated to the 4 Route53
+  nameservers — scheduled an hourly sweep to catch ISSUED and auto-run the TLS cutover.
 
 ## Lane Matt (app code) — log
 - 2026-06-10 — **LANE PRODUCT (real-mode tab build-out) — Pipeline · Contacts · Agents · Workflows · Reports:**
