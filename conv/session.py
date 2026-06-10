@@ -12,11 +12,18 @@ is injected. `today` is injected for deterministic date math.
 A turn returns a structured result:
   {answer, citations, pending_approvals, slots, delegations, session_id, tenant_id}
 
-Routing is intentionally simple and offline:
-  - a *knowledge* question -> agentic RAG with citations (conv.rag.answer).
-  - an *action* utterance (matched to a side-effecting Phase 4 tool) -> the tool is invoked, which —
-    by the Phase 4 base-class guarantee — routes a proposal to Greenlight WITHOUT performing the side
-    effect, surfacing a pending approval.
+Routing (TODO AI/P1 resolved — coordinator-driven on real runtimes):
+  - FakeRuntime ONLY (explicitly gated): the offline regex facade —
+      * a *knowledge* question -> agentic RAG with citations (conv.rag.answer).
+      * an *action* utterance (matched to a side-effecting Phase 4 tool) -> the tool is invoked,
+        which — by the Phase 4 base-class guarantee — routes a proposal to Greenlight WITHOUT
+        performing the side effect, surfacing a pending approval.
+  - Any real runtime (ManagedAgentsRuntime): tool selection comes from the COORDINATOR — the
+    `send_message` event digest carries the agent.custom_tool_use events + delegations. A
+    side-effecting tool the coordinator named is resolved through the TRUSTED registry and
+    invoked (=> Greenlight proposal, draft-only); read-only/unknown tool events are surfaced
+    untouched — the self-hosted worker executes read tools in the VPC, and an unknown name is
+    never default-allowed.
 """
 from __future__ import annotations
 
@@ -25,16 +32,16 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
-from agents.runtime import Session, get_runtime
-from agents.tools.base import ToolContext
+from agents.runtime import FakeRuntime, Session, get_runtime
+from agents.tools.base import Policy, ToolContext
 from agents.tools.sideeffecting import IssueQuote, SendEmail, UpdateDeal
 
 from .analytics import Analytics, Event, EventType
 from .rag import Answer, RagContext, answer as rag_answer
 from .slots import SlotContext, resolve_slots
 
-# Lightweight intent matching for the offline facade. The real front door lets the coordinator pick;
-# here we map a few obvious action verbs to the corresponding Phase 4 side-effecting tool.
+# Lightweight intent matching for the offline facade — FakeRuntime ONLY (explicitly gated in
+# send()). On a real runtime the coordinator picks the tools; this regex never runs there.
 _ACTION_TOOLS = {
     "send_email": (SendEmail, re.compile(r"\b(send|email|reach out|follow up with)\b", re.I)),
     "update_deal": (UpdateDeal, re.compile(r"\b(update|move|change)\b.*\bdeal\b", re.I)),
@@ -91,7 +98,9 @@ class Conversation:
         crm: Any = None,
         rag_crm: Any = None,
         cube: Any = None,
+        cortex: Any = None,
         synthesizer: Any = None,
+        spec_generator: Any = None,
         disambiguator: Any = None,
         greenlight: Any = None,
         analytics: Analytics | None = None,
@@ -105,7 +114,11 @@ class Conversation:
         self.crm = crm            # tool-side CRM/db client: .read(entity=, limit=), .set_tenant(...)
         self.rag_crm = rag_crm    # RAG-side CRM client: .read(tenant_id=, query=)
         self.cube = cube
+        self.cortex = cortex      # persistent per-tenant model registry (ml.registry) -> run_model
         self.synthesizer = synthesizer
+        # Default view-spec generator for build_view (ctx.extra['generate_spec']); None preserves
+        # build_view's explicit raise — a missing generator is a programming error, not a mode.
+        self.spec_generator = spec_generator
         self.disambiguator = disambiguator
         self.greenlight = greenlight
         self.analytics = analytics
@@ -116,8 +129,6 @@ class Conversation:
         # per-request provisioning the WorkspaceStore exists to avoid — it is allowed ONLY on
         # FakeRuntime; a real runtime without a coordinator_id means the tenant isn't provisioned.
         if coordinator_id is None:
-            from agents.runtime import FakeRuntime  # noqa: PLC0415 — local import keeps module cheap
-
             if not isinstance(self.runtime, FakeRuntime):
                 raise RuntimeError(
                     "coordinator_id is required on a non-fake runtime — resolve the tenant's "
@@ -138,13 +149,19 @@ class Conversation:
 
     # ------------------------------------------------------------------ helpers
     def _tool_ctx(self) -> ToolContext:
+        # Fresh extra dict per call — tool invocations must never share mutable context state.
+        extra: dict = {}
+        if self.spec_generator is not None:
+            extra["generate_spec"] = self.spec_generator
         return ToolContext(
             tenant_id=self.tenant_id,
             agent=self.agent,
             db=self.crm,
             cube=self.cube,
             rag=self.rag,
+            cortex=self.cortex,
             greenlight=self.greenlight,
+            extra=extra,
         )
 
     def _record(self, type: EventType, payload: dict) -> None:
@@ -174,18 +191,77 @@ class Conversation:
     def send(self, message: str, **action_kwargs: Any) -> Turn:
         """Forward one user message; return the structured turn.
 
-        `action_kwargs` carries any explicit args for a matched side-effecting tool (e.g. to/body for
-        send_email). In the real front door these come from slot resolution + the coordinator.
+        `action_kwargs` carries any explicit args for a side-effecting tool (e.g. to/body for
+        send_email) — they top up the coordinator's tool input on the real path, and feed the
+        regex-matched tool on the FakeRuntime facade.
         """
         self._record(EventType.UTTERANCE, {"text": message})
 
         slots, ambiguous = self._resolve_slots(message)
+
+        # EXPLICIT GATE (TODO AI/P1): the regex action-routing is the OFFLINE FACADE — FakeRuntime
+        # only. On any real runtime (ManagedAgentsRuntime) the coordinator picks the tools; its
+        # custom_tool_use events drive the routing below.
+        if not isinstance(self.runtime, FakeRuntime):
+            return self._handle_coordinator(message, slots, ambiguous, action_kwargs)
 
         action_name, tool_cls = self._match_action(message)
         if tool_cls is not None:
             return self._handle_action(message, action_name, tool_cls, slots, ambiguous, action_kwargs)
 
         return self._handle_knowledge(message, slots, ambiguous)
+
+    def _handle_coordinator(self, message, slots, ambiguous, action_kwargs) -> Turn:
+        """Real-runtime turn: tool selection comes from the COORDINATOR, never a local regex.
+
+        `send_message` (the MA stream-first/drain-to-idle adapter) returns the event digest:
+        answer text, delegations (session.thread_created), and agent.custom_tool_use events
+        surfaced as pending entries `{status, tool, input, custom_tool_use_id}`. Routing:
+
+        - a SIDE-EFFECTING tool named by the coordinator resolves through the TRUSTED registry
+          and is invoked — the Phase 4 base class routes a proposal to Greenlight WITHOUT
+          performing the side effect (draft-only stays guaranteed);
+        - read-only tool events pass through untouched (the self-hosted worker executes read
+          tools in the VPC — this facade never re-runs them);
+        - an UNKNOWN tool name is never default-allowed: the event is surfaced as-is, nothing
+          resolves or executes.
+        """
+        from agents.tools.registry import get_tool  # noqa: PLC0415 — trusted server-side registry
+
+        resp = self.runtime.send_message(self.session, message)
+
+        pending: list[dict] = []
+        for event in resp.get("pending_approvals") or []:
+            name = event.get("tool") if isinstance(event, dict) else None
+            tool_cls = get_tool(name) if name else None
+            if tool_cls is None or tool_cls.policy is not Policy.ALWAYS_ASK:
+                pending.append(event)  # read-only/unknown: surfaced, never executed here
+                continue
+            kwargs = dict(event.get("input") or {})
+            kwargs.update(action_kwargs)  # explicit caller args win (parity with the facade)
+            out = tool_cls().invoke(self._tool_ctx(), **kwargs)
+            self._record(EventType.TOOL_CALL, {"tool": name, "status": out.get("status")})
+            if out.get("status") == "pending_approval":
+                approval = out.get("approval")
+                if approval is not None:
+                    pending.append(approval)
+                    self._record(EventType.APPROVAL, {"approval_id": approval.get("id"), "action": name})
+                else:
+                    # Greenlight unconfigured — still surface the proposal; nothing silently runs.
+                    pending.append({"status": "pending", "proposal": out.get("proposal")})
+
+        answer = resp.get("answer") or ""
+        if not answer and pending:
+            answer = "Prepared an action for your approval."
+        return Turn(
+            answer=answer,
+            pending_approvals=pending,
+            slots=slots,
+            needs_disambiguation=ambiguous,
+            delegations=resp.get("delegations", []),
+            session_id=self.session.id,
+            tenant_id=self.tenant_id,
+        )
 
     def _handle_action(self, message, action_name, tool_cls, slots, ambiguous, action_kwargs) -> Turn:
         ctx = self._tool_ctx()

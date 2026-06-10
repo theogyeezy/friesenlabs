@@ -29,6 +29,7 @@ from fastapi import HTTPException
 
 from agents.runtime import FakeRuntime, get_runtime
 from agents.tools.base import ToolContext
+from agents.tools.spec_generator import AnthropicSpecGenerator
 from agents.workspace_store import PgWorkspaceStore, WorkspaceStore
 from api.app import ApiDeps, create_app
 from api.auth import CognitoJwtVerifier, JwtVerifier
@@ -39,6 +40,7 @@ from api.pg_clients import PgCrmClient, PgRagClient
 from api.views import PgSavedViewStore, SavedViews
 from conv.session import Conversation
 from conv.synthesizer import AnthropicSynthesizer
+from ml.registry import registry_from_env
 from shared.config import ENV_ANTHROPIC_API_KEY, dsn_from_env
 
 
@@ -66,7 +68,9 @@ def make_conversation_factory(
     rag: Any = None,
     crm: Any = None,
     rag_crm: Any = None,
+    cortex: Any = None,
     synthesizer: Any = None,
+    spec_generator: Any = None,
     today: Callable[[], date] | None = None,
 ) -> Callable[[str], Any]:
     """Build the `/chat` conversation factory: tenant_id -> Conversation | None.
@@ -115,7 +119,9 @@ def make_conversation_factory(
             rag=rag,
             crm=db,
             rag_crm=rag_crm,
+            cortex=cortex,                  # persistent Cortex registry -> run_model scores live
             synthesizer=synthesizer,
+            spec_generator=spec_generator,  # default ctx.extra['generate_spec'] for build_view
             greenlight=greenlight,
         )
 
@@ -128,6 +134,8 @@ def make_executor(
     crm: Any = None,
     rag: Any = None,
     cube: Any = None,
+    cortex: Any = None,
+    spec_generator: Any = None,
 ) -> Callable[[Action], Any]:
     """Build the real tool executor: dispatch through `agents.tools.registry` with a ToolContext
     bound to the action's tenant.
@@ -152,13 +160,19 @@ def make_executor(
             )
         # Fresh per-call DB adapter (PgCrmClient.binding()) so tenant state is never shared.
         db = crm.binding() if hasattr(crm, "binding") else crm
+        # Fresh extra dict per call — tool invocations must never share mutable context state.
+        extra: dict = {}
+        if spec_generator is not None:
+            extra["generate_spec"] = spec_generator  # default build_view generator (env-guarded)
         ctx = ToolContext(
             tenant_id=tenant_id,
             agent=action.agent,
             db=db,
             cube=cube,
             rag=rag,
+            cortex=cortex,  # persistent per-tenant model registry (ml.registry) -> run_model
             greenlight=greenlight,
+            extra=extra,
         )
         return tool.invoke(ctx, **(action.payload or {}))
 
@@ -179,6 +193,15 @@ def _managed_runtime_factory(api_key: str) -> Callable[[dict], Any]:
 
 
 def build_app():
+    # Persistent Cortex registry (S3 wins over LocalFs; all-unset -> None and run_model degrades
+    # cleanly) + the default view-spec generator. Both are env-built, lazy, and offline-safe: the
+    # registry touches no AWS until first blob access, and the generator is constructed ONLY when
+    # the org key is present — without it, ctx.extra carries no 'generate_spec' and build_view
+    # keeps its explicit raise (the current unconfigured behavior, preserved).
+    cortex = registry_from_env()
+    api_key = os.environ.get(ENV_ANTHROPIC_API_KEY)
+    spec_generator = AnthropicSpecGenerator(api_key=api_key) if api_key else None
+
     # Aurora-backed stores when a crm_app DSN is configured; else in-memory (boots for /healthz).
     dsn = dsn_from_env()
     if dsn:
@@ -188,7 +211,8 @@ def build_app():
         crm = PgCrmClient(dsn)
         rag = PgRagClient(dsn)
         # Real tool executor: registry dispatch with tenant-bound clients (RLS via SET LOCAL).
-        executor = make_executor(greenlight=greenlight, crm=crm, rag=rag)
+        executor = make_executor(greenlight=greenlight, crm=crm, rag=rag,
+                                 cortex=cortex, spec_generator=spec_generator)
     else:
         greenlight = Greenlight()
         saved_views = SavedViews()
@@ -198,7 +222,6 @@ def build_app():
 
     # /chat factory needs BOTH the DB (workspace rows + tool clients) and the org Anthropic key
     # (API task only — never the worker). Without either, /chat keeps returning the graceful 503.
-    api_key = os.environ.get(ENV_ANTHROPIC_API_KEY)
     if dsn and api_key and workspace_store is not None:
         conversation_factory = make_conversation_factory(
             workspace_store=workspace_store,
@@ -206,7 +229,9 @@ def build_app():
             greenlight=greenlight,
             rag=rag,
             crm=crm,
+            cortex=cortex,
             synthesizer=AnthropicSynthesizer(api_key=api_key),
+            spec_generator=spec_generator,
         )
     else:
         conversation_factory = lambda tenant_id: None  # noqa: E731 — unconfigured: /chat 503
