@@ -545,3 +545,11 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   the RAG embed leg ImportError in the live image. `ingest/` is stdlib-only at import time; its
   lazy deps (boto3/psycopg2) are already in `requirements-api.txt`. arm64 image build verified
   locally. Next: roll the api image to current main via deploy.yml (live is 44 commits stale).
+- 2026-06-10 — **Cycle 5 (step 5/10, worker go-live):** uplift-worker image built (arm64, immutable
+  sha tags) + `module.worker` applied targeted (5 pure adds: service/task-def/log-groups +
+  `worker_absent` alarm). First task crash-looped: `worker.py run()` lazy-imports
+  `api.control.greenlight` + `api.pg_clients` (→ `ingest.embed`) which the worker image omitted —
+  fixed with `COPY api/ ./api/` + `COPY ingest/ ./ingest/` (local container run reaches the real
+  Anthropic env poll loop). tfvars synced: machine + worktree + GH secret `PROD_AUTO_TFVARS_B64`
+  (also fixed stale `api_image` e0794bc→682b2ea there). Verify: workers_polling + alarm pending
+  the fixed-image roll.
