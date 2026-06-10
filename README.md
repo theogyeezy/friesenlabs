@@ -63,10 +63,10 @@ Everything that can be built and tested offline is done, and a final adversarial
 | ✅ **Live & working** | crm-app-db secrets rotation (30-day, controlled-window procedure) | rotation executed + services rolled + verified | — |
 | ✅ **Live & working** | CI/CD: OIDC deploy pipeline (build→plan→approved apply→roll) | **proven end-to-end**; prod runs current `main` | — |
 | ✅ **Live & working** | Cloud Map (`cube.uplift.local`) + cube semantic model + ECS Exec | verified end-to-end | — |
-| ✅ **Live & working** | Provisioning Lambda + Step Functions (pinned ARNs, idempotent executions) | applied + smoked all-stub | signup go-live values (Stripe/Resend/admin key) |
-| 🟙 **Half-live** | AI / agent plane: MA environment live, org key + env-id on the API task, `/chat` reaches auth (401) | MA SDK shapes verified; env `uplift-prod` created | env-key Console click (worker), conversation wiring (app) |
+| ✅ **Live & working** | Provisioning Lambda + Step Functions; **signup real-deps flipped** (Stripe/Resend/Anthropic-admin/webhook secrets on the API task, real clients wired — no `_Stub`/`_Noop`) | `signup_real_deps` live | — |
+| ✅ **Live & working** | AI / agent plane: provisions a 7-agent roster + coordinator, `/chat` answers + delegates, draft-only Greenlight held; worker **2/2 polling** | `scripts/verify_agent_plane.py` PASSED live 2026-06-10; caught + fixed a `bedrock:InvokeModel` (Titan embed) IAM gap | seed a tenant corpus for a positive grounding citation (TODO) |
 | 🟙 **Authored, gated** | Ingest scheduler (nightly EventBridge → Fargate `run_sync`) | applied, rule DISABLED | `ingest_tenants` + enable flip |
-| ⛔ **Not live** | Worker service; signup real-deps (Stripe/Resend/Cognito admin) | gated flags off | env-key + webhook-secret + admin-key values |
+| ⛔ **Not live** | Cortex retrain pipeline; API → 2-task HA + autoscaling | authored `validate`-clean / cost-parked vs the $200 ceiling | cortex job unapplied; API-scale flip when the ceiling moves |
 | 🟙 **Pending** | friesenlabs.com TLS (Route53 zone + wildcard ACM applied) | cert PENDING_VALIDATION | Squarespace NS cutover, then ALB TLS cutover |
 
 Applied to AWS account 186052668426 (us-east-1) under a $200 budget alarm; Terraform state in S3 (KMS). Edge hardened with WAFv2 (managed rules + rate limit), HSTS, and access logging; Cognito is provisioning-only with deletion protection.
@@ -87,10 +87,13 @@ those plugins come along. Repo-local skills (if any) live in `.claude/skills/` a
 
 ## Safety constraints (in force)
 
-- **No live cloud creation.** All IaC is authored and `terraform validate`-clean; nothing is
-  `apply`-ed. Steps needing live AWS are marked `BLOCKED: needs Nick` in BUILD_STATUS.md.
-- **Draft-only.** No real email/SMS/CRM write executes against real data — all sends are gated
-  behind Greenlight stubs.
+- **Live cloud mutation is Lane Nick only.** The stack IS applied + live (real money, acct
+  186052668426, us-east-1). Lane Nick applies from merged `main` after a reviewed plan showing no
+  unintended change/destroy; Lane Matt (app code) authors + `terraform validate` only and marks
+  live steps `BLOCKED: Lane Nick`.
+- **Draft-only.** No real email/SMS/CRM write executes against real data — every send routes through
+  the Greenlight gate (proven by the live agent-plane verify: an approved + executed `send_email`
+  produced only a proposal, no real send left the building).
 - **Secrets** live in AWS Secrets Manager / env refs, never in the repo.
 
 ## Developing

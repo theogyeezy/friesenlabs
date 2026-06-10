@@ -21,7 +21,7 @@ short-lived `feat/…` PRs — see `CONTRIBUTING.md`).
 (acct 186052668426, us-east-1) under a $200 budget alarm. Live path: **browser → Amplify (Vite SPA,
 real mode) → CloudFront → ALB (HTTP) → arm64 Fargate API → Aurora** (FORCE'd RLS) with real Cognito
 JWKS auth. **Browser-verified end-to-end:** sign-in gate → Hosted UI (PKCE) → code exchange →
-app shell → real RLS-scoped tenant rows. Unauth `/api/*` → 401; `/chat` → graceful 503 (AI parked).
+app shell → real RLS-scoped tenant rows. Unauth `/api/*` → 401; **`/chat` is LIVE** — the agent plane provisions a 7-agent roster + coordinator, answers and delegates, with draft-only Greenlight gating proven end-to-end (live verify 2026-06-10).
 - ✅ **Login:** Cognito Hosted UI + PKCE in `web/src/auth/`; demo creds in `uplift/demo-user`.
 - ✅ **Landing (overhauled 2026-06-10):** an **"Editorial & warm"** marketing page — cream paper,
   one warm-clay accent, **Fraunces** serif display, mono eyebrows with section numerals, hairline
@@ -47,15 +47,22 @@ app shell → real RLS-scoped tenant rows. Unauth `/api/*` → 401; `/chat` → 
   scoped S3 data events + ALB access logs; IAM tightening (exact-ARN api task secrets, no SFN
   wildcard); provisioning Lambda + pinned SFN (idempotent executions, smoked all-stub); ingest
   scheduler applied DISABLED; prod isolation gate PASSED live as `crm_app`; baseline plan CLEAN.
-- 🟙 **AI plane half-live:** MA SDK shapes VERIFIED real (managed-agents-2026-04-01); environment
-  `uplift-prod` (env_012JvqRKUZzUDeH3Gse6TBgZ) live; org key + env-id on the API task (rev 6, current `main` image);
-  `/chat` 401-unauth (conversation wiring = app side). Worker blocked on the Console-generated
-  environment key (`uplift/env-key`).
+- ✅ **AI/agent plane LIVE + verified (2026-06-10):** MA env `uplift-prod` (env_012JvqRKUZzUDeH3Gse6TBgZ)
+  live; org key + env-id + `SIGNUP_REAL_DEPS=1` on the API task (rev 10); the real
+  `signup.agent_plane.AgentPlaneEnsure` is wired (not `_Noop`). `scripts/verify_agent_plane.py` PASSED
+  live: provision 7 specialists + coordinator → coordinator answer + delegation → Greenlight
+  approve/execute with the **draft-only guarantee held** (no real send). **Worker 2/2 polling; cube
+  live.** A RAG-embed IAM gap (`bedrock:InvokeModel` on Titan, missing from the api+worker roles) was
+  caught by the verify and FIXED live. Grounding plumbing is green (no-uncited-claim invariant holds);
+  a positive citation just needs a seeded tenant corpus (see `TODO.md`).
 - 🟙 **Domain:** friesenlabs.com bought (Squarespace); Route53 zone + wildcard ACM applied,
   PENDING_VALIDATION until the registrar NS cutover; ALB TLS cutover follows (RUNBOOK sequence).
-- ⛔ **Parked on values:** signup go-live (`uplift/stripe-webhook-secret` from the Stripe
-  dashboard, `uplift/anthropic-admin-key` after the VERIFY pass) — flags `api_signup_env` then
-  `signup_real_deps`; worker deploy (env-key + cost). (SNS email sub now CONFIRMED.)
+- ✅ **Signup/provisioning go-live DONE:** `api_signup_env` + `signup_real_deps` flipped; Stripe/Resend/
+  Anthropic-admin/webhook secrets present on the API task; the real provisioning clients are wired (no
+  `_Stub`/`_Noop`). Worker deployed (env-key present). (SNS email sub CONFIRMED.)
+- ⛔ **Still gated on the account owner:** delegate `friesenlabs.com` NS to the 4 Route53 nameservers
+  → cert validates → ALB TLS cutover (sequence in RUNBOOK; an hourly Lane-Nick sweep watches the cert
+  and auto-runs it, then repoints `og:image` + canonical to the real domain).
 - **Ops:** state in S3 (KMS); machine-local `infra/prod.auto.tfvars` carries the live values +
   go-live flags — full applies allowed only against a re-verified clean plan; targeted applies
   are the norm. One-off tasks run via the `uplift-migrate-oneoff` task-def family. Runbook:
@@ -67,9 +74,10 @@ app shell → real RLS-scoped tenant rows. Unauth `/api/*` → 401; `/chat` → 
   limit) + access logging + HSTS + PriceClass_100; Cognito deletion-protection + admin-create-only +
   7-day refresh; AWS provider pin `~> 6.49`; ECS deployment circuit breakers (auto-rollback); ECR
   lifecycle policies; Aurora pg-log retention 30d; CI permissions block; `.stignore` parity. TODO.md
-  swept (25 done items checked off + a Lane-Nick completion-status block). Four irreducible
-  remainders need owner-only actions (BUILD_STATUS): env-key Console click → worker; Squarespace NS
-  → TLS; Stripe webhook secret → signup; Anthropic admin key.
+  swept (25 done items checked off + a Lane-Nick completion-status block). Of the four owner-gated
+  remainders, **three are now satisfied** (env-key → worker live 2/2; Stripe webhook secret +
+  Anthropic admin key → signup go-live done). The **one left is yours**: delegate Squarespace NS
+  → the 4 Route53 nameservers → the ALB TLS cutover (a sweep watches the cert and auto-runs it).
 **Tooling:** `.claude/settings.json` enables the official-marketplace plugins so collaborators inherit
 them on clone+trust. Don't commit secrets to it.
 
