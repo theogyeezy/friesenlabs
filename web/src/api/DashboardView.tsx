@@ -5,9 +5,10 @@
 // from the API client (mock mode for tests).
 
 import React from "react";
-import { ApiClient, defaultClient } from "./client";
+import { ApiClient, ApiError, defaultClient, friendlyErrorMessage } from "./client";
 import { SpecRenderer } from "../dashboard/SpecRenderer";
 import { sampleLoadData } from "../dashboard/sample";
+import { Spinner } from "./Spinner";
 
 const { useState, useEffect, useCallback } = React;
 
@@ -20,18 +21,31 @@ export function DashboardView({ client, viewId = "demo_pipeline" }: DashboardVie
   const api = client ?? defaultClient();
   const [spec, setSpec] = useState<Record<string, unknown> | null>(null);
   const [version, setVersion] = useState<number | null>(null);
+  const [loading, setLoading] = useState(true);
+  // True when the tenant simply has no saved view yet (a 404, not a failure).
+  const [empty, setEmpty] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [savedNote, setSavedNote] = useState<string | null>(null);
 
   const load = useCallback(async () => {
+    setLoading(true);
     setError(null);
+    setEmpty(false);
     try {
       const row = await api.getView(viewId);
       setSpec(row.spec_json);
       setVersion(row.version);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not load this view.");
+      if (e instanceof ApiError && e.status === 404) {
+        // A fresh tenant with no saved views is the normal empty state,
+        // not an error.
+        setEmpty(true);
+      } else {
+        setError(friendlyErrorMessage(e, "Couldn't load this view. Please try again."));
+      }
+    } finally {
+      setLoading(false);
     }
   }, [api, viewId]);
 
@@ -52,7 +66,7 @@ export function DashboardView({ client, viewId = "demo_pipeline" }: DashboardVie
       setSavedNote(`Saved as version ${row.version}`);
       window.setTimeout(() => setSavedNote(null), 2500);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not save this view.");
+      setError(friendlyErrorMessage(e, "Couldn't save this view. Please try again."));
     } finally {
       setSaving(false);
     }
@@ -94,16 +108,64 @@ export function DashboardView({ client, viewId = "demo_pipeline" }: DashboardVie
       </div>
 
       {error && (
-        <div data-testid="dashboard-error" style={{ color: "var(--rose, #b4413b)", fontSize: 13, marginBottom: 12 }}>
-          {error}
+        <div
+          data-testid="dashboard-error"
+          style={{
+            border: "1px solid var(--rose, #b4413b)",
+            background: "var(--surface, #fff)",
+            borderRadius: 14,
+            padding: "18px 20px",
+            marginBottom: 12,
+            fontSize: 13.5,
+          }}
+        >
+          <div style={{ fontWeight: 700, marginBottom: 4 }}>Something needs another try</div>
+          <p style={{ color: "var(--ink-3, #8a8278)", lineHeight: 1.5 }}>{error}</p>
+          {!loading && (
+            <button
+              data-testid="dashboard-retry"
+              onClick={() => void load()}
+              style={{
+                marginTop: 10,
+                padding: "7px 14px",
+                borderRadius: 8,
+                border: "1px solid var(--line, #ccc)",
+                background: "#fff",
+                cursor: "pointer",
+                fontSize: 13,
+              }}
+            >
+              Try again
+            </button>
+          )}
         </div>
       )}
 
-      {spec ? (
-        <SpecRenderer spec={spec} loadData={sampleLoadData} />
-      ) : (
-        !error && <div data-testid="dashboard-loading">Loading view...</div>
+      {loading && <Spinner testid="dashboard-loading" label="Loading view..." />}
+
+      {!loading && empty && (
+        <div
+          data-testid="dashboard-empty"
+          style={{
+            border: "1px solid var(--line, #e3ddd3)",
+            background: "var(--surface, #fff)",
+            borderRadius: 14,
+            padding: "26px 24px",
+            textAlign: "center",
+            color: "var(--ink-3, #8a8278)",
+          }}
+        >
+          <div style={{ fontSize: 15, fontWeight: 700, color: "var(--ink, #2a2622)" }}>
+            No saved views yet
+          </div>
+          <p style={{ fontSize: 13, marginTop: 6, lineHeight: 1.5 }}>
+            Ask your agents for a metric or chart, then save it. Saved views land here, versioned,
+            for the whole workspace.
+          </p>
+        </div>
       )}
+
+      {!loading && spec && <SpecRenderer spec={spec} loadData={sampleLoadData} />}
     </div>
   );
 }

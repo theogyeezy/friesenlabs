@@ -3,6 +3,15 @@ import React from "react";
 import "./globals";
 import { SafeHtml } from "./lib/SafeHtml";
 import { useAuth } from "./auth/AuthContext";
+// API-wired surfaces (real mode). When the build runs against the real control
+// plane (VITE_API_MOCK=0), the primary nav surfaces — Command Center,
+// Greenlight, Ask agents — mount these ApiClient-backed components with honest
+// loading/empty/error states instead of the FLStore prototype screens. The
+// prototype stays reachable only in mock mode.
+import { isApiMock } from "./api/client";
+import GreenlightQueue from "./api/GreenlightQueue";
+import DashboardView from "./api/DashboardView";
+import ChatDock from "./api/ChatDock";
 const { useState, useEffect, useRef, useMemo, useCallback, useLayoutEffect, useReducer, useContext, useImperativeHandle, useId } = React;
 const { Icon, Logo, FL_DATA, FLStore, useStore, askClaude, bizContext, confettiBurst, XPBadge, useCountUp, CountUp, AreaChart, Sparkline, LoadBars, Donut, SlideOver, CommandPalette, HEAT, fmtMoney, StatCard, ToneIco, FLflag, useTweaks, TweaksPanel, TweakSection, TweakRow, TweakSlider, TweakToggle, TweakRadio, TweakSelect, TweakText, TweakNumber, TweakColor, TweakButton, FoxDemo, KanbanDemo, WorkflowDemo, GreenlightDemo, CommandDemo, IntegrationDemo, SupportDemo, SecurityDemo, SidecarDemo, CortexDemo } = window as any;
 // app.jsx, shell: sidebar, topbar, routing, tweaks, palette
@@ -35,8 +44,42 @@ const ComingSoon = ({ title, icon }) => (
   </div>
 );
 
+// Slide-over panel hosting the API-wired ChatDock in real mode. Reuses the
+// prototype's .chat/.scrim chrome so "Ask agents" feels identical, but the
+// content is the real /chat surface (grounded answers, citations, honest
+// "Agents unavailable" copy on 503). Stays mounted so the thread survives
+// close/reopen, exactly like the prototype AgentChat.
+function RealChatPanel({ open, onClose }) {
+  useEffect(() => {
+    if (!open) return;
+    const k = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", k);
+    return () => window.removeEventListener("keydown", k);
+  }, [open, onClose]);
+  return (
+    <>
+      <div className={"scrim" + (open ? " show" : "")} style={{ pointerEvents: open ? "auto" : "none" }} onClick={onClose} />
+      <div className={"chat" + (open ? " show" : "")} data-testid="real-chat-panel" aria-hidden={!open}>
+        <div className="chat-head">
+          <div style={{ flex: 1 }}>
+            <b style={{ fontSize: 14.5, fontWeight: 700, display: "flex", alignItems: "center", gap: 7 }}>Ask your agents</b>
+            <span style={{ fontSize: 11.5, color: "var(--ink-3)" }}>grounded answers with citations</span>
+          </div>
+          <button className="icon-btn" onClick={onClose}><Icon name="x" size={18} /></button>
+        </div>
+        <div className="chat-body" style={{ padding: 0 }}>
+          <ChatDock embedded />
+        </div>
+      </div>
+    </>
+  );
+}
+
 function App() {
   const { STAGES, NAV, NAV_CRM, NAV_AGENTS, NAV_CONNECT, NAV2, FEED_LIVE } = window.FL_DATA;
+  // Real mode (VITE_API_MOCK=0): primary surfaces read through the ApiClient.
+  // Mock mode keeps the full FLStore prototype experience.
+  const realMode = !isApiMock();
   const agents = useStore((s) => s.agents);
   const pendingCount = useStore((s) => s.greenlight.filter((i) => i.status === "pending").length);
   const gamifyOn = useStore((s) => s.gamifyOn);
@@ -146,7 +189,9 @@ function App() {
         <div className="nav-section-label">Workspace</div>
         <nav className="nav">
           {NAV.filter((n) => n.id !== "sell" || gamifyOn).map((n) => {
-            const badge = n.id === "approvals" ? (pendingCount || null) : n.badge;
+            // In real mode the FLStore pending count is prototype data, not the
+            // tenant's queue — show no badge rather than a fake number.
+            const badge = n.id === "approvals" ? (realMode ? null : pendingCount || null) : realMode ? null : n.badge;
             return (
               <button key={n.id} className={"nav-item" + (route === n.id ? " active" : "")} onClick={() => navTo(n.id)}>
                 <span className="nav-ico"><Icon name={n.icon} size={18} /></span>
@@ -307,7 +352,7 @@ function App() {
         )}
 
         <div className="viewport">
-          {route === "dashboard" && <Dashboard agents={agents} onNavigate={navTo} />}
+          {route === "dashboard" && (realMode ? <DashboardView /> : <Dashboard agents={agents} onNavigate={navTo} />)}
           {route === "crm" && <CRM agents={agents} onOpen={setDeal} onNavigate={navTo} />}
           {route === "contacts" && <Contacts agents={agents} onNavigate={navTo} onOpenDeal={setDeal} />}
           {route === "billing" && <Billing agents={agents} onNavigate={navTo} />}
@@ -318,7 +363,7 @@ function App() {
           {route === "sell" && <Sell agents={agents} gamifyOn={gamifyOn} onNavigate={navTo} onOpenDeal={(d) => { navTo("crm"); setDeal(d); }} />}
           {route === "frontline" && <Frontline agents={agents} />}
           {route === "workflows" && <WorkflowBuilder agents={agents} />}
-          {route === "approvals" && <Greenlight agents={agents} />}
+          {route === "approvals" && (realMode ? <GreenlightQueue /> : <Greenlight agents={agents} />)}
           {route === "agents" && <AgentsConsole agents={agents} />}
           {route === "sidecar" && <Sidecar agents={agents} onNavigate={navTo} />}
           {route === "cortex" && <Cortex agents={agents} onNavigate={navTo} />}
@@ -331,7 +376,9 @@ function App() {
       </div>
 
       <SlideOver deal={deal} agents={agents} stages={STAGES} onClose={() => setDeal(null)} />
-      <AgentChat open={chat} agents={agents} onClose={() => setChat(false)} />
+      {realMode
+        ? <RealChatPanel open={chat} onClose={() => setChat(false)} />
+        : <AgentChat open={chat} agents={agents} onClose={() => setChat(false)} />}
       <CommandPalette open={cmdk} onClose={() => setCmdk(false)} onNavigate={navTo} onChat={() => setChat(true)} onSetup={() => setOnb(true)} onTour={() => setTour(true)} />
       {onb && <Onboarding agents={agents} onDone={finishOnb} />}
       {tour && !onb && <ProductTour onNavigate={navTo} onClose={finishTour} />}
@@ -356,7 +403,7 @@ function App() {
         </div>
       )}
       {route === "reports" && <DataAssistant surface="reports" onNavigate={navTo} />}
-      {route === "dashboard" && <DataAssistant surface="dashboard" onNavigate={navTo} />}
+      {route === "dashboard" && !realMode && <DataAssistant surface="dashboard" onNavigate={navTo} />}
 
       {/* tweaks */}
       <TweaksPanel>

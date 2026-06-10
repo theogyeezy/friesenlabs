@@ -202,18 +202,42 @@ export interface ApiClientConfig {
 }
 
 /**
- * Resolve config from the Vite environment. VITE_API_MOCK enables mock mode;
- * it defaults ON when unset so tests and local previews run offline. In real
- * mode with Cognito configured, the token callbacks wire to the auth layer:
- * the ID token is read (and refreshed) per request, never snapshotted into
- * the client. In mock/unconfigured builds no callback is wired, so the auth
- * layer stays fully inert.
+ * The single source of truth for the mock flag. VITE_API_MOCK defaults ON when
+ * unset so tests and local previews run offline; "0"/"false" builds real mode.
+ *
+ * TEST SEAM: a `?apimock=0` URL param forces REAL mode at runtime, so offline
+ * Playwright specs can stub fetch (page.route) and exercise the loading/empty/
+ * error paths against a mock-built bundle. The param can only DISABLE mock —
+ * a real (production) build can never be flipped back to canned fixtures from
+ * the URL, and the auth layer keys off the build env alone (auth/cognito.ts),
+ * so the seam never activates Cognito either.
  */
-export function configFromEnv(): ApiClientConfig {
+export function apiMockEnabled(): boolean {
   const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {};
   const mockFlag = env.VITE_API_MOCK;
   // Mock unless explicitly disabled with "0" / "false".
   const mock = mockFlag === undefined ? true : !(mockFlag === "0" || mockFlag === "false");
+  if (!mock) return false;
+  const search = typeof window !== "undefined" ? window.location.search : "";
+  if (/[?&]apimock=0(?:&|$)/.test(search)) return false;
+  return true;
+}
+
+/** True when app surfaces should mount the mock/prototype experience. */
+export function isApiMock(): boolean {
+  return apiMockEnabled();
+}
+
+/**
+ * Resolve config from the Vite environment (mock flag semantics above). In
+ * real mode with Cognito configured, the token callbacks wire to the auth
+ * layer: the ID token is read (and refreshed) per request, never snapshotted
+ * into the client. In mock/unconfigured builds no callback is wired, so the
+ * auth layer stays fully inert.
+ */
+export function configFromEnv(): ApiClientConfig {
+  const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {};
+  const mock = apiMockEnabled();
   const config: ApiClientConfig = {
     baseURL: env.VITE_API_BASE_URL ?? "",
     mock,
@@ -363,6 +387,73 @@ export class ApiError extends Error {
     this.status = status;
     this.detail = detail;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Friendly error copy.
+//
+// Raw transport errors must NEVER reach the user: not ApiError's
+// "API <code>: <detail>" message, not fetch's "Failed to fetch", not a bare
+// HTTP statusText. Every surface catch block routes through this mapper.
+// ---------------------------------------------------------------------------
+
+export const NETWORK_ERROR_MESSAGE =
+  "Can't reach Uplift right now. Check your connection and try again.";
+
+// When an error body isn't JSON, ApiError.detail falls back to the HTTP
+// statusText. Those bare phrases are not user copy — map them to the fallback.
+const BARE_STATUS_TEXTS = new Set([
+  "bad request",
+  "unauthorized",
+  "forbidden",
+  "not found",
+  "method not allowed",
+  "conflict",
+  "unprocessable entity",
+  "unprocessable content",
+  "too many requests",
+  "internal server error",
+  "bad gateway",
+  "service unavailable",
+  "gateway timeout",
+  "",
+]);
+
+/**
+ * Map any caught error to copy fit for the user. ApiError statuses get
+ * specific phrasing; remaining 4xx surface the server's human-authored
+ * `detail` when present (e.g. "approval 3 not pending"); network failures get
+ * connection copy; anything else gets the caller's contextual fallback.
+ */
+export function friendlyErrorMessage(
+  e: unknown,
+  fallback = "Something went wrong. Please try again.",
+): string {
+  if (e instanceof ApiError) {
+    switch (e.status) {
+      case 401:
+        return "Your session has ended. Please sign in again.";
+      case 403:
+        return "You don't have permission to do that in this workspace.";
+      case 429:
+        return "Too many requests right now. Give it a moment and try again.";
+      case 503:
+        return "That part of Uplift isn't available right now. Please try again shortly.";
+    }
+    if (e.status >= 500) {
+      return "Something went wrong on our side. Please try again in a moment.";
+    }
+    // Remaining 4xx (400/404/409/422...): the API authors human-readable
+    // detail strings — surface them, but never the raw "API <code>" message
+    // and never a bare statusText (the non-JSON-body fallback).
+    if (e.detail && !BARE_STATUS_TEXTS.has(e.detail.trim().toLowerCase())) {
+      return e.detail;
+    }
+    return fallback;
+  }
+  // fetch() rejects with a TypeError on network failure / CORS / DNS.
+  if (e instanceof TypeError) return NETWORK_ERROR_MESSAGE;
+  return fallback;
 }
 
 export class ApiClient {

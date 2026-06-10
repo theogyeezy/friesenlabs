@@ -3,7 +3,8 @@
 // answer so Playwright runs offline. No token or payload is ever rendered.
 
 import React from "react";
-import { ApiClient, ApiError, defaultClient, type Citation } from "./client";
+import { ApiClient, ApiError, defaultClient, friendlyErrorMessage, type Citation } from "./client";
+import { Spinner } from "./Spinner";
 
 const { useState, useCallback } = React;
 
@@ -11,13 +12,20 @@ interface Message {
   who: "me" | "agent";
   text: string;
   citations?: Citation[];
+  /** True for friendly error copy rendered as an agent bubble. */
+  error?: boolean;
 }
 
 export interface ChatDockProps {
   client?: ApiClient;
+  /**
+   * When mounted inside the shell's slide-over panel (which carries its own
+   * "Ask your agents" header), suppress the standalone heading.
+   */
+  embedded?: boolean;
 }
 
-export function ChatDock({ client }: ChatDockProps) {
+export function ChatDock({ client, embedded = false }: ChatDockProps) {
   const api = client ?? defaultClient();
   const [msgs, setMsgs] = useState<Message[]>([
     {
@@ -40,16 +48,14 @@ export function ChatDock({ client }: ChatDockProps) {
         setMsgs((m) => [...m, { who: "agent", text: res.answer, citations: res.citations }]);
       } catch (e) {
         // The agent plane is parked until the Managed runtime is connected;
-        // /chat returns 503 in that state (api/app.py). Show friendly copy
-        // instead of the raw "API 503: ..." error string.
+        // /chat returns 503 in that state (api/app.py). Every error renders
+        // friendly copy — the raw "API <code>: <detail>" string never does.
         const text =
           e instanceof ApiError && e.status === 503
-            ? "The agent runtime isn't connected yet, so chat is offline for now. " +
-              "Everything else keeps working — check back soon."
-            : e instanceof Error
-              ? e.message
-              : "Something went wrong.";
-        setMsgs((m) => [...m, { who: "agent", text }]);
+            ? "Agents unavailable — the agent runtime isn't connected yet, so chat " +
+              "is offline for now. Everything else keeps working; check back soon."
+            : friendlyErrorMessage(e, "The agents couldn't answer that one. Please try again.");
+        setMsgs((m) => [...m, { who: "agent", text, error: true }]);
       } finally {
         setSending(false);
       }
@@ -70,13 +76,16 @@ export function ChatDock({ client }: ChatDockProps) {
         gap: 14,
       }}
     >
-      <h1 style={{ fontSize: 20, fontWeight: 740, letterSpacing: "-.02em" }}>Ask your agents</h1>
+      {!embedded && (
+        <h1 style={{ fontSize: 20, fontWeight: 740, letterSpacing: "-.02em" }}>Ask your agents</h1>
+      )}
 
       <div data-testid="chat-body" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
         {msgs.map((m, i) => (
           <div
             key={i}
             data-testid={m.who === "me" ? "chat-msg-me" : "chat-msg-agent"}
+            data-error={m.error ? "1" : undefined}
             style={{ alignSelf: m.who === "me" ? "flex-end" : "flex-start", maxWidth: "92%" }}
           >
             <div
@@ -117,6 +126,12 @@ export function ChatDock({ client }: ChatDockProps) {
             )}
           </div>
         ))}
+
+        {sending && (
+          <div style={{ alignSelf: "flex-start" }}>
+            <Spinner testid="chat-busy" size={16} label="Asking your agents..." />
+          </div>
+        )}
       </div>
 
       <div style={{ display: "flex", gap: 8 }}>

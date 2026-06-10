@@ -20,7 +20,7 @@
 //     funnel events.
 
 import React from "react";
-import { ApiClient, defaultClient, type SignupState } from "../api/client";
+import { ApiClient, defaultClient, friendlyErrorMessage, type SignupState } from "../api/client";
 import { Analytics, defaultAnalytics } from "../analytics/posthog";
 import { isAuthEnabled, signIn } from "../auth/cognito";
 
@@ -199,7 +199,7 @@ export function SignupFlow({ client, analytics, pollMs = 600 }: SignupFlowProps)
       ph.capture("signup_started", { surface: "signup" });
       setStep("email");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not start signup.");
+      setError(friendlyErrorMessage(e, "Couldn't start signup. Please try again."));
     } finally {
       setBusy(false);
     }
@@ -216,7 +216,7 @@ export function SignupFlow({ client, analytics, pollMs = 600 }: SignupFlowProps)
       ph.capture("email_verified");
       setStep("phone");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not verify the email.");
+      setError(friendlyErrorMessage(e, "Couldn't verify that code. Check it and try again."));
     } finally {
       setBusy(false);
     }
@@ -233,7 +233,7 @@ export function SignupFlow({ client, analytics, pollMs = 600 }: SignupFlowProps)
       ph.capture("phone_verified");
       setStep("plan");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not verify the phone.");
+      setError(friendlyErrorMessage(e, "Couldn't verify that code. Check it and try again."));
     } finally {
       setBusy(false);
     }
@@ -251,7 +251,7 @@ export function SignupFlow({ client, analytics, pollMs = 600 }: SignupFlowProps)
       ph.capture("payment_succeeded", { plan: plan.id });
       setStep("provisioning");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not start checkout.");
+      setError(friendlyErrorMessage(e, "Couldn't start checkout. You haven't been charged — please try again."));
       setBusy(false);
     }
   }, [api, ph, accountId, plan]);
@@ -275,7 +275,7 @@ export function SignupFlow({ client, analytics, pollMs = 600 }: SignupFlowProps)
         pollRef.current = window.setTimeout(tick, pollMs);
       } catch (e) {
         if (cancelled) return;
-        setError(e instanceof Error ? e.message : "Provisioning check failed.");
+        setError(friendlyErrorMessage(e, "We couldn't check on your workspace. Refresh to keep watching — setup continues either way."));
         setBusy(false);
       }
     };
