@@ -216,7 +216,11 @@ def test_sync_kicks_runner_for_claims_tenant_and_serializes_result():
         return SyncResult(pulled=3, landed_rows=3, chunks=5, embedded=4, skipped=1,
                           cursor="2026-06-09T00:00:00Z")
 
-    client = _client(IntegrationsDeps(sync_runner=runner))
+    # The shared-fallback guard requires a verifiable per-tenant credential:
+    # vault one for tenant A (the verified-claim tenant) first.
+    writer = RecordingWriter()
+    writer.put_secret("uplift/A/hubspot", "tok")
+    client = _client(IntegrationsDeps(secret_writer=writer, sync_runner=runner))
     # A smuggled body tenant must not steer the runner either (route takes no body).
     r = client.post("/integrations/hubspot/sync", json={"tenant_id": "B"}, headers=H)
     assert r.status_code == 200
@@ -231,10 +235,49 @@ def test_sync_runner_failure_502():
     def runner(tenant_id, name):
         raise RuntimeError("connector blew up")
 
-    client = _client(IntegrationsDeps(sync_runner=runner))
+    writer = RecordingWriter()
+    writer.put_secret("uplift/A/hubspot", "tok")
+    client = _client(IntegrationsDeps(secret_writer=writer, sync_runner=runner))
     r = client.post("/integrations/hubspot/sync", headers=H)
     assert r.status_code == 502
     assert "connector blew up" not in r.text
+
+
+# --------------------------------------------------------------------------- #
+# the shared-fallback guard (post-#67 review MEDIUM): an API-kicked sync must
+# never run without the tenant's OWN verifiable vaulted credential.
+# --------------------------------------------------------------------------- #
+@pytest.mark.integration
+def test_sync_refused_503_when_no_secret_writer_to_verify_with():
+    runner_calls = []
+    client = _client(IntegrationsDeps(
+        secret_writer=None, sync_runner=lambda t, n: runner_calls.append((t, n))))
+    r = client.post("/integrations/hubspot/sync", headers=H)
+    assert r.status_code == 503
+    assert runner_calls == []
+
+
+@pytest.mark.integration
+def test_sync_refused_409_when_tenant_not_connected():
+    runner_calls = []
+    client = _client(IntegrationsDeps(
+        secret_writer=RecordingWriter(),  # empty vault — tenant A never connected
+        sync_runner=lambda t, n: runner_calls.append((t, n))))
+    r = client.post("/integrations/hubspot/sync", headers=H)
+    assert r.status_code == 409
+    assert runner_calls == []
+    assert "shared fallback" in r.json()["detail"]
+
+
+@pytest.mark.integration
+def test_sync_fails_closed_502_when_credential_check_errors():
+    runner_calls = []
+    client = _client(IntegrationsDeps(
+        secret_writer=ExplodingWriter(),
+        sync_runner=lambda t, n: runner_calls.append((t, n))))
+    r = client.post("/integrations/hubspot/sync", headers=H)
+    assert r.status_code == 502
+    assert runner_calls == []
 
 
 # --------------------------------------------------------------------------- #
