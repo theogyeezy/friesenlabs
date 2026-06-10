@@ -802,3 +802,36 @@ textarea.lp-input { height: 92px; padding: 11px 13px; resize: none; }
 .lp .lp-price { font-family: var(--display); font-weight: 520; letter-spacing: -0.02em; }
 .lp .lp-summary { border: 1px solid var(--line) !important; box-shadow: none !important; border-radius: 10px !important; background: var(--surface); }
 .lp .lp-plan-chips .chip, .lp .lp-plan-chip { border-radius: 999px; }
+
+/* ============================================================
+   Section 05 (vs-GoHighLevel) was cool dark-indigo from the
+   cinematic phase and clashed with the warm cream. Bring it
+   into the light editorial palette so it matches the page.
+   ============================================================ */
+.lp .lp-vs, .lp-cinematic .lp-vs { background: var(--surface-2) !important; color: var(--ink); box-shadow: none !important; }
+.lp .lp-vs .lp-h2 { color: var(--ink); }
+.lp .lp-vs .lp-sub { color: var(--ink-2); }
+.lp .lp-vs .lp-eyebrow { color: var(--accent-ink); }
+.lp .lp-vs .vs-lens { border: 1px solid var(--line); background: var(--surface); color: var(--ink-2); }
+.lp .lp-vs .vs-lens.active { background: var(--ink); border-color: var(--ink); color: var(--bg); }
+.lp .lp-vs .vs-table { border: 1px solid var(--line) !important; background: var(--surface) !important; box-shadow: 0 22px 60px -42px oklch(0.3 0.04 48 / .3) !important; }
+.lp .lp-vs .vs-head { background: var(--bg); border-bottom: 1px solid var(--line); }
+.lp .lp-vs .vs-brand.us { color: var(--ink); }
+.lp .lp-vs .vs-brand.them { color: var(--ink-2); }
+.lp .lp-vs .vs-row { border-bottom: 1px solid var(--line); }
+.lp .lp-vs .vs-row:hover { background: var(--bg); }
+.lp .lp-vs .vs-row.hot { background: color-mix(in oklch, var(--accent-softer) 55%, var(--surface)); }
+.lp .lp-vs .vs-cell-f { border-right: 1px solid var(--line); color: var(--ink); }
+.lp .lp-vs .vs-cell-g { color: var(--ink-2); }
+.lp .lp-vs .vs-score { color: var(--ink-2); }
+.lp .lp-vs .vs-score i { color: var(--ink-2); }
+/* radar on light paper */
+.lp .lp-vs .rad-grid, .lp .lp-vs .rad-spoke { stroke: var(--line); }
+.lp .lp-vs .rad-lab { fill: var(--ink-2); }
+.lp .lp-vs .rad-them { fill: oklch(0.68 0.012 70); stroke: oklch(0.56 0.012 70); }
+.lp .lp-vs .rad-us { fill: var(--accent); stroke: var(--accent); }
+.lp .lp-vs .rad-legend .rl { color: var(--ink-2); }
+.lp .lp-vs .rad-legend .them i { background: oklch(0.68 0.012 70); }
+.lp .lp-vs .rad-legend .us i { background: var(--accent); }
+/* warm the closing CTA band (was cool indigo too) so it harmonises with the warm theme */
+.lp .lp-finalcta, .lp-cinematic .lp-finalcta { background: oklch(0.205 0.015 52) !important; }
