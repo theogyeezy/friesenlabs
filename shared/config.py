@@ -94,19 +94,6 @@ class Config:
     # Cognito admin ops (signup/cognito_admin.py) — same name api/asgi.py already uses for JWKS.
     cognito_user_pool_id: str = os.environ.get("COGNITO_USER_POOL_ID", "")
 
-
-# plan id -> env var that carries its Stripe Price ID (values land via task secrets, never here).
-STRIPE_PRICE_ID_ENV = {
-    "starter": "STRIPE_PRICE_ID_STARTER",
-    "team": "STRIPE_PRICE_ID_TEAM",
-    "scale": "STRIPE_PRICE_ID_SCALE",
-}
-
-
-def stripe_price_ids() -> dict[str, str]:
-    """plan -> Stripe Price ID map, read from env at call time (unset plans are omitted)."""
-    return {plan: os.environ[var] for plan, var in STRIPE_PRICE_ID_ENV.items() if os.environ.get(var)}
-
     # --- Outbound senders + Anthropic Admin (signup/provisioning) ---
     # DRAFT-GATE (CLAUDE.md hard constraint #2): real outbound delivery (email/SMS) stays OFF
     # unless this is explicitly the string "true". Default is draft-only — senders log and drop.
@@ -122,6 +109,19 @@ def stripe_price_ids() -> dict[str, str]:
     anthropic_admin_key_secret: str = os.environ.get(
         "ANTHROPIC_ADMIN_KEY_SECRET", "uplift/anthropic-admin-key"
     )
+
+
+# plan id -> env var that carries its Stripe Price ID (values land via task secrets, never here).
+STRIPE_PRICE_ID_ENV = {
+    "starter": "STRIPE_PRICE_ID_STARTER",
+    "team": "STRIPE_PRICE_ID_TEAM",
+    "scale": "STRIPE_PRICE_ID_SCALE",
+}
+
+
+def stripe_price_ids() -> dict[str, str]:
+    """plan -> Stripe Price ID map, read from env at call time (unset plans are omitted)."""
+    return {plan: os.environ[var] for plan, var in STRIPE_PRICE_ID_ENV.items() if os.environ.get(var)}
 
 
 def load() -> Config:
