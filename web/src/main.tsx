@@ -36,6 +36,7 @@ import IntegrationsPanel from "./api/IntegrationsPanel";
 import PipelineBoard from "./api/PipelineBoard";
 import ContactsDirectory from "./api/ContactsDirectory";
 import AgentsRoster from "./api/AgentsRoster";
+import WorkflowsView from "./api/WorkflowsView";
 import SignupFlow from "./signup/SignupFlow";
 
 // Auth (Cognito Hosted UI, PKCE). The provider and the gate are fully inert
@@ -188,6 +189,12 @@ function Root() {
       return (
         <Gated seam>
           <AgentsRoster />
+        </Gated>
+      );
+    case "workflows":
+      return (
+        <Gated seam>
+          <WorkflowsView />
         </Gated>
       );
   }

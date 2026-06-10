@@ -310,6 +310,53 @@ export interface AgentCrewResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Workflows wire types (mirror api/workflows_routes.py shapes). READ-ONLY: the
+// step diagram is the OWNED provisioning semantics serialized server-side, and
+// the execution feed carries name + status + timestamps ONLY (ARNs and the AWS
+// account id are stripped server-side; inputs/outputs are never fetched).
+// ---------------------------------------------------------------------------
+
+/** One step of the provisioning funnel (signup → verify → pay → provision →
+ * activate) — static, owned semantics; never a live AWS Describe. */
+export interface WorkflowStep {
+  id: string;
+  label: string;
+  description: string;
+}
+
+/** Step Functions execution statuses, straight from AWS. The (string & {})
+ * arm keeps unknown future statuses flowing through (rendered neutrally). */
+export type WorkflowExecutionStatus =
+  | "RUNNING"
+  | "SUCCEEDED"
+  | "FAILED"
+  | "TIMED_OUT"
+  | "ABORTED"
+  | (string & {});
+
+/** One recent run: display fields ONLY — no ARNs, no payloads, ever. */
+export interface WorkflowExecution {
+  name: string | null;
+  status: WorkflowExecutionStatus | null;
+  started_at: string | null;
+  stopped_at: string | null;
+}
+
+export interface WorkflowsResponse {
+  /** Display name + kind of the machine — never an ARN. */
+  machine: { name: string; kind: string };
+  steps: WorkflowStep[];
+  step_count: number;
+  /** False = the run feed is honestly unavailable (see `reason`): the live api
+   * task lacks the read grant until REQ-009, or the ARN isn't configured. The
+   * static diagram still renders either way — an informative state, NOT an
+   * error. */
+  executions_available: boolean;
+  reason: string | null;
+  recent_executions: WorkflowExecution[];
+}
+
+// ---------------------------------------------------------------------------
 // Integrations wire types (mirror api/integrations_routes.py shapes).
 // ---------------------------------------------------------------------------
 
@@ -867,6 +914,18 @@ export class ApiClient {
       return (await this.mockApi()).getAgentCrew();
     }
     return this.request<AgentCrewResponse>("GET", "/agents");
+  }
+
+  // --- workflows (authed, read-only) -------------------------------------------
+
+  /** GET /workflows: the provisioning machine — the OWNED 5-step diagram plus
+   * recent executions (name/status/timestamps only) when the read grant exists;
+   * an honest {executions_available: false, reason} degrade otherwise. */
+  async getWorkflows(): Promise<WorkflowsResponse> {
+    if (this.mock) {
+      return (await this.mockApi()).getWorkflows();
+    }
+    return this.request<WorkflowsResponse>("GET", "/workflows");
   }
 
   // --- integrations (authed) -------------------------------------------------

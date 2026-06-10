@@ -41,6 +41,7 @@ import {
   type SignupResponse,
   type SignupState,
   type StoreCredentialsResponse,
+  type WorkflowsResponse,
 } from "./client";
 
 const MOCK_TENANT = "tenant-demo";
@@ -151,6 +152,81 @@ function seedAgentCrew(): AgentCrewResponse {
     },
     roster,
     count: roster.length,
+  };
+}
+
+// The demo tenant's workflows view — mirrors api/workflows_routes.py exactly: the OWNED
+// provisioning funnel (5 static steps; the diagram is owned semantics, never a live AWS
+// Describe) plus a few canned executions shaped like the real feed (name + status +
+// timestamps ONLY — the real API strips ARNs server-side and the mock holds none either).
+function seedWorkflows(): WorkflowsResponse {
+  return {
+    machine: { name: "uplift-provisioning", kind: "provisioning" },
+    steps: [
+      {
+        id: "signup",
+        label: "Sign up",
+        description:
+          "An account is created with an email and phone. Nothing is provisioned yet — " +
+          "no workspace, no agents, no charge.",
+      },
+      {
+        id: "verify",
+        label: "Verify",
+        description:
+          "Email and phone are both confirmed before payment unlocks (verify-before-pay). " +
+          "Verification links and codes are single-use and expire.",
+      },
+      {
+        id: "pay",
+        label: "Pay",
+        description:
+          "Checkout completes and ONLY the cryptographically signed Stripe webhook flips " +
+          "the account to paid — never the browser redirect. A re-delivered webhook is a " +
+          "no-op: provisioning starts exactly once.",
+      },
+      {
+        id: "provision",
+        label: "Provision",
+        description:
+          "The state machine builds the workspace step by step: tenant record, a dedicated " +
+          "Anthropic workspace, the eight-agent crew, identity, and defaults. Every step is " +
+          "idempotent (check-then-create) and a mid-failure parks the account for retry — " +
+          "never a half-built tenant. Outbound email stays draft-gated until sends are " +
+          "deliberately enabled.",
+      },
+      {
+        id: "activate",
+        label: "Activate",
+        description:
+          "The terminal flip: the workspace goes live and the crew starts working. From " +
+          "here, anything an agent does that touches the outside world routes through " +
+          "Greenlight for human sign-off — autonomy never outruns your approval.",
+      },
+    ],
+    step_count: 5,
+    executions_available: true,
+    reason: null,
+    recent_executions: [
+      {
+        name: "provision-demo-aurora-co",
+        status: "SUCCEEDED",
+        started_at: "2026-06-09T12:00:00+00:00",
+        stopped_at: "2026-06-09T12:00:42+00:00",
+      },
+      {
+        name: "provision-demo-lantern",
+        status: "RUNNING",
+        started_at: "2026-06-10T09:30:00+00:00",
+        stopped_at: null,
+      },
+      {
+        name: "provision-demo-riverside",
+        status: "FAILED",
+        started_at: "2026-06-08T08:00:00+00:00",
+        stopped_at: "2026-06-08T08:01:07+00:00",
+      },
+    ],
   };
 }
 
@@ -480,6 +556,15 @@ export class MockApi {
 
   chat(message: string): ChatResponse {
     return cannedChat(message);
+  }
+
+  getWorkflows(): WorkflowsResponse {
+    const w = seedWorkflows();
+    return {
+      ...w,
+      steps: w.steps.map((s) => ({ ...s })),
+      recent_executions: w.recent_executions.map((e) => ({ ...e })),
+    };
   }
 
   runAction(body: ActionBody): ActionResponse {
