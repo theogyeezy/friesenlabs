@@ -733,9 +733,15 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   TLS cutover (RUNBOOK) is now executable — nothing remains owner-gated for the domain.
 - 2026-06-10 — **Domain LIVE (follow-up to the root-cause entry, #172):** the re-created uplift-web
   domain association reached **AVAILABLE** on attempt 1; **https://friesenlabs.com + www verified
-  live** (200 over the `*.friesenlabs.com` cert, correct landing title). Remaining domain work is
-  the ALB TLS cutover for `api.friesenlabs.com` only (RUNBOOK sequence / hourly sweep — pre-reqs
-  all satisfied).
+  live** (200 over the `*.friesenlabs.com` cert, correct landing title). (NB the "claim released"
+  in Cycle 15 below = the deliberate eviction of the us-east-2 app per the root-cause entry.)
+- 2026-06-10 — **Cycle 15: friesenlabs.com IS LIVE.** The conflicting foreign distro
+  (djvyqxdhlili4) stopped resolving — claim released; domain-association recreate (-replace)
+  went AWAITING_APP_CNAME → PENDING_DEPLOYMENT → AVAILABLE. Verified: https://friesenlabs.com
+  200 (real title) + www 200, wildcard cert served, and a FULL browser login on the apex domain
+  (Hosted UI accepted the new redirect_uri → code exchange → Command Center signed in). The
+  product — marketing site, app shell, login, API (via /api proxy → CloudFront → HTTPS ALB),
+  agents+worker, signup — is end-to-end live on the real domain.
 - 2026-06-10 — **ALB TLS cutover CONFIRMED DONE + verified (Matt's session):** the hourly sweep
   had already executed the RUNBOOK sequence once the cert went ISSUED. Live verification: ALB 443
   serves the real `friesenlabs.com` cert (CN match, exp 2026-12-24) with the 403-default
