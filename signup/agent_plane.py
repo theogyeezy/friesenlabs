@@ -93,6 +93,13 @@ class AgentPlaneEnsure:
         Returns {workspace_id, environment_id, coordinator_id} — the provisioning step persists
         them via workspace_store.upsert (and re-persisting the same values on the no-op path is
         a harmless same-value overwrite).
+
+        PINNING CONSTRAINT (#161, bit live 2026-06-10): the coordinator's multiagent config pins
+        each specialist at the VERSION current at create time — later `agents.update` calls on a
+        specialist do NOT propagate to existing coordinators (delegations keep running the old
+        version). This method is create-once and never upgrades; rolling out agent-spec changes
+        to EXISTING tenants needs a deliberate upgrade pass (update specialists, then repin the
+        coordinator's multiagent.agents[].version, as done by hand during the #147 remediation).
         """
         row = self._store.get(tenant_id) or {}
         ids = (row.get("workspace_id"), row.get("environment_id"), row.get("coordinator_id"))

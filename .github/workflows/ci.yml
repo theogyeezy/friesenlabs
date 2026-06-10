@@ -13,6 +13,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # Node-20 actions are removed 2026-09; forced to 24 on 2026-06-16 — opt in now
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   python:
     runs-on: ubuntu-latest
@@ -40,8 +44,8 @@ jobs:
       PGPASSWORD: postgres
       PGDATABASE: uplift
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
       - name: Install deps
@@ -86,7 +90,7 @@ jobs:
   terraform:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: hashicorp/setup-terraform@v3
       - name: Format check
         run: terraform -chdir=infra fmt -check -recursive
@@ -101,8 +105,8 @@ jobs:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: "20"
       - name: Install
@@ -123,11 +127,11 @@ jobs:
     # Roll-up smoke (scripts/smoke_all.sh). Needs Node 20 for the semantic/Cube security tests
     # (node --check + node --test under semantic/) AND Python for the foundation/data-plane smokes.
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: "20"
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
       - name: Install Python deps
@@ -144,8 +148,8 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with: { python-version: "3.13" }
       - run: pip install -r requirements-api.txt -r requirements-dev.txt
       - run: python -m pytest tests/integration/test_signup_live_e2e.py -q
