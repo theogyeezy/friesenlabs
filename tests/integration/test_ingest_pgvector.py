@@ -106,11 +106,16 @@ def test_pipeline_upserts_documents_and_is_incremental():
     assert r1.embedded == 4  # company + contact + deal + note
     assert r1.cursor == "2026-01-04T00:00:00Z"
 
-    # Verify rows actually present under this tenant (RLS-scoped).
-    with store._conn.cursor() as cur:
-        cur.execute("SET app.current_tenant = %s", (tenant,))
-        cur.execute("SELECT count(*) FROM documents WHERE tenant_id=%s", (tenant,))
-        assert cur.fetchone()[0] == 4
+    # Verify rows actually present under this tenant (RLS-scoped). The stores now run on the
+    # pooled per-op + SET LOCAL pattern (no shared `_conn`), so verify on a fresh crm_app conn.
+    check = psycopg2.connect(dsn)
+    try:
+        with check.cursor() as cur:
+            cur.execute("SET app.current_tenant = %s", (tenant,))
+            cur.execute("SELECT count(*) FROM documents WHERE tenant_id=%s", (tenant,))
+            assert cur.fetchone()[0] == 4
+    finally:
+        check.close()
 
     # Second run: change-filtered connector pulls nothing → embeds nothing.
     r2 = sync_tenant(tenant, make_conn(), _fake_embedder, store, cursors)

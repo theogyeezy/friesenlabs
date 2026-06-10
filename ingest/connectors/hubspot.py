@@ -1,9 +1,14 @@
 """HubSpot connector — the reference connector implementation.
 
-DOES NOT call the real HubSpot API. The source client is INJECTED: tests pass a
-fake that returns fixture contacts/companies/deals/notes. A real impl would wrap
-the HubSpot REST/CRM client, but constructing it is the caller's job — importing
-this module needs no network.
+The source client is INJECTED: tests pass a fake that returns fixture
+contacts/companies/deals/notes. :class:`HubSpotRestClient` (below) is the real
+impl over the HubSpot CRM v3 Search API — constructed by the caller
+(`ingest/run_sync.py`), never here, and importing this module needs no network.
+
+Credentials (TODO INT/P1): `authenticate()` resolves the PER-TENANT vaulted
+token `uplift/{tenant_id}/hubspot` via the injected SecretProvider first; the
+single shared `HUBSPOT_TOKEN_SECRET_REF` remains only as a DEPRECATED fallback
+(warns) until every tenant has a per-tenant secret provisioned.
 
 Normalizes HubSpot objects to the db/schema.sql shapes
 (companies / contacts / deals / activities), carrying tenant_id, source='hubspot',
@@ -11,9 +16,10 @@ and ref_id (the HubSpot object id) on every row.
 """
 from __future__ import annotations
 
-from typing import Iterable, Protocol, runtime_checkable
+import warnings
+from typing import Any, Iterable, Iterator, Protocol, runtime_checkable
 
-from .base import Connector, NormalizedRecord
+from .base import Connector, NormalizedRecord, tenant_secret_ref
 
 
 @runtime_checkable
@@ -31,7 +37,9 @@ class HubSpotClient(Protocol):
     def list_notes(self, since: str | None) -> Iterable[dict]: ...
 
 
-# The vaulted credential reference (resolved via the injected SecretProvider).
+# DEPRECATED — the single SHARED token reference (one token for ALL tenants).
+# Kept only as a fallback while per-tenant secrets (uplift/{tenant_id}/hubspot,
+# see base.tenant_secret_ref) are being provisioned; resolution warns when used.
 HUBSPOT_TOKEN_SECRET_REF = "uplift/hubspot-private-app-token"
 
 
@@ -45,10 +53,33 @@ class HubSpotConnector(Connector):
 
     # -- auth ------------------------------------------------------------ #
     def authenticate(self) -> None:
-        # Resolve the vaulted token reference; never log/return the raw value.
-        self._token = self._secrets.get_secret(HUBSPOT_TOKEN_SECRET_REF)
-        if not self._token:
+        # Resolve the PER-TENANT vaulted token first (uplift/{tenant_id}/hubspot);
+        # never log/return the raw value. Any failure on the per-tenant lookup
+        # (not provisioned yet / provider that only knows the shared ref) falls
+        # back to the DEPRECATED shared token, with a warning.
+        per_tenant_ref = tenant_secret_ref(self.tenant_id, self.source)
+        token: str | None = None
+        try:
+            token = self._secrets.get_secret(per_tenant_ref)
+        except Exception:  # noqa: BLE001 — absence/legacy-provider both mean "fall back"
+            token = None
+        if not token:
+            warnings.warn(
+                f"HubSpot: per-tenant secret {per_tenant_ref!r} not resolved — "
+                f"falling back to the SHARED token ({HUBSPOT_TOKEN_SECRET_REF!r}). "
+                "The shared token is DEPRECATED; provision the per-tenant secret.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            token = self._secrets.get_secret(HUBSPOT_TOKEN_SECRET_REF)
+        if not token:
             raise RuntimeError("HubSpot: empty token from secret provider")
+        self._token = token
+        # Hand the resolved token to the injected source client when it accepts
+        # one (HubSpotRestClient does; test fakes need not implement set_token).
+        set_token = getattr(self._client, "set_token", None)
+        if callable(set_token):
+            set_token(token)
         self._authed = True
 
     # -- pull ------------------------------------------------------------ #
@@ -201,3 +232,108 @@ class HubSpotConnector(Connector):
             kind="note",
             text_blocks=[{"ref_id": ref, "kind": "note", "text": body}],
         )
+
+
+# --------------------------------------------------------------------------- #
+# Real HubSpot CRM v3 client (stdlib urllib — no new dependency, no import-time
+# network). Satisfies the HubSpotClient Protocol; built by ingest/run_sync.py.
+# --------------------------------------------------------------------------- #
+HUBSPOT_API_BASE = "https://api.hubapi.com"
+
+# The "last modified" property HubSpot uses per object type (contacts are the
+# odd one out). # VERIFY: property names against the live CRM v3 API.
+_LASTMOD_PROP = {
+    "companies": "hs_lastmodifieddate",
+    "contacts": "lastmodifieddate",
+    "deals": "hs_lastmodifieddate",
+    "notes": "hs_lastmodifieddate",
+}
+_SEARCH_PROPERTIES = {
+    "companies": ["name", "domain", "hs_lastmodifieddate"],
+    "contacts": ["firstname", "lastname", "email", "phone", "jobtitle",
+                 "associatedcompanyid", "lastmodifieddate"],
+    "deals": ["dealname", "dealstage", "amount", "deal_currency_code",
+              "associatedcompanyid", "associatedcontactid", "hs_lastmodifieddate"],
+    "notes": ["hs_note_body", "hs_lastmodifieddate"],
+}
+
+
+class HubSpotRestClient:
+    """Minimal real HubSpot client over the CRM v3 Search API (POST
+    /crm/v3/objects/{type}/search), paged via `paging.next.after` and filtered
+    on the object's last-modified property when `since` is given.
+
+    Constructed UNAUTHENTICATED — `HubSpotConnector.authenticate()` resolves the
+    vaulted token and injects it via `set_token()`, so the raw token never
+    transits run_sync. stdlib `urllib` only, imported lazily per request; no
+    network (or token) is touched at import or construction time.
+
+    # VERIFY: confirm against the live HubSpot API before first prod run —
+    #   * the search filter `value` format for datetime properties (ISO-8601
+    #     `updatedAt` strings, which our cursor stores, vs epoch-millis),
+    #   * `notes` being searchable at /crm/v3/objects/notes/search,
+    #   * association properties (associatedcompanyid) arriving via search.
+    """
+
+    def __init__(self, *, base_url: str = HUBSPOT_API_BASE, page_size: int = 100,
+                 timeout_s: float = 30.0) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._page_size = min(int(page_size), 200)  # HubSpot search caps at 200
+        self._timeout_s = timeout_s
+        self._token: str | None = None
+
+    def set_token(self, token: str) -> None:
+        self._token = token
+
+    # -- one paged search ------------------------------------------------- #
+    def _post(self, path: str, payload: dict) -> dict:
+        import json as _json  # noqa: PLC0415 — lazy with urllib below
+        import urllib.request  # noqa: PLC0415 — lazy: no network machinery at import
+
+        if not self._token:
+            raise RuntimeError("HubSpotRestClient: no token — authenticate() must run first")
+        req = urllib.request.Request(
+            f"{self._base_url}{path}",
+            data=_json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self._token}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=self._timeout_s) as resp:  # noqa: S310 — fixed https base
+            return _json.loads(resp.read().decode("utf-8"))
+
+    def _search(self, object_type: str, since: str | None) -> Iterator[dict]:
+        lastmod = _LASTMOD_PROP[object_type]
+        body: dict[str, Any] = {
+            "properties": _SEARCH_PROPERTIES[object_type],
+            "sorts": [{"propertyName": lastmod, "direction": "ASCENDING"}],
+            "limit": self._page_size,
+        }
+        if since:
+            body["filterGroups"] = [
+                {"filters": [{"propertyName": lastmod, "operator": "GT", "value": since}]}
+            ]
+        after: str | None = None
+        while True:
+            if after:
+                body["after"] = after
+            page = self._post(f"/crm/v3/objects/{object_type}/search", body)
+            yield from page.get("results", [])
+            after = (page.get("paging", {}).get("next") or {}).get("after")
+            if not after:
+                return
+
+    # -- HubSpotClient Protocol ------------------------------------------- #
+    def list_companies(self, since: str | None) -> Iterable[dict]:
+        return self._search("companies", since)
+
+    def list_contacts(self, since: str | None) -> Iterable[dict]:
+        return self._search("contacts", since)
+
+    def list_deals(self, since: str | None) -> Iterable[dict]:
+        return self._search("deals", since)
+
+    def list_notes(self, since: str | None) -> Iterable[dict]:
+        return self._search("notes", since)

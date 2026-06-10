@@ -137,3 +137,60 @@ Rules:
   # these ARNs, do not widen a wildcard).
   ```
 - **Done when:** `terraform validate` green; the API task definition shows `STRIPE_API_KEY` + `RESEND_API_KEY` + `STRIPE_WEBHOOK_SECRET` + `SIGNUP_TOKEN_SECRET_VALUE` + `ANTHROPIC_ADMIN_KEY` under `secrets` and `SIGNUP_REAL_DEPS` + `COGNITO_USER_POOL_ID` under `environment`; the worker task definition shows NONE of them; with `SIGNUP_REAL_DEPS=1` + values present `api.prod_deps.build_signup_deps()` selects StripeAdapter / ResendEmailSender / CognitoAdminClient / the token services — and with `SIGNUP_REAL_DEPS` absent the deploy boots byte-identically all-stub even though `COGNITO_USER_POOL_ID`/`DB_*` are present (/healthz 200). `ALLOW_REAL_SENDS` stays unset/"false" (draft-gate) — flipping it is a separate, deliberate Lane Nick act.
+
+### REQ-004: Ingestion scheduler — EventBridge schedule → Fargate one-off task running `python -m ingest.run_sync --all`
+- **Status:** OPEN
+- **Requested by:** Lane Matt @feat/matt-ingest-runnable-creds-batch (PR "feat(ingest): scheduler entrypoint, per-tenant creds, SET LOCAL cursors, Titan batch")
+- **Needed for:** TODO AI/P1 "Build the ingestion scheduler/infra (connectors → chunk → embed → pgvector)" — the code half (`ingest/run_sync.py`) ships with this request; also unblocks INT/P1 per-tenant connector creds (the task role needs the per-tenant secret reads) and, later, AI/P2 Titan batch backfill.
+- **Env/secret names** (must already exist in shared/config.py): `INGEST_REAL_STORES`, `INGEST_TENANTS`, `INGEST_RAW_BUCKET`, `INGEST_BATCH_S3_BUCKET`, `BEDROCK_BATCH_ROLE_ARN` (all appended in this PR), plus the EXISTING `DB_USER`/`DB_PASS`/`DB_HOST`/`DB_NAME`/`DB_PORT` (crm_app DSN, same values the worker gets per REQ-001).
+- **Spec:**
+  ```hcl
+  # 1) A dedicated INGEST task definition (same image as the API; arm64), command override:
+  #      command = ["python", "-m", "ingest.run_sync", "--all"]
+  #    Environment (NONE of these ever reach the API or worker task definitions):
+  #      INGEST_REAL_STORES = "1"            # the deliberate act — set ONLY on this task; unset
+  #                                          # anywhere else keeps run_sync a no-op offline stub
+  #      INGEST_TENANTS     = var.ingest_tenants   # comma-separated tenant ids; safe "" default
+  #                                          # ("" => run_sync logs 'nothing to do' and exits 0)
+  #      INGEST_RAW_BUCKET  = var.ingest_raw_bucket # safe "" default (raw landing skipped w/ warn)
+  #      DB_USER / DB_PASS  <- valueFrom the EXISTING crm_app credentials secret
+  #      DB_HOST / DB_NAME / DB_PORT <- existing Aurora outputs (same as the API/worker tasks)
+  variable "ingest_tenants" {
+    type    = string
+    default = ""
+  }
+  variable "ingest_raw_bucket" {
+    type    = string
+    default = ""
+  }
+
+  # 2) EventBridge schedule (DISABLED by default — flipping it on is the go-live act) targeting
+  #    ecs:RunTask of the ingest task definition on the existing cluster, e.g. nightly:
+  variable "ingest_schedule_enabled" {
+    type    = bool
+    default = false
+  }
+  #    aws_cloudwatch_event_rule  schedule_expression = "rate(1 day)"
+  #                               state = var.ingest_schedule_enabled ? "ENABLED" : "DISABLED"
+  #    aws_cloudwatch_event_target -> ecs_target (LATEST task def, awsvpc, private subnets,
+  #                               the API service SG so Aurora ingress already matches)
+
+  # 3) IAM (the ingest TASK ROLE — not the API/worker roles):
+  #      secretsmanager:GetSecretValue on arn:...:secret:uplift/*/hubspot-*   (per-tenant pattern,
+  #        ingest/connectors/base.py tenant_secret_ref) AND the DEPRECATED shared
+  #        uplift/hubspot-private-app-token (until every tenant is migrated)
+  #      bedrock:InvokeModel on the Titan V2 embeddings model (synchronous embed path)
+  #      s3:PutObject on ${var.ingest_raw_bucket}/raw/*           (raw lake, when set)
+  #    LATER (AI/P2 batch backfill — may ship as its own REQ when first used):
+  #      bedrock:CreateModelInvocationJob + GetModelInvocationJob, iam:PassRole on
+  #      var.bedrock_batch_role_arn, s3 RW on var.ingest_batch_s3_bucket (batch-embed/* JSONL I/O).
+  variable "bedrock_batch_role_arn" {
+    type    = string
+    default = ""
+  }
+  variable "ingest_batch_s3_bucket" {
+    type    = string
+    default = ""
+  }
+  ```
+- **Done when:** `terraform validate` green with safe defaults (schedule DISABLED, "" vars); the ingest task definition shows `INGEST_REAL_STORES=1` + `INGEST_TENANTS` + `INGEST_RAW_BUCKET` + `DB_*` and the API/worker task definitions show NONE of the `INGEST_*` names; with the schedule flipped on and a tenant id + HubSpot secret populated, a scheduled run populates `documents` for that tenant and the next run embeds ~0 (the TODO's done-when). Until then `python -m ingest.run_sync --tenant <id>` stays runnable anywhere as an offline stub (exit 0, touches nothing).

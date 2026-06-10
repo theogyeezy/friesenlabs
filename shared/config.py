@@ -31,6 +31,19 @@ ENV_CORTEX_S3_BUCKET = "CORTEX_S3_BUCKET"  # S3 bucket holding serialized tenant
 ENV_CORTEX_S3_PREFIX = "CORTEX_S3_PREFIX"  # key prefix in that bucket (empty -> cortex/registry)
 ENV_CORTEX_LOCAL_DIR = "CORTEX_LOCAL_DIR"  # local-filesystem registry root — dev/tests fallback
 
+# --- Ingestion-plane env-var NAMES (ingest/run_sync.py — the EventBridge→Fargate one-off entry,
+# --- infra/REQUESTS.md REQ-004). These are NEW, deliberate names: the live API task already
+# --- injects DB_*/COGNITO_*/AWS_REGION for OTHER features, so the scheduler's real adapters key
+# --- ONLY off the master switch below (deploy invariance — same rationale as SIGNUP_REAL_DEPS).
+# --- Safe default everywhere is "unset" = offline stubs; run_sync stays runnable with no AWS/DB.
+ENV_INGEST_REAL_STORES = "INGEST_REAL_STORES"  # exactly "true"/"1" -> real Pg stores + Titan embed
+ENV_INGEST_TENANTS = "INGEST_TENANTS"          # comma-separated tenant ids consumed by --all
+ENV_INGEST_RAW_BUCKET = "INGEST_RAW_BUCKET"    # S3 raw-lake bucket (unset = in-memory raw sink)
+# Titan V2 BATCH embeddings (ingest/embed.py batch_embed) — both must be set or batch_embed
+# falls back to synchronous per-text embed (the safe, incremental-sync behavior).
+ENV_INGEST_BATCH_S3_BUCKET = "INGEST_BATCH_S3_BUCKET"  # JSONL input/output bucket for batch jobs
+ENV_BEDROCK_BATCH_ROLE_ARN = "BEDROCK_BATCH_ROLE_ARN"  # roleArn for create_model_invocation_job
+
 
 def dsn_from_env() -> str | None:
     """Build the crm_app DSN from `UPLIFT_DB_URL`, or the discrete DB_* parts (DB_USER/DB_PASS from
