@@ -1,16 +1,27 @@
 // Dashboard path wired to the control plane: loads a saved view via getView,
 // renders it through the existing trusted SpecRenderer, and can persist edits
-// back via saveView. Data for the renderer comes from the offline sampleLoadData
-// stub (the renderer never fetches; loadData is injected). The spec itself comes
-// from the API client (mock mode for tests).
+// back via saveView. The renderer never fetches; loadData is injected:
+//   - MOCK builds inject the offline sampleLoadData fixture stub, so demos and
+//     tests render deterministic numbers with no network.
+//   - REAL builds inject noLiveData below. The live data plane (the Cube
+//     semantic layer) is not deployed yet, so every block honestly renders its
+//     "No data yet" state — demo fixture numbers must NEVER be presented as a
+//     real tenant's data.
 
 import React from "react";
 import { ApiClient, ApiError, defaultClient, friendlyErrorMessage } from "./client";
-import { SpecRenderer } from "../dashboard/SpecRenderer";
+import { SpecRenderer, type LoadData } from "../dashboard/SpecRenderer";
 import { sampleLoadData } from "../dashboard/sample";
 import { Spinner } from "./Spinner";
 
 const { useState, useEffect, useCallback } = React;
+
+// Real-mode data loader: there is no live query path yet (Cube is authored but
+// unapplied — see TODO.md), so resolve every query to zero rows. SpecRenderer
+// turns that into explicit per-block "No data yet" states. Do NOT swap in
+// sampleLoadData here: canned demo numbers on a real tenant's dashboard are a
+// lie. When the semantic layer ships, this becomes the real query client.
+const noLiveData: LoadData = async () => [];
 
 export interface DashboardViewProps {
   client?: ApiClient;
@@ -165,7 +176,9 @@ export function DashboardView({ client, viewId = "demo_pipeline" }: DashboardVie
         </div>
       )}
 
-      {!loading && spec && <SpecRenderer spec={spec} loadData={sampleLoadData} />}
+      {!loading && spec && (
+        <SpecRenderer spec={spec} loadData={api.isMock() ? sampleLoadData : noLiveData} />
+      )}
     </div>
   );
 }

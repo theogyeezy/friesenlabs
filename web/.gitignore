@@ -1,0 +1,3 @@
+# Real-mode e2e bundle (npm run build:real — see playwright.config.ts).
+# web/dist/ is already ignored at the repo root.
+dist-real/

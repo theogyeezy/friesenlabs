@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:real": "VITE_API_MOCK=0 vite build --outDir dist-real",
     "preview": "vite preview",
+    "preview:real": "vite preview --outDir dist-real --port 4174",
     "typecheck": "tsc --noEmit",
     "test": "node --test test/*.test.mjs",
     "test:e2e": "playwright test"

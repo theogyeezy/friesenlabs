@@ -205,22 +205,18 @@ export interface ApiClientConfig {
  * The single source of truth for the mock flag. VITE_API_MOCK defaults ON when
  * unset so tests and local previews run offline; "0"/"false" builds real mode.
  *
- * TEST SEAM: a `?apimock=0` URL param forces REAL mode at runtime, so offline
- * Playwright specs can stub fetch (page.route) and exercise the loading/empty/
- * error paths against a mock-built bundle. The param can only DISABLE mock —
- * a real (production) build can never be flipped back to canned fixtures from
- * the URL, and the auth layer keys off the build env alone (auth/cognito.ts),
- * so the seam never activates Cognito either.
+ * The flag is BUILD-TIME ONLY, decided by the Vite env and baked into the
+ * bundle. There is deliberately no runtime override (the old `?apimock=0` URL
+ * seam is gone): a deployed bundle's mode can never be flipped from the URL in
+ * either direction. Offline Playwright coverage of real mode runs against a
+ * dedicated VITE_API_MOCK=0 build (see web/playwright.config.ts) with fetch
+ * stubbed via page.route.
  */
 export function apiMockEnabled(): boolean {
   const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {};
   const mockFlag = env.VITE_API_MOCK;
-  // Mock unless explicitly disabled with "0" / "false".
-  const mock = mockFlag === undefined ? true : !(mockFlag === "0" || mockFlag === "false");
-  if (!mock) return false;
-  const search = typeof window !== "undefined" ? window.location.search : "";
-  if (/[?&]apimock=0(?:&|$)/.test(search)) return false;
-  return true;
+  // Mock unless explicitly disabled with "0" / "false" at build time.
+  return mockFlag === undefined ? true : !(mockFlag === "0" || mockFlag === "false");
 }
 
 /** True when app surfaces should mount the mock/prototype experience. */
