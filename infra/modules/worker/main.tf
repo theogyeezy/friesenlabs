@@ -58,6 +58,13 @@ resource "aws_ecs_task_definition" "worker" {
   execution_role_arn       = var.execution_role_arn
   task_role_arn            = var.task_role_arn
 
+  # arm64 (Graviton) — matches the api image toolchain; the worker image builds natively on
+  # Apple Silicon and runs cheaper.
+  runtime_platform {
+    cpu_architecture        = "ARM64"
+    operating_system_family = "LINUX"
+  }
+
   container_definitions = jsonencode([
     {
       name      = "worker"
