@@ -1155,7 +1155,7 @@ function Landing({ onSignIn = () => {} } = {}) {
                 <div className="lp-layer" style={{ "--fc": L.fc }}>
                   <div>
                     <div className="ll-eyebrow">{L.eyebrow}</div>
-                    <h4>{L.h}</h4>
+                    <h3>{L.h}</h3>
                     <div className="ll-desc">{L.desc}</div>
                   </div>
                   <div className="lp-layer-pills">
@@ -1248,7 +1248,7 @@ function Landing({ onSignIn = () => {} } = {}) {
               <div className="lp-hiw-step" key={n}>
                 <div className="lp-hiw-marker"><span className="lp-hiw-num">{n}</span>{i < arr.length - 1 && <span className="lp-hiw-line" />}</div>
                 <div className="lp-hiw-body">
-                  <div style={{ display: "flex", alignItems: "center", gap: 9 }}><LpIcon name={ic} size={17} style={{ color: "var(--accent-ink)" }} /><h4>{h}</h4></div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 9 }}><LpIcon name={ic} size={17} style={{ color: "var(--accent-ink)" }} /><h3>{h}</h3></div>
                   <p>{p}</p>
                 </div>
               </div>
@@ -1312,7 +1312,7 @@ function Landing({ onSignIn = () => {} } = {}) {
                   <div className="lp-mod-ico" style={{ background: "var(--accent-soft)", color: "var(--accent-ink)" }}><LpIcon name={ic} size={18} /></div>
                   <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--ink-4)", fontWeight: 600 }}>0{i + 1}</span>
                 </div>
-                <h4 style={{ fontSize: 16, fontWeight: 700, letterSpacing: "-.01em" }}>{h}</h4>
+                <h3 style={{ fontSize: 16, fontWeight: 700, letterSpacing: "-.01em" }}>{h}</h3>
                 <p style={{ fontSize: 13.5, color: "var(--ink-2)", lineHeight: 1.55, marginTop: 7 }}>{p}</p>
               </div>
             ))}
@@ -1345,7 +1345,7 @@ function Landing({ onSignIn = () => {} } = {}) {
             </div>
 
             <div className="lp-summary">
-              <h4>Your instance</h4>
+              <h3>Your instance</h3>
               <div className="lp-price">${total}<span>/mo</span></div>
               {discount > 0 && <div className="lp-saver"><LpIcon name="bolt" size={13} />Bundle saver, 10% off applied</div>}
               <div style={{ display: "flex", alignItems: "center", gap: 9, marginTop: 14, padding: "11px 13px", background: "var(--accent-softer)", borderRadius: "var(--r-sm)" }}>
@@ -1567,21 +1567,21 @@ function Landing({ onSignIn = () => {} } = {}) {
             </div>
             <div className="lp-foot-cols">
               <div className="lp-foot-col">
-                <h5>Product</h5>
+                <h4>Product</h4>
                 <a {...sectionLink("products")}>Products</a>
                 <a {...sectionLink("pricing")}>Pricing</a>
                 <a {...sectionLink("demos")}>See it work</a>
                 <a href={SIGNIN_HREF} onClick={signInClick}>Sign in</a>
               </div>
               <div className="lp-foot-col">
-                <h5>Organization</h5>
+                <h4>Organization</h4>
                 <a href="Foundation.html">Foundation</a>
                 <a {...sectionLink("research")}>Research</a>
                 <a {...sectionLink("team")}>Team</a>
                 <a {...actionLink(() => setDoc("Form 990"))}>Form 990</a>
               </div>
               <div className="lp-foot-col">
-                <h5>Legal</h5>
+                <h4>Legal</h4>
                 <a {...actionLink(() => setDoc("Privacy Policy"))}>Privacy Policy</a>
                 <a {...actionLink(() => setDoc("Terms of Service"))}>Terms of Service</a>
                 <a {...actionLink(() => setDoc("Donor Privacy Policy"))}>Donor privacy</a>
