@@ -183,6 +183,25 @@ CREATE TABLE IF NOT EXISTS stripe_events (
     handled_at timestamptz NOT NULL DEFAULT now()
 );
 
+-- ---------------------------------------------------------------------------
+-- tenant_settings — per-tenant defaults seeded at provisioning step 5 (TODO INT/P2).
+-- One row per tenant: the default autonomy level (api/control/autonomy.py Level — 'L1' matches
+-- AutonomyConfig.default_level) + the tenant's cost-allocation tag. Written by
+-- signup/tenant_defaults.py PgTenantDefaults (pooled per-op conn + SET LOCAL in one txn) via an
+-- idempotent INSERT .. ON CONFLICT (tenant_id) DO NOTHING — SFN step retries are safe and can
+-- never clobber an operator-tuned level. Tenant-scoped + FORCE'd RLS like every other tenant
+-- table (it is in the tenant_tables array below).
+-- NOTE: declared BEFORE the RLS DO block (the block executes when reached; any table named in
+-- its array must already exist or a fresh load — CI psql ON_ERROR_STOP=1, api/migrate.py's
+-- single batch — aborts). Explicit RLS statements are at EOF, same as tenant_workspaces.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tenant_settings (
+    tenant_id      uuid PRIMARY KEY,
+    autonomy_level text NOT NULL DEFAULT 'L1',
+    cost_tag       text,
+    created_at     timestamptz NOT NULL DEFAULT now()
+);
+
 -- ===========================================================================
 -- ROW LEVEL SECURITY — apply the identical pattern to every tenant-scoped table.
 -- The DO block keeps it DRY and guarantees no table is missed (and never without FORCE).
@@ -192,7 +211,8 @@ DECLARE
     t text;
     tenant_tables text[] := ARRAY[
         'documents', 'companies', 'contacts', 'deals', 'activities',
-        'saved_views', 'approvals', 'traces', 'ingest_cursor', 'tenant_workspaces'
+        'saved_views', 'approvals', 'traces', 'ingest_cursor', 'tenant_workspaces',
+        'tenant_settings'
     ];
 BEGIN
     FOREACH t IN ARRAY tenant_tables LOOP
@@ -235,3 +255,11 @@ CREATE POLICY tenant_isolation ON tenant_workspaces
 -- A tombstone, NOT a DELETE: the crm_app grant surface on this ledger is append-only
 -- (REQ-002 — SELECT/INSERT/UPDATE, no DELETE), and the released row keeps the audit trail.
 ALTER TABLE stripe_events ADD COLUMN IF NOT EXISTS released_at timestamptz;
+
+-- tenant_settings — explicit ENABLE/FORCE + policy (belt and suspenders with the DO block above;
+-- DROP IF EXISTS + CREATE keeps re-runs idempotent, same as the block's own policy refresh).
+ALTER TABLE tenant_settings ENABLE ROW LEVEL SECURITY; ALTER TABLE tenant_settings FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON tenant_settings;
+CREATE POLICY tenant_isolation ON tenant_settings
+    USING (tenant_id = current_setting('app.current_tenant', true)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.current_tenant', true)::uuid);

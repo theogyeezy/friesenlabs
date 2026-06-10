@@ -58,7 +58,8 @@ def refund_stub(account: Account) -> str:
 
 class Provisioner:
     def __init__(self, *, store, mint_tenant_id, db, anthropic_admin, secrets, cognito, cube, resend,
-                 agent_plane=None, funnel=None, workspace_store=None, refund=None):
+                 agent_plane=None, funnel=None, workspace_store=None, refund=None,
+                 tenant_defaults=None):
         self.store = store
         self.mint_tenant_id = mint_tenant_id      # injected (deterministic in tests)
         self.db = db
@@ -77,6 +78,11 @@ class Provisioner:
         # record-only `refund_stub` (# VERIFY there) — park_failed fires it AT MOST ONCE per
         # account (the `refund_requested` meta flag) and NEVER lets it raise out of the park.
         self.refund = refund
+        # Optional signup.tenant_defaults.PgTenantDefaults (INT/P2 "tenant-context
+        # correctness"): the REAL step-5 seeder of the tenant_settings row (default autonomy
+        # level + cost tag, SET LOCAL pattern). None = step 5 falls back to `db` — the _Noop in
+        # an unconfigured deploy, a recorder in tests.
+        self.tenant_defaults = tenant_defaults
 
     # ------------------------------------------------------------------ full pipeline
     def provision(self, account: Account) -> ProvisionResult:
@@ -177,7 +183,44 @@ class Provisioner:
             self.store.update(account)
         except Exception:  # noqa: BLE001 — never raise out of the park (docstring)
             log.exception("park_failed: store update failed for account %s", account.id)
+        # H7: the terminal failure is a server-side funnel event too (provisioning_failed,
+        # grouped under the tenant when one was minted — a pre-tenant_record park has none).
+        # GUARDED: park_failed must never raise, and an analytics hiccup must never affect the
+        # park or the refund seam (the prod PostHogClient never raises, but the funnel is an
+        # injected duck — defend anyway).
+        if self.funnel is not None:
+            try:
+                self.funnel.capture(account.id, "provisioning_failed",
+                                    tenant_id=account.tenant_id,
+                                    error=account.meta.get("provisioning_error"))
+            except Exception:  # noqa: BLE001 — never raise out of the park (docstring)
+                log.exception("park_failed: funnel capture failed for account %s", account.id)
         return self._result("park_failed", account, status="ok", refund=refund_status)
+
+    def retry(self, account: Account) -> dict:
+        """Idempotent operator/tenant retry: provisioning_failed -> re-provision (TODO INT/P2).
+
+        ONE implementation shared by both retry surfaces so they can never drift:
+          * the operator Lambda entrypoint (`signup/lambda_handler.py`, direct invoke with
+            ``{"account_id", "step": "retry"}`` — IAM-gated by lambda:InvokeFunction);
+          * the gated POST /signup/{account_id}/retry-provision route
+            (`api/signup_routes.py` — SIGNUP_REAL_DEPS + verified-claims tenant match).
+
+        Itself idempotent: an ACTIVE account is a skip; any other non-parked state is a
+        structured refusal (never a stealth re-provision); only a parked
+        (provisioning_failed) account re-runs the idempotent full pipeline.
+        """
+        if account.state is State.ACTIVE:
+            return {"step": "retry", "status": "skipped", "reason": "already_active",
+                    "state": account.state.value, "tenant_id": account.tenant_id}
+        if account.state is not State.PROVISIONING_FAILED:
+            return {"step": "retry", "status": "refused",
+                    "reason": f"state is {account.state.value}, not provisioning_failed",
+                    "state": account.state.value, "tenant_id": account.tenant_id}
+        res = self.provision(account)   # the idempotent full pipeline (check-then-create steps)
+        return {"step": "retry", "status": "ok" if res.ok else "failed",
+                "state": account.state.value, "tenant_id": res.tenant_id,
+                "failed_step": res.failed_step, "steps_done": res.steps_done}
 
     def _request_refund(self, account: Account) -> str:
         """Fire the injected refund callback AT MOST ONCE per account; never raise."""
@@ -241,10 +284,21 @@ class Provisioner:
         self.cognito.confirm(account.cognito_sub)
 
     def _step_tenant_context(self, account: Account, created: dict | None) -> None:
-        # 5. Cube tenant context + budget/cost tags + autonomy defaults.
+        # 5. Tenant-context defaults — two halves with DIFFERENT realities:
+        #    (a) `cube.ensure_tenant_context` is EXPLICITLY a no-op in production (the prod_deps
+        #        _Noop is the PERMANENT wiring, not a pending TODO): Cube has no per-tenant
+        #        resource to provision — its security context is derived per REQUEST from the
+        #        verified JWT (semantic/security.js queryRewrite + the tenant-scoped Cube JWT
+        #        minted in agents/tools/cube_client.py). The call stays so injected fakes can
+        #        observe/veto the step in tests.
+        #    (b) `set_tenant_defaults` is REAL: seed the tenant_settings row (default autonomy
+        #        level + cost tag) via the injected `tenant_defaults`
+        #        (signup/tenant_defaults.PgTenantDefaults under SIGNUP_REAL_DEPS + DSN —
+        #        idempotent ON CONFLICT DO NOTHING, SET LOCAL pattern); the `db` fallback keeps
+        #        the historic seam (_Noop unconfigured / recorder in tests).
         self._require_tenant(account)
-        self.cube.ensure_tenant_context(account.tenant_id)
-        self.db.set_tenant_defaults(account.tenant_id)    # autonomy defaults, cost tags
+        self.cube.ensure_tenant_context(account.tenant_id)   # documented no-op (see above)
+        (self.tenant_defaults or self.db).set_tenant_defaults(account.tenant_id)
 
     def _step_welcome(self, account: Account, created: dict | None) -> None:
         # 6. Welcome email (the activate flip is its own terminal step).

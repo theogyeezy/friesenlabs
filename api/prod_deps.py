@@ -22,17 +22,25 @@ happen to be present. The individual guards below sit UNDERNEATH the master swit
                               boto3 client (logs + drops) until ALLOW_REAL_SENDS=true
   ANTHROPIC_ADMIN_KEY         signup.anthropic_admin.AnthropicAdminClient (else _Noop)
   UPLIFT_DB_URL / DB_*        signup.store_pg.{PgAccountStore, PgStripeEventLedger, PgOtpStore}
-                              (else the per-task in-memory _AccountStore / no ledger / in-proc OTP)
+                              + signup.tenant_defaults.PgTenantDefaults (the step-5 seeder)
+                              (else the per-task in-memory _AccountStore / no ledger / in-proc
+                              OTP / no tenant_settings seed)
   SIGNUP_TOKEN_SECRET_VALUE   signup.tokens.{EmailTokenService, OtpService} wired into
                               email_token_ok / sms_code_ok + issued at create
                               (else verification stays hardcoded OFF — may_pay never flips)
+  POSTHOG_PROJECT_KEY_VALUE   signup.posthog_client.PostHogClient inside signup.funnel.Funnel
+                              — server-side payment_succeeded / instance_provisioned /
+                              provisioning_failed, grouped by tenant (else funnel=None, no-op)
+  COGNITO_USER_POOL_ID        api.auth claims gate for POST /signup/{id}/retry-provision
+  + COGNITO_CLIENT_ID         (else claims_tenant=None — the route refuses, internal-only)
 
 DRAFT-GATE (CLAUDE.md hard constraint #2) still stands: the Resend/SNS senders refuse real
 delivery unless ALLOW_REAL_SENDS=true regardless of keys, and no live cloud/Anthropic resource is
 created unless LANE NICK deliberately injects the corresponding credential. The provisioning
-pipeline's db / Secrets-Manager / cube / agent-plane seams remain _Noop (follow-up TODOs) — live
-end-to-end provisioning stays BLOCKED: Lane Nick until those land and the # VERIFY'd Anthropic
-Admin endpoints are confirmed.
+pipeline's Secrets-Manager / agent-plane seams remain _Noop (follow-up TODOs; cube is a
+DOCUMENTED no-op by design — see Provisioner._step_tenant_context) — live end-to-end
+provisioning stays BLOCKED: Lane Nick until those land and the # VERIFY'd Anthropic Admin
+endpoints are confirmed.
 """
 from __future__ import annotations
 
@@ -42,17 +50,21 @@ import re
 import time
 import uuid
 
+from api.auth import CognitoJwtVerifier, make_current_tenant
 from api.signup_routes import SignupDeps
 from shared.config import dsn_from_env, load, stripe_price_ids
 from signup.accounts import AccountService
 from signup.anthropic_admin import AnthropicAdminClient
 from signup.cognito_admin import CognitoAdminClient
+from signup.funnel import Funnel
 from signup.payment import PaymentService
+from signup.posthog_client import PostHogClient
 from signup.provisioning import Provisioner
 from signup.resend_sender import ResendEmailSender
 from signup.sms_sender import SnsSmsOtpSender
 from signup.store_pg import PgAccountStore, PgOtpStore, PgStripeEventLedger
 from signup.stripe_adapter import StripeAdapter
+from signup.tenant_defaults import PgTenantDefaults
 from signup.tokens import EmailTokenService, OtpRateLimitError, OtpService
 
 log = logging.getLogger(__name__)
@@ -236,27 +248,45 @@ def _is_execution_already_exists(exc: Exception) -> bool:
     return False
 
 
+def _build_funnel(cfg) -> Funnel | None:
+    """Env-guarded server-side PostHog funnel (TODO INT/P3) — None unless BOTH the
+    SIGNUP_REAL_DEPS master switch AND the NEW POSTHOG_PROJECT_KEY_VALUE env (REQ-006;
+    SM `friesenlabs/platform/shared/posthog-project-key` is the source) are set. The client is
+    lazy (no network/thread at construction), fire-and-forget, and never raises — analytics can
+    never fail a webhook or a provisioning step."""
+    if cfg.signup_real_deps and cfg.posthog_project_key_value:
+        return Funnel(PostHogClient(cfg.posthog_project_key_value, cfg.posthog_host))
+    return None
+
+
 def build_provisioner(workspace_store=None, *, store=None, cognito=None, email_sender=None,
-                      refund=None) -> Provisioner:
+                      refund=None, funnel=None) -> Provisioner:
     """Env-guarded Provisioner construction — ONE selection path for BOTH runtimes.
 
-    `build_signup_deps` (the API task) passes its already-built store/cognito/email_sender so
-    the two planes share adapters + the Pg pool; `signup/lambda_handler.py` (the SFN Task
-    runtime) calls it bare on cold start and gets the identical env-guarded selection. The
-    SIGNUP_REAL_DEPS master switch is honored exactly as in `build_signup_deps`: without it
-    everything is the stub, regardless of what other env happens to be present.
+    `build_signup_deps` (the API task) passes its already-built store/cognito/email_sender (and
+    its funnel, so payment + provisioning share ONE PostHog client) so the two planes share
+    adapters + the Pg pool; `signup/lambda_handler.py` (the SFN Task runtime) calls it bare on
+    cold start and gets the identical env-guarded selection — including the funnel and the
+    tenant-defaults seeder, so the SFN path emits instance_provisioned/provisioning_failed and
+    seeds tenant_settings exactly like the in-process path. The SIGNUP_REAL_DEPS master switch
+    is honored exactly as in `build_signup_deps`: without it everything is the stub, regardless
+    of what other env happens to be present.
 
-    db / Secrets-Manager / cube / agent-plane seams remain _Noop (follow-up TODOs): with a real
-    ANTHROPIC_ADMIN_KEY the # VERIFY'd key-create endpoint would fail -> Provisioner parks the
-    account + archives the workspace (rollback-safe), so live provisioning stays BLOCKED: Lane
-    Nick until those seams land. `refund=None` keeps the record-only terminal-failure stub
-    (`signup.provisioning.refund_stub` — # VERIFY the Stripe refund endpoint there before
-    injecting a live callback).
+    Step-5 seams, settled (TODO INT/P2 "tenant-context correctness"): `tenant_defaults` is the
+    REAL `signup.tenant_defaults.PgTenantDefaults` whenever the crm_app DSN is configured under
+    the switch (idempotent tenant_settings seed, SET LOCAL pattern); `cube` stays _Noop
+    PERMANENTLY by design — Cube's security context is per-request JWT, nothing to provision
+    (see `Provisioner._step_tenant_context`). Secrets-Manager / agent-plane seams remain _Noop
+    (follow-up TODOs): with a real ANTHROPIC_ADMIN_KEY the # VERIFY'd key-create endpoint would
+    fail -> Provisioner parks the account + archives the workspace (rollback-safe), so live
+    provisioning stays BLOCKED: Lane Nick until those seams land. `refund=None` keeps the
+    record-only terminal-failure stub (`signup.provisioning.refund_stub` — # VERIFY the Stripe
+    refund endpoint there before injecting a live callback).
     """
     cfg = load()
     real = cfg.signup_real_deps
+    dsn = dsn_from_env() if real else None
     if store is None:
-        dsn = dsn_from_env() if real else None
         store = PgAccountStore(dsn) if dsn else _AccountStore()
     if cognito is None:
         cognito = (
@@ -277,11 +307,16 @@ def build_provisioner(workspace_store=None, *, store=None, cognito=None, email_s
         AnthropicAdminClient(cfg.anthropic_admin_key)
         if real and cfg.anthropic_admin_key else _Noop()
     )
+    if funnel is None:
+        funnel = _build_funnel(cfg)   # deterministic from cfg — the Lambda cold start lands here
+    # The REAL step-5 db seam (tenant_settings seed) rides the same crm_app DSN guard as the
+    # stores; None falls back to the Provisioner's `db` (_Noop here) — offline boots unchanged.
+    tenant_defaults = PgTenantDefaults(dsn) if dsn else None
     return Provisioner(
         store=store, mint_tenant_id=lambda aid: str(uuid.uuid4()), db=_Noop(),
         anthropic_admin=anthropic_admin, secrets=_Noop(), cognito=cognito, cube=_Noop(),
         resend=email_sender, agent_plane=_Noop(), workspace_store=workspace_store,
-        refund=refund,
+        refund=refund, funnel=funnel, tenant_defaults=tenant_defaults,
     )
 
 
@@ -357,12 +392,17 @@ def build_signup_deps(workspace_store=None, *, now=time.time) -> SignupDeps:
 
     accounts = _VerifyingAccountService(store, cognito, account_email, sms_sender, otp=otp)
 
+    # --- server-side PostHog funnel (INT/P3): ONE client shared by payment (payment_succeeded
+    # --- from the signed webhook) and provisioning (instance_provisioned / provisioning_failed,
+    # --- grouped under the tenant). None when unconfigured — both planes no-op.
+    funnel = _build_funnel(cfg)
+
     # --- provisioning pipeline — ONE construction path shared with the Lambda runtime
-    # --- (build_provisioner): the API task hands over its already-built store/cognito/sender so
-    # --- both planes ride the same adapters + Pg pool. The _Noop seams + the BLOCKED: Lane Nick
-    # --- posture are documented on build_provisioner.
+    # --- (build_provisioner): the API task hands over its already-built store/cognito/sender
+    # --- (+ funnel) so both planes ride the same adapters + Pg pool. The _Noop seams + the
+    # --- BLOCKED: Lane Nick posture are documented on build_provisioner.
     provisioner = build_provisioner(
-        workspace_store, store=store, cognito=cognito, email_sender=email_sender
+        workspace_store, store=store, cognito=cognito, email_sender=email_sender, funnel=funnel
     )
 
     # --- payment plane ---
@@ -382,7 +422,30 @@ def build_signup_deps(workspace_store=None, *, now=time.time) -> SignupDeps:
         on_paid = SfnProvisioningTrigger(cfg.provisioning_sfn_arn, region=cfg.aws_region).start
     else:
         on_paid = provisioner.provision
-    payment = PaymentService(stripe, accounts, on_paid=on_paid, event_ledger=event_ledger)
+    payment = PaymentService(stripe, accounts, on_paid=on_paid, funnel=funnel,
+                             event_ledger=event_ledger)
+
+    # --- retry-provision (INT/P2 closure): the route's two layered gates -------------------
+    # 1) `retry_provision` is wired ONLY under the master switch — without SIGNUP_REAL_DEPS the
+    #    route answers 404 (byte-identical posture to the route not existing).
+    # 2) `claims_tenant` is THE TRUST RULE gate: the same Cognito JWKS verification the API's
+    #    authed routes use (api/auth.py), built only when the pool + client id are configured —
+    #    None keeps the route refusing (403 internal-only; the operator path is the direct
+    #    Lambda 'retry' invoke, IAM-gated). The in-process retry is idempotent
+    #    (Provisioner.retry: ACTIVE = skip, non-parked = structured refusal) — and stays
+    #    in-process even when on_paid is the SFN trigger: it is the SAME idempotent pipeline
+    #    the Lambda steps run, and the SFN-shaped operator retry remains available via
+    #    SfnProvisioningTrigger.start(account, attempt>0) / the Lambda 'retry' invoke.
+    retry_provision = (lambda account_id: provisioner.retry(store.get(account_id))) if real \
+        else None
+    claims_tenant = (
+        make_current_tenant(CognitoJwtVerifier(
+            pool_id=cfg.cognito_user_pool_id,
+            client_id=cfg.cognito_client_id,
+            region=cfg.aws_region,
+        ))
+        if real and cfg.cognito_user_pool_id and cfg.cognito_client_id else None
+    )
 
     return SignupDeps(
         accounts=accounts,
@@ -392,4 +455,6 @@ def build_signup_deps(workspace_store=None, *, now=time.time) -> SignupDeps:
         email_token_ok=email_token_ok,
         sms_code_ok=sms_code_ok,
         verify_redirect_url=cfg.signup_verify_url_base,
+        retry_provision=retry_provision,
+        claims_tenant=claims_tenant,
     )
