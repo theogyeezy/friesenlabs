@@ -197,6 +197,57 @@ function VsMark({ v }) {
   return <span className="vs-mark no">✕</span>;
 }
 
+// Capability radar — Friesen vs GoHighLevel across six axes. Draws on scroll.
+const VS_AXES = [
+  { k: "Autonomy", f: 95, g: 35 },
+  { k: "Human control", f: 92, g: 30 },
+  { k: "Own your data", f: 90, g: 25 },
+  { k: "Gets smarter", f: 88, g: 20 },
+  { k: "Keep your stack", f: 94, g: 28 },
+  { k: "Funnels & sites", f: 45, g: 90 },
+];
+function radarPath(vals, R, cx, cy) {
+  const n = vals.length;
+  return vals.map((v, i) => {
+    const a = (Math.PI * 2 * i) / n - Math.PI / 2;
+    const r = (v / 100) * R;
+    return `${i ? "L" : "M"}${(cx + r * Math.cos(a)).toFixed(1)},${(cy + r * Math.sin(a)).toFixed(1)}`;
+  }).join(" ") + "Z";
+}
+function CapabilityRadar() {
+  const ref = useRef(null);
+  const [on, setOn] = useState(false);
+  useEffect(() => {
+    if (!ref.current || !("IntersectionObserver" in window)) { setOn(true); return; }
+    const io = new IntersectionObserver((es) => es.forEach((e) => e.isIntersecting && setOn(true)), { threshold: 0.3 });
+    io.observe(ref.current); return () => io.disconnect();
+  }, []);
+  const R = 96, cx = 130, cy = 124, n = VS_AXES.length;
+  const fPath = radarPath(VS_AXES.map((a) => a.f), R, cx, cy);
+  const gPath = radarPath(VS_AXES.map((a) => a.g), R, cx, cy);
+  return (
+    <div className="vs-radar" ref={ref}>
+      <svg viewBox="0 0 260 248" role="img" aria-label="Friesen vs GoHighLevel capability radar">
+        {[0.25, 0.5, 0.75, 1].map((g) => (
+          <polygon key={g} className="rad-grid" points={VS_AXES.map((_, i) => { const a = (Math.PI * 2 * i) / n - Math.PI / 2; return `${cx + R * g * Math.cos(a)},${cy + R * g * Math.sin(a)}`; }).join(" ")} />
+        ))}
+        {VS_AXES.map((ax, i) => { const a = (Math.PI * 2 * i) / n - Math.PI / 2; const lx = cx + (R + 16) * Math.cos(a), ly = cy + (R + 16) * Math.sin(a); return (
+          <g key={ax.k}>
+            <line className="rad-spoke" x1={cx} y1={cy} x2={cx + R * Math.cos(a)} y2={cy + R * Math.sin(a)} />
+            <text className="rad-lab" x={lx} y={ly} textAnchor={Math.abs(Math.cos(a)) < 0.3 ? "middle" : lx > cx ? "start" : "end"} dominantBaseline="middle">{ax.k}</text>
+          </g>
+        ); })}
+        <path className={"rad-them" + (on ? " in" : "")} d={gPath} />
+        <path className={"rad-us" + (on ? " in" : "")} d={fPath} />
+      </svg>
+      <div className="rad-legend">
+        <span className="rl us"><i />Friesen Labs</span>
+        <span className="rl them"><i />GoHighLevel</span>
+      </div>
+    </div>
+  );
+}
+
 function VsSection() {
   const [lens, setLens] = useState(null);
   const hot = lens ? VS_LENSES.find((l) => l.id === lens).rows : null;
@@ -207,6 +258,7 @@ function VsSection() {
         <div className="lp-eyebrow">Why not just use GoHighLevel?</div>
         <h2 className="lp-h2">Marketing automation sends the email.<br />Agents close the loop.</h2>
         <p className="lp-sub">GoHighLevel is a great funnel machine. Friesen is a workforce. Pick what matters to you and see the difference.</p>
+        <CapabilityRadar />
         <div className="vs-lenses">
           {VS_LENSES.map((l) => (
             <button key={l.id} className={"vs-lens" + (lens === l.id ? " active" : "")} onClick={() => setLens(lens === l.id ? null : l.id)}>{l.label}</button>
@@ -608,8 +660,66 @@ function ProductPage({ id, onClose, onAdd, onBook }) {
 // onSignIn: wired by main.tsx to the Cognito Hosted UI signIn() when the
 // sign-in gate is active. Defaults to a no-op so the screen is render-safe
 // standalone.
+// Magnetic pull for primary CTAs — the button leans toward the cursor.
+function useMagnetic() {
+  useEffect(() => {
+    if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    if (window.matchMedia && !window.matchMedia("(hover: hover)").matches) return;
+    const btns = Array.from(document.querySelectorAll(".lp .btn-primary"));
+    const move = (e) => { const b = e.currentTarget, r = b.getBoundingClientRect(); b.style.transform = `translate(${(e.clientX - r.left - r.width / 2) * 0.18}px, ${(e.clientY - r.top - r.height / 2) * 0.28}px)`; };
+    const leave = (e) => { e.currentTarget.style.transform = ""; };
+    btns.forEach((b) => { b.addEventListener("mousemove", move); b.addEventListener("mouseleave", leave); });
+    return () => btns.forEach((b) => { b.removeEventListener("mousemove", move); b.removeEventListener("mouseleave", leave); });
+  }, []);
+}
+
+// Live ROI calculator — sliders drive an animated monthly-savings readout + a bar race.
+function RoiCalculator() {
+  const [team, setTeam] = useState(4);
+  const [rate, setRate] = useState(28);
+  const [hrs, setHrs] = useState(12);
+  const weekly = team * hrs;            // busywork hours / week across the team
+  const manualMo = Math.round(weekly * 4.33 * rate);
+  const friesenMo = Math.round(team * 49 + 199); // suite + agent credits, illustrative
+  const saved = Math.max(0, manualMo - friesenMo);
+  const pct = manualMo ? Math.round((saved / manualMo) * 100) : 0;
+  const barF = manualMo ? Math.max(6, Math.round((friesenMo / manualMo) * 100)) : 6;
+  return (
+    <section className="lp-section lp-roi" id="roi">
+      <div className="lp-wrap">
+        <div className="lp-eyebrow">Run the numbers</div>
+        <h2 className="lp-h2">What would a crew of agents save you?</h2>
+        <p className="lp-sub">Drag the sliders. The math is live — busywork hours your agents absorb vs. what those hours cost you today.</p>
+        <div className="roi-grid">
+          <div className="roi-controls">
+            {[
+              ["Team members doing busywork", team, setTeam, 1, 25, "", (v) => v],
+              ["Avg. loaded hourly cost", rate, setRate, 12, 120, "$", (v) => v],
+              ["Busywork hours / person / week", hrs, setHrs, 2, 30, "", (v) => v],
+            ].map(([label, val, set, min, max, pre]) => (
+              <label className="roi-ctl" key={label}>
+                <span className="roi-ctl-top"><b>{label}</b><span className="roi-ctl-val">{pre}{val}</span></span>
+                <input type="range" min={min} max={max} value={val} onChange={(e) => set(+e.target.value)} style={{ "--p": ((val - min) / (max - min) * 100) + "%" }} />
+              </label>
+            ))}
+          </div>
+          <div className="roi-readout">
+            <div className="roi-save"><span className="roi-save-pre">You'd reclaim</span><div className="roi-save-num">$<CountUp to={saved} dur={650} /><span>/mo</span></div><span className="roi-save-pct">{pct}% lower than paying for the hours</span></div>
+            <div className="roi-bars">
+              <div className="roi-bar"><span className="roi-bar-lab">Doing it by hand</span><div className="roi-bar-track"><div className="roi-bar-fill manual" style={{ width: "100%" }}><b>${manualMo.toLocaleString()}</b></div></div></div>
+              <div className="roi-bar"><span className="roi-bar-lab">With Friesen agents</span><div className="roi-bar-track"><div className="roi-bar-fill friesen" style={{ width: barF + "%" }}><b>${friesenMo.toLocaleString()}</b></div></div></div>
+            </div>
+            <div className="roi-foot">{(weekly * 4.33).toFixed(0)} hours of busywork a month — handed to agents that don't clock out. <i>Illustrative; your suite price depends on the modules you pick.</i></div>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function Landing({ onSignIn = () => {} } = {}) {
   useReveal();
+  useMagnetic();
   const [demoTab, setDemoTab] = useState("agents");
   const [plan, setPlan] = useState("keepcrm");
   const [sel, setSel] = useState({ command: true, agents: true, workflows: true, greenlight: true, integration: true });
@@ -774,6 +884,9 @@ function Landing({ onSignIn = () => {} } = {}) {
 
       {/* Friesen vs GoHighLevel */}
       <VsSection />
+
+      {/* live ROI calculator */}
+      <RoiCalculator />
 
       {/* how it works */}
       <section className="lp-section">
