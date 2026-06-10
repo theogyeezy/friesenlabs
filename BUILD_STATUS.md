@@ -749,3 +749,13 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   https-only:443 (edge /healthz 200; SPA /api/healthz 200 via friesenlabs.com); :80 is a redirect
   listener, SG-scoped off the public internet. No 301 loop. api_cdn retained per the Lane Ship
   RECOMMEND-AGAINST. Follow-on hardening still open: drop the :80 SG rule (#211), CF min-TLS (#257).
+- 2026-06-10 — **Cycle 16: cube data plane wired to the API (#175) + edge timeout fix (#176).**
+  api rev-11 carries CUBEJS_API_SECRET_VALUE; cube_client_from_env() live in executor + /chat
+  ToolContext. CloudFront origin_read_timeout 30→60s (in-request multi-tool turns 504'd at the
+  default — hit live). RESULT: complex tool turns now complete IN-REQUEST (200 in ~15s, no
+  deferral): the agent ran query_cube via two specialists, REFUSED to fabricate when it returned
+  zero rows, and reported the real CRM pipeline ($2,596,850 / 60 deals; negotiation $438,550 —
+  matches the step-3 verification). Remaining cube defect ROOT-CAUSED + filed (#177): Cube
+  connects as crm_app but never sets app.current_tenant, so FORCE'd RLS blanks every query —
+  fix design (TenantBoundPostgresDriver via driverFactory) in the issue. Dashboards' /views data
+  route + web loader remains the separate product slice.
