@@ -37,23 +37,42 @@ happen to be present. The individual guards below sit UNDERNEATH the master swit
 DRAFT-GATE (CLAUDE.md hard constraint #2) still stands: the Resend/SNS senders refuse real
 delivery unless ALLOW_REAL_SENDS=true regardless of keys, and no live cloud/Anthropic resource is
 created unless LANE NICK deliberately injects the corresponding credential. The provisioning
-pipeline's Secrets-Manager / agent-plane seams remain _Noop (follow-up TODOs; cube is a
-DOCUMENTED no-op by design — see Provisioner._step_tenant_context) — live end-to-end
-provisioning stays BLOCKED: Lane Nick until those land and the # VERIFY'd Anthropic Admin
-endpoints are confirmed.
+pipeline's Secrets-Manager seam remains _Noop (follow-up TODO; cube is a DOCUMENTED no-op by
+design — see Provisioner._step_tenant_context); the AGENT-PLANE seam is now REAL under the gate
+below (signup.agent_plane.AgentPlaneEnsure — eager per ratified #123,
+docs/decisions/agent-plane-ensure-eager-vs-lazy.md):
+
+  SIGNUP_REAL_DEPS                     the master switch (the deliberate Lane Nick act) AND
+  + ANTHROPIC_API_KEY + UPLIFT_ENV_ID  the AI-plane gate (the live API task now carries both —
+                                       a deliberate flip, see CLAUDE.md "AI plane half-live") AND
+  + a workspace store (crm_app DSN)    ids must be persistable/checkable, never orphaned
+  -> AgentPlaneEnsure                  (else the _Noop stub-id fallback below, and the
+                                       conversation factory's stub-id guard keeps /chat at 503)
+
+Live end-to-end provisioning otherwise stays BLOCKED: Lane Nick until the Secrets-Manager seam
+lands and the # VERIFY'd Anthropic Admin endpoints are confirmed.
 """
 from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 import uuid
 
+from agents.workspace_store import PgWorkspaceStore
 from api.auth import CognitoJwtVerifier, make_current_tenant
 from api.signup_routes import SignupDeps
-from shared.config import dsn_from_env, load, stripe_price_ids
+from shared.config import (
+    ENV_ANTHROPIC_API_KEY,
+    ENV_UPLIFT_ENV_ID,
+    dsn_from_env,
+    load,
+    stripe_price_ids,
+)
 from signup.accounts import AccountService
+from signup.agent_plane import AgentPlaneEnsure
 from signup.anthropic_admin import AnthropicAdminClient
 from signup.cognito_admin import CognitoAdminClient
 from signup.funnel import Funnel
@@ -107,7 +126,9 @@ class _Noop:
         # Agent-plane stub: stable stub ids so provisioning can upsert a tenant_workspaces row
         # offline (the conversation factory then resolves them; FakeRuntime accepts any ids —
         # and api/asgi.py REFUSES to hand 'stub-' ids to a real runtime).
-        # The real agent plane returns the LIVE workspace/environment/coordinator ids.
+        # The real agent plane (signup.agent_plane.AgentPlaneEnsure, selected by
+        # _build_agent_plane under the gate documented there) returns the LIVE
+        # workspace/environment/coordinator ids — and re-provisions over these stubs.
         return {"workspace_id": "stub-ws", "environment_id": "stub-env",
                 "coordinator_id": "stub-coord"}
 
@@ -248,6 +269,32 @@ def _is_execution_already_exists(exc: Exception) -> bool:
     return False
 
 
+def _build_agent_plane(cfg, workspace_store):
+    """Env-guarded agent-plane seam (provisioning step 3) — EAGER per ratified #123
+    (docs/decisions/agent-plane-ensure-eager-vs-lazy.md): the roster is created at signup,
+    never in the request path.
+
+    The real `signup.agent_plane.AgentPlaneEnsure` (7 specialists + coordinator in the EXISTING
+    UPLIFT_ENV_ID environment, idempotent via the workspace-store row) is selected ONLY when ALL
+    of these hold:
+      * the SIGNUP_REAL_DEPS master switch (the deliberate Lane Nick act — deploy invariance:
+        ANTHROPIC_API_KEY + UPLIFT_ENV_ID already ride the live API task for /chat, so the
+        AI-plane gate alone must never flip live provisioning on a mere image deploy);
+      * the AI-plane gate: ANTHROPIC_API_KEY (org key — API task/Lambda posture, NEVER the
+        worker) + UPLIFT_ENV_ID (the live MA environment) both present;
+      * a workspace store to check/persist the per-tenant ids (never create live resources
+        whose ids cannot be persisted — they'd be unreachable orphans).
+    Everywhere else: the _Noop fallback (stable 'stub-' ids), which the conversation factory's
+    stub-id guard refuses to hand to a real runtime — /chat stays a graceful 503.
+    """
+    api_key = os.environ.get(ENV_ANTHROPIC_API_KEY, "")
+    env_id = os.environ.get(ENV_UPLIFT_ENV_ID, "")
+    if cfg.signup_real_deps and api_key and env_id and workspace_store is not None:
+        return AgentPlaneEnsure(api_key=api_key, environment_id=env_id,
+                                workspace_store=workspace_store)
+    return _Noop()
+
+
 def _build_funnel(cfg) -> Funnel | None:
     """Env-guarded server-side PostHog funnel (TODO INT/P3) — None unless BOTH the
     SIGNUP_REAL_DEPS master switch AND the NEW POSTHOG_PROJECT_KEY_VALUE env (REQ-006;
@@ -276,16 +323,29 @@ def build_provisioner(workspace_store=None, *, store=None, cognito=None, email_s
     REAL `signup.tenant_defaults.PgTenantDefaults` whenever the crm_app DSN is configured under
     the switch (idempotent tenant_settings seed, SET LOCAL pattern); `cube` stays _Noop
     PERMANENTLY by design — Cube's security context is per-request JWT, nothing to provision
-    (see `Provisioner._step_tenant_context`). Secrets-Manager / agent-plane seams remain _Noop
-    (follow-up TODOs): with a real ANTHROPIC_ADMIN_KEY the # VERIFY'd key-create endpoint would
-    fail -> Provisioner parks the account + archives the workspace (rollback-safe), so live
-    provisioning stays BLOCKED: Lane Nick until those seams land. `refund=None` keeps the
-    record-only terminal-failure stub (`signup.provisioning.refund_stub` — # VERIFY the Stripe
-    refund endpoint there before injecting a live callback).
+    (see `Provisioner._step_tenant_context`).
+
+    Step-3 agent plane, settled (ratified #123 — see `_build_agent_plane`): EAGER
+    `signup.agent_plane.AgentPlaneEnsure` under SIGNUP_REAL_DEPS + ANTHROPIC_API_KEY +
+    UPLIFT_ENV_ID + a workspace store; else the _Noop stub-id fallback. When the caller passes
+    no `workspace_store` (the Lambda's bare cold-start call), it is defaulted from the crm_app
+    DSN under the switch — the SFN path persists the SAME tenant_workspaces row the API task's
+    in-process path does (both planes ride the identical env-guarded selection).
+
+    The Secrets-Manager seam remains _Noop (follow-up TODO): with a real ANTHROPIC_ADMIN_KEY the
+    # VERIFY'd key-create endpoint would fail -> Provisioner parks the account + archives the
+    workspace (rollback-safe), so live per-tenant-workspace provisioning stays BLOCKED: Lane Nick
+    until that seam lands. `refund=None` keeps the record-only terminal-failure stub
+    (`signup.provisioning.refund_stub` — # VERIFY the Stripe refund endpoint there before
+    injecting a live callback).
     """
     cfg = load()
     real = cfg.signup_real_deps
     dsn = dsn_from_env() if real else None
+    if workspace_store is None and dsn:
+        # The Lambda cold start calls this bare: give the SFN path the same per-tenant MA-id
+        # persistence (and the agent plane the same idempotency check) the API task wires in.
+        workspace_store = PgWorkspaceStore(dsn)
     if store is None:
         store = PgAccountStore(dsn) if dsn else _AccountStore()
     if cognito is None:
@@ -315,7 +375,8 @@ def build_provisioner(workspace_store=None, *, store=None, cognito=None, email_s
     return Provisioner(
         store=store, mint_tenant_id=lambda aid: str(uuid.uuid4()), db=_Noop(),
         anthropic_admin=anthropic_admin, secrets=_Noop(), cognito=cognito, cube=_Noop(),
-        resend=email_sender, agent_plane=_Noop(), workspace_store=workspace_store,
+        resend=email_sender, agent_plane=_build_agent_plane(cfg, workspace_store),
+        workspace_store=workspace_store,
         refund=refund, funnel=funnel, tenant_defaults=tenant_defaults,
     )
 
