@@ -515,6 +515,24 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   place; cert is PENDING only because `friesenlabs.com` NS aren't yet delegated to the 4 Route53
   nameservers — scheduled an hourly sweep to catch ISSUED and auto-run the TLS cutover.
 
+- 2026-06-10 — AGENT-PLANE LIVE VERIFY (Lane Nick, on `feat/nick-agentplane`). Confirmed the live
+  wiring (api task `uplift-api:10` has the full gate: `SIGNUP_REAL_DEPS=1` + `ANTHROPIC_API_KEY` +
+  `UPLIFT_ENV_ID` → the real `signup.agent_plane.AgentPlaneEnsure` is selected, NOT `_Noop`; worker
+  2/2, cube up), then ran `scripts/verify_agent_plane.py` LIVE (`UPLIFT_LIVE_VERIFY=1`, org key +
+  env-id from SM, throwaway test tenant, in-memory stores). RESULT `{"ok": true}`:
+  • workspace PASS — provisioned 7 specialists + coordinator (`agent_01QTgpwQ…`) in env
+    `env_012JvqRKUZ…`;
+  • chat PASS — live coordinator round-trip, 293-char answer, delegated to the `ledger` specialist;
+  • greenlight/approve/execute PASS — a `send_email` lands PENDING (executor calls=0), approve flips
+    it, execute runs the executor exactly once AND the **draft-only guarantee held** (the executed
+    send only produced a fresh Greenlight proposal — no email left the building);
+  • grounding SKIP (no crm_app DSN — needs the in-VPC Aurora; a Fargate one-off is the full RAG leg).
+  ⇒ The agent plane is PROVEN usable + safe end-to-end. TODO 193's description ("ensure() is `_Noop`")
+  is stale and its "done-when" (ensure creates env+roster+coordinator idempotently) is now met —
+  ready for Lane Matt to close. NOTE: this run created an orphaned test-tenant roster in the live MA
+  env (in-memory store ⇒ no Aurora pointer); harmless + tenant-scoped, deletable via the Admin API on
+  request.
+
 ## Lane Matt (app code) — log
 - 2026-06-10 — **LANE PRODUCT (real-mode tab build-out) — Pipeline · Contacts · Agents · Workflows · Reports:**
   converted five sidebar surfaces from FLStore prototypes to honest, API-wired real-mode views, each
