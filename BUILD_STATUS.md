@@ -463,6 +463,13 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
     4. uplift/anthropic-admin-key — Anthropic Console admin key — unblocks workspace provisioning
        (provisioning_admin_key_available flip).
   Hand me any one of those values/clicks and the corresponding go-live runs same-session.
+- 2026-06-10 — Landing prod fixes (user-reported): (1) SCROLL-LOCK fixed — the landing never
+  applied `body.lp-body`, so the global `body{overflow:hidden}` locked it in real builds; Landing
+  now owns that class (verified live: real scroll to y=4037). (2) STALE-CACHE fixed at the Amplify
+  edge — set custom headers: `index.html`/`/` → `Cache-Control: no-store, must-revalidate`,
+  `/assets/**` (hashed) → `immutable` — so future web deploys are seen immediately without a hard
+  refresh (AWS-side `amplify update-app --custom-headers`, not in git). Existing users should
+  hard-refresh once to clear the previously-cached bundle.
 
 ## Lane Matt (app code) — log
 - 2026-06-09 — **Cycles 5-6 (lane tail) + LANE MATT COMPLETE:** #67(+hotfix #73: the prod image
