@@ -533,6 +533,21 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   env (in-memory store ⇒ no Aurora pointer); harmless + tenant-scoped, deletable via the Admin API on
   request.
 
+- 2026-06-10 — AGENT-PLANE grounding leg + the REAL prod IAM bug it caught (Lane Nick). Ran
+  `scripts/verify_agent_plane.py` as a Fargate one-off IN THE VPC (api task def + command override,
+  demo tenant `f0930caa…`, DB-backed). It surfaced `AccessDenied` on `bedrock:InvokeModel` for
+  `amazon.titan-embed-text-v2:0` — NEITHER the api nor worker task role could embed RAG queries, so
+  knowledge/grounding lookups were broken in PRODUCTION, not just the verify. FIX APPLIED LIVE: added
+  a scoped `bedrock-embed` inline policy to both `uplift-api-task` + `uplift-worker-task` (mirrors the
+  ingest role's sync-embed grant, `infra/modules/iam/main.tf`); `terraform apply` = **2 added, 0
+  change/destroy**. Re-ran the verify: AccessDenied GONE — grounding embeds + searches cleanly; chat
+  PASS (273-char answer, delegated to `ledger`); draft-only held through approve+execute. Grounding's
+  only remaining miss is `citations=0` because the demo tenant's knowledge corpus is EMPTY (needs an
+  ingest sync) — and `grounded=True, dropped=0` proves the no-uncited-claim invariant HELD (produced
+  nothing-to-cite rather than hallucinating). CLEANUP: archived the 8 orphaned agents from the earlier
+  LOCAL verify run (timestamp-cluster matched; the demo's real roster preserved). ⇒ Agent plane proven
+  usable + safe; RAG-embed IAM gap closed live.
+
 ## Lane Matt (app code) — log
 - 2026-06-10 — **LANE PRODUCT (real-mode tab build-out) — Pipeline · Contacts · Agents · Workflows · Reports:**
   converted five sidebar surfaces from FLStore prototypes to honest, API-wired real-mode views, each
