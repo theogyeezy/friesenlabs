@@ -393,6 +393,11 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   — user must click); cube-api-secret minted. Cycle-11 PR: cube digest pin (amd64), worker_absent
   gated on worker_deployed, billing alarm wired to the alarms topic, new dns module (Route53 zone
   + wildcard ACM cert for friesenlabs.com; validation waits gated on dns_delegated).
+- 2026-06-09 — Cycle 11 applies: friesenlabs.com Route53 zone + wildcard ACM live (PENDING_VALIDATION
+  until the Squarespace NS cutover — 4 NS handed to user); billing alarm wired to the alarms topic
+  (verified); cube service deployed 1/1 STEADY STATE (digest-pinned, minted secret). Live :4000 probe
+  caught the missing sg_api self-ingress rule (timeout) — fix PR'd. Cloud Map service discovery noted
+  as the remaining cube gap. SNS email sub still PendingConfirmation (user).
 
 ## Lane Matt (app code) — log
 - 2026-06-09 — **Cycle 3 (real wiring + frontend honesty, 5 PRs + 1 fix-PR):** #34 real provisioning
