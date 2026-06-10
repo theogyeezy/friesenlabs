@@ -231,3 +231,10 @@ ENV_UPLIFT_VERIFY_ALLOW_PROVISION = "UPLIFT_VERIFY_ALLOW_PROVISION"
 # Optional draft recipient for the Greenlight leg (default: a documented example.com address —
 # the draft gate means nothing sends either way).
 ENV_UPLIFT_VERIFY_EMAIL_TO = "UPLIFT_VERIFY_EMAIL_TO"
+
+# --- Worker liveness heartbeat (worker/worker.py heartbeat_loop — the explicit workers_polling
+# --- emit per docs/decisions/workers-polling-heartbeat-assumption.md, RATIFIED #123). A NEW
+# --- deliberate name (deploy invariance: never key new behavior off env the live tasks already
+# --- inject): optional float seconds between PutMetricData emits. Unset/junk/non-positive ->
+# --- the 30s default. The emit itself stays gated on CLOUDWATCH_METRICS=1 (worker task def only).
+ENV_WORKER_HEARTBEAT_SECONDS = "WORKER_HEARTBEAT_SECONDS"
