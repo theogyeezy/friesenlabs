@@ -771,6 +771,98 @@ function WebGLBackdrop() {
   return <canvas ref={ref} className="lp-webgl" aria-hidden="true" />;
 }
 
+// A soft radial glow sprite for the constellation points.
+function glowSprite(THREE) {
+  const c = document.createElement("canvas"); c.width = c.height = 64;
+  const g = c.getContext("2d");
+  const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grad.addColorStop(0, "rgba(255,255,255,1)");
+  grad.addColorStop(0.25, "rgba(185,175,255,0.92)");
+  grad.addColorStop(1, "rgba(120,110,235,0)");
+  g.fillStyle = grad; g.fillRect(0, 0, 64, 64);
+  return new THREE.CanvasTexture(c);
+}
+
+// three.js hero showpiece — a glowing 3D "agent constellation": points + proximity links drifting
+// in dark space, with mouse / device-tilt parallax and additive bloom. LAZY-loaded (dynamic
+// import("three") — never blocks first paint) and tuned down on phones (fewer nodes, DPR 1).
+// Skipped only on reduced-motion. This is the real 3D geometry layer the WebGL field can't give.
+function ThreeHero() {
+  const ref = useRef(null);
+  useEffect(() => {
+    if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    let alive = true, cleanup = () => {};
+    import("three").then((THREE) => {
+      if (!alive || !ref.current) return;
+      const el = ref.current;
+      const mobile = window.innerWidth < 760;
+      let w = el.clientWidth || window.innerWidth, h = el.clientHeight || 600;
+      const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: !mobile, powerPreference: "low-power" });
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, mobile ? 1 : 1.5));
+      renderer.setSize(w, h);
+      el.appendChild(renderer.domElement);
+      const scene = new THREE.Scene();
+      scene.fog = new THREE.FogExp2(0x0a0a1f, 0.055);
+      const camera = new THREE.PerspectiveCamera(62, w / h, 0.1, 100);
+      camera.position.z = 15;
+      const N = mobile ? 90 : 230;
+      const pos = new Float32Array(N * 3), nodes = [];
+      for (let i = 0; i < N; i++) {
+        const r = 7.5 * Math.cbrt((i + 1) / N), a = i * 2.399963, y = 1 - (i / (N - 1)) * 2;
+        const rad = Math.sqrt(Math.max(0, 1 - y * y));
+        const x = Math.cos(a) * rad * 7.5, yy = y * 5.2, z = Math.sin(a) * rad * 7.5;
+        pos[i * 3] = x; pos[i * 3 + 1] = yy; pos[i * 3 + 2] = z; nodes.push([x, yy, z]);
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+      const sprite = glowSprite(THREE);
+      const pmat = new THREE.PointsMaterial({ size: mobile ? 0.62 : 0.5, map: sprite, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, color: 0x9b8bff });
+      const points = new THREE.Points(geo, pmat);
+      scene.add(points);
+      const linePos = [], maxLinks = mobile ? 1.8 : 2.1;
+      for (let i = 0; i < N; i++) for (let j = i + 1; j < N; j++) {
+        const dx = nodes[i][0] - nodes[j][0], dy = nodes[i][1] - nodes[j][1], dz = nodes[i][2] - nodes[j][2];
+        if (dx * dx + dy * dy + dz * dz < maxLinks * maxLinks) linePos.push(nodes[i][0], nodes[i][1], nodes[i][2], nodes[j][0], nodes[j][1], nodes[j][2]);
+      }
+      const lgeo = new THREE.BufferGeometry();
+      lgeo.setAttribute("position", new THREE.Float32BufferAttribute(linePos, 3));
+      const lmat = new THREE.LineBasicMaterial({ color: 0x6f5fe0, transparent: true, opacity: 0.16, blending: THREE.AdditiveBlending, depthWrite: false });
+      const lines = new THREE.LineSegments(lgeo, lmat);
+      scene.add(lines);
+      let mx = 0, my = 0, raf, running = true;
+      const onMove = (e) => { mx = e.clientX / window.innerWidth - 0.5; my = e.clientY / window.innerHeight - 0.5; };
+      const onTilt = (e) => { if (e.gamma != null) { mx = Math.max(-0.5, Math.min(0.5, e.gamma / 45)); my = Math.max(-0.5, Math.min(0.5, (e.beta - 45) / 45)); } };
+      const onResize = () => { w = el.clientWidth || window.innerWidth; h = el.clientHeight || 600; renderer.setSize(w, h); camera.aspect = w / h; camera.updateProjectionMatrix(); };
+      window.addEventListener("mousemove", onMove, { passive: true });
+      window.addEventListener("deviceorientation", onTilt, { passive: true });
+      window.addEventListener("resize", onResize);
+      const t0 = performance.now();
+      const loop = () => {
+        if (!running) return;
+        const t = (performance.now() - t0) / 1000;
+        points.rotation.y = lines.rotation.y = t * 0.045;
+        points.rotation.x = lines.rotation.x = Math.sin(t * 0.12) * 0.12;
+        camera.position.x += (mx * 3.4 - camera.position.x) * 0.035;
+        camera.position.y += (-my * 2.2 - camera.position.y) * 0.035;
+        camera.lookAt(0, 0, 0);
+        renderer.render(scene, camera);
+        raf = requestAnimationFrame(loop);
+      };
+      loop();
+      const onVis = () => { running = !document.hidden; if (running) loop(); };
+      document.addEventListener("visibilitychange", onVis);
+      cleanup = () => {
+        running = false; cancelAnimationFrame(raf);
+        window.removeEventListener("mousemove", onMove); window.removeEventListener("deviceorientation", onTilt); window.removeEventListener("resize", onResize); document.removeEventListener("visibilitychange", onVis);
+        geo.dispose(); lgeo.dispose(); pmat.dispose(); lmat.dispose(); sprite.dispose(); renderer.dispose();
+        if (renderer.domElement.parentNode) renderer.domElement.parentNode.removeChild(renderer.domElement);
+      };
+    }).catch(() => {});
+    return () => { alive = false; cleanup(); };
+  }, []);
+  return <div ref={ref} className="lp-three" aria-hidden="true" />;
+}
+
 // Section anchors shared by the desktop nav + the mobile menu.
 const NAV_LINKS = [
   ["products", "Products"], ["demos", "See it work"], ["compare", "vs GHL"],
@@ -994,6 +1086,7 @@ function Landing({ onSignIn = () => {} } = {}) {
       {/* hero */}
       <section className="lp-hero">
         <div className="lp-aurora" aria-hidden="true"><span /><span /><span /></div>
+        <div className="lp-three-wrap" aria-hidden="true"><ThreeHero /></div>
         <div className="lp-grid3d" aria-hidden="true"><div className="lp-grid3d-floor" /></div>
         <div className="lp-vignette" aria-hidden="true" />
         <div className="lp-wrap lp-hero-grid">
