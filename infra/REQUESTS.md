@@ -141,7 +141,7 @@ Rules:
 ### REQ-005: Provisioning Lambda (signup/lambda_handler.handler) + pin the SFN Task ARNs + api-task states:StartExecution + PROVISIONING_SFN_ARN env
 - **Status:** OPEN
 - **Requested by:** Lane Matt @feat/matt-provisioning-lambda-sfn (PR "feat(signup): provisioning Lambda handler + SFN trigger (deterministic, claim-ordered)")
-- **Needed for:** TODO INT/P1s "Package + deploy the provisioning Lambda the SFN invokes" + "Connect the Stripe webhook to start the SFN execution (decouple from the request)"; also closes the P2 "SFN role lambda:InvokeFunction on Resource *" wildcard (pinning `provisioning_lambda_arn` scopes the existing policy automatically)
+- **Needed for:** TODO INT/P1s "Package + deploy the provisioning Lambda the SFN invokes" + "Connect the Stripe webhook to start the SFN execution (decouple from the request)" (the SFN-role `Resource="*"` P2 is already closed on main — sfn_invoke now grants against the placeholder ARN; pinning `provisioning_lambda_arn` swaps both the policy and the Task states to the real ARN)
 - **Env/secret names** (must already exist in shared/config.py): `PROVISIONING_SFN_ARN` (NEW, landed in `shared/config.py` with this PR); on the LAMBDA only existing names: `SIGNUP_REAL_DEPS`, `UPLIFT_DB_URL`/`DB_USER`/`DB_PASS`/`DB_HOST`/`DB_NAME`/`DB_PORT`, `COGNITO_USER_POOL_ID`, `RESEND_API_KEY`, `RESEND_FROM_EMAIL`, `SIGNUP_VERIFY_URL_BASE`, `ALLOW_REAL_SENDS`, `ANTHROPIC_ADMIN_KEY`
 - **Spec:**
   ```hcl
@@ -181,8 +181,8 @@ Rules:
   }
 
   # 2) PIN the SFN Task ARNs: pass the deployed Lambda ARN into the EXISTING provisioning
-  #    module (today every Task points at the placeholder and the sfn_invoke policy falls back
-  #    to Resource="*" — setting the var scopes it to the real ARN, closing the P2 finding):
+  #    module (today every Task — and the sfn_invoke policy — points at the inert placeholder
+  #    ARN; setting the var swaps both to the real function):
   #    module "provisioning" { ... provisioning_lambda_arn = aws_lambda_function.provisioning.arn }
 
   # 3) API-TASK IAM: allow starting the machine — scoped to the ONE machine ARN, never "*":
@@ -199,4 +199,4 @@ Rules:
   #    names; re-delivery -> ExecutionAlreadyExists -> no-op), still strictly AFTER the atomic
   #    stripe_events ledger claim. Never on the worker task.
   ```
-- **Done when:** `terraform validate` green with the new function + pinned `provisioning_lambda_arn` (no `Resource="*"` left in the SFN role); the api task role policy lists `states:StartExecution` on exactly the machine ARN; the API task env shows `PROVISIONING_SFN_ARN` (once deliberately set) and the worker shows none of this; a test StartExecution with `{"account_id": <verified+paid test account>}` drives PAID -> ACTIVE through the execution history (or parks via the Catch-all on an injected failure), and a second StartExecution with the same name answers ExecutionAlreadyExists.
+- **Done when:** `terraform validate` green with the new function + pinned `provisioning_lambda_arn` (the SFN role + every Task state reference the real function ARN, not the placeholder); the api task role policy lists `states:StartExecution` on exactly the machine ARN; the API task env shows `PROVISIONING_SFN_ARN` (once deliberately set) and the worker shows none of this; a test StartExecution with `{"account_id": <verified+paid test account>}` drives PAID -> ACTIVE through the execution history (or parks via the Catch-all on an injected failure), and a second StartExecution with the same name answers ExecutionAlreadyExists.
