@@ -267,4 +267,5 @@ module "worker" {
   db_host            = module.data.cluster_endpoint
   cube_endpoint      = var.cube_endpoint
   log_retention_days = var.log_retention_days
+  image              = var.worker_image
 }

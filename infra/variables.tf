@@ -208,3 +208,9 @@ variable "cube_image" {
   default     = "" # the custom uplift-cube image (semantic/ model + security context baked in)
   description = "ECR image URI for the cube service; empty = pinned public cubejs/cube."
 }
+
+variable "worker_image" {
+  type        = string
+  default     = "" # the prebuilt uplift-worker ECR image (deploy still gated on env-key + worker module apply)
+  description = "ECR image URI for the worker service."
+}
