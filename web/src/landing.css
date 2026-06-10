@@ -668,3 +668,13 @@ textarea.lp-input { height: 92px; padding: 11px 13px; resize: none; }
   .lp-cinematic .lp-section.alt { background: var(--surface-2); }
   .lp-cinematic .lp-footer { background: var(--surface-2); backdrop-filter: none; }
 }
+
+/* Fix: the WebGL-backdrop rule `.lp-cinematic > *` set z-index:1 on EVERY direct child, which
+   clobbered the fixed chrome/overlays (nav, mobile menu, sticky bar, progress) — so the mobile
+   menu opened BEHIND the page content. Restore their stacking with higher-specificity selectors. */
+.lp-cinematic > .lp-progress { z-index: 200; }
+.lp-cinematic > .lp-mnav { z-index: 120; }
+.lp-cinematic > .lp-grain { z-index: 95; }
+.lp-cinematic > .lp-mobar { z-index: 90; }
+.lp-cinematic > .lp-totop { z-index: 80; }
+.lp-cinematic > .lp-nav { z-index: 50; }
