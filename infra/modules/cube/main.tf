@@ -118,6 +118,14 @@ resource "aws_ecs_service" "cube" {
   desired_count   = 1
   launch_type     = "FARGATE"
 
+  # A broken task def auto-rolls back instead of draining the service to zero.
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+  deployment_minimum_healthy_percent = 100
+  deployment_maximum_percent         = 200
+
   dynamic "service_registries" {
     for_each = var.namespace_id != "" ? [1] : []
     content {
