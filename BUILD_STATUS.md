@@ -668,3 +668,15 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   queue hygiene, ensure() roster repin, codify worker desired_count). LANE TALLY: 9/10 steps
   landed + verified; step 8 blocked SOLELY on the owner's Squarespace NS change (TF zone NS set
   documented; TLS sequence ready to execute on cutover).
+- 2026-06-10 — **Cycle 13 (STEP 8 COMPLETE — 10/10): full TLS chain live.** NS cutover (user,
+  Squarespace → the TF zone's awsdns set) propagated in minutes; `dns_delegated=true` →
+  ACM cert ISSUED (friesenlabs.com + wildcard). Cutover IaC authored as 3 one-flag phases
+  (#164, review caught a real :80 destroy-before-create collision — depends_on added):
+  (a) ALB :443 (validated-cert gate) + 443 origin-verify twin + api.friesenlabs.com alias —
+  3 pure adds, :80 untouched; (b) CloudFront origin → https-only via api.friesenlabs.com
+  (RUNBOOK amended: raw ELB hostname can't validate TLS — named origin required); Deployed +
+  edge 200×3 + signup 422 through the https chain; (d) :80 forward retired → 301 redirect
+  (reachable only from the CloudFront prefix list, by SG design); direct :443 no-header → 403 ✓.
+  Live path now: browser → Amplify → CloudFront → **HTTPS** → ALB(443, real cert) → API.
+  Remaining (not steps): apex/www records decision (owner), api_cdn retirement (TODO 210/211),
+  #161 hardening, Node-20 actions bump.
