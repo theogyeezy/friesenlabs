@@ -75,13 +75,13 @@ const LP_PRODUCTS = [
     long: "Hire ready-made agents or build your own in a visual Studio: name them, give them composable skills, ground them on your knowledge, and set exactly how much they can do.",
     features: [["Agent Studio", "Build an agent and watch it work in a live preview before you ship it"], ["Skill marketplace", "Composable capabilities you mix, build & share"], ["Autonomy & guardrails", "Suggest-only to fully autonomous, with limits"], ["Managed runtime", "Optimized, hosted, nothing to set up"]] },
   { id: "integration", name: "Switchboard", cat: "Connect", icon: "plug", tone: "green", blurb: "Plug into HubSpot, Stripe, Gmail and 18+ tools you already use.",
-    long: "Connect the tools you already run on. Your CRM becomes the system of record and agents read & write to it directly.",
+    long: "Keep every tool you already pay for. Your CRM stays the source of truth, and your agents work right inside it, reading and writing as they go. No migration, no rip and replace.",
     features: [["18+ connectors", "CRM, email, calendar, payments, support"], ["System of record", "Your CRM stays the source of truth"], ["Two-way sync", "Nothing lives in two places"], ["Write-back", "Approved actions push back to your tools"]] },
   { id: "sidecar", name: "Sidecar", cat: "Agentic layer", icon: "layers", tone: "indigo", blurb: "Put your agents to work on the tools you already use, keep your whole stack.",
     long: "The agentic layer of your suite. Powered by your Switchboard connections, Sidecar's agents work on top of the tools you already use, enriching, drafting and advancing work, with no migration and your tools staying the system of record.",
     features: [["Part of your suite", "Software in your Friesen workspace, no install, no plugin"], ["Powered by Switchboard", "Works over your connected tools & system of record"], ["Agents do the work", "Enrich, draft, follow up and advance deals automatically"], ["Same guardrails", "Approvals, policy & kill switch apply everywhere"]] },
   { id: "knowledge", name: "Knowledge", cat: "Intelligence", icon: "doc", tone: "amber", blurb: "Upload what your business knows; we host it as searchable context for everything.",
-    long: "Your hosted context layer. Upload your handbook, SOPs, pricing, contracts and help center, and we chunk, embed and index them into private knowledge bases. Every product and agent grounds its answers on them, so the whole suite knows your business.",
+    long: "Upload your handbook, SOPs, pricing and help center once, and every agent answers from your actual business instead of a generic guess. We turn your docs into private knowledge bases the whole suite grounds its answers on.",
     features: [["Hosted knowledge bases", "We host & index your docs, private to your instance"], ["RAG out of the box", "Chunked, embedded and searchable automatically"], ["Grounds everything", "Context for Uplift, Frontline, Workflows & agents"], ["Test retrieval", "Ask a base a question and see exactly what it returns"]] },
   { id: "cortex", name: "Cortex", cat: "Intelligence", icon: "network", tone: "amber", blurb: "Knowledge-grounded intelligence, with optional plugins to compound and train private models.",
     long: "The intelligence layer for your agents. Knowledge grounding is included, your agents answer from your own knowledge bases. Add the Flywheel and Fine-tuning plugins to compound on every decision and train private models on your own data, the moat no competitor can copy.",
@@ -940,7 +940,7 @@ function RoiCalculator() {
             ].map(([label, val, set, min, max, pre]) => (
               <label className="roi-ctl" key={label}>
                 <span className="roi-ctl-top"><b>{label}</b><span className="roi-ctl-val">{pre}{val}</span></span>
-                <input type="range" min={min} max={max} value={val} onChange={(e) => set(+e.target.value)} style={{ "--p": ((val - min) / (max - min) * 100) + "%" }} />
+                <input type="range" min={min} max={max} value={val} aria-label={label} aria-valuetext={`${pre}${val}`} onChange={(e) => set(+e.target.value)} style={{ "--p": ((val - min) / (max - min) * 100) + "%" }} />
               </label>
             ))}
           </div>
@@ -1493,7 +1493,7 @@ function Landing({ onSignIn = () => {} } = {}) {
             <h2 style={{ fontSize: 24, fontWeight: 750, letterSpacing: "-.03em", marginTop: 8 }}>Run your business from your pocket.</h2>
             <p style={{ fontSize: 14, color: "var(--ink-2)", marginTop: 8, maxWidth: 420 }}>Approve agent actions, check your pipeline, and watch the work happen, wherever you are.</p>
           </div>
-          <a className="lp-appstore" href="#" onClick={(e) => e.preventDefault()}>
+          <a className="lp-appstore" href="#" role="button" aria-label="iOS app coming soon" onClick={(e) => e.preventDefault()}>
             <svg viewBox="0 0 24 24" width="26" height="26" fill="#fff" aria-hidden="true"><path d="M16.365 1.43c0 1.14-.46 2.23-1.2 3.02-.79.85-2.08 1.51-3.16 1.42-.13-1.1.42-2.27 1.13-3.01.79-.83 2.18-1.45 3.23-1.43zM20.8 17.12c-.5 1.16-.74 1.68-1.39 2.71-.9 1.44-2.18 3.24-3.76 3.25-1.4.01-1.76-.92-3.67-.91-1.9.01-2.3.92-3.7.9-1.58-.01-2.79-1.62-3.7-3.06-2.53-4.01-2.8-8.72-1.24-11.22 1.11-1.78 2.86-2.82 4.5-2.82 1.68 0 2.73.92 4.12.92 1.35 0 2.17-.92 4.11-.92 1.47 0 3.02.8 4.13 2.18-3.63 1.99-3.04 7.17.2 8.97z" /></svg>
             <span><small>Download on the</small><b>App Store</b></span>
           </a>
@@ -1585,7 +1585,7 @@ function Landing({ onSignIn = () => {} } = {}) {
             <h1 className="lp-paper-title">{paper.title}</h1>
             <div className="lp-paper-authors">
               <span><b>Matthew Yee</b></span>
-              <span className="lp-paper-aff">Friesen Labs Foundation, Austin, TX · <a href="mailto:research@friesenlabs.org" onClick={(e) => e.preventDefault()}>research@friesenlabs.org</a></span>
+              <span className="lp-paper-aff">Friesen Labs Foundation, Austin, TX · <a href="mailto:research@friesenlabs.org">research@friesenlabs.org</a></span>
             </div>
             <div className="lp-paper-meta">Published {paper.date} · Friesen Labs Foundation Technical Report · {paper.readTime} read</div>
             <div className="lp-paper-abstract">
