@@ -5,6 +5,11 @@ variable "project" { type = string }
 variable "vpc_id" { type = string }
 variable "public_subnet_ids" { type = list(string) }
 variable "alb_security_group_id" { type = string }
+variable "retire_http_forward" {
+  type    = bool
+  default = false # TLS cutover phase (d): flip ONLY after CloudFront talks https to the ALB (RUNBOOK)
+}
+
 variable "certificate_arn" {
   type    = string
   default = "" # set to the ACM cert ARN before apply
@@ -114,14 +119,51 @@ resource "aws_lb_listener" "https" {
   ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
   certificate_arn   = var.certificate_arn
 
-  default_action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.api.arn
+  dynamic "default_action" {
+    for_each = local.enforce_origin ? [] : [1]
+    content {
+      type             = "forward"
+      target_group_arn = aws_lb_target_group.api.arn
+    }
+  }
+
+  dynamic "default_action" {
+    for_each = local.enforce_origin ? [1] : []
+    content {
+      type = "fixed-response"
+      fixed_response {
+        content_type = "application/json"
+        message_body = "{\"detail\":\"forbidden\"}"
+        status_code  = "403"
+      }
+    }
   }
 }
 
+# The 443 twin of the origin_verify rule below — the X-Origin-Verify discipline carries to TLS.
+resource "aws_lb_listener_rule" "origin_verify_https" {
+  count        = (local.has_cert && local.enforce_origin) ? 1 : 0
+  listener_arn = aws_lb_listener.https[0].arn
+  priority     = 10
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.api.arn
+  }
+
+  condition {
+    http_header {
+      http_header_name = "X-Origin-Verify"
+      values           = [var.origin_verify_secret]
+    }
+  }
+}
+
+# Port-80 collision guard: the redirect listener exists only AFTER http_forward retires —
+# the RUNBOOK both-listeners transitional state keeps 80-forward alive while CloudFront still
+# talks HTTP (CloudFront never follows origin redirects; an early redirect = outage).
 resource "aws_lb_listener" "http_redirect" {
-  count             = local.has_cert ? 1 : 0
+  count             = (local.has_cert && var.retire_http_forward) ? 1 : 0
   load_balancer_arn = aws_lb.this.arn
   port              = 80
   protocol          = "HTTP"
@@ -143,7 +185,7 @@ resource "aws_lb_listener" "http_redirect" {
 # default_action materializes. (Applies to the no-cert path only; the ACM/443 path gets its own
 # rule when a domain lands.)
 resource "aws_lb_listener" "http_forward" {
-  count             = local.has_cert ? 0 : 1
+  count             = var.retire_http_forward ? 0 : 1
   load_balancer_arn = aws_lb.this.arn
   port              = 80
   protocol          = "HTTP"
@@ -170,7 +212,7 @@ resource "aws_lb_listener" "http_forward" {
 }
 
 resource "aws_lb_listener_rule" "origin_verify" {
-  count        = (!local.has_cert && local.enforce_origin) ? 1 : 0
+  count        = (!var.retire_http_forward && local.enforce_origin) ? 1 : 0
   listener_arn = aws_lb_listener.http_forward[0].arn
   priority     = 10
 
@@ -188,5 +230,6 @@ resource "aws_lb_listener_rule" "origin_verify" {
 }
 
 output "alb_dns_name" { value = aws_lb.this.dns_name }
+output "alb_zone_id" { value = aws_lb.this.zone_id }
 output "target_group_arn" { value = aws_lb_target_group.api.arn }
 output "arn_suffix" { value = aws_lb.this.arn_suffix }

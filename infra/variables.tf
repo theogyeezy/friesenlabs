@@ -137,6 +137,24 @@ variable "domain_name" {
   description = "Apex domain for the Route53 zone + ACM cert."
 }
 
+variable "alb_tls" {
+  type        = bool
+  default     = false # TLS cutover phase (a): 443 listener (validated cert) + api.<domain> alias; 80-forward stays
+  description = "Attach the issued ACM cert to the ALB (443) and create api.<domain> -> ALB."
+}
+
+variable "alb_retire_http_forward" {
+  type        = bool
+  default     = false # TLS cutover phase (d): ONLY after CloudFront origin is https (phase b) + verified
+  description = "Retire the ALB :80 forward listener (replaced by 80->443 redirect)."
+}
+
+variable "api_cdn_origin_domain" {
+  type        = string
+  default     = "" # TLS cutover phase (b): set to api.<domain> — CloudFront origin goes https-only
+  description = "Named https origin for the API CloudFront distribution."
+}
+
 variable "dns_delegated" {
   type        = bool
   default     = false # flip AFTER Squarespace nameservers point at the Route53 zone
