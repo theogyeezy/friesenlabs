@@ -21,9 +21,13 @@ Routing (TODO AI/P1 resolved — coordinator-driven on real runtimes):
   - Any real runtime (ManagedAgentsRuntime): tool selection comes from the COORDINATOR — the
     `send_message` event digest carries the agent.custom_tool_use events + delegations. A
     side-effecting tool the coordinator named is resolved through the TRUSTED registry and
-    invoked (=> Greenlight proposal, draft-only); read-only/unknown tool events are surfaced
-    untouched — the self-hosted worker executes read tools in the VPC, and an unknown name is
-    never default-allowed.
+    invoked (=> Greenlight proposal, draft-only); READ-ONLY (Policy.AUTO) tools are executed
+    CLIENT-SIDE inside the runtime's send_message loop (docs/decisions/
+    custom-tool-execution-path.md, ratified #123 — the Conversation binds its tenant-scoped
+    ToolContext builder onto the runtime's `tool_context_factory` seam, and results feed back
+    as user.custom_tool_result). Read-only/unknown events that REACH the digest un-executed
+    (no clients configured, mixed gated round, round bound) are surfaced untouched — an
+    unknown name is never default-allowed.
 """
 from __future__ import annotations
 
@@ -39,6 +43,9 @@ from agents.tools.sideeffecting import IssueQuote, SendEmail, UpdateDeal
 from .analytics import Analytics, Event, EventType
 from .rag import Answer, RagContext, answer as rag_answer
 from .slots import SlotContext, resolve_slots
+
+# Sentinel distinguishing "runtime has no tool_context_factory seam" from "seam present, unset".
+_SEAM_ABSENT = object()
 
 # Lightweight intent matching for the offline facade — FakeRuntime ONLY (explicitly gated in
 # send()). On a real runtime the coordinator picks the tools; this regex never runs there.
@@ -147,7 +154,35 @@ class Conversation:
             environment_id=environment_id,
         )
 
+        # CLIENT-SIDE AUTO-TOOL EXECUTION (custom-tool-execution-path decision, ratified #123):
+        # when the runtime exposes the `tool_context_factory` seam (ManagedAgentsRuntime) and the
+        # caller injected nothing, bind this conversation's tenant-scoped context builder so the
+        # coordinator's read-only tool calls execute in-process during send_message and feed back
+        # as user.custom_tool_result. A factory injected at runtime construction always wins.
+        # FakeRuntime / stub runtimes don't carry the seam — nothing changes for them.
+        if getattr(self.runtime, "tool_context_factory", _SEAM_ABSENT) is None:
+            self.runtime.tool_context_factory = self._session_tool_ctx
+
     # ------------------------------------------------------------------ helpers
+    def _session_tool_ctx(self, session: Session) -> ToolContext:
+        """ToolContext for the runtime's client-side AUTO-tool execution. THE TRUST RULE: the
+        tenant comes from the SESSION metadata only (set from the verified claim at
+        create_session) — never re-read from conversation/request state. Fresh extra dict per
+        call — tool invocations must never share mutable context state."""
+        extra: dict = {}
+        if self.spec_generator is not None:
+            extra["generate_spec"] = self.spec_generator
+        return ToolContext(
+            tenant_id=session.metadata["tenant_id"],
+            agent=self.agent,
+            db=self.crm,
+            cube=self.cube,
+            rag=self.rag,
+            cortex=self.cortex,
+            greenlight=self.greenlight,
+            extra=extra,
+        )
+
     def _tool_ctx(self) -> ToolContext:
         # Fresh extra dict per call — tool invocations must never share mutable context state.
         extra: dict = {}
@@ -221,14 +256,21 @@ class Conversation:
         - a SIDE-EFFECTING tool named by the coordinator resolves through the TRUSTED registry
           and is invoked — the Phase 4 base class routes a proposal to Greenlight WITHOUT
           performing the side effect (draft-only stays guaranteed);
-        - read-only tool events pass through untouched (the self-hosted worker executes read
-          tools in the VPC — this facade never re-runs them);
+        - READ-ONLY (AUTO) tools were already executed CLIENT-SIDE inside the runtime's
+          send_message loop (ratified #123) — executed calls arrive in the digest's
+          `tool_results` (recorded to analytics here, never re-run); any read-only event that
+          reaches `pending_approvals` un-executed passes through untouched;
         - an UNKNOWN tool name is never default-allowed: the event is surfaced as-is, nothing
           resolves or executes.
         """
         from agents.tools.registry import get_tool  # noqa: PLC0415 — trusted server-side registry
 
         resp = self.runtime.send_message(self.session, message)
+
+        # Client-side executions the runtime already performed this turn (AUTO tools only) —
+        # recorded for the trace; the results were fed back into the session, nothing re-runs.
+        for tr in resp.get("tool_results") or []:
+            self._record(EventType.TOOL_CALL, {"tool": tr.get("tool"), "status": tr.get("status")})
 
         pending: list[dict] = []
         for event in resp.get("pending_approvals") or []:

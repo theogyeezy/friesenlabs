@@ -11,8 +11,9 @@ lazily and every method is flagged "verify" (MA is beta). Tests use `FakeRuntime
 from __future__ import annotations
 
 import abc
+import json
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from shared.config import MA_BETA_HEADER
 
@@ -20,6 +21,12 @@ from shared.config import MA_BETA_HEADER
 DELEGATION_DEPTH = 1          # no nested sub-teams
 MAX_AGENTS_PER_ROSTER = 20
 MAX_CONCURRENT_THREADS = 25
+
+# Client-side custom-tool execution bound (docs/decisions/custom-tool-execution-path.md,
+# ratified #123): max execute-and-resume rounds per send_message turn. Each round may carry
+# several parallel AUTO tool calls; on exhaustion the loop fails CLOSED (surfaces the calls as
+# pending and returns) rather than draining a runaway coordinator forever.
+DEFAULT_MAX_TOOL_ROUNDS = 8
 
 # The MA built-in toolset id implied for every agent (versioned, static resource).
 # VERIFY: toolset version string against the live managed-agents-2026-04-01 surface.
@@ -67,14 +74,38 @@ class ManagedAgentsRuntime(AgentRuntime):
     constructor/`create_environment` id is only a single-tenant convenience fallback — an
     instance-global must never silently serve every tenant, and `create_environment` refuses to
     overwrite an already-configured id.
+
+    CLIENT-SIDE TOOL EXECUTION (docs/decisions/custom-tool-execution-path.md, ratified #123 —
+    v1 = client-side; the orchestrator drives tool execution): when `tool_context_factory` is
+    injected (the same seam `SelfHostedToolUseRuntime` carries), `send_message` executes the
+    coordinator's read-only (Policy.AUTO) custom-tool calls IN-PROCESS through the trusted
+    registry and feeds each result back as `user.custom_tool_result` — the documented round-trip
+    for `{"type": "custom"}` tools. ALWAYS_ASK / unknown tools are NEVER executed here: they
+    surface as pending exactly as before (Greenlight routing stays in `conv.session` via the
+    Phase 4 `Tool.invoke` draft-only guarantee). With no factory — or a context carrying no tool
+    clients — behavior is byte-identical to the pre-execution adapter: events surface, nothing runs.
     """
 
-    def __init__(self, api_key: str | None = None, environment_id: str | None = None):
+    def __init__(
+        self,
+        api_key: str | None = None,
+        environment_id: str | None = None,
+        *,
+        tool_context_factory: Callable[["Session"], Any] | None = None,
+        max_tool_rounds: int = DEFAULT_MAX_TOOL_ROUNDS,
+    ):
+        if max_tool_rounds < 1:
+            raise ValueError(f"max_tool_rounds must be >= 1, got {max_tool_rounds}")
         self._api_key = api_key
         self._client = None  # built lazily; import never needs the network
         self._environment_id = environment_id
         self._coordinator_ids: set[str] = set()  # coordinators created here (depth-1 guard)
         self._session_ids: set[str] = set()      # sessions opened here (thread-cap guard)
+        # The client-side execution seam: session -> tenant-bound ToolContext. PUBLIC on purpose —
+        # `conv.session.Conversation` binds its per-tenant context builder here when the caller
+        # didn't inject one (None = no executor = today's surface-only behavior).
+        self.tool_context_factory = tool_context_factory
+        self.max_tool_rounds = max_tool_rounds
 
     def _c(self):
         if self._client is None:
@@ -112,6 +143,60 @@ class ManagedAgentsRuntime(AgentRuntime):
         if isinstance(stop, dict):
             return stop.get("type")
         return getattr(stop, "type", None)
+
+    # ------------------------------------------------- client-side AUTO-tool execution helpers
+    @staticmethod
+    def _auto_tool_class(name: str | None):
+        """TRUSTED-registry lookup for client-side execution: returns the Tool class ONLY for a
+        known read-only (Policy.AUTO) tool. ALWAYS_ASK and unknown names return None — they are
+        never executed here (unknown is never default-allowed; gated tools keep their existing
+        surface-to-Greenlight path in conv.session)."""
+        if not name:
+            return None
+        from .tools.base import Policy  # noqa: PLC0415 — lazy: keep module import cheap
+        from .tools.registry import get_tool  # noqa: PLC0415
+
+        cls = get_tool(name)
+        if cls is None or cls.policy is not Policy.AUTO:
+            return None
+        return cls
+
+    @staticmethod
+    def _ctx_has_clients(ctx: Any) -> bool:
+        """Honest fallback gate: a ToolContext carrying NO tool clients must not 'execute' tools
+        into empty results the coordinator would then present as data-grounded. No clients ->
+        no execution -> events surface exactly as before."""
+        return any(getattr(ctx, name, None) is not None for name in ("db", "cube", "rag", "cortex"))
+
+    def _run_auto_tool(self, ctx: Any, entry: dict, thread_id: str | None) -> tuple[dict, str]:
+        """Execute ONE coordinator-requested AUTO tool via the trusted registry; return the
+        `user.custom_tool_result` event to feed back + an "ok"/"error" status for the digest.
+
+        Fails CLOSED: any executor error (bad model input, degraded client) becomes an
+        `is_error` tool result fed back to the session — the drain loop never crashes mid-turn.
+        Result shape per the MA docs (events reference): {type, custom_tool_use_id,
+        content:[{type:"text",text}], is_error?}; `session_thread_id` is echoed when the call
+        was cross-posted from a subagent thread (multiagent contract).
+        """
+        name, tu_id = entry.get("tool"), entry.get("custom_tool_use_id")
+        try:
+            cls = self._auto_tool_class(name)
+            if cls is None:  # routing guarantees AUTO-only; double-checked here (never default-allow)
+                raise RuntimeError(f"{name!r} is not an executable AUTO registry tool")
+            out = cls().invoke(ctx, **(entry.get("input") or {}))
+            content, status = json.dumps(out.get("result"), default=str), "ok"
+        except Exception as exc:  # fail closed: error result fed back, never a crash
+            content, status = f"{name} failed: {exc}", "error"
+        result: dict[str, Any] = {
+            "type": "user.custom_tool_result",
+            "custom_tool_use_id": tu_id,
+            "content": [{"type": "text", "text": content}],
+        }
+        if status == "error":
+            result["is_error"] = True
+        if thread_id is not None:
+            result["session_thread_id"] = thread_id
+        return result, status
 
     def create_environment(self, name: str) -> str:
         # Guard: never silently overwrite a configured environment id (the persisted per-tenant id
@@ -230,16 +315,45 @@ class ManagedAgentsRuntime(AgentRuntime):
 
     def send_message(self, session, message) -> dict:
         """One turn against the live session as the real event-stream flow:
-        stream-first -> send -> drain-to-idle (the MA-readiness rework in TODO.md).
+        stream-first -> send -> drain-to-idle, WITH client-side execution of read-only
+        (Policy.AUTO) custom tools (custom-tool-execution-path decision, ratified #123).
+
+        The documented custom-tool round-trip: `agent.custom_tool_use` -> session idles with
+        stop_reason `requires_action` -> this orchestrator executes through the trusted registry
+        with the session's tenant-bound ToolContext -> `user.custom_tool_result` goes back via
+        `events.send` on the SAME open stream (client-patterns Pattern 9 submits results while
+        the stream stays open) -> the drain continues until the coordinator settles with a
+        data-grounded answer. Rules:
+
+        - ONLY registry Policy.AUTO tools execute, and only when `tool_context_factory` is bound
+          AND the context carries at least one tool client (honest fallback: no clients -> no
+          execution -> byte-identical surface-only behavior);
+        - ALWAYS_ASK / unknown tools keep the EXISTING behavior exactly: surfaced as pending,
+          never executed here. A round containing ANY such gated call surfaces ALL of that
+          round's calls and breaks — partial result submission to a session still blocked on a
+          gated call is deliberately avoided (VERIFY: live partial-fulfilment resume semantics
+          before ever relying on them);
+        - the loop is BOUNDED at `max_tool_rounds` execute-and-resume rounds; on exhaustion the
+          remaining calls surface as pending (reason: max_tool_rounds_exhausted) and the turn
+          returns — fail closed, never an unbounded drain;
+        - THE TRUST RULE: the execution tenant comes from the factory's ToolContext, which is
+          built from SESSION metadata only (set from the verified claim at create_session).
 
         Returns the FakeRuntime-compatible shape {session_id, tenant_id, delegations, answer}
-        plus `pending_approvals` for any client-side tool calls surfaced during the turn.
+        plus `pending_approvals` (surfaced, un-executed events) and `tool_results` (executed
+        AUTO calls: {tool, custom_tool_use_id, status}).
         """
         client = self._c()
         answer_parts: list[str] = []
         delegations: list[str] = []
         pending: list[dict] = []
+        tool_results: list[dict] = []
         errors: list[str] = []
+        # The current round's surfaced-but-unresolved tool calls, in ARRIVAL ORDER:
+        # (pending-entry, session_thread_id, AUTO tool class | None). Resolution happens at the
+        # requires_action idle gate — parallel calls batch into one events.send.
+        calls: list[tuple[dict, str | None, Any]] = []
+        rounds = 0
         # Stream-FIRST, then send: the SSE stream only delivers events emitted after it opens —
         # send-then-stream loses the early events.
         with client.beta.sessions.events.stream(
@@ -263,17 +377,20 @@ class ManagedAgentsRuntime(AgentRuntime):
                     if name:
                         delegations.append(name)
                 elif etype == "agent.custom_tool_use":
-                    # A client-side tool call. NEVER executed here — surfaced as a pending action;
-                    # side-effecting tools route through Greenlight via the Phase 4 Tool base class
-                    # in whatever executor resolves this (draft-only stays guaranteed).
-                    pending.append(
+                    # A client-side tool call. Collected (never executed inline) — the
+                    # requires_action idle gate decides: execute-and-resume for pure-AUTO rounds,
+                    # surface-as-pending otherwise. Entry shape is unchanged from the
+                    # pre-execution adapter so surfaced events stay byte-identical.
+                    calls.append((
                         {
                             "status": "pending",
                             "tool": getattr(event, "name", None),
                             "input": getattr(event, "input", None),
                             "custom_tool_use_id": getattr(event, "id", None),
-                        }
-                    )
+                        },
+                        getattr(event, "session_thread_id", None),
+                        self._auto_tool_class(getattr(event, "name", None)),
+                    ))
                 elif etype == "session.error":
                     errors.append(str(getattr(event, "error", None) or getattr(event, "message", "")))
                 elif etype == "session.status_terminated":
@@ -282,27 +399,63 @@ class ManagedAgentsRuntime(AgentRuntime):
                         + (f" — errors: {errors}" if errors else "")
                     )
                 elif etype == "session.status_idle":
-                    # Drain-to-idle gate. We break on EVERY idle (never spin on the stream):
-                    # "requires_action" means the session is blocked on a client-side event (tool
-                    # confirmation / custom tool result) — this adapter holds no tool executor, so
-                    # the blocked state is surfaced as pending rather than awaited forever.
-                    # VERIFY: whether self-hosted environment-worker tool execution ever surfaces as
-                    # requires_action here, or stays "running" while the worker drains the queue.
+                    # Drain-to-idle gate. "requires_action" = blocked on a client-side event:
+                    # a pure-AUTO round executes here and the drain CONTINUES on the same
+                    # stream; anything gated/unknown/unexecutable surfaces as pending and the
+                    # turn returns (the session stays blocked exactly as before — Greenlight
+                    # approval flows resolve it out-of-band). Every other idle breaks.
                     stop = self._stop_reason_type(event)
                     if stop == "retries_exhausted":
                         raise RuntimeError(
                             f"MA session {session.id} idle after retries_exhausted"
                             + (f" — errors: {errors}" if errors else "")
                         )
+                    if stop == "requires_action" and calls:
+                        ctx = (
+                            self.tool_context_factory(session)
+                            if self.tool_context_factory is not None else None
+                        )
+                        runnable = (
+                            ctx is not None
+                            and self._ctx_has_clients(ctx)
+                            and all(cls is not None for _, _, cls in calls)  # pure-AUTO round
+                        )
+                        if runnable and rounds < self.max_tool_rounds:
+                            rounds += 1
+                            results = []
+                            for entry, thread_id, _cls in calls:
+                                result, status = self._run_auto_tool(ctx, entry, thread_id)
+                                results.append(result)
+                                tool_results.append({
+                                    "tool": entry.get("tool"),
+                                    "custom_tool_use_id": entry.get("custom_tool_use_id"),
+                                    "status": status,
+                                })
+                            calls = []
+                            client.beta.sessions.events.send(
+                                session_id=session.id,
+                                events=results,
+                                extra_headers=self._beta_headers(),
+                            )
+                            continue  # keep draining the SAME stream to the next idle
+                        if runnable:  # bound hit — fail closed: surface, never drain forever
+                            for entry, _thread_id, _cls in calls:
+                                entry["reason"] = "max_tool_rounds_exhausted"
+                        pending.extend(entry for entry, _thread_id, _cls in calls)
+                        calls = []
+                        break
                     if stop == "requires_action" and not pending:
                         pending.append({"status": "pending", "reason": "requires_action"})
                     break
+        # Defensive: anything still unresolved at stream end surfaces (never silently dropped).
+        pending.extend(entry for entry, _thread_id, _cls in calls)
         return {
             "session_id": session.id,
             "tenant_id": session.tenant_id,
             "delegations": delegations,
             "answer": "".join(answer_parts),
             "pending_approvals": pending,
+            "tool_results": tool_results,
         }
 
 
@@ -383,6 +536,10 @@ def get_runtime(config: dict[str, Any] | None = None) -> AgentRuntime:
         return ManagedAgentsRuntime(
             api_key=config.get("api_key"),
             environment_id=config.get("environment_id"),  # the persisted per-tenant env id
+            # Client-side AUTO-tool execution seam (ratified #123). Optional: when absent,
+            # conv.session.Conversation binds its tenant-scoped context builder post-construction.
+            tool_context_factory=config.get("tool_context_factory"),
+            max_tool_rounds=config.get("max_tool_rounds") or DEFAULT_MAX_TOOL_ROUNDS,
         )
     if kind == "self_hosted":
         # Lazy import keeps this module's import cost unchanged for the fake/managed paths.

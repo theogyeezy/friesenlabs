@@ -6,8 +6,10 @@ gated to FakeRuntime and never runs:
 
 - a side-effecting tool the coordinator names resolves through the TRUSTED registry and lands a
   Greenlight proposal (draft-only — the Phase 4 base class never performs the side effect);
-- read-only tool events pass through untouched (the self-hosted worker runs read tools in the
-  VPC); an unknown tool name is never default-allowed — surfaced as-is, nothing executes;
+- read-only tool events that reach the digest UN-EXECUTED pass through untouched (AUTO tools
+  normally execute client-side inside the runtime's send_message loop — ratified #123; the
+  facade never re-runs them); an unknown tool name is never default-allowed — surfaced as-is,
+  nothing executes;
 - an action-verb utterance with NO coordinator tool event produces NO proposal (regex is off).
 
 The MA-shaped send_message digest is exactly what agents.runtime.ManagedAgentsRuntime returns
@@ -105,7 +107,8 @@ def test_regex_routing_is_gated_off_on_real_runtimes():
 @pytest.mark.integration
 def test_readonly_and_unknown_tool_events_surface_untouched():
     events = [
-        # Read-only: the worker executes these in the VPC — the facade must NOT re-run them.
+        # Read-only reaching the digest un-executed (no clients / gated round in the runtime
+        # loop) — the facade must NOT re-run it.
         {"status": "pending", "tool": "read_crm", "input": {"entity": "deals"},
          "custom_tool_use_id": "ctu_r"},
         # Unknown: never default-allowed into the registry — surfaced as-is.

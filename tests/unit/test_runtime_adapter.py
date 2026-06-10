@@ -214,10 +214,12 @@ def test_managed_send_message_returns_fake_compatible_shape():
     session = r.create_session("coord_1", tenant_id="tenant-a")
     out = r.send_message(session, "find me leads")
 
-    # FakeRuntime's shape ({session_id, tenant_id, delegations, answer}) + pending approvals.
+    # FakeRuntime's shape ({session_id, tenant_id, delegations, answer}) + pending approvals
+    # + tool_results (client-side AUTO executions — ratified #123; empty on a no-tool turn).
     fake = FakeRuntime()
     fake_keys = set(fake.send_message(fake.create_session("c", "t"), "x"))
-    assert set(out) == fake_keys | {"pending_approvals"}
+    assert set(out) == fake_keys | {"pending_approvals", "tool_results"}
+    assert out["tool_results"] == []
     assert out["session_id"] == session.id
     assert out["tenant_id"] == "tenant-a"
     assert out["delegations"] == ["scout"]
