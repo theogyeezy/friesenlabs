@@ -1,5 +1,6 @@
 // @ts-nocheck
 import React from "react";
+import { createPortal } from "react-dom";
 import "../globals";
 import mattPhoto from "../assets/matt-yee.jpg";
 import nickPhoto from "../assets/nick-friesen.jpg";
@@ -997,7 +998,9 @@ function Landing({ onSignIn = () => {} } = {}) {
         </div>
       </nav>
 
-      {/* mobile menu */}
+      {/* mobile menu — portaled to <body> so it escapes the .lp stacking context entirely
+          (a backdrop rule was trapping it behind the hero). Guaranteed on top. */}
+      {createPortal(
       <div className={"lp-mnav" + (navOpen ? " open" : "")} onClick={() => setNavOpen(false)}>
         <div className="lp-mnav-panel" onClick={(e) => e.stopPropagation()}>
           <div className="lp-mnav-head">
@@ -1013,7 +1016,8 @@ function Landing({ onSignIn = () => {} } = {}) {
             <a className="lp-mnav-signin" href={SIGNIN_HREF} onClick={signInClick}>Sign in</a>
           </div>
         </div>
-      </div>
+      </div>,
+      document.body)}
 
       {/* hero */}
       <section className="lp-hero">
