@@ -68,6 +68,10 @@ variable "provisioning_sfn_arn" {
   type    = string
   default = ""
 }
+variable "cube_endpoint" {
+  type    = string
+  default = "" # http://cube.uplift.local:4000 once Cloud Map is live
+}
 variable "cognito_user_pool_id" { type = string }
 variable "cognito_client_id" { type = string }
 variable "aurora_endpoint" {
@@ -128,7 +132,8 @@ resource "aws_ecs_task_definition" "api" {
         # REQ-003 step 0: the master switch appears ONLY at the deliberate go-live act —
         # without it build_signup_deps() boots all-stub even with every secret present.
         var.signup_real_deps ? [{ name = "SIGNUP_REAL_DEPS", value = "1" }] : [],
-        var.provisioning_sfn_arn != "" ? [{ name = "PROVISIONING_SFN_ARN", value = var.provisioning_sfn_arn }] : []
+        var.provisioning_sfn_arn != "" ? [{ name = "PROVISIONING_SFN_ARN", value = var.provisioning_sfn_arn }] : [],
+        var.cube_endpoint != "" ? [{ name = "CUBE_ENDPOINT", value = var.cube_endpoint }] : []
       )
       secrets = concat(
         [
@@ -186,6 +191,9 @@ resource "aws_ecs_service" "api" {
   task_definition = aws_ecs_task_definition.api.arn
   desired_count   = var.desired_count
   launch_type     = "FARGATE"
+
+  # Break-glass debugging (TODO Sec/P3 212): live shell into a task via SSM — no inbound ports.
+  enable_execute_command = true
 
   # First deploy: tasks need time to pull the image + pass health checks before the LB drains them.
   health_check_grace_period_seconds = 120

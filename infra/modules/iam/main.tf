@@ -125,6 +125,25 @@ resource "aws_iam_role_policy" "api_task_sfn" {
   })
 }
 
+# ECS Exec (TODO Sec/P3 212): the api task opens SSM sessions for break-glass shells.
+resource "aws_iam_role_policy" "api_task_ssm_exec" {
+  name = "ecs-exec-ssm"
+  role = aws_iam_role.task["api"].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "ssmmessages:CreateControlChannel",
+        "ssmmessages:CreateDataChannel",
+        "ssmmessages:OpenControlChannel",
+        "ssmmessages:OpenDataChannel",
+      ]
+      Resource = "*"
+    }]
+  })
+}
+
 # CI/CD (TODO Sec/P1): GitHub Actions OIDC — deploy.yml assumes this role; no static keys.
 # Trust is pinned to this repo (build jobs on main + the protected 'production' environment).
 # Policy is AdministratorAccess for now (terraform apply spans every service) — tightening to a
