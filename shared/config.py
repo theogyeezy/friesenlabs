@@ -30,6 +30,13 @@ ENV_DB_HOST, ENV_DB_NAME, ENV_DB_PORT = "DB_HOST", "DB_NAME", "DB_PORT"
 ENV_CORTEX_S3_BUCKET = "CORTEX_S3_BUCKET"  # S3 bucket holding serialized tenant models (prod)
 ENV_CORTEX_S3_PREFIX = "CORTEX_S3_PREFIX"  # key prefix in that bucket (empty -> cortex/registry)
 ENV_CORTEX_LOCAL_DIR = "CORTEX_LOCAL_DIR"  # local-filesystem registry root — dev/tests fallback
+# Cube REST auth (agents/tools/cube_client.py). The RESOLVED HS256 signing-secret VALUE — the same
+# secret the Cube service itself reads as CUBEJS_API_SECRET (infra/modules/cube, SM
+# uplift/cube-api-secret); LANE NICK wires it into the task-def `secrets` block under THIS name.
+# A NEW deliberate name on purpose: per-request Cube-JWT minting must never key off env the live
+# API task already injects (deploy invariance) — unset = no JWT can be minted, the client degrades
+# to its 'unconfigured' result and nothing touches the network. Never the SM reference.
+ENV_CUBEJS_API_SECRET_VALUE = "CUBEJS_API_SECRET_VALUE"
 
 
 def dsn_from_env() -> str | None:

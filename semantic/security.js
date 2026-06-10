@@ -3,7 +3,36 @@
 // to the tenant derived from the verified JWT. Isolation is enforced once, for every consumer,
 // instead of every generated query having to get it right.
 //
+// THE TRUST RULE (CLAUDE.md hard constraint #6): the tenant arrives ONLY inside a signed HS256
+// JWT minted by the API/tool plane from the verified Cognito claim (the Python mirror is
+// agents/tools/cube_client.py). checkAuth below verifies that token itself — unsigned, expired,
+// or wrongly-signed tokens are rejected — and queryRewrite refuses any context whose tenant is
+// missing or shaped like a forgery.
+//
 // Pulled into its own module so it is unit-testable without a running Cube.
+
+const crypto = require('node:crypto');
+
+// Tenants are UUIDs in this system (db/schema.sql: tenant_id uuid), but validate by safe charset
+// (parity with the Python guard) so a forged context — object, array, empty/whitespace string,
+// quote/wildcard junk — can never reach a filter value.
+const TENANT_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
+
+/** True only for a sane, non-empty tenant-id string. Anything else is missing or forged. */
+function isValidTenantId(tenantId) {
+  return typeof tenantId === 'string' && TENANT_ID_RE.test(tenantId);
+}
+
+/** Throw unless the security context carries a valid tenant; return the tenant id. */
+function requireTenant(securityContext) {
+  if (!securityContext || securityContext.tenant_id === undefined || securityContext.tenant_id === null) {
+    throw new Error('no tenant');
+  }
+  if (!isValidTenantId(securityContext.tenant_id)) {
+    throw new Error('forged tenant context');
+  }
+  return securityContext.tenant_id;
+}
 
 /** Return the distinct cube names referenced by a Cube query (e.g. "Deals" from "Deals.count"). */
 function cubesInQuery(query) {
@@ -23,13 +52,11 @@ function cubesInQuery(query) {
 
 /**
  * queryRewrite: force a tenant_id filter onto every cube the query touches.
- * Throws if no tenant is present so a missing/forged context can never return cross-tenant data.
+ * Throws if the tenant is missing OR forged (non-string / empty / unsafe charset) so a bad
+ * context can never return cross-tenant data.
  */
 function queryRewrite(query, { securityContext } = {}) {
-  if (!securityContext || !securityContext.tenant_id) {
-    throw new Error('no tenant');
-  }
-  const tenantId = securityContext.tenant_id;
+  const tenantId = requireTenant(securityContext);
   query.filters = query.filters || [];
 
   for (const cube of cubesInQuery(query)) {
@@ -42,12 +69,71 @@ function queryRewrite(query, { securityContext } = {}) {
   return query;
 }
 
-/** Keep compile/cache resources separate per tenant. */
+/** Keep compile/cache resources separate per tenant. Same missing/forged rejection. */
 function contextToAppId({ securityContext } = {}) {
-  if (!securityContext || !securityContext.tenant_id) {
-    throw new Error('no tenant');
-  }
-  return `CUBE_${securityContext.tenant_id}`;
+  return `CUBE_${requireTenant(securityContext)}`;
 }
 
-module.exports = { queryRewrite, contextToAppId, cubesInQuery };
+/**
+ * Verify an HS256 JWT and return its payload. Throws on ANY defect:
+ * - unsigned / malformed shape (not three non-empty dot-separated segments)
+ * - alg other than HS256 (including `none` — alg-stripping is the classic forgery)
+ * - signature that doesn't verify against the secret (constant-time compare)
+ * - missing or past `exp` (every Cube token is short-lived by construction)
+ * Python mirror: agents/tools/cube_client.decode_verified — both sides enforce the same contract.
+ */
+function decodeVerifiedJwt(token, secret, { now = Math.floor(Date.now() / 1000) } = {}) {
+  if (typeof token !== 'string' || !token) throw new Error('no token');
+  if (!secret) throw new Error('no api secret');
+  const raw = token.startsWith('Bearer ') ? token.slice('Bearer '.length) : token;
+  const parts = raw.split('.');
+  if (parts.length !== 3 || parts.some((p) => !p)) throw new Error('unsigned or malformed token');
+  const [headerB64, payloadB64, sigB64] = parts;
+
+  let header;
+  let payload;
+  let givenSig;
+  try {
+    header = JSON.parse(Buffer.from(headerB64, 'base64url').toString('utf8'));
+    payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8'));
+    givenSig = Buffer.from(sigB64, 'base64url');
+  } catch (e) {
+    throw new Error('unsigned or malformed token');
+  }
+  if (!header || header.alg !== 'HS256') throw new Error('bad alg');
+
+  const expected = crypto
+    .createHmac('sha256', secret)
+    .update(`${headerB64}.${payloadB64}`)
+    .digest();
+  if (givenSig.length !== expected.length || !crypto.timingSafeEqual(givenSig, expected)) {
+    throw new Error('bad signature');
+  }
+  if (!payload || typeof payload.exp !== 'number') throw new Error('no expiry');
+  if (payload.exp <= now) throw new Error('expired token');
+  return payload;
+}
+
+/**
+ * checkAuth for cube.js: verify the request's JWT OURSELVES (never trust an upstream to have
+ * done it) and stamp the security context from the verified payload only. The signing secret is
+ * CUBEJS_API_SECRET — injected into the Cube task from Secrets Manager (infra/modules/cube);
+ * the minting side holds the same value as CUBEJS_API_SECRET_VALUE (shared/config.py).
+ */
+function checkAuth(req, authorization) {
+  const secret = process.env.CUBEJS_API_SECRET;
+  if (!secret) throw new Error('no api secret'); // fail CLOSED: no secret => nobody authenticates
+  const payload = decodeVerifiedJwt(authorization, secret);
+  if (!isValidTenantId(payload.tenant_id)) throw new Error('no tenant');
+  // ONLY the verified tenant crosses into the security context — nothing else from the token.
+  req.securityContext = { tenant_id: payload.tenant_id };
+}
+
+module.exports = {
+  queryRewrite,
+  contextToAppId,
+  cubesInQuery,
+  checkAuth,
+  decodeVerifiedJwt,
+  isValidTenantId,
+};
