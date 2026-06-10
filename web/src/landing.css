@@ -871,3 +871,20 @@ textarea.lp-input { height: 92px; padding: 11px 13px; resize: none; }
 @media (prefers-reduced-motion: reduce) {
   .lp-hero .lp-eyebrow, .lp-hero .lp-h1, .lp-hero .lp-lead, .lp-hero .lp-hero-cta, .lp-hero .lp-trust, .lp-hero .lp-hero-3d { animation: none; }
 }
+
+/* ============================================================
+   Product-render framing: the live demo sits in a refined app
+   window (muted warm controls, mono address, live pulse) so it
+   reads as a real product capture while staying editorial.
+   ============================================================ */
+.lp-demo-window { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--surface); box-shadow: 0 40px 80px -52px oklch(0.3 0.04 48 / .45); }
+.lp-demo-chrome { display: flex; align-items: center; gap: 12px; height: 40px; padding: 0 15px; border-bottom: 1px solid var(--line); background: var(--surface-2); }
+.lp-demo-dots { display: inline-flex; gap: 7px; flex-shrink: 0; }
+.lp-demo-dots i { width: 10px; height: 10px; border-radius: 50%; background: var(--line); }
+.lp-demo-addr { flex: 1; text-align: center; font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 11.5px; letter-spacing: 0.02em; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lp-demo-live { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700; color: var(--green); letter-spacing: 0.04em; text-transform: uppercase; flex-shrink: 0; }
+.lp-demo-live .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 3px color-mix(in oklch, var(--green) 22%, transparent); animation: lpDemoPulse 2s ease-in-out infinite; }
+@keyframes lpDemoPulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+/* the inner stage drops its own frame; the window provides it */
+.lp .lp-demo-window .lp-demo-stage { border: none !important; border-radius: 0 !important; box-shadow: none !important; }
+@media (prefers-reduced-motion: reduce) { .lp-demo-live .dot { animation: none; } }
