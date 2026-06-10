@@ -14,8 +14,10 @@ import {
   ApiError,
   type ActionBody,
   type ActionResponse,
+  type AgentCrewResponse,
   type Approval,
   type ChatResponse,
+  type CrewAgent,
   type CompanyDetailResponse,
   type CompanyRow,
   type ContactDetailResponse,
@@ -42,6 +44,115 @@ import {
 } from "./client";
 
 const MOCK_TENANT = "tenant-demo";
+
+// The demo tenant's crew — mirrors the OWNED roster definitions (agents/roster.py +
+// agents/coordinator.py) and the trusted registry's per-tool policies, so the mock
+// shows the exact crew provisioning assembles. Id tails are fixture values shaped
+// like the real truncation (last 6 chars; the real API never sends full ids either).
+function seedCrewRoster(): CrewAgent[] {
+  return [
+    {
+      name: "scout",
+      role: "Lead research",
+      description:
+        "You are the lead-research specialist. Enrich and score leads using the tenant's " +
+        "corpus and metrics; score conversion propensity with run_model and surface findings " +
+        "as a saved view with build_view.",
+      is_coordinator: false,
+      tools: [
+        { name: "search_rag", policy: "auto" },
+        { name: "query_cube", policy: "auto" },
+        { name: "read_crm", policy: "auto" },
+        { name: "run_model", policy: "auto" },
+        { name: "build_view", policy: "auto" },
+      ],
+    },
+    {
+      name: "nadia",
+      role: "Outreach drafting",
+      description:
+        "You draft outreach. Personalize from the tenant's data; never send — drafts route " +
+        "to a human.",
+      is_coordinator: false,
+      tools: [
+        { name: "search_rag", policy: "auto" },
+        { name: "read_crm", policy: "auto" },
+        { name: "draft_email", policy: "auto" },
+      ],
+    },
+    {
+      name: "margo",
+      role: "Quoting",
+      description: "You handle quoting. Propose quotes grounded in deal data; issuing requires approval.",
+      is_coordinator: false,
+      tools: [
+        { name: "read_crm", policy: "auto" },
+        { name: "query_cube", policy: "auto" },
+        { name: "issue_quote", policy: "always_ask" },
+      ],
+    },
+    {
+      name: "ledger",
+      role: "CRM ops",
+      description: "You handle ops and CRM mutations. All mutations route through Greenlight.",
+      is_coordinator: false,
+      tools: [
+        { name: "read_crm", policy: "auto" },
+        { name: "update_deal", policy: "always_ask" },
+      ],
+    },
+    {
+      name: "echo",
+      role: "Follow-ups",
+      description: "You handle follow-ups. Draft timely nudges; sends require approval.",
+      is_coordinator: false,
+      tools: [
+        { name: "read_crm", policy: "auto" },
+        { name: "draft_email", policy: "auto" },
+      ],
+    },
+    {
+      name: "pip",
+      role: "Support",
+      description: "You handle support questions grounded in the tenant's knowledge.",
+      is_coordinator: false,
+      tools: [
+        { name: "search_rag", policy: "auto" },
+        { name: "read_crm", policy: "auto" },
+      ],
+    },
+    {
+      name: "critic",
+      role: "Review & risk",
+      description:
+        "You review the team's proposed actions and answers for correctness and risk before " +
+        "they go out.",
+      is_coordinator: false,
+      tools: [],
+    },
+  ];
+}
+
+function seedAgentCrew(): AgentCrewResponse {
+  const roster = seedCrewRoster();
+  return {
+    provisioned: true,
+    environment_id_tail: "e6TBgZ",
+    coordinator: {
+      name: "uplift-orchestrator",
+      role: "Coordinator",
+      description:
+        "You coordinate the Uplift team. Delegate research to scout, outreach drafting to " +
+        "nadia, quoting to margo, follow-ups to echo, support to pip, ops to ledger, and " +
+        "always run the critic before responding.",
+      is_coordinator: true,
+      tools: [],
+      id_tail: "kQ9mXa",
+    },
+    roster,
+    count: roster.length,
+  };
+}
 
 function seedApprovals(): Approval[] {
   return [
@@ -563,6 +674,17 @@ export class MockApi {
         contact_id: d.contact_id,
         created_at: d.created_at,
       })),
+    };
+  }
+
+  // --- agent crew --------------------------------------------------------------
+
+  getAgentCrew(): AgentCrewResponse {
+    const crew = seedAgentCrew();
+    return {
+      ...crew,
+      coordinator: { ...crew.coordinator, tools: [...crew.coordinator.tools] },
+      roster: crew.roster.map((a) => ({ ...a, tools: a.tools.map((t) => ({ ...t })) })),
     };
   }
 
