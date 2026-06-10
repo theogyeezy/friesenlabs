@@ -434,6 +434,10 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   interactive vs-GoHighLevel comparison shipped (user-directed lane override; Amplify deploying).
   REMAINING = USER INPUTS ONLY: env-key Console click → worker deploy; NS cutover → TLS cutover;
   SNS confirm; stripe-webhook + admin-key values → signup go-live; deploy-run approval click.
+- 2026-06-10 — REQ-006/007/008 DONE (#85): PostHog env (Lambda live + staged in the signup
+  gate), connector-write IAM verified exact-scope, live-e2e CI job (nightly, self-skipping).
+  LIVE CATCH: AWS auto-minor-upgraded Aurora 16.8→16.11 — the stale pin would have planned a
+  DOWNGRADE; re-pinned + ignore_changes(engine_version), module.data plan clean.
 
 ## Lane Matt (app code) — log
 - 2026-06-09 — **Cycles 5-6 (lane tail) + LANE MATT COMPLETE:** #67(+hotfix #73: the prod image
