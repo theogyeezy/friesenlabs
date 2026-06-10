@@ -25,7 +25,9 @@ import os
 from datetime import date
 from typing import Any, Callable
 
-from agents.runtime import get_runtime
+from fastapi import HTTPException
+
+from agents.runtime import FakeRuntime, get_runtime
 from agents.tools.base import ToolContext
 from agents.workspace_store import PgWorkspaceStore, WorkspaceStore
 from api.app import ApiDeps, create_app
@@ -73,7 +75,9 @@ def make_conversation_factory(
     nothing here reads env/headers/bodies for it. The tenant's persisted Managed Agents ids are
     looked up in the WorkspaceStore (RLS-scoped); a missing/incomplete row means the tenant is not
     provisioned => return None, which `/chat` turns into the graceful 503 — never a 500, and never
-    an on-the-fly roster build in the request path.
+    an on-the-fly roster build in the request path. A row holding the offline 'stub-' placeholder
+    ids (written by the _Noop agent plane) is likewise refused with a clear 503 when the runtime
+    is real — only FakeRuntime may ride stub ids.
 
     `runtime_factory(row)` builds the runtime for THAT tenant's row (a fresh
     `ManagedAgentsRuntime` bound to the row's environment_id in prod; a FakeRuntime in tests).
@@ -84,13 +88,28 @@ def make_conversation_factory(
         if row is None or not row.get("coordinator_id") or not row.get("environment_id"):
             return None  # not provisioned -> /chat's graceful 503 path
 
+        runtime = runtime_factory(row)
+        stub_ids = sorted({
+            v for v in (row.get("workspace_id"), row.get("environment_id"),
+                        row.get("coordinator_id"))
+            if isinstance(v, str) and v.startswith("stub-")
+        })
+        if stub_ids and not isinstance(runtime, FakeRuntime):
+            # Offline provisioning (the prod_deps _Noop agent plane) persisted PLACEHOLDER ids.
+            # A real runtime pointed at them would surface an opaque Anthropic error as a 500 —
+            # refuse up front with a clear 503 instead. FakeRuntime (tests/dev) accepts any ids.
+            raise HTTPException(status_code=503, detail=(
+                f"tenant agent plane holds offline stub ids ({', '.join(stub_ids)}); chat is "
+                "unavailable until this tenant is re-provisioned against live Managed Agents"
+            ))
+
         # Tool-side CRM client: a fresh per-request tenant adapter (never shared across requests).
         db = crm.for_tenant(tenant_id) if hasattr(crm, "for_tenant") else crm
 
         return Conversation(
             tenant_id=tenant_id,
             today=(today or date.today)(),
-            runtime=runtime_factory(row),
+            runtime=runtime,
             coordinator_id=row["coordinator_id"],
             environment_id=row["environment_id"],
             rag=rag,

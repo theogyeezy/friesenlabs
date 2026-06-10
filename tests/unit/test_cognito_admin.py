@@ -162,6 +162,22 @@ def test_confirm_calls_admin_confirm_sign_up_and_redelivery_is_noop():
     assert [c[0] for c in fake.calls].count("admin_confirm_sign_up") == 2
 
 
+@pytest.mark.unit
+def test_confirm_reraises_not_authorized_that_is_not_already_confirmed():
+    # NotAuthorizedException also covers REAL failures (missing IAM perms, disabled user) —
+    # only the already-CONFIRMED replay may be swallowed; anything else must surface so the
+    # provisioning step fails (and parks/rolls back) instead of silently passing.
+    fake = FakeCidp()
+
+    def deny(**kw):
+        raise NotAuthorized("Access denied: not authorized to perform AdminConfirmSignUp")
+
+    fake.admin_confirm_sign_up = deny
+    client = CognitoAdminClient("us-east-1_TestPool", client=fake)
+    with pytest.raises(NotAuthorized):
+        client.confirm("sub-1")
+
+
 # ---------------- the exact AccountService + Provisioner duck-type contract ----------------
 @pytest.mark.unit
 def test_provisioning_pipeline_runs_through_the_real_client():

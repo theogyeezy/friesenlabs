@@ -8,8 +8,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Callable
+from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 from signup.accounts import AccountService
@@ -24,6 +26,10 @@ class SignupDeps:
     new_account_id: Callable[[], str]
     email_token_ok: Callable[[str, str], bool]
     sms_code_ok: Callable[[str, str], bool]
+    # Where the browser GET click-through (the emailed link) lands AFTER the token is consumed:
+    # the SPA base from shared.config Config.signup_verify_url_base. Empty (the safe fallback)
+    # = no redirect; the route answers JSON like its POST sibling.
+    verify_redirect_url: str = ""
 
 
 class SignupBody(BaseModel):
@@ -62,6 +68,24 @@ def mount_signup(app: FastAPI, deps: SignupDeps) -> None:
         if deps.accounts.store.get(account_id) is None:
             raise HTTPException(status_code=404, detail="no such account")
         acct = deps.accounts.verify_email(account_id, deps.email_token_ok(account_id, body.token))
+        return {"state": acct.state.value, "email_verified": acct.email_verified}
+
+    @app.get("/signup/{account_id}/verify-email")
+    def verify_email_click(account_id: str, token: str = ""):
+        """The emailed link (a browser GET). Verification itself is the same constant-time path
+        as the POST sibling (`EmailTokenService.verify` MACs the token before anything is decoded
+        or branched on); a bad/expired/replayed token just doesn't flip the flag. Then a 303 so
+        the browser lands on the SPA with a clean GET — or JSON when no SPA base is configured."""
+        if deps.accounts.store.get(account_id) is None:
+            raise HTTPException(status_code=404, detail="no such account")
+        acct = deps.accounts.verify_email(account_id, deps.email_token_ok(account_id, token))
+        if deps.verify_redirect_url:
+            sep = "&" if "?" in deps.verify_redirect_url else "?"
+            dest = (
+                f"{deps.verify_redirect_url}{sep}account_id={quote(account_id, safe='')}"
+                f"&email_verified={'1' if acct.email_verified else '0'}"
+            )
+            return RedirectResponse(dest, status_code=303)
         return {"state": acct.state.value, "email_verified": acct.email_verified}
 
     @app.post("/signup/{account_id}/verify-phone")

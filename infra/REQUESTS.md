@@ -79,3 +79,35 @@ Rules:
   #    environment key only) — this asymmetry is the security boundary.
   ```
 - **Done when:** `terraform validate` green with the new secret + variables (safe `""` defaults); the worker task definition shows UPLIFT_ENV_ID / UPLIFT_ENV_KEY / CLOUDWATCH_METRICS=1 / CUBE_ENDPOINT / DB_* and NO `ANTHROPIC_API_KEY`; the API task definition shows `ANTHROPIC_API_KEY` (from `uplift/anthropic-api-key`) and NO `UPLIFT_ENV_KEY`.
+
+### REQ-003: API task env for the live provisioning deps — Stripe/Resend secrets, webhook secret, Cognito pool id
+- **Status:** OPEN
+- **Requested by:** Lane Matt @feat/matt-signup-prod-deps (PR "feat(signup): real provisioning deps end-to-end (env-guarded, draft-gated)")
+- **Needed for:** TODO INT/P0s "real Stripe adapter" / "real Resend email client" / "real Cognito admin ops" / "real email verification" — `api/prod_deps.build_signup_deps()` now selects the real adapters off these env vars (unset = byte-identical stub boot)
+- **Env/secret names** (must already exist in shared/config.py): `STRIPE_API_KEY`, `RESEND_API_KEY`, `STRIPE_WEBHOOK_SECRET`, `COGNITO_USER_POOL_ID` (all read in `shared/config.py` `Config`)
+- **Spec:**
+  ```hcl
+  # API task definition ONLY (none of these ever reach the worker task).
+
+  # 1) EXISTING shared platform secrets -> task-def `secrets` (valueFrom):
+  #    STRIPE_API_KEY <- friesenlabs/platform/shared/stripe-secret-key
+  #    RESEND_API_KEY <- friesenlabs/platform/shared/resend-api-key
+
+  # 2) NEW secret container for the Stripe webhook signing secret (value written by Lane Nick
+  #    from the Stripe dashboard after registering the /webhooks/stripe endpoint; "" until then —
+  #    signup/stripe_adapter.construct_event refuses ALL webhooks while it is empty).
+  resource "aws_secretsmanager_secret" "stripe_webhook_secret" {
+    name = "uplift/stripe-webhook-secret"
+  }
+  #    STRIPE_WEBHOOK_SECRET <- valueFrom aws_secretsmanager_secret.stripe_webhook_secret
+
+  # 3) Plain (non-secret) env var on the API task, from the auth module output already in state:
+  #    COGNITO_USER_POOL_ID = module.auth.user_pool_id
+  #    (api/asgi.py already reads the same name for JWKS; prod_deps reuses it for the admin ops —
+  #    the api task role additionally needs cognito-idp Admin* IAM, tracked in TODO INT, not here.)
+
+  # IAM: grant the api task execution role GetSecretValue on the two shared platform secret ARNs
+  # + the new uplift/stripe-webhook-secret ARN explicitly (TODO P2 wants uplift/* scoping
+  # TIGHTENED — list these ARNs, do not widen a wildcard).
+  ```
+- **Done when:** `terraform validate` green; the API task definition shows `STRIPE_API_KEY` + `RESEND_API_KEY` + `STRIPE_WEBHOOK_SECRET` under `secrets` and `COGNITO_USER_POOL_ID` under `environment`; the worker task definition shows NONE of them; with values present `api.prod_deps.build_signup_deps()` selects StripeAdapter / ResendEmailSender / CognitoAdminClient (and with them absent the deploy boots byte-identically — /healthz 200). `ALLOW_REAL_SENDS` stays unset/"false" (draft-gate) — flipping it is a separate, deliberate Lane Nick act.

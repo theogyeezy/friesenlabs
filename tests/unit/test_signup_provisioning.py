@@ -187,6 +187,72 @@ def test_redelivered_webhook_is_idempotent_no_double_provision():
     assert provisioned == ["a1"]  # only once
 
 
+# ---------------- cross-task webhook idempotency (the shared event ledger) ----------------
+class Ledger:
+    """In-memory stand-in for signup.store_pg.PgStripeEventLedger (shared across 'tasks')."""
+
+    def __init__(self):
+        self.rows = {}
+
+    def is_handled(self, event_id):
+        return event_id in self.rows
+
+    def mark_handled(self, event_id, account_id=None):
+        if event_id in self.rows:
+            return False
+        self.rows[event_id] = account_id
+        return True
+
+
+@pytest.mark.unit
+def test_replayed_event_id_short_circuits_across_two_tasks():
+    # Two PaymentService instances with SEPARATE account stores (two Fargate tasks whose
+    # in-memory state can't see each other) sharing ONE event ledger: the re-delivered event id
+    # must short-circuit on the second task BEFORE any state mutation.
+    ledger = Ledger()
+    event = {"id": "evt_1", "type": "checkout.session.completed",
+             "data": {"object": {"client_reference_id": "a1"}}}
+    svc_a, svc_b = _account_service(), _account_service()
+    _verified_account(svc_a)
+    _verified_account(svc_b)  # in prod both tasks see the same Aurora row
+    provisioned_a, provisioned_b = [], []
+    task_a = PaymentService(Stripe(event), svc_a,
+                            on_paid=lambda a: provisioned_a.append(a.id), event_ledger=ledger)
+    task_b = PaymentService(Stripe(event), svc_b,
+                            on_paid=lambda a: provisioned_b.append(a.id), event_ledger=ledger)
+
+    assert task_a.handle_webhook(b"{}", "good-sig", "whsec") == {
+        "handled": True, "account_id": "a1",
+    }
+    assert provisioned_a == ["a1"] and ledger.rows == {"evt_1": "a1"}
+
+    # Stripe re-delivers the SAME event id to the other task.
+    assert task_b.handle_webhook(b"{}", "good-sig", "whsec") == {
+        "handled": True, "idempotent": True, "event_id": "evt_1",
+    }
+    assert provisioned_b == []
+    assert svc_b.store.get("a1").state is State.PHONE_VERIFIED  # untouched — never flipped PAID
+
+
+@pytest.mark.unit
+def test_event_is_marked_after_the_work_not_before():
+    # A crash inside on_paid leaves the event UNCLAIMED, so Stripe's retry gets to run it again
+    # (check-before / mark-after = at-least-once; account-state idempotency absorbs the rest).
+    ledger = Ledger()
+    event = {"id": "evt_2", "type": "checkout.session.completed",
+             "data": {"object": {"client_reference_id": "a1"}}}
+    svc = _account_service()
+    _verified_account(svc)
+
+    def boom(acct):
+        raise RuntimeError("provisioning crashed")
+
+    pay = PaymentService(Stripe(event), svc, on_paid=boom, event_ledger=ledger)
+    with pytest.raises(RuntimeError):
+        pay.handle_webhook(b"{}", "good-sig", "whsec")
+    assert ledger.rows == {}  # not claimed — the retry will re-run the work
+
+
 # ---------------- provisioning idempotency + rollback ----------------
 @pytest.mark.unit
 def test_full_provisioning_sets_tenant_and_activates():

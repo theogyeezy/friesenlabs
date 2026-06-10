@@ -1,27 +1,55 @@
-"""Production dependency wiring for the ASGI app.
+"""Production dependency wiring for the ASGI app (signup / payment / provisioning plane).
 
-Builds the signup/webhook deps so the routes are actually MOUNTED in the container (the audit found
-they weren't). The external integrations (Cognito, Stripe, Resend, SNS) are live and need credentials —
-they are wired here as explicit stubs that no-op where safe and raise a clear "needs configuration"
-error where a real call is required, so:
-  - the routes EXIST (POST /signup, /verify-*, /checkout, /webhooks/stripe),
-  - account creation works in-memory,
-  - operations that genuinely need live creds fail loudly instead of silently faking success.
-Replace the stubs with real clients (BLOCKED: needs Nick) to make the flow live.
+Selects the REAL adapters behind env guards (shared/config.py names; values land via the task
+definition — infra/REQUESTS.md REQ-003). EVERY guard falls back to the original stub, so an
+unconfigured deploy boots byte-identically to before this wiring existed: /healthz 200, routes
+mounted, account creation in-memory, verification off, checkout 400s "needs configuration".
+
+  guard (env)                 real adapter (else the stub)
+  --------------------------  -----------------------------------------------------------------
+  STRIPE_API_KEY              signup.stripe_adapter.StripeAdapter        (else _StubStripe)
+  COGNITO_USER_POOL_ID        signup.cognito_admin.CognitoAdminClient    (else _StubCognito)
+  RESEND_API_KEY              signup.resend_sender.ResendEmailSender     (else _Noop)
+  (always)                    signup.sms_sender.SnsSmsOtpSender — self-gating: it never builds a
+                              boto3 client (logs + drops) until ALLOW_REAL_SENDS=true
+  ANTHROPIC_ADMIN_KEY         signup.anthropic_admin.AnthropicAdminClient (else _Noop)
+  UPLIFT_DB_URL / DB_*        signup.store_pg.{PgAccountStore, PgStripeEventLedger, PgOtpStore}
+                              (else the per-task in-memory _AccountStore / no ledger / in-proc OTP)
+  SIGNUP_TOKEN_SECRET_VALUE   signup.tokens.{EmailTokenService, OtpService} wired into
+                              email_token_ok / sms_code_ok + issued at create
+                              (else verification stays hardcoded OFF — may_pay never flips)
+
+DRAFT-GATE (CLAUDE.md hard constraint #2) still stands: the Resend/SNS senders refuse real
+delivery unless ALLOW_REAL_SENDS=true regardless of keys, and no live cloud/Anthropic resource is
+created unless LANE NICK deliberately injects the corresponding credential. The provisioning
+pipeline's db / Secrets-Manager / cube / agent-plane seams remain _Noop (follow-up TODOs) — live
+end-to-end provisioning stays BLOCKED: Lane Nick until those land and the # VERIFY'd Anthropic
+Admin endpoints are confirmed.
 """
 from __future__ import annotations
 
-import os
+import logging
+import time
 import uuid
 
 from api.signup_routes import SignupDeps
+from shared.config import dsn_from_env, load, stripe_price_ids
 from signup.accounts import AccountService
+from signup.anthropic_admin import AnthropicAdminClient
+from signup.cognito_admin import CognitoAdminClient
 from signup.payment import PaymentService
 from signup.provisioning import Provisioner
+from signup.resend_sender import ResendEmailSender
+from signup.sms_sender import SnsSmsOtpSender
+from signup.store_pg import PgAccountStore, PgOtpStore, PgStripeEventLedger
+from signup.stripe_adapter import StripeAdapter
+from signup.tokens import EmailTokenService, OtpRateLimitError, OtpService
+
+log = logging.getLogger(__name__)
 
 
 class _AccountStore:
-    """In-memory account store (prod swaps in an Aurora-backed store under RLS)."""
+    """In-memory account store (the no-DSN fallback; prod swaps in PgAccountStore)."""
 
     def __init__(self):
         self.rows: dict[str, object] = {}
@@ -41,21 +69,22 @@ class _AccountStore:
 
 class _StubCognito:
     def create_unconfirmed_user(self, email):
-        return f"stub-sub-{uuid.uuid4()}"  # real Cognito user creation: needs Nick
+        return f"stub-sub-{uuid.uuid4()}"  # real Cognito needs COGNITO_USER_POOL_ID
 
     def set_tenant_id(self, sub, tenant_id):
-        pass  # real Cognito admin update: needs Nick
+        pass  # real Cognito admin update needs COGNITO_USER_POOL_ID
 
     def confirm(self, sub):
         pass
 
 
 class _Noop:
-    """Email (Resend) / SMS (SNS) / agent-plane stub — real delivery/creation needs Nick."""
+    """Email / SMS / agent-plane / SM / cube stub — the unconfigured fallback."""
 
     def ensure(self, **_kw):
         # Agent-plane stub: stable stub ids so provisioning can upsert a tenant_workspaces row
-        # offline (the conversation factory then resolves them; FakeRuntime accepts any ids).
+        # offline (the conversation factory then resolves them; FakeRuntime accepts any ids —
+        # and api/asgi.py REFUSES to hand 'stub-' ids to a real runtime).
         # The real agent plane returns the LIVE workspace/environment/coordinator ids.
         return {"workspace_id": "stub-ws", "environment_id": "stub-env",
                 "coordinator_id": "stub-coord"}
@@ -67,35 +96,164 @@ class _Noop:
 
 
 class _StubStripe:
-    """Stripe stub — real payment/verification needs Nick + STRIPE_WEBHOOK_SECRET + the stripe lib."""
+    """Stripe stub — real payment/verification needs STRIPE_API_KEY (+ webhook secret)."""
 
     def create_customer(self, **kw):
-        raise NotImplementedError("Stripe not configured — needs Nick")
+        raise NotImplementedError("Stripe not configured — needs STRIPE_API_KEY")
 
     def create_checkout_session(self, **kw):
-        raise NotImplementedError("Stripe not configured — needs Nick")
+        raise NotImplementedError("Stripe not configured — needs STRIPE_API_KEY")
 
     def construct_event(self, payload, sig, secret):
-        raise NotImplementedError("Stripe not configured — needs Nick")
+        raise NotImplementedError("Stripe not configured — needs STRIPE_API_KEY")
 
 
-def build_signup_deps(workspace_store=None) -> SignupDeps:
-    """`workspace_store` (optional `agents.workspace_store.WorkspaceStore`) persists the per-tenant
-    Managed Agents ids at provisioning time; None (default) skips persistence (DB unconfigured)."""
-    store = _AccountStore()
-    accounts = AccountService(store, _StubCognito(), _Noop(), _Noop())
+class _VerificationMailer:
+    """The AccountService email seam, minting the REAL credential before delivery.
+
+    `AccountService.create` calls `email.send_verification(email, account_id)` — the second
+    positional is the ACCOUNT ID. This wrapper turns it into the signed single-use 15-minute
+    token (EmailTokenService.issue) and hands THAT to the underlying sender (which composes the
+    click-through link and is itself draft-gated). `send_welcome` passes straight through.
+    """
+
+    def __init__(self, sender, tokens):
+        self.sender = sender   # ResendEmailSender or _Noop
+        self.tokens = tokens   # EmailTokenService
+
+    def send_verification(self, email, account_id):
+        return self.sender.send_verification(email, self.tokens.issue(str(account_id)))
+
+    def send_welcome(self, email, tenant_id=None):
+        return self.sender.send_welcome(email, tenant_id)
+
+
+class _VerifyingAccountService(AccountService):
+    """AccountService that ALSO mints + delivers the SMS OTP at create time.
+
+    The base `create` only triggers the email leg; the phone-verify step needs a live code too.
+    Failure posture: an OTP problem (rate limit, SNS outage) never fails the signup request —
+    the account exists, the email leg ran, and a re-submitted signup (idempotent create) re-issues
+    a code within the OtpService send budget.
+    """
+
+    def __init__(self, store, cognito, email_sender, sms, *, otp=None):
+        super().__init__(store, cognito, email_sender, sms)
+        self.otp = otp  # OtpService | None (None = phone verification not configured)
+
+    def create(self, account_id: str, email: str, phone: str):
+        acct = super().create(account_id, email, phone)
+        if self.otp is not None and not acct.phone_verified:
+            try:
+                self.sms.send_otp(acct.phone, self.otp.issue(acct.id))
+            except OtpRateLimitError as e:
+                log.info("OTP issue rate-limited for account %s: %s", acct.id, e)
+            except Exception as e:  # noqa: BLE001 — SmsSendError etc.; signup must not 500
+                log.warning("OTP delivery failed for account %s: %s: %s",
+                            acct.id, type(e).__name__, e)
+        return acct
+
+
+def build_signup_deps(workspace_store=None, *, now=time.time) -> SignupDeps:
+    """`workspace_store` (optional `agents.workspace_store.WorkspaceStore`) persists the
+    per-tenant Managed Agents ids at provisioning time; None (default) skips persistence
+    (DB unconfigured). `now` is the clock injected into the token/OTP services (test seam)."""
+    cfg = load()
+    dsn = dsn_from_env()
+
+    # --- stores: Aurora-backed when the crm_app DSN is configured (shared across the 2 Fargate
+    # --- tasks + survives restarts); else the per-task in-memory fallback.
+    if dsn:
+        store = PgAccountStore(dsn)
+        event_ledger = PgStripeEventLedger(dsn)
+        otp_store = PgOtpStore(dsn)
+    else:
+        store = _AccountStore()
+        event_ledger = None  # per-task account-state idempotency only
+        otp_store = None     # OtpService falls back to its in-process store
+
+    # --- identity plane ---
+    cognito = (
+        CognitoAdminClient(cfg.cognito_user_pool_id, region=cfg.aws_region)
+        if cfg.cognito_user_pool_id else _StubCognito()
+    )
+
+    # --- outbound senders (BOTH refuse real delivery until ALLOW_REAL_SENDS=true) ---
+    email_sender = (
+        ResendEmailSender(
+            cfg.resend_api_key,
+            cfg.resend_from_email,
+            allow_real_sends=cfg.allow_real_sends,
+            verify_url_base=cfg.signup_verify_url_base,
+        )
+        if cfg.resend_api_key else _Noop()
+    )
+    sms_sender = SnsSmsOtpSender(cfg.aws_region, allow_real_sends=cfg.allow_real_sends)
+
+    # --- verification credentials: issued at create, verified by the /verify-* endpoints ---
+    if cfg.signup_token_secret_value:
+        email_tokens = EmailTokenService(
+            cfg.signup_token_secret_value,
+            ttl_seconds=cfg.signup_email_token_ttl_s,
+            now=now,
+        )
+        otp = OtpService(
+            cfg.signup_token_secret_value,
+            store=otp_store,
+            ttl_seconds=cfg.signup_otp_ttl_s,
+            max_attempts=cfg.signup_otp_max_attempts,
+            max_sends=cfg.signup_otp_max_sends,
+            send_window_seconds=cfg.signup_otp_send_window_s,
+            now=now,
+        )
+        email_token_ok = email_tokens.verify
+        sms_code_ok = otp.verify
+        account_email = _VerificationMailer(email_sender, email_tokens)
+    else:
+        # No signing secret resolved -> verification stays OFF (the safe pre-wire behavior:
+        # nothing can be minted OR verified, may_pay never flips, checkout 400s). The accounts
+        # service gets a _Noop mailer — without a token there is nothing valid to email.
+        otp = None
+        email_token_ok = lambda aid, token: False  # noqa: E731
+        sms_code_ok = lambda aid, code: False      # noqa: E731
+        account_email = _Noop()
+
+    accounts = _VerifyingAccountService(store, cognito, account_email, sms_sender, otp=otp)
+
+    # --- provisioning pipeline. db / Secrets Manager / cube / agent_plane remain _Noop
+    # --- (follow-up TODOs): with a real ANTHROPIC_ADMIN_KEY the # VERIFY'd key-create endpoint
+    # --- would fail -> Provisioner parks the account + archives the workspace (rollback-safe),
+    # --- so live provisioning stays BLOCKED: Lane Nick until those seams land.
+    anthropic_admin = (
+        AnthropicAdminClient(cfg.anthropic_admin_key)
+        if cfg.anthropic_admin_key else _Noop()
+    )
     provisioner = Provisioner(
         store=store, mint_tenant_id=lambda aid: str(uuid.uuid4()), db=_Noop(),
-        anthropic_admin=_Noop(), secrets=_Noop(), cognito=_StubCognito(), cube=_Noop(),
-        resend=_Noop(), agent_plane=_Noop(), workspace_store=workspace_store,
+        anthropic_admin=anthropic_admin, secrets=_Noop(), cognito=cognito, cube=_Noop(),
+        resend=email_sender, agent_plane=_Noop(), workspace_store=workspace_store,
     )
-    payment = PaymentService(_StubStripe(), accounts, on_paid=provisioner.provision)
+
+    # --- payment plane ---
+    stripe = (
+        StripeAdapter(
+            api_key=cfg.stripe_api_key,
+            price_ids=stripe_price_ids(),
+            success_url=cfg.stripe_success_url,
+            cancel_url=cfg.stripe_cancel_url,
+        )
+        if cfg.stripe_api_key else _StubStripe()
+    )
+    payment = PaymentService(
+        stripe, accounts, on_paid=provisioner.provision, event_ledger=event_ledger
+    )
+
     return SignupDeps(
         accounts=accounts,
         payment=payment,
-        stripe_webhook_secret=os.environ.get("STRIPE_WEBHOOK_SECRET", ""),
+        stripe_webhook_secret=cfg.stripe_webhook_secret,
         new_account_id=lambda: str(uuid.uuid4()),
-        # No real email/SMS verifier wired yet → verification cannot complete until configured (safe).
-        email_token_ok=lambda aid, token: False,
-        sms_code_ok=lambda aid, code: False,
+        email_token_ok=email_token_ok,
+        sms_code_ok=sms_code_ok,
+        verify_redirect_url=cfg.signup_verify_url_base,
     )

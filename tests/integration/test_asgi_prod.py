@@ -91,6 +91,30 @@ def test_chat_503_when_workspace_not_provisioned():
     assert _app(factory2).post("/chat", json={"message": "hi"}, headers=H).status_code == 503
 
 
+@pytest.mark.integration
+def test_chat_503_when_real_runtime_meets_stub_provisioned_ids():
+    # Offline provisioning (the prod_deps _Noop agent plane) persisted 'stub-' placeholder ids.
+    # A REAL runtime must refuse to ride them — clear 503, never an opaque Anthropic 500.
+    store = InMemoryWorkspaceStore()
+    store.upsert("tenant-A", "stub-ws", "stub-env", "stub-coord")
+
+    class _RealishRuntime:  # anything that is not FakeRuntime counts as real here
+        pass
+
+    factory = asgi.make_conversation_factory(
+        workspace_store=store, runtime_factory=lambda row: _RealishRuntime()
+    )
+    r = _app(factory).post("/chat", json={"message": "hi"}, headers=H)
+    assert r.status_code == 503
+    assert "stub ids" in r.json()["detail"]
+
+    # FakeRuntime (tests/dev) still rides stub ids — the request goes through, not a 503.
+    fake_factory = asgi.make_conversation_factory(
+        workspace_store=store, runtime_factory=lambda row: FakeRuntime()
+    )
+    assert _app(fake_factory).post("/chat", json={"message": "hi"}, headers=H).status_code == 200
+
+
 class _FakeRag:
     def __init__(self):
         self.called_with = []

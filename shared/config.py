@@ -73,6 +73,10 @@ class Config:
     signup_token_secret: str = os.environ.get(
         "SIGNUP_TOKEN_SECRET", "uplift/signup-token-secret"
     )
+    # The RESOLVED signing-secret VALUE (LANE NICK wires the secret above into the API task-def
+    # `secrets` block under this env name). Empty = verification stays OFF (api/prod_deps.py
+    # keeps email_token_ok/sms_code_ok hardcoded False, the safe pre-wire behavior).
+    signup_token_secret_value: str = os.environ.get("SIGNUP_TOKEN_SECRET_VALUE", "")
     # Plain tunables (safe defaults; no secrets).
     signup_email_token_ttl_s: int = _int_env("SIGNUP_EMAIL_TOKEN_TTL_S", 900)   # 15 min
     signup_otp_ttl_s: int = _int_env("SIGNUP_OTP_TTL_S", 600)                   # 10 min
@@ -109,6 +113,9 @@ class Config:
     anthropic_admin_key_secret: str = os.environ.get(
         "ANTHROPIC_ADMIN_KEY_SECRET", "uplift/anthropic-admin-key"
     )
+    # The RESOLVED admin-key VALUE (task-def `secrets` valueFrom the reference above; API task
+    # ONLY). Empty = unconfigured — api/prod_deps.py keeps the provisioning _Noop stub.
+    anthropic_admin_key: str = os.environ.get("ANTHROPIC_ADMIN_KEY", "")
 
 
 # plan id -> env var that carries its Stripe Price ID (values land via task secrets, never here).
