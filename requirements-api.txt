@@ -6,3 +6,4 @@ anthropic>=0.40
 psycopg2-binary>=2.9
 jsonschema>=4.20
 pyjwt[crypto]>=2.8    # Cognito JWKS verification (RS256)
+stripe>=7             # payment adapter (signup/stripe_adapter.py) — imported lazily
