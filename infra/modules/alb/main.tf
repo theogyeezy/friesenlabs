@@ -168,6 +168,11 @@ resource "aws_lb_listener" "http_redirect" {
   port              = 80
   protocol          = "HTTP"
 
+  # Destroy-before-create across the port-80 handover (review finding, confidence 95): without
+  # this edge terraform may CreateListener the redirect while http_forward still owns :80 —
+  # AWS rejects with DuplicateListener and the apply fails mid-flight on the live path.
+  depends_on = [aws_lb_listener.http_forward]
+
   default_action {
     type = "redirect"
     redirect {
