@@ -7,7 +7,8 @@
 // token and the full proposed-action payload are never rendered.
 
 import React from "react";
-import { ApiClient, defaultClient, type Approval } from "./client";
+import { ApiClient, defaultClient, friendlyErrorMessage, type Approval } from "./client";
+import { Spinner } from "./Spinner";
 
 const { useState, useEffect, useCallback } = React;
 
@@ -65,7 +66,7 @@ export function GreenlightQueue({ client }: GreenlightQueueProps) {
       approvals.forEach((a) => (d[a.id] = draftFromAction(a)));
       setDrafts(d);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not load the queue.");
+      setError(friendlyErrorMessage(e, "Couldn't load the queue. Please try again."));
     } finally {
       setLoading(false);
     }
@@ -97,7 +98,7 @@ export function GreenlightQueue({ client }: GreenlightQueueProps) {
         );
         window.setTimeout(() => setToast(null), 2500);
       } catch (e) {
-        setError(e instanceof Error ? e.message : "Decision failed.");
+        setError(friendlyErrorMessage(e, "That decision didn't go through. Please try again."));
       } finally {
         setBusy((b) => ({ ...b, [a.id]: false }));
       }
@@ -118,22 +119,37 @@ export function GreenlightQueue({ client }: GreenlightQueueProps) {
         <p style={{ color: "var(--ink-3, #8a8278)", fontSize: 14 }}>
           Every agent action that needs your sign off, in one queue.
         </p>
-        <div data-testid="pending-count" style={{ marginTop: 10, fontSize: 13, color: "var(--ink-3, #8a8278)" }}>
-          {items.length} pending
-        </div>
+        {/* Only claim a count once we actually know it (post-load, no error). */}
+        {!loading && !error && (
+          <div data-testid="pending-count" style={{ marginTop: 10, fontSize: 13, color: "var(--ink-3, #8a8278)" }}>
+            {items.length} pending
+          </div>
+        )}
       </div>
 
-      {loading && <div data-testid="gl-loading">Loading the queue...</div>}
+      {loading && <Spinner testid="gl-loading" label="Loading the queue..." />}
       {error && (
-        <div data-testid="gl-error" style={{ color: "var(--rose, #b4413b)", fontSize: 13, marginBottom: 12 }}>
-          {error}
+        <div
+          data-testid="gl-error"
+          style={{ ...card, borderColor: "var(--rose, #b4413b)", color: "var(--ink, #2a2622)", fontSize: 13.5 }}
+        >
+          <div style={{ fontWeight: 700, marginBottom: 4 }}>Something needs another try</div>
+          <p style={{ color: "var(--ink-3, #8a8278)", lineHeight: 1.5 }}>{error}</p>
+          {!loading && (
+            <button data-testid="gl-retry" onClick={() => void load()} style={{ ...ghostBtn, marginTop: 10, color: "var(--ink, #2a2622)" }}>
+              Try again
+            </button>
+          )}
         </div>
       )}
 
-      {!loading && items.length === 0 && (
+      {!loading && !error && items.length === 0 && (
         <div data-testid="gl-empty" style={{ ...card, textAlign: "center", color: "var(--ink-3, #8a8278)" }}>
           <div style={{ fontSize: 15, fontWeight: 700, color: "var(--ink, #2a2622)" }}>Inbox zero</div>
-          <p style={{ fontSize: 13, marginTop: 4 }}>Your agents are running autonomously.</p>
+          <p style={{ fontSize: 13, marginTop: 4 }}>
+            Nothing is waiting on you. When an agent proposes a send, a discount, or any
+            side-effecting action, it lands here for your sign off.
+          </p>
         </div>
       )}
 
