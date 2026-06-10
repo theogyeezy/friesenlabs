@@ -23,25 +23,31 @@ real mode) → CloudFront → ALB (HTTP) → arm64 Fargate API → Aurora** (FOR
 JWKS auth. **Browser-verified end-to-end:** sign-in gate → Hosted UI (PKCE) → code exchange →
 app shell → real RLS-scoped tenant rows. Unauth `/api/*` → 401; `/chat` → graceful 503 (AI parked).
 - ✅ **Login:** Cognito Hosted UI + PKCE in `web/src/auth/`; demo creds in `uplift/demo-user`.
-- ✅ **Landing (2026-06-10):** GHL-style interactive marketing page — hero agent roster, animated
-  Friesen-vs-GoHighLevel capability radar + lens comparison, live ROI calculator, scroll progress,
-  closing CTA. Browser-verified on Amplify. SNS alarm email CONFIRMED (alarms page the owner).
+- ✅ **Landing (2026-06-10):** cinematic, **3D, mobile-first** GHL-style marketing page —
+  interactive hero agent roster + cursor-tilt 3D demo panel + receding perspective grid floor +
+  film grain + vignette; animated Friesen-vs-GoHighLevel capability radar (3D-tilt) + lens
+  comparison; live ROI calculator; scroll-progress bar; hamburger nav + slide-in menu + sticky
+  mobile CTA + back-to-top; closing CTA band; founder photos restored (optimized 7MB→32KB, bundled
+  assets) + Matt's bio corrected (currently at ServiceNow). All 3D/grain is pure CSS (no WebGL) and
+  disables on touch/reduced-motion. Browser-verified desktop + 390px mobile. SNS alarm email
+  CONFIRMED (alarms page the owner). Amplify edge cache: HTML `no-store` + hashed assets
+  `immutable`, so web deploys appear instantly.
 - ✅ **Live since 2026-06-09 (Lane Nick cycles 1-15):** Aurora hardening (retention 7, deletion
   protection, copy-tags, PI); X-Origin-Verify edge→ALB shared secret (403-default listener);
   cube service 1/1 (`/readyz` 200; memory driver — Cube 1.x dropped redis; sg_api self-rule);
-  4 alarms + SNS + billing-alarm action + `uplift-live` dashboard + budget subscriber; CloudTrail
+  5 alarms + SNS + billing-alarm action + `uplift-live` dashboard + budget subscriber; CloudTrail
   scoped S3 data events + ALB access logs; IAM tightening (exact-ARN api task secrets, no SFN
   wildcard); provisioning Lambda + pinned SFN (idempotent executions, smoked all-stub); ingest
   scheduler applied DISABLED; prod isolation gate PASSED live as `crm_app`; baseline plan CLEAN.
 - 🟙 **AI plane half-live:** MA SDK shapes VERIFIED real (managed-agents-2026-04-01); environment
-  `uplift-prod` (env_012JvqRKUZzUDeH3Gse6TBgZ) live; org key + env-id on the API task (rev 4);
+  `uplift-prod` (env_012JvqRKUZzUDeH3Gse6TBgZ) live; org key + env-id on the API task (rev 6, current `main` image);
   `/chat` 401-unauth (conversation wiring = app side). Worker blocked on the Console-generated
   environment key (`uplift/env-key`).
 - 🟙 **Domain:** friesenlabs.com bought (Squarespace); Route53 zone + wildcard ACM applied,
   PENDING_VALIDATION until the registrar NS cutover; ALB TLS cutover follows (RUNBOOK sequence).
 - ⛔ **Parked on values:** signup go-live (`uplift/stripe-webhook-secret` from the Stripe
   dashboard, `uplift/anthropic-admin-key` after the VERIFY pass) — flags `api_signup_env` then
-  `signup_real_deps`; worker deploy (env-key + cost); SNS email sub PendingConfirmation.
+  `signup_real_deps`; worker deploy (env-key + cost). (SNS email sub now CONFIRMED.)
 - **Ops:** state in S3 (KMS); machine-local `infra/prod.auto.tfvars` carries the live values +
   go-live flags — full applies allowed only against a re-verified clean plan; targeted applies
   are the norm. One-off tasks run via the `uplift-migrate-oneoff` task-def family. Runbook:
@@ -49,8 +55,13 @@ app shell → real RLS-scoped tenant rows. Unauth `/api/*` → 401; `/chat` → 
   cube model + Cloud Map live, CI/CD OIDC pipeline, ECS Exec, GuardDuty/Config/SSM, worker image
   staged, rotation executed, TLS-cutover runbook authored, GHL-style landing shipped. Remaining
   work is user-input-gated only. CI/CD pipeline PROVEN end-to-end (prod runs current main). SNS
-  alarms confirmed. Four irreducible remainders need owner-only actions (BUILD_STATUS): env-key
-  Console click → worker; Squarespace NS → TLS; Stripe webhook secret → signup; Anthropic admin key.
+  alarms confirmed. Security-hardening batch APPLIED + live-verified: CloudFront WAFv2 (managed rules + rate
+  limit) + access logging + HSTS + PriceClass_100; Cognito deletion-protection + admin-create-only +
+  7-day refresh; AWS provider pin `~> 6.49`; ECS deployment circuit breakers (auto-rollback); ECR
+  lifecycle policies; Aurora pg-log retention 30d; CI permissions block; `.stignore` parity. TODO.md
+  swept (25 done items checked off + a Lane-Nick completion-status block). Four irreducible
+  remainders need owner-only actions (BUILD_STATUS): env-key Console click → worker; Squarespace NS
+  → TLS; Stripe webhook secret → signup; Anthropic admin key.
 **Tooling:** `.claude/settings.json` enables the official-marketplace plugins so collaborators inherit
 them on clone+trust. Don't commit secrets to it.
 

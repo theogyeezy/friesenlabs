@@ -54,11 +54,12 @@ Everything that can be built and tested offline is done, and a final adversarial
 |-------|-----------|-----|--------------|
 | ✅ **Live & working** | Amplify → CloudFront → ALB → arm64 Fargate API → Aurora (FORCE'd RLS); Cognito JWKS auth | deployed + **verified** (`/healthz` 200, unauth API 401) | — |
 | ✅ **Live & working** | Web UI with real login (Hosted-UI PKCE, `web/src/auth/`) | browser-verified end-to-end | — |
-| ✅ **Live & working** | GHL-energy marketing landing, **mobile-first**: hamburger nav, sticky CTA, interactive hero roster, vs-GoHighLevel radar, live ROI calculator | browser-verified desktop + 390px mobile | — |
+| ✅ **Live & working** | Cinematic **3D, mobile-first** marketing landing: hamburger nav, sticky CTA, back-to-top, 3D cursor-tilt hero panel + perspective grid + film grain, hero agent roster, vs-GoHighLevel 3D radar, live ROI calculator, founder photos (optimized) | browser-verified desktop + 390px mobile | — |
 | ✅ **Live & working** | Edge hardening: X-Origin-Verify shared secret (CloudFront → ALB 403-default) | applied two-phase, zero downtime | — |
 | ✅ **Live & working** | Cube semantic service (1/1, `/readyz` 200 internally) | digest-pinned, memory driver (Cube 1.x), SG self-rule | data model image (semantic/ bake) next |
-| ✅ **Live & working** | Observability: 4 CloudWatch alarms + SNS + billing-alarm action + `uplift-live` dashboard; budget notification subscribed | applied | email sub PendingConfirmation (click) |
+| ✅ **Live & working** | Observability: 5 CloudWatch alarms + SNS + billing-alarm action + `uplift-live` dashboard; GuardDuty + Config | applied; **SNS email CONFIRMED** (alarms page the owner) | — |
 | ✅ **Live & working** | Audit: CloudTrail scoped S3 data events; ALB access logs (encrypted bucket, delivering) | applied + verified | — |
+| ✅ **Live & working** | Security hardening: CloudFront WAFv2 (managed rules + rate limit) + access logging + HSTS + PriceClass_100; ECS circuit breakers; ECR lifecycle; AWS provider pin | applied + verified | — |
 | ✅ **Live & working** | crm-app-db secrets rotation (30-day, controlled-window procedure) | rotation executed + services rolled + verified | — |
 | ✅ **Live & working** | CI/CD: OIDC deploy pipeline (build→plan→approved apply→roll) | **proven end-to-end**; prod runs current `main` | — |
 | ✅ **Live & working** | Cloud Map (`cube.uplift.local`) + cube semantic model + ECS Exec | verified end-to-end | — |
