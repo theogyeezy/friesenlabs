@@ -37,9 +37,40 @@ resource "aws_secretsmanager_secret" "env_id" {
   description = "Managed Agents environment id — single-tenant fallback; per-tenant rows take precedence."
 }
 
+# Sec/P0: shared secret CloudFront injects as X-Origin-Verify so the ALB can reject requests that
+# bypass our edge (any stranger's CloudFront distro passes the SG prefix-list check). The value is
+# generated only when var.enable_origin_verify is set (phase-1 of the two-phase rollout) and lives
+# in SM for rotation; it also lands in the (KMS-encrypted S3) state — acceptable, never in git.
+variable "enable_origin_verify" {
+  type    = bool
+  default = false
+}
+
+resource "aws_secretsmanager_secret" "origin_verify" {
+  name        = "${var.project}/origin-verify"
+  description = "X-Origin-Verify shared secret: CloudFront custom origin header, enforced at the ALB listener."
+}
+
+resource "random_password" "origin_verify" {
+  count   = var.enable_origin_verify ? 1 : 0
+  length  = 48
+  special = false # header-safe
+}
+
+resource "aws_secretsmanager_secret_version" "origin_verify" {
+  count         = var.enable_origin_verify ? 1 : 0
+  secret_id     = aws_secretsmanager_secret.origin_verify.id
+  secret_string = random_password.origin_verify[0].result
+}
+
 output "anthropic_api_key_secret_arn" { value = aws_secretsmanager_secret.anthropic_api_key.arn }
 output "connectors_secret_arn" { value = aws_secretsmanager_secret.connectors.arn }
 output "crm_app_db_secret_arn" { value = aws_secretsmanager_secret.crm_app_db.arn }
 output "cube_api_secret_arn" { value = aws_secretsmanager_secret.cube_api_secret.arn }
 output "env_key_secret_arn" { value = aws_secretsmanager_secret.env_key.arn }
 output "env_id_secret_arn" { value = aws_secretsmanager_secret.env_id.arn }
+output "origin_verify_secret_arn" { value = aws_secretsmanager_secret.origin_verify.arn }
+output "origin_verify_value" {
+  value     = var.enable_origin_verify ? random_password.origin_verify[0].result : ""
+  sensitive = true
+}

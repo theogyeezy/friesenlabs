@@ -29,8 +29,9 @@ module "iam" {
 }
 
 module "secrets" {
-  source  = "./modules/secrets"
-  project = var.project
+  source               = "./modules/secrets"
+  project              = var.project
+  enable_origin_verify = var.enable_origin_verify
 }
 
 module "ecr" {
@@ -94,6 +95,8 @@ module "alb" {
   vpc_id                = module.vpc.vpc_id
   public_subnet_ids     = module.vpc.public_subnet_ids
   alb_security_group_id = module.security.sg_alb
+  origin_verify_secret  = module.secrets.origin_verify_value
+  enforce_origin_verify = var.alb_enforce_origin_verify
 }
 
 module "api_service" {
@@ -133,9 +136,10 @@ module "provisioning" {
 # --- Web hosting: Amplify (Vite SPA). Only created when a GitHub token is supplied. ---
 # CloudFront HTTPS edge in front of the API ALB (so Amplify can proxy /api/* to a valid HTTPS target).
 module "api_cdn" {
-  source  = "./modules/api_cdn"
-  project = var.project
-  alb_dns = module.alb.alb_dns_name
+  source               = "./modules/api_cdn"
+  project              = var.project
+  alb_dns              = module.alb.alb_dns_name
+  origin_verify_secret = module.secrets.origin_verify_value
 }
 
 module "web_hosting" {

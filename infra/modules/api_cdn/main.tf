@@ -5,6 +5,11 @@
 
 variable "project" { type = string }
 variable "alb_dns" { type = string }
+variable "origin_verify_secret" {
+  type      = string
+  default   = "" # Sec/P0 phase 1: when set, CloudFront stamps X-Origin-Verify on every origin request
+  sensitive = true
+}
 
 # Don't cache the API; forward method/query/headers/body through to the origin.
 data "aws_cloudfront_cache_policy" "disabled" { name = "Managed-CachingDisabled" }
@@ -24,6 +29,16 @@ resource "aws_cloudfront_distribution" "api" {
       https_port             = 443
       origin_protocol_policy = "http-only" # ALB has no TLS cert; CloudFront terminates TLS at the edge
       origin_ssl_protocols   = ["TLSv1.2"]
+    }
+
+    # Sec/P0: prove to the ALB that traffic came through OUR distribution — the SG prefix-list
+    # admits every CloudFront customer, so the ALB listener requires this header (phase 2).
+    dynamic "custom_header" {
+      for_each = nonsensitive(var.origin_verify_secret != "") ? [1] : []
+      content {
+        name  = "X-Origin-Verify"
+        value = var.origin_verify_secret
+      }
     }
   }
 

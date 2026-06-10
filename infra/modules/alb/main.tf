@@ -9,6 +9,15 @@ variable "certificate_arn" {
   type    = string
   default = "" # set to the ACM cert ARN before apply
 }
+variable "origin_verify_secret" {
+  type      = string
+  default   = "" # Sec/P0: the X-Origin-Verify value CloudFront stamps (must match api_cdn's)
+  sensitive = true
+}
+variable "enforce_origin_verify" {
+  type    = bool
+  default = false # Sec/P0 phase 2: flip ONLY after the distro is Deployed with the header, or the edge 403s
+}
 
 resource "aws_lb" "this" {
   name               = "${var.project}-alb"
@@ -34,7 +43,13 @@ resource "aws_lb_target_group" "api" {
   }
 }
 
-locals { has_cert = var.certificate_arn != "" }
+locals {
+  has_cert = var.certificate_arn != ""
+  # Both halves must be present: enforcing with an empty secret would 403 ALL traffic.
+  # nonsensitive(): the bool reveals nothing about the secret, and without it the sensitivity
+  # taints the dynamic default_action and re-marks the live listener (spurious plan diff).
+  enforce_origin = var.enforce_origin_verify && nonsensitive(var.origin_verify_secret != "")
+}
 
 # With a cert: terminate TLS at the ALB (443 forward) + redirect 80 -> 443.
 resource "aws_lb_listener" "https" {
@@ -69,15 +84,52 @@ resource "aws_lb_listener" "http_redirect" {
 
 # No cert (no domain yet): forward HTTP:80 directly to the API. TLS is terminated upstream by Amplify,
 # which proxies /api/* to this ALB over HTTP. Swap to the HTTPS listeners once a domain + ACM cert exist.
+# Sec/P0 phase 2 (enforce_origin): the default becomes 403 and only requests carrying the
+# X-Origin-Verify header our CloudFront stamps are forwarded (rule below) — exactly one
+# default_action materializes. (Applies to the no-cert path only; the ACM/443 path gets its own
+# rule when a domain lands.)
 resource "aws_lb_listener" "http_forward" {
   count             = local.has_cert ? 0 : 1
   load_balancer_arn = aws_lb.this.arn
   port              = 80
   protocol          = "HTTP"
 
-  default_action {
+  dynamic "default_action" {
+    for_each = local.enforce_origin ? [] : [1]
+    content {
+      type             = "forward"
+      target_group_arn = aws_lb_target_group.api.arn
+    }
+  }
+
+  dynamic "default_action" {
+    for_each = local.enforce_origin ? [1] : []
+    content {
+      type = "fixed-response"
+      fixed_response {
+        content_type = "application/json"
+        message_body = "{\"detail\":\"forbidden\"}"
+        status_code  = "403"
+      }
+    }
+  }
+}
+
+resource "aws_lb_listener_rule" "origin_verify" {
+  count        = (!local.has_cert && local.enforce_origin) ? 1 : 0
+  listener_arn = aws_lb_listener.http_forward[0].arn
+  priority     = 10
+
+  action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.api.arn
+  }
+
+  condition {
+    http_header {
+      http_header_name = "X-Origin-Verify"
+      values           = [var.origin_verify_secret]
+    }
   }
 }
 

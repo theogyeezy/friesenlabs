@@ -36,7 +36,7 @@ test-results/
 *.tfstate
 *.tfstate.*
 crash.log
-.terraform.lock.hcl
+# .terraform.lock.hcl is TRACKED (multi-platform hashes) so CI/applies pin identical providers.
 
 # --- Worker logs / scratch ---
 logs/*.log

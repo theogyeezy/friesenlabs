@@ -333,6 +333,10 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   (exit 0) then `scripts/isolation_test.py` as crm_app → '[isolation] PASS — RLS enforced'.
   crm_app live: rolsuper=f, rolbypassrls=f; DELETE denied on accounts/stripe_events. REQ-001+002
   both DONE in REQUESTS.md. Edge /healthz 200 after. TODO Sec/P0 188 checked.
+- 2026-06-09 — Cycle 5 authoring: X-Origin-Verify edge→ALB shared secret (Sec/P0 187) behind a
+  two-flag, two-phase rollout (no 403 window; nonsensitive() bool so the live listener shows zero
+  spurious diff — flags-off plan = baseline +1 pure add). Multi-platform .terraform.lock.hcl now
+  TRACKED (aws + random, 2×h1 each) — TODO 135 done; random ~>3.6 added for the secret value.
 
 ## Lane Matt (app code) — log
 - 2026-06-09 — **Cycle 2 (asgi integration + provisioning foundations, 4 PRs + 1 fix, all reviewed PASS):**
