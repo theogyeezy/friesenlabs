@@ -656,6 +656,49 @@ function ProductPage({ id, onClose, onAdd, onBook }) {
 // onSignIn: wired by main.tsx to the Cognito Hosted UI signIn() when the
 // sign-in gate is active. Defaults to a no-op so the screen is render-safe
 // standalone.
+// Space-travel scroll: each section is positioned in DEPTH by its distance from screen center, so
+// scrolling dollies a camera THROUGH the page — a section approaches from far, snaps into focus at
+// center, then flies toward + past the viewer as the next emerges from behind it (and reverses on
+// scroll-up). Native scroll is preserved (so mobile / scrollbar / keyboard all work); we only add
+// per-section transform/opacity/blur driven by scroll. rAF-throttled. Off on reduced-motion.
+function smooth01(a, b, x) { const t = Math.max(0, Math.min(1, (x - a) / (b - a))); return t * t * (3 - 2 * t); }
+function useSpaceScroll() {
+  useEffect(() => {
+    if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const sel = ".lp-cinematic .lp-section, .lp-cinematic .lp-fullbleed, .lp-cinematic .lp-finalcta";
+    const sections = Array.from(document.querySelectorAll(sel));
+    if (!sections.length) return;
+    const mobile = window.innerWidth < 760;
+    const DEPTH = mobile ? 460 : 600;   // px of z-travel
+    let raf = null;
+    const update = () => {
+      raf = null;
+      const vh = window.innerHeight, cy = vh / 2;
+      for (const el of sections) {
+        const r = el.getBoundingClientRect();
+        let p = (r.top + r.height / 2 - cy) / vh; // 0 = dead center, >0 ahead (below), <0 passed (above)
+        p = Math.max(-1.4, Math.min(1.4, p));
+        const ap = Math.abs(p);
+        // flat & readable while centered (ramp≈0); ramps into depth only as it enters/leaves center,
+        // so a section flies in from far, holds in focus, then flies toward + past the viewer.
+        const ramp = smooth01(0.12, 0.92, ap);
+        const tz = (p < 0 ? 1 : -1) * ramp * DEPTH;             // below center → away (deep); above → toward viewer
+        const op = 1 - smooth01(0.62, 1.15, ap);               // stays opaque through the focus zone
+        const bl = !mobile && ap > 0.68 ? Math.min(8, (ap - 0.68) * 18) : 0;
+        el.style.transform = "perspective(1250px) translateZ(" + tz.toFixed(0) + "px)";
+        el.style.opacity = op.toFixed(3);
+        el.style.filter = bl > 0.2 ? "blur(" + bl.toFixed(1) + "px)" : "none";
+        el.style.zIndex = String(Math.round(40 - p * 12));      // nearer-the-viewer sections paint on top (under the nav)
+        el.style.pointerEvents = ap > 0.6 ? "none" : "auto";    // only the focused section is interactive
+      }
+    };
+    const onScroll = () => { if (raf == null) raf = requestAnimationFrame(update); };
+    update();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onScroll);
+    return () => { window.removeEventListener("scroll", onScroll); window.removeEventListener("resize", onScroll); if (raf) cancelAnimationFrame(raf); };
+  }, []);
+}
 // Magnetic pull for primary CTAs — the button leans toward the cursor.
 function useMagnetic() {
   useEffect(() => {
@@ -1015,7 +1058,7 @@ function Landing({ onSignIn = () => {} } = {}) {
       if (prevTheme) root.setAttribute("data-theme", prevTheme); else root.removeAttribute("data-theme");
     };
   }, []);
-  useReveal();
+  useSpaceScroll();
   useMagnetic();
   useTilt3d();
   const [demoTab, setDemoTab] = useState("agents");
