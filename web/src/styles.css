@@ -940,13 +940,27 @@ input[type="range"] { accent-color: var(--accent); height: 6px; }
     box-shadow .2s ease, transform .16s cubic-bezier(.2,.7,.2,1);
 }
 
-:where(a, button, input, textarea, select, [tabindex], .nav-item, .deal-card, .cmdk-item):focus-visible {
-  outline: 2.5px solid var(--accent);
-  outline-offset: 2px;
-  border-radius: 8px;
+/* Keyboard focus is ALWAYS visible (WCAG 2.4.7 — #127). :focus-visible never
+   matches plain mouse clicks on links/buttons, so pointer users stay ring-free.
+   `!important` is deliberate: the codebase has many component-level and INLINE
+   `outline: none` resets (screens/*.tsx style props, landing.css inputs) that
+   would otherwise silently kill keyboard visibility — they're neutralized here,
+   in one global layer, instead of editing every component. The old
+   `:where(...):focus-visible` form had zero-prefix specificity and lost to any
+   later single-class reset (landing.css loads after this sheet). */
+:focus-visible {
+  outline: 2px solid var(--accent) !important;
+  outline-offset: 2px !important;
 }
-/* keep the soft inputs' rounded focus tidy */
-input:focus-visible, textarea:focus-visible, select:focus-visible,
+/* Text-entry controls keep the softer focus design: accent border + halo
+   (box-shadow) IS the visible indicator there, so the hard outline stays off.
+   Needs !important + higher specificity to win over the universal rule above. */
+input:focus-visible, textarea:focus-visible, select:focus-visible {
+  outline: none !important;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+/* keep the soft search trigger's rounded focus tidy */
 .search-trigger:focus-within { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 
 /* buttons, springier press, premium primary depth, playful icon nudge */
