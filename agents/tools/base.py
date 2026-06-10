@@ -13,7 +13,7 @@ from __future__ import annotations
 import abc
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol
 
 
 class Policy(str, Enum):

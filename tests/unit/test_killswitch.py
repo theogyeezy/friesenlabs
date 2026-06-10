@@ -23,7 +23,8 @@ def _ctx(ks, ex):
 
 @pytest.mark.unit
 def test_tenant_pause_blocks_autoexecute():
-    ks = KillSwitch(); ks.pause_tenant("t1")
+    ks = KillSwitch()
+    ks.pause_tenant("t1")
     ex = SpyExecutor()
     res = ActionGate().run(Action(name="read_crm", side_effecting=False), _ctx(ks, ex))
     assert res.status == "blocked" and res.decision is Decision.BLOCK
@@ -32,7 +33,8 @@ def test_tenant_pause_blocks_autoexecute():
 
 @pytest.mark.unit
 def test_global_pause_blocks_all_tenants():
-    ks = KillSwitch(); ks.pause_global()
+    ks = KillSwitch()
+    ks.pause_global()
     ex = SpyExecutor()
     res = ActionGate().run(Action(name="read_crm"), _ctx(ks, ex))
     assert res.status == "blocked"
@@ -41,7 +43,9 @@ def test_global_pause_blocks_all_tenants():
 
 @pytest.mark.unit
 def test_resume_restores_flow():
-    ks = KillSwitch(); ks.pause_tenant("t1"); ks.resume_tenant("t1")
+    ks = KillSwitch()
+    ks.pause_tenant("t1")
+    ks.resume_tenant("t1")
     ex = SpyExecutor()
     res = ActionGate().run(Action(name="read_crm", side_effecting=False), _ctx(ks, ex))
     assert res.status == "ok"
@@ -50,6 +54,7 @@ def test_resume_restores_flow():
 
 @pytest.mark.unit
 def test_other_tenant_not_affected():
-    ks = KillSwitch(); ks.pause_tenant("t1")
+    ks = KillSwitch()
+    ks.pause_tenant("t1")
     assert ks.is_paused("t1") is True
     assert ks.is_paused("t2") is False

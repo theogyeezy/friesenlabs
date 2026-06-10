@@ -318,6 +318,7 @@ def build_app():
         conversation_factory=conversation_factory,
         autonomy_config=AutonomyConfig(),
         executor=executor,
+        crm=crm,
         # mounts /signup, /verify-*, /checkout, /webhooks/stripe; provisioning persists the
         # tenant's Managed Agents ids into tenant_workspaces when the DB is configured.
         signup=build_signup_deps(workspace_store=workspace_store),

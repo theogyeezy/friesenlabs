@@ -24,6 +24,9 @@ def test_run_model_and_build_view_are_registered_and_rostered():
 def test_tool_meta_is_server_truth():
     assert tool_meta("send_email") == {"side_effecting": True, "channel": "email"}
     assert tool_meta("update_deal")["side_effecting"] is True
+    assert tool_meta("update_contact")["side_effecting"] is True
+    assert tool_meta("create_activity")["side_effecting"] is True
+    assert tool_meta("create_deal")["side_effecting"] is True
     assert tool_meta("issue_quote")["side_effecting"] is True
     for ro in ("read_crm", "search_rag", "query_cube", "run_model", "build_view", "draft_email"):
         assert tool_meta(ro)["side_effecting"] is False

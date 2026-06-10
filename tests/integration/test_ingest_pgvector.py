@@ -14,9 +14,9 @@ import pytest
 
 psycopg2 = pytest.importorskip("psycopg2")
 
-from ingest import EMBEDDING_DIM
-from ingest.connectors.hubspot import HUBSPOT_TOKEN_SECRET_REF, HubSpotConnector
-from ingest.pipeline import (
+from ingest import EMBEDDING_DIM  # noqa: E402
+from ingest.connectors.hubspot import HubSpotConnector  # noqa: E402
+from ingest.pipeline import (  # noqa: E402
     InMemoryRawSink,
     InMemoryStructuredSink,
     PgCursorStore,

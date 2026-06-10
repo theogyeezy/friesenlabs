@@ -9,7 +9,9 @@ Built via `create_app(deps)` so it is fully testable offline with a fake verifie
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from fastapi import Depends, FastAPI, HTTPException
@@ -18,8 +20,9 @@ from pydantic import BaseModel
 from api.agents_routes import AgentsDeps
 from api.auth import JwtVerifier, TenantClaims, make_current_tenant
 from api.control.autonomy import AutonomyConfig
+from api.control.appliers import apply_approved_action
 from api.control.gate import ActionGate, GateContext
-from api.control.greenlight import Greenlight
+from api.control.greenlight import EditNotAllowed, Greenlight
 from api.control.killswitch import KillSwitch
 from api.control.traces import InMemoryTraceStore, TraceStore
 from api.control.types import Action
@@ -28,6 +31,8 @@ from api.deals_routes import DealsDeps
 from api.integrations_routes import IntegrationsDeps, build_integrations_deps
 from api.views import SavedViews
 from api.workflows_routes import WorkflowsDeps
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -38,6 +43,7 @@ class ApiDeps:
     conversation_factory: Callable[[str], Any]          # tenant_id -> conv.session.Conversation
     autonomy_config: AutonomyConfig
     executor: Callable[[Action], Any]                   # performs an approved/auto action
+    crm: Any | None = None                              # post-approval CRM appliers
     killswitch: KillSwitch = field(default_factory=KillSwitch)
     trace_store: TraceStore = field(default_factory=InMemoryTraceStore)
     view_patcher: Callable[[dict, str], dict] | None = None  # NL refine: (spec, instruction) -> spec
@@ -130,11 +136,77 @@ def create_app(deps: ApiDeps) -> FastAPI:
         rec = deps.greenlight.store.get(claims.tenant_id, approval_id)
         if rec is None or str(rec["tenant_id"]) != str(claims.tenant_id):
             raise HTTPException(status_code=404, detail="no such approval")  # tenant-scoped
+
+        wants_apply = body.decision in ("approve", "edit")
+        # Kill switch — consulted BEFORE the atomic status flip so an engaged pause (global or
+        # tenant) leaves the approval PENDING: the approval is NOT consumed, the human simply
+        # re-approves after the pause lifts. The applier can therefore never run while paused.
+        if wants_apply and deps.killswitch.is_paused(claims.tenant_id):
+            raise HTTPException(status_code=409, detail="kill switch engaged")
+
+        # Step 1 — the ATOMIC pending->decided flip. decide() writes via the store's conditional
+        # update (WHERE status='pending'); a concurrent loser raises here, so the applier below
+        # can only ever run for the single request that won the transition.
         try:
-            return deps.greenlight.decide(claims.tenant_id, approval_id, body.decision, edits=body.edits,
-                                          deny_message=body.deny_message, decided_by=claims.sub)
+            decided = deps.greenlight.decide(
+                claims.tenant_id,
+                approval_id,
+                body.decision,
+                edits=body.edits,
+                deny_message=body.deny_message,
+                decided_by=claims.sub,
+            )
+        except EditNotAllowed as e:  # edit tried to change 'action' / a non-payload key
+            raise HTTPException(status_code=422, detail=str(e))
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
+        if not wants_apply:
+            return decided
+
+        # Apply-on-approve: the tenant for the write is the approval row's tenant (stamped
+        # from verified claims when proposed), not anything in the request body.
+        apply_tenant = str(decided["tenant_id"])
+
+        # Step 2 — the applier ALONE is guarded: an exception here means the CRM write did not
+        # happen (or cannot be trusted to have happened), recorded honestly as performed: false.
+        try:
+            apply_result = apply_approved_action(
+                deps.crm, apply_tenant, dict(decided["proposed_action"])
+            )
+        except Exception as e:  # noqa: BLE001 - response records type only, never internals
+            failure = {"performed": False, "error": e.__class__.__name__}
+            try:
+                deps.greenlight.store.update(apply_tenant, approval_id, {"apply_result": failure})
+            except Exception:  # noqa: BLE001 — keep the response honest even if the audit write dies
+                logger.exception(
+                    "approval %s: applier failed AND the failure audit write failed", approval_id
+                )
+                out = dict(decided)
+                out["apply_result"] = failure
+                out["warning"] = "audit write failed; apply_result not persisted"
+                return out
+            return deps.greenlight.store.get(claims.tenant_id, approval_id)
+
+        # Step 3 — the audit update. The CRM write HAS happened by now; a failure writing the
+        # audit row must NEVER be recorded (or reported) as performed: false. Log loudly and
+        # return the applied outcome with a warning instead of rewriting history.
+        applied_at = datetime.now(timezone.utc)
+        try:
+            deps.greenlight.store.update(apply_tenant, approval_id, {
+                "applied_at": applied_at,
+                "apply_result": apply_result,
+            })
+        except Exception:  # noqa: BLE001 — the apply succeeded; surface that truth regardless
+            logger.exception(
+                "approval %s: audit write failed AFTER a successful apply — the CRM write "
+                "happened; apply_result not persisted", approval_id
+            )
+            out = dict(decided)
+            out["applied_at"] = applied_at
+            out["apply_result"] = apply_result
+            out["warning"] = "applied, but the audit write failed; apply_result not persisted"
+            return out
+        return deps.greenlight.store.get(claims.tenant_id, approval_id)
 
     @app.get("/views")
     def list_views(claims: TenantClaims = Depends(current_tenant)):

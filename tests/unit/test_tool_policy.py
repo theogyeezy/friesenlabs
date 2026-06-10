@@ -3,7 +3,15 @@ import pytest
 
 from agents.tools.base import InMemoryGreenlight, Policy, ToolContext
 from agents.tools.readonly import QueryCube, ReadCrm, SearchRag
-from agents.tools.sideeffecting import DraftEmail, IssueQuote, SendEmail, UpdateDeal
+from agents.tools.sideeffecting import (
+    CreateActivity,
+    CreateDeal,
+    DraftEmail,
+    IssueQuote,
+    SendEmail,
+    UpdateContact,
+    UpdateDeal,
+)
 
 
 class SpyDB:
@@ -27,7 +35,9 @@ def test_readonly_tools_are_auto():
 
 @pytest.mark.unit
 def test_side_effecting_tools_are_always_ask():
-    for tool in (SendEmail(), UpdateDeal(), IssueQuote()):
+    for tool in (
+        SendEmail(), UpdateDeal(), UpdateContact(), CreateActivity(), CreateDeal(), IssueQuote()
+    ):
         assert tool.policy is Policy.ALWAYS_ASK
 
 
@@ -56,9 +66,15 @@ def test_update_deal_and_issue_quote_carry_value_at_stake():
     gl = InMemoryGreenlight()
     ctx = ToolContext(tenant_id="t-1", greenlight=gl)
     UpdateDeal().invoke(ctx, deal_id="d1", changes={"amount": 5000})
+    UpdateContact().invoke(ctx, contact_id="c1", changes={"email": "x@y.com"})
+    CreateActivity().invoke(ctx, deal_id="d1", kind="note", body="followed up")
+    CreateDeal().invoke(ctx, company_id="co1", name="New deal", stage="new", amount=2500)
     IssueQuote().invoke(ctx, deal_id="d1", amount=7500)
     assert gl.queue[0]["value_at_stake"] == 5000
-    assert gl.queue[1]["value_at_stake"] == 7500
+    assert gl.queue[1]["action"] == "update_contact"
+    assert gl.queue[2]["action"] == "create_activity"
+    assert gl.queue[3]["value_at_stake"] == 2500
+    assert gl.queue[4]["value_at_stake"] == 7500
 
 
 @pytest.mark.unit
