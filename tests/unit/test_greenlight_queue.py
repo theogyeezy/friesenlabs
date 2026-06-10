@@ -134,3 +134,23 @@ def test_ma_confirmation_mapping():
     approved = gl.decide("t1", rec["id"], "approve")
     ev = gl.to_ma_confirmation(approved, tool_use_id="tu_1")
     assert ev["result"] == "allow" and ev["type"] == "user.tool_confirmation"
+
+
+@pytest.mark.unit
+def test_payload_action_key_cannot_override_the_registry_name():
+    """The trusted, registry-derived action name must win over a smuggled
+    payload['action'] — it is the applier-dispatch discriminator and the label
+    compliance/traces key off (audit-label divergence + compliance route-around
+    otherwise)."""
+    gl = Greenlight()
+    rec = gl.propose(
+        tenant_id="t1",
+        action="send_email",                      # what the registry/gate derived
+        agent="a1",
+        reasoning="r",
+        value_at_stake=None,
+        payload={"action": "update_deal",          # the smuggle attempt
+                 "deal_id": "d1", "changes": {"stage": "closed_won"},
+                 "to": "x@example.com", "body": "hi"},
+    )
+    assert rec["proposed_action"]["action"] == "send_email"

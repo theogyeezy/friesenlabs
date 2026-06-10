@@ -201,9 +201,13 @@ class Greenlight:
     # --- matches agents.tools.base.Greenlight.propose(...) ---
     def propose(self, *, tenant_id: str, action: str, agent: str | None,
                 reasoning: str, value_at_stake: float | None, payload: dict) -> dict:
+        # The registry-derived `action` is the discriminator the applier dispatches on
+        # and the label compliance/traces key off. A client-supplied payload['action']
+        # must never override it (audit-label divergence + a latent compliance
+        # route-around) — the spread order below makes the trusted name win.
         approval_id = self.store.insert({
             "tenant_id": tenant_id,
-            "proposed_action": {"action": action, **payload},
+            "proposed_action": {**payload, "action": action},
             "agent": agent,
             "reasoning": reasoning,
             "value_at_stake": value_at_stake,
