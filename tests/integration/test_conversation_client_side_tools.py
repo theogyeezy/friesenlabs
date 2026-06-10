@@ -7,6 +7,7 @@ Mocked anthropic client only — live shapes stay VERIFY-flagged. The mocked str
 the fake events.send reacts to the user.custom_tool_result batch by pushing the session's
 next events onto the same open stream (client-patterns Pattern 9).
 """
+import json
 from datetime import date
 from types import SimpleNamespace
 from unittest import mock
@@ -128,6 +129,66 @@ def test_conversation_turn_executes_auto_tool_client_side_end_to_end():
     tool_calls = analytics.list("tenant-A", type=EventType.TOOL_CALL)
     assert [(e["payload"]["tool"], e["payload"]["status"]) for e in tool_calls] == [
         ("read_crm", "ok")
+    ]
+
+
+@pytest.mark.integration
+def test_conversation_turn_routes_gated_tool_with_immediate_queued_reply():
+    """The ratified-brief ALWAYS_ASK round-trip, end-to-end through the Conversation: the
+    coordinator names send_email -> the runtime routes the proposal to Greenlight via the bound
+    tenant-scoped context and IMMEDIATELY replies user.custom_tool_result
+    {status: queued_for_approval, approval_id, performed: false} -> the coordinator
+    acknowledges the queue -> the turn surfaces the already-routed entry (never re-invoked,
+    never enqueued twice). The side effect never runs."""
+    def on_results(events, stream):
+        stream.push([
+            _ev(type="agent.message",
+                content=[_ev(type="text", text="Queued the email for your approval.")]),
+            _ev(type="session.status_idle", stop_reason=_ev(type="end_turn")),
+        ])
+
+    runtime, sends = _mocked_runtime(
+        initial_events=[
+            _ev(type="agent.custom_tool_use", id="sevt_1", name="send_email",
+                input={"to": "lead@x.co", "body": "hi there"}),
+            _ev(type="session.status_idle", stop_reason=_ev(type="requires_action")),
+        ],
+        on_tool_results=on_results,
+    )
+    gl = Greenlight()
+    analytics = Analytics()
+    convo = Conversation(
+        tenant_id="tenant-A", today=TODAY, runtime=runtime,
+        coordinator_id="coord-A", environment_id="env-A",
+        greenlight=gl, analytics=analytics,
+    )
+    turn = convo.send("email the lead")
+
+    # The immediate reply went back on the stream — exactly the prescribed shape.
+    reply = sends[1][0]
+    assert reply["type"] == "user.custom_tool_result"
+    assert reply["custom_tool_use_id"] == "sevt_1"
+    payload = json.loads(reply["content"][0]["text"])
+    assert payload["status"] == "queued_for_approval"
+    assert payload["performed"] is False
+
+    # The proposal landed in Greenlight exactly ONCE (never re-invoked by the conv layer).
+    queue = gl.list_pending("tenant-A")
+    assert len(queue) == 1
+    assert queue[0]["proposed_action"]["action"] == "send_email"
+    assert payload["approval_id"] == queue[0]["id"]
+
+    # The coordinator acknowledged the queue; the already-routed entry surfaced untouched.
+    assert turn.answer == "Queued the email for your approval."
+    assert len(turn.pending_approvals) == 1
+    entry = turn.pending_approvals[0]
+    assert entry["tool_name"] == "send_email" and "tool" not in entry
+    assert entry["approval"]["id"] == queue[0]["id"]
+
+    # The routing hit the analytics trace via the digest's tool_results.
+    tool_calls = analytics.list("tenant-A", type=EventType.TOOL_CALL)
+    assert [(e["payload"]["tool"], e["payload"]["status"]) for e in tool_calls] == [
+        ("send_email", "queued_for_approval")
     ]
 
 

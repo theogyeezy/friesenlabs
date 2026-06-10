@@ -19,15 +19,19 @@ Routing (TODO AI/P1 resolved — coordinator-driven on real runtimes):
         which — by the Phase 4 base-class guarantee — routes a proposal to Greenlight WITHOUT
         performing the side effect, surfacing a pending approval.
   - Any real runtime (ManagedAgentsRuntime): tool selection comes from the COORDINATOR — the
-    `send_message` event digest carries the agent.custom_tool_use events + delegations. A
-    side-effecting tool the coordinator named is resolved through the TRUSTED registry and
-    invoked (=> Greenlight proposal, draft-only); READ-ONLY (Policy.AUTO) tools are executed
-    CLIENT-SIDE inside the runtime's send_message loop (docs/decisions/
-    custom-tool-execution-path.md, ratified #123 — the Conversation binds its tenant-scoped
-    ToolContext builder onto the runtime's `tool_context_factory` seam, and results feed back
-    as user.custom_tool_result). Read-only/unknown events that REACH the digest un-executed
-    (no clients configured, mixed gated round, round bound) are surfaced untouched — an
-    unknown name is never default-allowed.
+    `send_message` event digest carries the agent.custom_tool_use events + delegations.
+    READ-ONLY (Policy.AUTO) tools are executed CLIENT-SIDE inside the runtime's send_message
+    loop (docs/decisions/custom-tool-execution-path.md, ratified #123 — the Conversation binds
+    its tenant-scoped ToolContext builder onto the runtime's `tool_context_factory` seam, and
+    results feed back as user.custom_tool_result). SIDE-EFFECTING (ALWAYS_ASK) tools are
+    likewise ROUTED to Greenlight inside that loop when the bound context carries a greenlight
+    client (the session gets an immediate queued_for_approval reply, per the ratified brief) —
+    they arrive here as already-routed `tool_name` entries and pass through untouched. A
+    side-effecting `tool` entry that reaches the digest UN-routed (no greenlight in the bound
+    context, or a stub runtime without the seam) is resolved through the TRUSTED registry and
+    invoked here (=> Greenlight proposal, draft-only). Read-only/unknown events that reach the
+    digest un-executed (no clients configured, unresolvable round, round bound) are surfaced
+    untouched — an unknown name is never default-allowed.
 """
 from __future__ import annotations
 
@@ -253,11 +257,16 @@ class Conversation:
         answer text, delegations (session.thread_created), and agent.custom_tool_use events
         surfaced as pending entries `{status, tool, input, custom_tool_use_id}`. Routing:
 
-        - a SIDE-EFFECTING tool named by the coordinator resolves through the TRUSTED registry
-          and is invoked — the Phase 4 base class routes a proposal to Greenlight WITHOUT
-          performing the side effect (draft-only stays guaranteed);
+        - a SIDE-EFFECTING tool the runtime ALREADY ROUTED to Greenlight (ratified #123: gated
+          calls get an immediate queued_for_approval reply inside send_message when the bound
+          context carries greenlight) arrives as a `tool_name` entry — passed through untouched,
+          the proposal is never enqueued twice (`action_kwargs` top-ups apply only to the
+          un-routed path below);
+        - a side-effecting `tool` entry that reached the digest UN-routed resolves through the
+          TRUSTED registry and is invoked here — the Phase 4 base class routes a proposal to
+          Greenlight WITHOUT performing the side effect (draft-only stays guaranteed);
         - READ-ONLY (AUTO) tools were already executed CLIENT-SIDE inside the runtime's
-          send_message loop (ratified #123) — executed calls arrive in the digest's
+          send_message loop (ratified #123) — resolved calls arrive in the digest's
           `tool_results` (recorded to analytics here, never re-run); any read-only event that
           reaches `pending_approvals` un-executed passes through untouched;
         - an UNKNOWN tool name is never default-allowed: the event is surfaced as-is, nothing
