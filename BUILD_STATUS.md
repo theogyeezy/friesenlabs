@@ -836,6 +836,17 @@ tiered builders in isolated worktrees → 3-haiku refute-by-default panel → bo
   BACKEND (corrected CortexDrift.registered_auc, Integration.kind/csv_import_configured, the real
   CsvImportReport shape), fixed an account-view field bug + the cortex e2e nav. Verified: typecheck +
   mock/real builds + **126 Playwright e2e** + 30 node tests green (#229).
-- **Remaining after all waves:** owner-gated infra flips/seeding, a few backend depth items (CRM-table
-  landing, status probes, agent-marketplace, a settings-persistence endpoint), and the deferred
-  landing/demo-honesty + legal pages. **The buildable backend + web-UI backlog (ex-landing-legal) is drained.**
+- **Depth wave (#231 + #232 + #233):** the four remaining depth items, all confirmed + verified:
+  **CRM-table landing** (CSV imports land in Pipeline/Contacts via `default_structured_sink`; the
+  ref→uuid `PgCrmStructuredSink` already existed — #231); **status probes** (`GET /public/status`,
+  unknown-never-degrades rollup + a commit-review security fix that sanitized the public probe-error
+  detail — #232) wired into the web `fetchStatus`; **settings persistence** (`GET/PUT /account/settings`
+  over new `tenant_settings` columns + a real-mode Workspace settings UI that saves — #232/#233);
+  **agent-marketplace** (the `/studio/templates` backend already existed — built the real-mode
+  `MarketplaceView` browse+hire — #233). The web half of #233 was built directly (not a fleet wave) to
+  avoid another shared-`client.ts` reconciliation; verified the same way: typecheck + mock/real builds +
+  131 Playwright e2e (+5 new) + 30 node tests. account-delete deliberately kept INERT (owner decision).
+- **Remaining:** owner-gated infra flips/seeding (workspace-key pool, cortex_s3/ingest/integrations
+  tfvars, knowledge corpus, EventBridge legs, the settings column-migrate + real status probes in asgi,
+  the ingest-env flip for live CRM-table landing) and the deferred landing/demo-honesty + legal pages.
+  **Every buildable item (ex-landing-legal) is shipped; what's left needs owner action, not code.**
