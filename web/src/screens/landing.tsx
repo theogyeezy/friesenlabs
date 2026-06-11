@@ -6,6 +6,7 @@ import mattPhoto from "../assets/matt-yee.jpg";
 import nickPhoto from "../assets/nick-friesen.jpg";
 import { submitLeadWithFallback } from "../api/leads";
 import { defaultAnalytics } from "../analytics/posthog";
+import { HelpDialog } from "../support/HelpForm";
 const { useState, useEffect, useRef, useMemo, useCallback, useLayoutEffect, useReducer, useContext, useImperativeHandle, useId } = React;
 const { Icon, Logo, FL_DATA, FLStore, useStore, askClaude, bizContext, confettiBurst, XPBadge, useCountUp, CountUp, AreaChart, Sparkline, LoadBars, Donut, SlideOver, CommandPalette, HEAT, fmtMoney, StatCard, ToneIco, FLflag, useTweaks, TweaksPanel, TweakSection, TweakRow, TweakSlider, TweakToggle, TweakRadio, TweakSelect, TweakText, TweakNumber, TweakColor, TweakButton, FoxDemo, KanbanDemo, WorkflowDemo, GreenlightDemo, CommandDemo, IntegrationDemo, SupportDemo, SecurityDemo, SidecarDemo, CortexDemo } = window as any;
 
@@ -1627,6 +1628,7 @@ function Landing({ onSignIn = () => {}, onForgotPassword = () => {} } = {}) {
               <div style={{ display: "flex", gap: 9, marginTop: 14 }}>
                 <a className="btn btn-soft btn-sm" href="Foundation.html"><LpIcon name="spark" size={13} />The Foundation</a>
                 <button className="btn btn-ghost btn-sm" onClick={() => setModal("email")}><LpIcon name="mail" size={13} />Contact</button>
+                <button className="btn btn-ghost btn-sm" data-testid="footer-help-btn" onClick={() => setModal("help")}><LpIcon name="checkCircle" size={13} />Help</button>
               </div>
             </div>
             <div className="lp-foot-cols">
@@ -1651,6 +1653,11 @@ function Landing({ onSignIn = () => {}, onForgotPassword = () => {} } = {}) {
                 <a {...actionLink(() => setDoc("Donor Privacy Policy"))}>Donor privacy</a>
                 <a {...actionLink(() => setDoc("Accessibility Statement"))}>Accessibility</a>
               </div>
+              <div className="lp-foot-col">
+                <h3>Support</h3>
+                <a {...actionLink(() => setModal("help"))} data-testid="footer-help">Help &amp; contact</a>
+                <a href="/?view=status" data-testid="footer-status">Status</a>
+              </div>
             </div>
           </div>
           <div className="lp-foot-legal">
@@ -1662,6 +1669,7 @@ function Landing({ onSignIn = () => {}, onForgotPassword = () => {} } = {}) {
 
       {modal === "book" && <BookModal onClose={() => setModal(null)} />}
       {modal === "email" && <EmailModal onClose={() => setModal(null)} />}
+      {modal === "help" && <HelpDialog onClose={() => setModal(null)} />}
       {modal === "donate" && <DonateModal onClose={() => setModal(null)} />}
       {modal === "statement" && (
         <div className="lp-modal-scrim" onClick={() => setModal(null)} style={{ alignItems: "flex-start", overflowY: "auto", padding: "5vh 16px" }}>

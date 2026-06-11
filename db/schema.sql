@@ -530,6 +530,30 @@ CREATE POLICY tenant_isolation ON predictions
     USING (tenant_id = current_setting('app.current_tenant', true)::uuid)
     WITH CHECK (tenant_id = current_setting('app.current_tenant', true)::uuid);
 
+-- ---------------------------------------------------------------------------
+-- support_requests — public contact/help intake (POST /public/support, api/support_routes.py;
+-- appended per the Matt-append rule).
+-- RLS-EXEMPT (pre-tenant): a support request precedes — or outlives — any tenant binding (a
+-- prospect with a question, a locked-out customer), so there is no trustworthy tenant_id to key a
+-- policy on. This table is deliberately NOT in the tenant_tables array above. `tenant_hint` is a
+-- FREE-TEXT triage hint a user types ("I think my workspace is acme") — it is NEVER trusted for
+-- authorization, never resolved to a real tenant_id, and never used to bind RLS (THE TRUST RULE).
+-- Access is restricted to crm_app DML via GRANTs (INSERT + SELECT), not RLS. The route validates +
+-- caps the payload (2KB) and rate-limits per IP before any row is written. The crm_app GRANT lives
+-- in infra/REQUESTS.md (db/roles.sql is Lane Nick's) — see the REQ block this PR appends.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS support_requests (
+    id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    name        text NOT NULL,
+    email       text NOT NULL,
+    subject     text NOT NULL,
+    message     text NOT NULL,
+    tenant_hint text,             -- free-text workspace hint; NEVER trusted for auth/RLS
+    source_ip   text,             -- the requester IP the in-process rate limit keyed on
+    created_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS support_requests_created_idx ON support_requests (created_at);
+
 -- usage_counters + cost_events — explicit ENABLE/FORCE + policy (belt and suspenders with the DO
 -- block above; the CREATE TABLEs live BEFORE the block — see the predictions/playbooks precedent —
 -- because any table named in the block's tenant_tables array must already exist on a fresh load).

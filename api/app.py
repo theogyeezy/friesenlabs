@@ -49,6 +49,12 @@ def _build_studio_deps():
     return build_studio_deps()
 
 
+def _build_support_deps():
+    """Lazy default for ApiDeps.support (import api.support_routes only when constructed)."""
+    from api.support_routes import build_support_deps  # noqa: PLC0415 — avoid an import cycle
+    return build_support_deps()
+
+
 @dataclass
 class ApiDeps:
     verifier: JwtVerifier
@@ -112,6 +118,11 @@ class ApiDeps:
     # crm_app DSN (api/public_routes.build_public_deps); otherwise the route answers an honest
     # 503 after validation. Pass None to skip mounting the route entirely.
     public: Any | None = field(default_factory=lambda: _build_public_deps())
+    # /public/support deps (unauthenticated contact/help intake). Env-built by default so
+    # api/asgi.py needs no change: the real PgSupportStore is selected ONLY under SIGNUP_REAL_DEPS
+    # + the crm_app DSN (api/support_routes.build_support_deps); otherwise the route answers an
+    # honest 503 after validation. Pass None to skip mounting the route entirely.
+    support: Any | None = field(default_factory=lambda: _build_support_deps())
     # /studio deps (Agent Studio — playbook composer + library). Env-built by default so
     # api/asgi.py needs no change: the PgPlaybookStore rides ONLY the crm_app DSN gate and its
     # pool opens lazily; with no DSN every store-backed route answers an honest 503 (templates
@@ -495,6 +506,12 @@ def create_app(deps: ApiDeps) -> FastAPI:
     if deps.public is not None:
         from api.public_routes import mount_public
         mount_public(app, deps.public)
+
+    # Public, unauthenticated support intake (POST /public/support) — validated, 2KB-capped,
+    # per-IP rate-limited; the store is honest-503 until the prod gates select PgSupportStore.
+    if deps.support is not None:
+        from api.support_routes import mount_support
+        mount_support(app, deps.support)
 
     # Authed per-tenant usage view (monthly quota counter + plan cap + Anthropic cost
     # attribution). Claims-bound, READ-ONLY; inert-default deps answer a stable zeroed shape
