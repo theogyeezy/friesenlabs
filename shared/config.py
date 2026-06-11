@@ -188,6 +188,22 @@ class Config:
     # live task — which is why the gate ALSO sits under SIGNUP_REAL_DEPS (deploy invariance).
     cognito_client_id: str = os.environ.get("COGNITO_CLIENT_ID", "")
 
+    # --- TESTING-ONLY internal Stripe bypass (revenue lane) ---------------------------------
+    # Comma-separated email DOMAINS whose VERIFIED signups skip Stripe checkout and settle via
+    # a synthetic, clearly-labeled `internal_comp:` ledger event through the SAME idempotent
+    # claim + on_paid path the signed webhook uses (signup/payment.py internal_comp). A NEW,
+    # deliberate env name (deploy invariance); the default is EMPTY = the feature is OFF — no
+    # domain ever bypasses payment unless Lane Nick explicitly injects e.g. "friesenlabs.com".
+    signup_internal_bypass_domains: str = os.environ.get("SIGNUP_INTERNAL_BYPASS_DOMAINS", "")
+
+    def internal_bypass_domain_set(self) -> frozenset:
+        """Parse SIGNUP_INTERNAL_BYPASS_DOMAINS into normalized domains (empty = feature OFF)."""
+        return frozenset(
+            d.strip().lower()
+            for d in self.signup_internal_bypass_domains.split(",")
+            if d.strip()
+        )
+
 
 # plan id -> env var that carries its Stripe Price ID (values land via task secrets, never here).
 STRIPE_PRICE_ID_ENV = {
@@ -231,6 +247,17 @@ ENV_UPLIFT_VERIFY_ALLOW_PROVISION = "UPLIFT_VERIFY_ALLOW_PROVISION"
 # Optional draft recipient for the Greenlight leg (default: a documented example.com address —
 # the draft gate means nothing sends either way).
 ENV_UPLIFT_VERIFY_EMAIL_TO = "UPLIFT_VERIFY_EMAIL_TO"
+
+# --- Revenue-lane env-var NAMES (signup/payment.py + signup/key_pool.py + api/public_routes.py).
+# --- NEW deliberate names (deploy invariance: new behavior never keys off env the live tasks
+# --- already inject). Safe default everywhere is "unset" = feature off / built-in defaults.
+ENV_SIGNUP_INTERNAL_BYPASS_DOMAINS = "SIGNUP_INTERNAL_BYPASS_DOMAINS"  # ""=off (Config field above)
+# Low-water mark for the pre-minted workspace-key pool (signup/key_pool.py — issue #152): when
+# the count of available keys after a consume is at or below this, an alarms-friendly
+# `workspace_key_pool_low` warning is logged (CloudWatch metric-filter ready). Junk/unset -> 3.
+ENV_WORKSPACE_KEY_POOL_LOW_WATERMARK = "WORKSPACE_KEY_POOL_LOW_WATERMARK"
+# Per-IP in-process rate limit for POST /public/leads (api/public_routes.py). Junk/unset -> 5/min.
+ENV_PUBLIC_LEADS_RATE_PER_MINUTE = "PUBLIC_LEADS_RATE_PER_MINUTE"
 
 # --- Worker liveness heartbeat (worker/worker.py heartbeat_loop — the explicit workers_polling
 # --- emit per docs/decisions/workers-polling-heartbeat-assumption.md, RATIFIED #123). A NEW
