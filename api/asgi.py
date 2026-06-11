@@ -59,6 +59,8 @@ from conv.view_patcher import AnthropicViewPatcher
 from conv.views import ViewSynthesizer
 from ml.predictions import PgPredictionLog
 from ml.registry import registry_from_env
+from api.account_routes import AccountDeps
+from api.status_routes import StatusDeps
 from shared.config import (
     ENV_ANTHROPIC_API_KEY,
     dsn_from_env,
@@ -114,6 +116,7 @@ def make_conversation_factory(
     rag_crm: Any = None,
     cube: Any = None,
     cortex: Any = None,
+    prediction_log: Any = None,
     synthesizer: Any = None,
     spec_generator: Any = None,
     cost_recorder: Any = None,
@@ -170,6 +173,7 @@ def make_conversation_factory(
             rag_crm=rag_crm,
             cube=cube,
             cortex=cortex,                  # persistent Cortex registry -> run_model scores live
+            prediction_log=prediction_log,  # run_model logs each score -> predictions (flywheel)
             synthesizer=synthesizer,
             spec_generator=spec_generator,  # default ctx.extra['generate_spec'] for build_view
             greenlight=greenlight,
@@ -325,6 +329,7 @@ def build_app():
             crm=crm,
             cube=cube,
             cortex=cortex,
+            prediction_log=PgPredictionLog(dsn),  # run_model -> predictions (Cortex flywheel)
             synthesizer=AnthropicSynthesizer(api_key=api_key),
             spec_generator=spec_generator,
             cost_recorder=cost_recorder,
@@ -432,6 +437,21 @@ def build_app():
             usage_store=usage_store,
             cost_recorder=cost_recorder,
             plan_resolver=PlanResolver(fetch=plan_lookup.plan if plan_lookup else None),
+        ),
+        # GET /account/export (GDPR/portability egress) — the SAME crm/rag/saved_views instances
+        # every other authed route rides. Inert (None stores) only when no DSN; with Aurora wired
+        # the export is live. (account_delete is DELIBERATELY left to its inert default — a
+        # destructive teardown ships non-functional until an explicit owner wiring step.)
+        account=AccountDeps(crm=crm, rag=rag, saved_views=saved_views) if dsn else AccountDeps(),
+        # GET /public/status — per-subsystem readiness. The "api" component is always operational
+        # (this endpoint answered); these probes report whether each subsystem is WIRED on this
+        # deployment (the API process is up + its dep is configured), not a deep liveness ping —
+        # an honest, strict improvement over the previous permanently-"unknown" subsystems. Ingest
+        # runs on a SEPARATE Fargate task the API can't reach, so it stays honestly "unknown".
+        status=StatusDeps(
+            data_plane=(lambda: "operational") if dsn else None,
+            agent_plane=(lambda: "operational") if (workspace_store is not None and api_key) else None,
+            ingest=None,
         ),
         # Per-tenant rate-limit + quota middleware spec (cls, kwargs). Installed only when
         # tenant_limits_enabled() (default ON) — a request with no/invalid tenant claim passes

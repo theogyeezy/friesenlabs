@@ -29,6 +29,7 @@ def test_build_clients_from_env_wires_pg_clients_when_db_configured(monkeypatch)
     # the lazily-imported constructors are patched at their source modules.
     import api.control.greenlight as gl_mod
     import api.pg_clients as pg_mod
+    import ml.predictions as pred_mod
 
     seen = {}
 
@@ -44,17 +45,24 @@ def test_build_clients_from_env_wires_pg_clients_when_db_configured(monkeypatch)
         def __init__(self, dsn):
             seen["store"] = dsn
 
+    class FakePredLog:
+        def __init__(self, dsn):
+            seen["pred"] = dsn
+
     monkeypatch.setattr(pg_mod, "PgCrmClient", FakeCrm)
     monkeypatch.setattr(pg_mod, "PgRagClient", FakeRag)
     monkeypatch.setattr(gl_mod, "PgApprovalStore", FakeStore)
+    monkeypatch.setattr(pred_mod, "PgPredictionLog", FakePredLog)
     monkeypatch.setenv("UPLIFT_DB_URL", "postgresql://crm_app:x@db.local:5432/uplift")
 
     clients = worker.build_clients_from_env()
     assert isinstance(clients["db"], FakeCrm)
     assert isinstance(clients["rag"], FakeRag)
     assert clients["greenlight"].store.__class__ is FakeStore
-    # All three rode the SAME crm_app DSN from env.
-    assert seen == {k: "postgresql://crm_app:x@db.local:5432/uplift" for k in ("crm", "rag", "store")}
+    # run_model's prediction log is wired (the Cortex flywheel close-loop).
+    assert isinstance(clients["prediction_log"], FakePredLog)
+    # All four rode the SAME crm_app DSN from env.
+    assert seen == {k: "postgresql://crm_app:x@db.local:5432/uplift" for k in ("crm", "rag", "store", "pred")}
 
 
 class _BindingCrm:
