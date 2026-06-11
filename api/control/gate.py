@@ -70,7 +70,8 @@ class ActionGate:
         return GateResult("ok", Decision.AUTO, f"level={level.value}", result=result, trace_id=tid)
 
     @staticmethod
-    def _trace(ctx: GateContext, action: Action, kind: str, *, outputs=None, reasoning: str = "") -> int:
+    def _trace(ctx: GateContext, action: Action, kind: str, *, outputs=None,
+               reasoning: str = "") -> int | str:
         return traces.append_trace(
             ctx.trace_store,
             tenant_id=ctx.tenant_id,
