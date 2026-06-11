@@ -176,3 +176,37 @@ Pre-req: Squarespace NS → Route53 (user), `dns_delegated=true` applied, cert I
 1. No full `terraform apply`.
 2. Pure-add module deploys go via `terraform apply -target=module.<cube|worker|observability> baseline-style plan first`.
 3. Re-run this triage after every tfvars/state change and update this section.
+
+## Enable real sends — signup email + SMS verification (the `allow_real_sends` go-live act)
+
+Verification email (Resend) + phone OTP (SNS SMS) are draft-gated by `ALLOW_REAL_SENDS` (CLAUDE.md
+hard-constraint #2). The senders are the REAL clients under `signup_real_deps`, but they log + drop
+the actual delivery until this flips — so signup email/phone verification (and, downstream, first
+login) do not work until ALL of the prerequisites below are done. The flag is wired (default
+`false`) onto the API task + provisioning Lambda; flipping it is the deliberate, last act.
+
+**Prereq A — Resend (email): a VERIFIED sending domain.**
+- Add `friesenlabs.com` in Resend → it emits DKIM (`resend._domainkey` TXT), a return-path on
+  `send.friesenlabs.com` (MX `feedback-smtp.us-east-1.amazonses.com` pri 10 + SPF TXT
+  `v=spf1 include:amazonses.com ~all`), and an optional `_dmarc` TXT.
+- Add those to the Route53 `friesenlabs.com` zone (ADD only). The apex Google-Workspace SPF
+  (`v=spf1 include:_spf.google.com ~all`) does NOT need merging — Resend's SPF lives on `send.`.
+  CAUTION: ensure exactly ONE `_dmarc.friesenlabs.com` TXT (a second = DMARC invalid); the
+  `_dmarc` record is optional for Resend verification.
+- Wait for Resend status = **Verified** (SES-backed, usually minutes–1h). From-address is then
+  `no-reply@friesenlabs.com` (apex; DMARC-aligned via Resend's DKIM `d=friesenlabs.com`).
+- tfvars: `resend_from_email = "no-reply@friesenlabs.com"`; confirm `signup_verify_url_base` is the
+  live app URL (the link in the email). Confirm the secret
+  `friesenlabs/platform/shared/resend-api-key` holds an active Sending-access key.
+
+**Prereq B — SNS SMS (phone OTP):** out of the SMS sandbox + a registered origination identity
+(toll-free verification or 10DLC) + default message type Transactional + a monthly spend limit.
+These are AWS account-level approvals (console, not terraform) and can take days. See the # VERIFY
+in `signup/sms_sender.py` (`BLOCKED: Lane Nick — SNS SMS spend limit / origination identity`).
+
+**The flip (only after A + B are both DONE):**
+1. `allow_real_sends = true` in `prod.auto.tfvars`.
+2. Targeted apply on `module.api_service` (+ `module.provisioning_lambda`) → the task def / Lambda
+   env gains `ALLOW_REAL_SENDS=true`; roll the service.
+3. Run ONE real signup end-to-end (real email + phone) and confirm the verification email + OTP SMS
+   arrive and the account provisions + logs in. Roll back by setting the flag false + apply.
