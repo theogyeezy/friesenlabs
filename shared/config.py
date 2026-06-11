@@ -156,6 +156,13 @@ class Config:
     resend_from_email: str = os.environ.get("RESEND_FROM_EMAIL", "")
     # Base URL the signed email-verification token is appended to (SPA click-through route).
     signup_verify_url_base: str = os.environ.get("SIGNUP_VERIFY_URL_BASE", "")
+    # FEATURE FLAG — phone (SMS OTP) verification. Default ON (phone required before pay). Set
+    # SIGNUP_REQUIRE_PHONE="false" to launch on EMAIL-ONLY verification while SMS account-level
+    # approval is pending (SNS sandbox exit / origination identity). When off: no OTP is minted or
+    # sent, the SPA skips the phone step, and an email-verified account is ready to pay.
+    require_phone_verification: bool = (
+        os.environ.get("SIGNUP_REQUIRE_PHONE", "true").strip().lower() != "false"
+    )
     # Anthropic ADMIN key (sk-ant-admin..., distinct from the inference key) — Secrets Manager
     # *reference name*, resolved at runtime like the refs above. Never the value.
     anthropic_admin_key_secret: str = os.environ.get(

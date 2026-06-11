@@ -53,6 +53,12 @@ variable "allow_real_sends" {
   type    = bool
   default = false
 }
+# Feature flag: phone (SMS OTP) verification. Default true = phone required (no env set). Set false
+# to inject SIGNUP_REQUIRE_PHONE=false → email-only signup while SMS account approval is pending.
+variable "signup_require_phone" {
+  type    = bool
+  default = true
+}
 variable "stripe_key_arn" {
   type    = string
   default = ""
@@ -225,6 +231,10 @@ resource "aws_ecs_task_definition" "api" {
         # Deliberate, separate go-live act — flip ONLY after SNS SMS is out of sandbox (spend limit +
         # origination identity) and the Resend sending domain is verified.
         var.allow_real_sends ? [{ name = "ALLOW_REAL_SENDS", value = "true" }] : [],
+        # FEATURE FLAG: phone (SMS OTP) verification. Default (true) = phone required, no env set.
+        # Set signup_require_phone=false → SIGNUP_REQUIRE_PHONE=false → email-only signup (skip the
+        # phone step) while SMS account-level approval is pending.
+        var.signup_require_phone ? [] : [{ name = "SIGNUP_REQUIRE_PHONE", value = "false" }],
         var.provisioning_sfn_arn != "" ? [{ name = "PROVISIONING_SFN_ARN", value = var.provisioning_sfn_arn }] : [],
         var.cube_endpoint != "" ? [{ name = "CUBE_ENDPOINT", value = var.cube_endpoint }] : [],
         var.posthog_host != "" ? [{ name = "POSTHOG_HOST", value = var.posthog_host }] : [],

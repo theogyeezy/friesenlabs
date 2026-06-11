@@ -219,7 +219,10 @@ class _VerifyingAccountService(AccountService):
 
     def create(self, account_id: str, email: str, phone: str):
         acct = super().create(account_id, email, phone)
-        if self.otp is not None and not acct.phone_verified:
+        # Skip the OTP when phone verification is flagged OFF (SIGNUP_REQUIRE_PHONE=false): no point
+        # minting/sending a code the user never needs (it would just hit the draft-gate/SMS approval).
+        from signup.accounts import _require_phone_verification  # noqa: PLC0415 — lazy
+        if self.otp is not None and not acct.phone_verified and _require_phone_verification():
             try:
                 self.sms.send_otp(acct.phone, self.otp.issue(acct.id))
             except OtpRateLimitError as e:

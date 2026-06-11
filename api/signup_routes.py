@@ -29,7 +29,7 @@ from signup.abuse import (
     SignupVelocityLimiter,
     VelocityLimitError,
 )
-from signup.accounts import AccountService
+from signup.accounts import AccountService, _require_phone_verification
 from signup.payment import PaymentError, PaymentService
 
 # The acquisition funnel (signup + verification-resends) sits behind CloudFront -> ALB -> Fargate,
@@ -175,7 +175,10 @@ def mount_signup(app: FastAPI, deps: SignupDeps) -> None:
         # the existing generated-password + forgot-password onboarding path at provisioning time.
         if body.password:
             deps.accounts.cognito.set_signup_password(acct.cognito_sub, body.password)
-        out = {"account_id": acct.id, "state": acct.state.value}
+        out = {"account_id": acct.id, "state": acct.state.value,
+               # Tell the SPA whether to walk the phone-verify step (SIGNUP_REQUIRE_PHONE feature
+               # flag). When false, the SPA skips straight from email-verify to plan selection.
+               "require_phone": _require_phone_verification()}
         # When session tokens are wired, hand the SPA a `checkout`-scoped session token so it never
         # has to carry the raw account_id as a bearer secret on the follow-up calls. Returned in
         # the JSON BODY (not a URL) — it does not leak via Referer/logs the way the emailed link

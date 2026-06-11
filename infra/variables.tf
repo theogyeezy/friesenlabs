@@ -119,6 +119,16 @@ variable "signup_real_deps" {
   description = "Set SIGNUP_REAL_DEPS=1 on the API task (build_signup_deps selects real adapters)."
 }
 
+variable "signup_require_phone" {
+  type        = bool
+  default     = true # phone (SMS OTP) verification required before pay
+  description = <<-EOT
+    Phone (SMS OTP) verification feature flag. Default true = required. Set FALSE to launch on
+    EMAIL-ONLY verification (skip the phone step, mint no OTP) while SMS account-level approval is
+    pending (SNS sandbox exit / origination identity). Flip back to true once SMS delivery works.
+  EOT
+}
+
 variable "allow_real_sends" {
   type        = bool
   default     = false # DRAFT-GATE (CLAUDE.md #2): senders log + drop until this is flipped.

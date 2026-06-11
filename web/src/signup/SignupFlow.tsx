@@ -217,6 +217,9 @@ export function SignupFlow({ client, analytics, pollMs = 600 }: SignupFlowProps)
   const [phoneCode, setPhoneCode] = useState("");
 
   const [accountId, setAccountId] = useState<string | null>(null);
+  // SIGNUP_REQUIRE_PHONE feature flag (from the create response). When false, the phone-verify
+  // step is skipped — email-only verification while SMS approval is pending. Defaults true.
+  const [requirePhone, setRequirePhone] = useState(true);
   const [plan, setPlan] = useState<Plan>(PLANS[1]);
 
   const strength = scorePassword(password);
@@ -242,6 +245,10 @@ export function SignupFlow({ client, analytics, pollMs = 600 }: SignupFlowProps)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const res = await api.signup({ email, phone, password } as any);
       setAccountId(res.account_id);
+      // The server tells us whether phone verification is required (feature flag). Only false
+      // explicitly disables it; anything else keeps the phone step (safe default).
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      setRequirePhone((res as any).require_phone !== false);
       setPassword(""); // zero out after submit — no longer needed in component state
       ph.capture("signup_started", { surface: "signup" });
       setStep("email");
@@ -261,13 +268,14 @@ export function SignupFlow({ client, analytics, pollMs = 600 }: SignupFlowProps)
       await api.verifyEmail(accountId, { token: emailToken.trim() });
       setEmailToken("");
       ph.capture("email_verified");
-      setStep("phone");
+      // Skip the phone step when phone verification is flagged off (email-only launch).
+      setStep(requirePhone ? "phone" : "plan");
     } catch (e) {
       setError(friendlyErrorMessage(e, "Couldn't verify that code. Check it and try again."));
     } finally {
       setBusy(false);
     }
-  }, [api, ph, accountId, emailToken]);
+  }, [api, ph, accountId, emailToken, requirePhone]);
 
   const submitPhone = useCallback(async () => {
     if (!accountId) return;
