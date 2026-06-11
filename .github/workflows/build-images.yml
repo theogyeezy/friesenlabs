@@ -1,0 +1,48 @@
+name: Build images
+
+# Manual-trigger builder for the non-api images the Deploy pipeline does NOT build:
+# cube (semantic/), provisioning-lambda, and worker. Each is built arm64 and pushed to
+# its ECR repo as an immutable ${GITHUB_SHA::7} tag — same OIDC role + buildx as deploy.yml.
+# Use this before a Deploy when semantic/, signup/lambda_handler, worker/, or their deps changed,
+# then point the matching image var (cube_image / provisioning_lambda_image) at the new tag.
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  ECR: 186052668426.dkr.ecr.us-east-1.amazonaws.com
+
+jobs:
+  images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: aws-actions/amazon-ecr-login@v2
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: cube (semantic/Dockerfile)
+        run: |
+          docker buildx build --platform linux/arm64 -f semantic/Dockerfile \
+            -t "$ECR/uplift-cube:${GITHUB_SHA::7}" --push semantic
+      - name: provisioning-lambda
+        run: |
+          docker buildx build --platform linux/arm64 -f provisioning-lambda.Dockerfile \
+            -t "$ECR/uplift-provisioning:${GITHUB_SHA::7}" --push .
+      - name: worker
+        run: |
+          docker buildx build --platform linux/arm64 -f worker/Dockerfile \
+            -t "$ECR/uplift-worker:${GITHUB_SHA::7}" --push .
+      - name: summary
+        run: |
+          echo "Built + pushed at ${GITHUB_SHA::7}:" >> "$GITHUB_STEP_SUMMARY"
+          echo "- $ECR/uplift-cube:${GITHUB_SHA::7}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- $ECR/uplift-provisioning:${GITHUB_SHA::7}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- $ECR/uplift-worker:${GITHUB_SHA::7}" >> "$GITHUB_STEP_SUMMARY"
