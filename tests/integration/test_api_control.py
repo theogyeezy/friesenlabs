@@ -236,7 +236,7 @@ def test_traces_contract_pagination_and_tenant_binding():
     # Pagination: limit=1 pages walk the same set with no overlap.
     seen, cursor = [], None
     for _ in range(4):
-        q = f"/control/traces?limit=1" + (f"&cursor={cursor}" if cursor else "")
+        q = "/control/traces?limit=1" + (f"&cursor={cursor}" if cursor else "")
         page = client.get(q, headers=H).json()
         seen += [t["id"] for t in page["traces"]]
         cursor = page["cursor"]

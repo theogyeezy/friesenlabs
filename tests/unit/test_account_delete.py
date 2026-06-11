@@ -72,9 +72,9 @@ H_A = {"Authorization": "Bearer t-A"}
 H_B = {"Authorization": "Bearer t-B"}
 
 
-def _client(deleter=None) -> TestClient:
+def _client(deleter=None, secret_writer=None) -> TestClient:
     app = FastAPI()
-    deps = AccountDeleteDeps(deleter=deleter)
+    deps = AccountDeleteDeps(deleter=deleter, secret_writer=secret_writer)
     mount_account_delete(app, deps, make_current_tenant(FakeVerifier()))
     return TestClient(app)
 
@@ -305,3 +305,71 @@ def test_delete_reports_failed_table_without_aborting_rest():
         if table == "deals":
             continue
         assert body["deleted"][table] == 1
+
+
+# --------------------------------------------------------------------------- connector-secret purge
+
+class FakeVault:
+    """SecretWriter-shaped fake for the purge path: holds refs, optionally explodes."""
+
+    def __init__(self, refs=(), explode_on=()):
+        self.refs = set(refs)
+        self.explode_on = set(explode_on)
+        self.deleted: list[str] = []
+
+    def put_secret(self, ref, value):  # pragma: no cover — purge never writes
+        raise AssertionError("purge must never write a secret")
+
+    def secret_exists(self, ref):  # pragma: no cover — purge never reads status
+        raise AssertionError("purge must never read status")
+
+    def delete_secret(self, ref) -> bool:
+        if ref in self.explode_on:
+            raise RuntimeError("simulated vault outage")
+        self.deleted.append(ref)
+        if ref in self.refs:
+            self.refs.discard(ref)
+            return True
+        return False
+
+
+@pytest.mark.unit
+def test_delete_purges_connector_secrets_for_claims_tenant_only():
+    """The purge derives every ref from the CLAIM tenant and reports only slots
+    that actually existed (hubspot+stripe vaulted; gohighlevel absent)."""
+    vault = FakeVault(refs={"uplift/A/hubspot", "uplift/A/stripe", "uplift/B/hubspot"})
+    c = _client(deleter=_full_deleter(), secret_writer=vault)
+    r = c.post("/account/delete", headers=H_A, json={"confirm": "A"})
+    assert r.status_code == 200
+    body = r.json()["connector_secrets"]
+    assert body["status"] == "purged"
+    assert sorted(body["purged"]) == ["hubspot", "stripe"]
+    assert body["failed"] == []
+    # Tenant B's slot was never touched (every attempted ref names tenant A).
+    assert "uplift/B/hubspot" in vault.refs
+    assert all(ref.startswith("uplift/A/") for ref in vault.deleted)
+
+
+@pytest.mark.unit
+def test_delete_reports_skipped_unconfigured_without_writer():
+    """No vault writer wired -> the response says so honestly (never a fake purge)."""
+    c = _client(deleter=_full_deleter(), secret_writer=None)
+    r = c.post("/account/delete", headers=H_A, json={"confirm": "A"})
+    assert r.status_code == 200
+    assert r.json()["connector_secrets"] == {
+        "purged": [], "failed": [], "status": "skipped_unconfigured"}
+
+
+@pytest.mark.unit
+def test_delete_purge_failure_reported_never_aborts_response():
+    """A vault outage on one slot lands in `failed` (status partial) — the PG
+    teardown already committed, so the response must still be a 200 report."""
+    vault = FakeVault(refs={"uplift/A/hubspot", "uplift/A/stripe"},
+                      explode_on={"uplift/A/stripe"})
+    c = _client(deleter=_full_deleter(), secret_writer=vault)
+    r = c.post("/account/delete", headers=H_A, json={"confirm": "A"})
+    assert r.status_code == 200
+    body = r.json()["connector_secrets"]
+    assert body["status"] == "partial"
+    assert body["purged"] == ["hubspot"]
+    assert body["failed"] == ["stripe"]

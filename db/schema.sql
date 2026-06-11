@@ -323,6 +323,44 @@ CREATE TABLE IF NOT EXISTS cost_events (
 );
 CREATE INDEX IF NOT EXISTS cost_events_tenant_ts_idx ON cost_events (tenant_id, ts);
 
+-- ---------------------------------------------------------------------------
+-- integration_sync_runs — per-tenant connector sync-run history + the single-runner guard
+-- (appended per the Matt-append rule; idempotent). One row per attempted sync of one source
+-- for one tenant. Backs POST /integrations/{name}/sync (async kick: the route INSERTs a
+-- 'running' row, a FastAPI background task finishes it) and the per-connector "last synced"
+-- surface in GET /integrations (api/integrations_routes.py + api/pg_sync_runs.py
+-- PgSyncRunStore). The partial UNIQUE index is the CONCURRENCY GUARD: at most ONE 'running'
+-- row per (tenant, source) — a second kick hits the unique index and the route answers 409
+-- instead of racing the shared ingest cursor. `error` stores an exception CLASS NAME only,
+-- never a message (a provider error message could embed credential material). RLS-FORCEd
+-- tenant table, same per-op SET LOCAL discipline as every tenant store; crm_app gets
+-- SELECT/INSERT/UPDATE in db/roles.sql (status transitions), NO DELETE (run history is the
+-- sync audit trail).
+-- NOTE: declared BEFORE the RLS DO block (it is in the tenant_tables array below), same
+-- ordering reason as usage_counters/cost_events above.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS integration_sync_runs (
+    id           uuid NOT NULL DEFAULT gen_random_uuid(),
+    tenant_id    uuid NOT NULL,
+    source       text NOT NULL,            -- registry name: hubspot | gohighlevel | stripe
+    triggered_by text NOT NULL DEFAULT 'api' CHECK (triggered_by IN ('api', 'schedule')),
+    status       text NOT NULL DEFAULT 'running'
+                 CHECK (status IN ('running', 'succeeded', 'failed', 'aborted')),
+    started_at   timestamptz NOT NULL DEFAULT now(),
+    finished_at  timestamptz,
+    pulled       integer,
+    landed_rows  integer,
+    chunks       integer,
+    embedded     integer,
+    skipped      integer,
+    error        text,
+    PRIMARY KEY (id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS integration_sync_runs_one_running
+    ON integration_sync_runs (tenant_id, source) WHERE status = 'running';
+CREATE INDEX IF NOT EXISTS integration_sync_runs_latest_idx
+    ON integration_sync_runs (tenant_id, source, started_at DESC);
+
 -- ===========================================================================
 -- ROW LEVEL SECURITY — apply the identical pattern to every tenant-scoped table.
 -- The DO block keeps it DRY and guarantees no table is missed (and never without FORCE).
@@ -333,7 +371,8 @@ DECLARE
     tenant_tables text[] := ARRAY[
         'documents', 'companies', 'contacts', 'deals', 'activities',
         'saved_views', 'approvals', 'traces', 'ingest_cursor', 'tenant_workspaces',
-        'tenant_settings', 'playbooks', 'predictions', 'usage_counters', 'cost_events', 'onboarding_state'
+        'tenant_settings', 'playbooks', 'predictions', 'usage_counters', 'cost_events', 'onboarding_state',
+        'integration_sync_runs'
     ];
 BEGIN
     FOREACH t IN ARRAY tenant_tables LOOP
@@ -620,3 +659,14 @@ ALTER TABLE tenant_settings ADD COLUMN IF NOT EXISTS notification_prefs jsonb NO
 -- GET/PUT /account/modules (api/modules_routes.py + PgSettingsStore.get_modules/set_modules); each
 -- enabled module is a Stripe subscription item in the Phase-2 "selection sets the price" billing.
 ALTER TABLE tenant_settings ADD COLUMN IF NOT EXISTS enabled_modules jsonb NOT NULL DEFAULT '[]'::jsonb;
+
+-- ---------------------------------------------------------------------------
+-- integration_sync_runs — explicit RLS statements (belt and suspenders with the DO block
+-- above, same convention as playbooks/predictions: the FORCE requirement stays greppable).
+-- ---------------------------------------------------------------------------
+ALTER TABLE integration_sync_runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE integration_sync_runs FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON integration_sync_runs;
+CREATE POLICY tenant_isolation ON integration_sync_runs
+    USING (tenant_id = current_setting('app.current_tenant', true)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.current_tenant', true)::uuid);

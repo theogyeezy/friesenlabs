@@ -58,6 +58,12 @@ class AccountDeleteDeps:
     # `delete_tenant_data(tenant_id=...) -> {deleted, retained, failed}`. None = data plane
     # unconfigured -> 503 (nothing can be deleted).
     deleter: Any | None = None
+    # api.integrations_routes.SecretWriter — purges the tenant's vaulted CONNECTOR
+    # credentials (uplift/{tenant}/{source}, the Switchboard slots) as part of the
+    # erasure: third-party tokens must not outlive the account. None = vault
+    # unconfigured -> the response reports connector_secrets.status
+    # "skipped_unconfigured" (honest skip, never a fake purge).
+    secret_writer: Any | None = None
 
 
 def mount_account_delete(app: FastAPI, deps: AccountDeleteDeps, current_tenant) -> None:
@@ -111,4 +117,39 @@ def mount_account_delete(app: FastAPI, deps: AccountDeleteDeps, current_tenant) 
             "deleted": report.get("deleted", {}),
             "retained": report.get("retained", {}),
             "failed": report.get("failed", {}),
+            "connector_secrets": _purge_connector_secrets(deps, tid),
         }
+
+
+# Connector vault slots the erasure must cover — the sync sources from the
+# integrations registry (api/integrations_routes.py KNOWN_INTEGRATIONS; csv has
+# no slot). Mirrored as a static tuple for the same boot-invariant reason that
+# module mirrors its own registry; tests/unit/test_connector_registry.py pins
+# registry<->mirror parity so this can't silently miss a new connector.
+_CONNECTOR_SOURCES: tuple[str, ...] = ("hubspot", "gohighlevel", "stripe")
+
+
+def _purge_connector_secrets(deps: AccountDeleteDeps, tenant_id: str) -> dict:
+    """Best-effort vault purge, AFTER the PG teardown: delete every
+    uplift/{tenant}/{source} slot so the tenant's third-party tokens do not
+    outlive the account. Never raises — the PG teardown already committed, so
+    this reports {purged, failed, status} honestly instead of failing the
+    request. Idempotent: an absent slot is simply not listed as purged."""
+    if deps.secret_writer is None:
+        return {"purged": [], "failed": [],
+                "status": "skipped_unconfigured"}
+    from api.integrations_routes import _tenant_secret_ref  # noqa: PLC0415 — name formatter only
+
+    purged: list[str] = []
+    failed: list[str] = []
+    for source in _CONNECTOR_SOURCES:
+        ref = _tenant_secret_ref(tenant_id, source)
+        try:
+            if deps.secret_writer.delete_secret(ref):
+                purged.append(source)
+        except Exception as exc:  # noqa: BLE001 — report, never abort the erasure response
+            log.error("account_delete: connector secret purge failed for %s (%s)",
+                      ref, type(exc).__name__)
+            failed.append(source)
+    return {"purged": purged, "failed": failed,
+            "status": "purged" if not failed else "partial"}

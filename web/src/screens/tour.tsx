@@ -19,7 +19,7 @@ const TOUR_STEPS = [
   { route: "agents", title: "Agents & Studio", body: "Hire ready-made agents or build your own in the visual Studio, give them skills and set their autonomy. Use it to grow your team." },
   { route: "knowledge", title: "Knowledge", body: "Upload your handbook, pricing and docs; we index them so every agent grounds its answers on what your business knows." },
   { route: "cortex", title: "Cortex, private intelligence", body: "Grounds agents on your knowledge and gets sharper with every decision, with optional plugins to train private models. That's your moat." },
-  { route: "integrations", title: "Switchboard & Sidecar", body: "Connect HubSpot, Gmail, Stripe and more, and Sidecar puts agents on top of the tools you already use. Use it to keep your stack." },
+  { route: "integrations", title: "Switchboard & Sidecar", body: "Connect HubSpot, Stripe, GoHighLevel or a CSV, and Sidecar puts agents on top of the tools you already use. Use it to keep your stack." },
   { route: "security", title: "Security & control", body: "One kill switch, guardrails, and a full audit trail. Use it any time you want to pause or review what agents are doing." },
   { route: "dashboard", title: "You're all set 🎉", body: "Everything's reachable from the left sidebar, grouped by Workspace, Uplift CRM, Agents and more. Your agents are already working, you just steer. Welcome aboard!" },
 ];

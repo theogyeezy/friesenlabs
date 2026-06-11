@@ -54,7 +54,6 @@ def normalize_phone(phone: str) -> str:
     if not isinstance(phone, str):
         raise ValueError("phone must be a string")
     raw = phone.strip()
-    has_plus = raw.startswith("+")
     digits = re.sub(r"\D", "", raw)
     if not digits:
         raise ValueError(f"invalid phone number: {phone!r}")

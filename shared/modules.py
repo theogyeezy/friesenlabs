@@ -5,9 +5,10 @@ Settings). Each module gates a set of app route-ids and carries a monthly price 
 sets the price" billing model — Phase 2 wires each enabled module to a Stripe subscription item;
 the per-module Stripe Price ids are owner-created and injected by env, never built here).
 
-This Python catalog is mirrored in web/src/modules.ts — keep the two in sync (a unit test +
-the web build both pin the ids). Prices are the RATIFIED launch prices (also shown on the
-marketing suite-builder); change them in these two places only.
+The web app does NOT mirror this catalog: it consumes it at runtime via GET /account/modules
+(catalog_payload below — api/modules_routes.py), so the SPA's nav/route gate can never drift
+from this file. Prices are the RATIFIED launch prices (also shown on the marketing
+suite-builder, which hardcodes its display copy); change prices HERE.
 
 Route gating contract:
   * A route-id listed in a module's `routes` is shown ONLY when that module is enabled.
