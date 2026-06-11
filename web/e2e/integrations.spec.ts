@@ -28,16 +28,38 @@ const HUBSPOT = {
   status: "not_connected",
 };
 
+const CSV_CONNECTOR = {
+  name: "csv",
+  label: "CSV Import",
+  category: "Files & Imports",
+  description:
+    "Import contacts, companies or deals from a CSV export (up to 5MB). " +
+    "Column mapping is auto-detected and can be overridden per upload.",
+  kind: "file",
+  connected: null as boolean | null,
+  status: "available",
+  experimental: false,
+};
+
 const LIST_NOT_CONNECTED = {
   integrations: [HUBSPOT],
   secrets_configured: true,
   sync_configured: true,
+  csv_import_configured: true,
 };
 
 const LIST_CONNECTED = {
   integrations: [{ ...HUBSPOT, connected: true, status: "connected" }],
   secrets_configured: true,
   sync_configured: true,
+  csv_import_configured: true,
+};
+
+const LIST_WITH_CSV = {
+  integrations: [CSV_CONNECTOR],
+  secrets_configured: true,
+  sync_configured: true,
+  csv_import_configured: true,
 };
 
 async function bodyText(page: Page): Promise<string> {
@@ -327,4 +349,63 @@ test("sync 503 -> honest 'not configured' copy", async ({ page }) => {
   const text = await bodyText(page);
   expect(text).not.toContain("ingestion plane");
   expect(text).not.toMatch(/API \d+/);
+});
+
+// ---------------------------------------------------------------------------
+// CSV import (file-kind card) — honest controls + honest error paths.
+// ---------------------------------------------------------------------------
+
+test("csv card renders entity picker + file input; no credential form", async ({ page }) => {
+  await page.route("**/integrations", (route) => route.fulfill({ json: LIST_WITH_CSV }));
+
+  await page.goto("/?view=integrations");
+  await expect(page.getByTestId("integration-item")).toBeVisible({ timeout: 15_000 });
+
+  // The CSV card shows its upload controls — not the credential-token form.
+  await expect(page.getByTestId("csv-import-form")).toBeVisible();
+  await expect(page.getByTestId("csv-entity-picker")).toBeVisible();
+  await expect(page.getByTestId("csv-file-input")).toBeVisible();
+  await expect(page.getByTestId("csv-import-submit")).toBeVisible();
+
+  // The credential form (int-token-input) and sync button must NOT appear for a
+  // file-kind card — CSV has no vault slot.
+  await expect(page.getByTestId("int-token-input")).toHaveCount(0);
+  await expect(page.getByTestId("int-connect-btn")).toHaveCount(0);
+  await expect(page.getByTestId("int-sync-btn")).toHaveCount(0);
+
+  // Import button is disabled until a file is selected.
+  await expect(page.getByTestId("csv-import-submit")).toBeDisabled();
+});
+
+test("csv import 503 -> 'not enabled on this deployment' copy, no fake rows-landed", async ({ page }) => {
+  await page.route("**/integrations", (route) => route.fulfill({ json: LIST_WITH_CSV }));
+  await page.route("**/integrations/csv/import", (route) =>
+    route.fulfill({
+      status: 503,
+      json: { detail: "csv import not configured — the ingestion plane is not wired on this task" },
+    }),
+  );
+
+  await page.goto("/?view=integrations");
+  await expect(page.getByTestId("csv-import-form")).toBeVisible({ timeout: 15_000 });
+
+  // Inject a dummy file so the import button becomes enabled.
+  await page.getByTestId("csv-file-input").setInputFiles({
+    name: "test.csv",
+    mimeType: "text/csv",
+    buffer: Buffer.from("name,email\nAlice,alice@example.com"),
+  });
+  await expect(page.getByTestId("csv-import-submit")).toBeEnabled();
+  await page.getByTestId("csv-import-submit").click();
+
+  const msg = page.getByTestId("int-card-msg");
+  await expect(msg).toBeVisible({ timeout: 15_000 });
+  await expect(msg).toHaveAttribute("data-kind", "error");
+  // Honest copy — not a fake success, not a raw API string.
+  await expect(msg).toContainText("isn't enabled on this deployment");
+  // The import result block must NOT appear — no rows were landed.
+  await expect(page.getByTestId("csv-import-result")).toHaveCount(0);
+  const text = await bodyText(page);
+  expect(text).not.toMatch(/API \d+/);
+  expect(text).not.toContain("ingestion plane");
 });

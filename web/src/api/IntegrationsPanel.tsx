@@ -6,17 +6,25 @@
 // secrets/sync configuration notes come straight from GET /integrations —
 // nothing is invented client-side and there are no fake successes anywhere.
 //
-// Connect flow: a masked token input POSTs to /integrations/{name}/credentials.
-// The token is write-only — held transiently in component state, sent in the
-// request body (token ONLY, never a tenant_id: THE TRUST RULE), never logged,
-// never echoed back into the DOM, and cleared as soon as the request settles
-// successfully. Per-status copy mirrors the API contract: 503 storage not
-// configured on this deployment, 422 empty token, 502 vault write failed.
+// Connect flow (sync-kind connectors): a masked token input POSTs to
+// /integrations/{name}/credentials. The token is write-only — held transiently
+// in component state, sent in the request body (token ONLY, never a tenant_id:
+// THE TRUST RULE), never logged, never echoed back into the DOM, and cleared as
+// soon as the request settles successfully. Per-status copy mirrors the API
+// contract: 503 storage not configured on this deployment, 422 empty token, 502
+// vault write failed.
 //
 // Sync-now: POSTs /integrations/{name}/sync per connected integration and
 // reports the SyncResult counts the server actually returned. 503 (ingestion
 // plane not wired), 409 (connect first — no vaulted credential) and 502 are
 // surfaced with honest copy; raw "API <code>" strings never reach the user.
+//
+// CSV import (file-kind connectors): an entity picker (contacts|companies|deals)
+// + a file input post multipart to /integrations/csv/import via api.csvImport().
+// The result is rendered honestly: imported + skipped counts plus per-row errors.
+// 503 (ingest plane not wired) surfaces as "not enabled on this deployment" — no
+// fake row-landed state. 422 (encoding/mapping/entity problem) shows the server's
+// detail. The csv card is filtered OUT of the credentialed-connect flow.
 
 import React from "react";
 import {
@@ -24,6 +32,7 @@ import {
   ApiError,
   defaultClient,
   friendlyErrorMessage,
+  type CsvImportReport,
   type Integration,
   type IntegrationStatus,
   type ListIntegrationsResponse,
@@ -68,6 +77,27 @@ function syncErrorMessage(e: unknown): string {
   return friendlyErrorMessage(e, "Couldn't start the sync. Please try again.");
 }
 
+function csvImportErrorMessage(e: unknown): string {
+  if (e instanceof ApiError) {
+    if (e.status === 503) {
+      return "CSV import isn't enabled on this deployment yet — no rows were imported.";
+    }
+    if (e.status === 413) {
+      return "That file exceeds the 5 MB import limit. Split it into smaller batches and try again.";
+    }
+    if (e.status === 422) {
+      // Whole-file problem: the server authors a human-readable detail string
+      // (encoding error, unusable mapping, bad entity) — surface it directly.
+      if (e.detail && e.detail.trim().length > 0) return e.detail;
+      return "The file couldn't be parsed. Check the encoding and column headers, then try again.";
+    }
+    if (e.status === 502) {
+      return "The import pipeline didn't complete. Nothing was stored — please try again.";
+    }
+  }
+  return friendlyErrorMessage(e, "Couldn't import the file. Please try again.");
+}
+
 // Summarize ONLY what the server reported — counts that exist in the result.
 // No invented numbers: when the result carries none of the known fields, the
 // summary claims nothing beyond completion.
@@ -95,6 +125,8 @@ const BADGE: Record<IntegrationStatus, { label: string; fg: string; bg: string }
   connected: { label: "Connected", fg: "oklch(0.42 0.1 152)", bg: "oklch(0.95 0.04 152)" },
   not_connected: { label: "Not connected", fg: "var(--ink-3, #8a8278)", bg: "var(--accent-soft, #f4f1ea)" },
   unknown: { label: "Unknown", fg: "oklch(0.5 0.12 60)", bg: "oklch(0.96 0.05 85)" },
+  // "available" = file-kind (CSV): no vault slot, always upload-ready when configured.
+  available: { label: "Available", fg: "oklch(0.42 0.1 152)", bg: "oklch(0.95 0.04 152)" },
 };
 
 function StatusBadge({ status }: { status: IntegrationStatus }) {
@@ -140,6 +172,15 @@ export interface IntegrationsPanelProps {
   client?: ApiClient;
 }
 
+// Entity options for CSV import.
+const CSV_ENTITIES = [
+  { value: "contacts", label: "Contacts" },
+  { value: "companies", label: "Companies" },
+  { value: "deals", label: "Deals" },
+] as const;
+
+type CsvEntity = (typeof CSV_ENTITIES)[number]["value"];
+
 export function IntegrationsPanel({ client }: IntegrationsPanelProps) {
   const api = client ?? defaultClient();
   const [data, setData] = useState<ListIntegrationsResponse | null>(null);
@@ -152,6 +193,10 @@ export function IntegrationsPanel({ client }: IntegrationsPanelProps) {
   const [tokens, setTokens] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [msgs, setMsgs] = useState<Record<string, CardMsg>>({});
+  // CSV import state (one per file-kind card; keyed for symmetry with other per-card state).
+  const [csvEntity, setCsvEntity] = useState<CsvEntity>("contacts");
+  const [csvFile, setCsvFile] = useState<File | null>(null);
+  const [csvReport, setCsvReport] = useState<CsvImportReport | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -237,8 +282,33 @@ export function IntegrationsPanel({ client }: IntegrationsPanelProps) {
     [api],
   );
 
+  const runCsvImport = useCallback(
+    async (item: Integration) => {
+      if (!csvFile) return;
+      setBusy((b) => ({ ...b, [item.name]: true }));
+      setMsg(item.name, null);
+      setCsvReport(null);
+      try {
+        // csvImport unwraps the {name, report} envelope → the report itself.
+        const report = await api.csvImport(csvEntity, csvFile);
+        // Report comes straight from the server — never invented.
+        setCsvReport(report);
+        // Clear the file input after a successful upload so a second upload
+        // isn't accidentally re-sent.
+        setCsvFile(null);
+      } catch (e) {
+        setMsg(item.name, { kind: "error", text: csvImportErrorMessage(e) });
+      } finally {
+        setBusy((b) => ({ ...b, [item.name]: false }));
+      }
+    },
+    [api, csvEntity, csvFile],
+  );
+
   const items = data?.integrations ?? [];
-  const connectedCount = items.filter((i) => i.status === "connected").length;
+  // Only sync-kind connectors carry "connected" status — file-kind (CSV) never counts.
+  const syncItems = items.filter((i) => i.kind !== "file");
+  const connectedCount = syncItems.filter((i) => i.status === "connected").length;
 
   return (
     <div
@@ -254,9 +324,9 @@ export function IntegrationsPanel({ client }: IntegrationsPanelProps) {
           Connect the tools your business runs on. Tokens go straight to your workspace vault and are never shown again.
         </p>
         {/* Only claim a count once we actually know it (post-load, no error). */}
-        {!loading && !error && data !== null && (
+        {!loading && !error && data !== null && syncItems.length > 0 && (
           <div data-testid="int-connected-count" style={{ marginTop: 10, fontSize: 13, color: "var(--ink-3, #8a8278)" }}>
-            {connectedCount} of {items.length} connected
+            {connectedCount} of {syncItems.length} connected
           </div>
         )}
       </div>
@@ -304,8 +374,171 @@ export function IntegrationsPanel({ client }: IntegrationsPanelProps) {
         !error &&
         items.map((item) => {
           const isBusy = !!busy[item.name];
-          const open = !!connectOpen[item.name];
           const msg = msgs[item.name];
+
+          // ---- File-kind card (CSV import) — no credential form, no sync button. ----
+          if (item.kind === "file") {
+            return (
+              <div key={item.name} data-testid="integration-item" data-integration={item.name} style={card}>
+                <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12 }}>
+                  <div style={{ fontSize: 16, fontWeight: 720 }}>{item.label}</div>
+                  <StatusBadge status={item.status} />
+                </div>
+                <div style={{ fontSize: 12.5, color: "var(--ink-3, #8a8278)", marginTop: 2 }}>{item.category}</div>
+                <p style={{ fontSize: 13.5, color: "var(--ink, #2a2622)", marginTop: 10, lineHeight: 1.5 }}>
+                  {item.description}
+                </p>
+
+                {/* Per-card error message (honest, never invented). */}
+                {msg && (
+                  <div
+                    data-testid="int-card-msg"
+                    data-kind={msg.kind}
+                    style={{
+                      fontSize: 13,
+                      lineHeight: 1.5,
+                      marginTop: 12,
+                      padding: "10px 12px",
+                      borderRadius: 10,
+                      color: msg.kind === "error" ? "var(--rose, #b4413b)" : "var(--ink, #2a2622)",
+                      background: msg.kind === "error" ? "oklch(0.97 0.02 18)" : "var(--accent-soft, #f4f1ea)",
+                    }}
+                  >
+                    {msg.text}
+                  </div>
+                )}
+
+                {/* CSV import result — rendered ONLY from the server's report. */}
+                {csvReport && (
+                  <div
+                    data-testid="csv-import-result"
+                    style={{
+                      marginTop: 12,
+                      padding: "10px 12px",
+                      borderRadius: 10,
+                      background: "var(--accent-soft, #f4f1ea)",
+                      fontSize: 13,
+                      lineHeight: 1.6,
+                    }}
+                  >
+                    <div style={{ fontWeight: 700, color: "var(--ink, #2a2622)", marginBottom: 4 }}>
+                      Import complete
+                    </div>
+                    <div style={{ color: "var(--ink, #2a2622)" }}>
+                      {csvReport.imported} imported, {csvReport.skipped_unchanged} skipped (total {csvReport.total_rows} rows).
+                    </div>
+                    {csvReport.errors.length > 0 && (
+                      <div
+                        data-testid="csv-import-errors"
+                        style={{ marginTop: 8 }}
+                      >
+                        <div style={{ fontWeight: 650, color: "var(--rose, #b4413b)", marginBottom: 4 }}>
+                          {csvReport.errors.length} row{csvReport.errors.length !== 1 ? "s" : ""} had problems:
+                        </div>
+                        <ul style={{ margin: 0, paddingLeft: 18 }}>
+                          {csvReport.errors.map((err, i) => (
+                            <li key={i} style={{ color: "var(--rose, #b4413b)", fontSize: 12.5 }}>
+                              Row {err.row}: {err.error}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* CSV upload UI — entity picker + file input. */}
+                <div data-testid="csv-import-form" style={{ marginTop: 16 }}>
+                  <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
+                    <div style={{ flex: "0 0 auto" }}>
+                      <label
+                        htmlFor={`csv-entity-${item.name}`}
+                        style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--ink-3, #8a8278)", marginBottom: 6 }}
+                      >
+                        Entity
+                      </label>
+                      <select
+                        id={`csv-entity-${item.name}`}
+                        data-testid="csv-entity-picker"
+                        value={csvEntity}
+                        disabled={isBusy}
+                        onChange={(e) => {
+                          setCsvEntity(e.target.value as CsvEntity);
+                          // Clear the previous result when the entity changes.
+                          setCsvReport(null);
+                          setMsg(item.name, null);
+                        }}
+                        style={{
+                          borderRadius: 10,
+                          border: "1px solid var(--line, #e3ddd3)",
+                          padding: "10px 12px",
+                          fontSize: 13.5,
+                          fontFamily: "inherit",
+                          background: "var(--surface, #fff)",
+                          cursor: isBusy ? "not-allowed" : "pointer",
+                        }}
+                      >
+                        {CSV_ENTITIES.map((opt) => (
+                          <option key={opt.value} value={opt.value}>{opt.label}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div style={{ flex: "1 1 180px" }}>
+                      <label
+                        htmlFor={`csv-file-${item.name}`}
+                        style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--ink-3, #8a8278)", marginBottom: 6 }}
+                      >
+                        CSV file (5 MB max)
+                      </label>
+                      <input
+                        id={`csv-file-${item.name}`}
+                        data-testid="csv-file-input"
+                        type="file"
+                        accept=".csv"
+                        disabled={isBusy}
+                        // Controlled via key — cleared after a successful upload by
+                        // resetting csvFile to null (the input key re-mounts it).
+                        onChange={(e) => {
+                          const f = e.target.files?.[0] ?? null;
+                          setCsvFile(f);
+                          // Clear any previous result or error when a new file is chosen.
+                          setCsvReport(null);
+                          setMsg(item.name, null);
+                        }}
+                        style={{
+                          display: "block",
+                          width: "100%",
+                          boxSizing: "border-box",
+                          borderRadius: 10,
+                          border: "1px solid var(--line, #e3ddd3)",
+                          padding: "8px 12px",
+                          fontSize: 13,
+                          fontFamily: "inherit",
+                          background: "var(--surface, #fff)",
+                          cursor: isBusy ? "not-allowed" : "pointer",
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  <div style={{ marginTop: 12 }}>
+                    <button
+                      data-testid="csv-import-submit"
+                      disabled={isBusy || !csvFile}
+                      onClick={() => void runCsvImport(item)}
+                      style={{ ...primaryBtn, opacity: isBusy || !csvFile ? 0.6 : 1 }}
+                    >
+                      {isBusy ? "Importing..." : "Import CSV"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            );
+          }
+
+          // ---- Sync-kind card (credentialed pull connector). ----
+          const open = !!connectOpen[item.name];
           const token = tokens[item.name] ?? "";
           return (
             <div key={item.name} data-testid="integration-item" data-integration={item.name} style={card}>

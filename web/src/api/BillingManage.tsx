@@ -19,7 +19,7 @@
 //     friendlyErrorMessage.
 
 import React from "react";
-import { ApiError, defaultClient, friendlyErrorMessage, type BillingState } from "./client";
+import { ApiError, defaultClient, friendlyErrorMessage, type BillingState, type Invoice } from "./client";
 import { Spinner } from "./Spinner";
 
 const { useState, useEffect, useCallback } = React;
@@ -50,6 +50,26 @@ const PLAN_LABELS: Record<string, string> = {
   team: "Team",
   scale: "Scale",
 };
+
+// Format an integer-cents amount to a readable currency string (e.g. $1,234.00).
+function formatMoney(cents: number, currency: string): string {
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency: currency.toUpperCase(),
+    }).format(cents / 100);
+  } catch {
+    // Unknown currency code — fall back to a plain decimal with the code.
+    return `${(cents / 100).toFixed(2)} ${currency.toUpperCase()}`;
+  }
+}
+
+// Format a Unix timestamp in seconds to a readable date string.
+function formatUnixDate(seconds: number): string {
+  const d = new Date(seconds * 1000);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
 
 // Friendly, honest copy for each billing status (Stripe Subscription.status).
 const STATUS_COPY: Record<string, { label: string; tone: "ok" | "warn" }> = {
@@ -83,6 +103,34 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
+// Invoice status display — honest labels for Stripe invoice statuses.
+const INVOICE_STATUS_COPY: Record<string, { label: string; tone: "ok" | "warn" | "neutral" }> = {
+  paid: { label: "Paid", tone: "ok" },
+  open: { label: "Open", tone: "warn" },
+  draft: { label: "Draft", tone: "neutral" },
+  uncollectible: { label: "Uncollectible", tone: "warn" },
+  void: { label: "Void", tone: "neutral" },
+};
+
+function InvoiceStatusBadge({ status }: { status: string }) {
+  const meta = INVOICE_STATUS_COPY[status] || { label: status, tone: "neutral" as const };
+  const style: React.CSSProperties = {
+    display: "inline-flex",
+    alignItems: "center",
+    height: 20,
+    padding: "0 8px",
+    borderRadius: 999,
+    fontSize: 11,
+    fontWeight: 650,
+    ...(meta.tone === "ok"
+      ? { background: "var(--green-soft, #def2e3)", color: "oklch(0.42 0.12 152)" }
+      : meta.tone === "warn"
+        ? { background: "var(--amber-soft, #fdf0d8)", color: "oklch(0.5 0.12 60)" }
+        : { background: "var(--accent-soft, #f4f1ea)", color: "var(--ink-2, #5d564d)" }),
+  };
+  return <span style={style}>{meta.label}</span>;
+}
+
 /**
  * The real-mode "Plan & billing" panel. `client` is injectable for tests;
  * defaults to the shared app client.
@@ -94,6 +142,13 @@ export function BillingManage({ client = defaultClient() }: { client?: ReturnTyp
   const [unavailable, setUnavailable] = useState<string | null>(null);
   const [redirecting, setRedirecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Invoices — separate fetch so a billing-routes 404 degrades both sections.
+  // "unavailable" mirrors the plan panel's 404 feature-detect pattern.
+  const [invoices, setInvoices] = useState<Invoice[] | null>(null);
+  const [invoicesLoading, setInvoicesLoading] = useState(true);
+  const [invoicesUnavailable, setInvoicesUnavailable] = useState<string | null>(null);
+  const [invoicesError, setInvoicesError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -114,9 +169,29 @@ export function BillingManage({ client = defaultClient() }: { client?: ReturnTyp
     }
   }, [client]);
 
+  const loadInvoices = useCallback(async () => {
+    setInvoicesLoading(true);
+    setInvoicesError(null);
+    try {
+      const list = await client.listInvoices();
+      setInvoices(list);
+      setInvoicesUnavailable(null);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) {
+        // Billing routes not yet deployed — degrade honestly, same as plan panel.
+        setInvoicesUnavailable("Invoice history isn't available on this workspace yet.");
+      } else {
+        setInvoicesError(friendlyErrorMessage(e, "Couldn't load your invoice history."));
+      }
+    } finally {
+      setInvoicesLoading(false);
+    }
+  }, [client]);
+
   useEffect(() => {
     void load();
-  }, [load]);
+    void loadInvoices();
+  }, [load, loadInvoices]);
 
   const manage = useCallback(async () => {
     setRedirecting(true);
@@ -211,6 +286,128 @@ export function BillingManage({ client = defaultClient() }: { client?: ReturnTyp
           </button>
         </div>
       )}
+
+      {/* --- Invoices section ----------------------------------------------- */}
+      <div
+        data-testid="billing-invoices"
+        style={{ marginTop: 20, paddingTop: 18, borderTop: "1px solid var(--line-2, #efe9df)" }}
+      >
+        <div style={{ fontWeight: 680, fontSize: 13.5, marginBottom: 10 }}>Invoice history</div>
+
+        {invoicesLoading && <Spinner label="Loading invoices…" />}
+
+        {!invoicesLoading && invoicesUnavailable && (
+          <p style={{ ...muted, fontSize: 13, margin: 0 }} data-testid="invoices-unavailable">
+            {invoicesUnavailable}
+          </p>
+        )}
+
+        {!invoicesLoading && invoicesError && (
+          <div role="alert" data-testid="invoices-error">
+            <p style={{ fontSize: 13, color: "oklch(0.5 0.16 25)", margin: "0 0 8px" }}>{invoicesError}</p>
+            <button
+              type="button"
+              style={{ ...primaryBtn, padding: "5px 11px", fontSize: 12.5 }}
+              onClick={() => void loadInvoices()}
+            >
+              Try again
+            </button>
+          </div>
+        )}
+
+        {!invoicesLoading && !invoicesUnavailable && !invoicesError && invoices !== null && (
+          invoices.length === 0 ? (
+            <p style={{ ...muted, fontSize: 13, margin: 0 }} data-testid="invoices-empty">
+              No invoices yet.
+            </p>
+          ) : (
+            <div data-testid="invoices-list">
+              {invoices.map((inv, i) => (
+                <div
+                  key={inv.id}
+                  data-testid="invoice-row"
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 12,
+                    flexWrap: "wrap",
+                    padding: "10px 0",
+                    borderTop: i === 0 ? "none" : "1px solid var(--line-2, #efe9df)",
+                    fontSize: 13,
+                  }}
+                >
+                  {/* Invoice number */}
+                  <span
+                    style={{
+                      flex: 1,
+                      minWidth: 120,
+                      fontFamily: "var(--mono, ui-monospace, monospace)",
+                      fontWeight: 650,
+                      color: "var(--ink, #2a2622)",
+                      fontSize: 12.5,
+                      overflowWrap: "anywhere",
+                    }}
+                  >
+                    {inv.number ?? inv.id}
+                  </span>
+
+                  {/* Amounts */}
+                  <span style={{ ...muted, fontSize: 12.5, whiteSpace: "nowrap" }}>
+                    Due{" "}
+                    <span style={{ color: "var(--ink, #2a2622)", fontWeight: 650 }}>
+                      {formatMoney(inv.amount_due, inv.currency)}
+                    </span>
+                    {inv.amount_paid > 0 && inv.amount_paid !== inv.amount_due && (
+                      <span> · Paid {formatMoney(inv.amount_paid, inv.currency)}</span>
+                    )}
+                  </span>
+
+                  {/* Status badge */}
+                  <InvoiceStatusBadge status={inv.status} />
+
+                  {/* Created date */}
+                  <span
+                    style={{
+                      fontSize: 12,
+                      fontFamily: "var(--mono, ui-monospace, monospace)",
+                      ...muted,
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {formatUnixDate(inv.created)}
+                  </span>
+
+                  {/* Links */}
+                  <span style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+                    {inv.hosted_invoice_url && (
+                      <a
+                        href={inv.hosted_invoice_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{ fontSize: 12.5, color: "var(--ink, #2a2622)", fontWeight: 650 }}
+                        data-testid="invoice-view-link"
+                      >
+                        View
+                      </a>
+                    )}
+                    {inv.invoice_pdf && (
+                      <a
+                        href={inv.invoice_pdf}
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{ fontSize: 12.5, color: "var(--ink, #2a2622)", fontWeight: 650 }}
+                        data-testid="invoice-pdf-link"
+                      >
+                        PDF
+                      </a>
+                    )}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )
+        )}
+      </div>
     </div>
   );
 }

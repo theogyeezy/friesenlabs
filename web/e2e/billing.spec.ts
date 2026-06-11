@@ -98,3 +98,36 @@ test("billing routes not deployed -> honest not-available state", async ({ page 
   await expect(page.getByTestId("billing-panel")).toContainText("isn't available");
   await expect(page.getByTestId("manage-billing")).toHaveCount(0);
 });
+
+// --- Invoices section ---
+
+test("invoices section shows empty state when no invoices", async ({ page }) => {
+  await stubShell(page);
+  await page.route("**/billing/invoices", (route) => route.fulfill({ json: [] }));
+  await page.route("**/billing", (route) =>
+    route.fulfill({ json: { customer: true, plan: "team", status: "active" } }),
+  );
+
+  await gotoSettings(page);
+
+  await expect(page.getByTestId("billing-invoices")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId("invoices-empty")).toContainText("No invoices yet");
+  await expect(page.getByTestId("invoice-row")).toHaveCount(0);
+});
+
+test("invoices section degrades honestly when billing routes return 404", async ({ page }) => {
+  await stubShell(page);
+  await page.route("**/billing/invoices", (route) =>
+    route.fulfill({ status: 404, json: { detail: "Not Found" } }),
+  );
+  await page.route("**/billing", (route) =>
+    route.fulfill({ json: { customer: true, plan: "team", status: "active" } }),
+  );
+
+  await gotoSettings(page);
+
+  await expect(page.getByTestId("billing-invoices")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId("invoices-unavailable")).toBeVisible();
+  await expect(page.getByTestId("invoices-unavailable")).toContainText("isn't available");
+  await expect(page.getByTestId("invoice-row")).toHaveCount(0);
+});
