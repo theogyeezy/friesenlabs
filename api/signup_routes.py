@@ -49,6 +49,11 @@ class SignupDeps:
     # seam in this API, so without claims the only retry surface is the operator's direct
     # Lambda 'retry' invoke (signup/lambda_handler.py — IAM-gated by lambda:InvokeFunction).
     claims_tenant: Callable | None = None
+    # TESTING-ONLY internal Stripe bypass (shared/config.py SIGNUP_INTERNAL_BYPASS_DOMAINS):
+    # normalized email domains whose VERIFIED signups settle via PaymentService.internal_comp
+    # (the SAME idempotent ledger + on_paid path) instead of Stripe checkout. The default —
+    # the empty set — means the feature is OFF and the branch is unreachable.
+    internal_bypass_domains: frozenset = frozenset()
 
 
 class SignupBody(BaseModel):
@@ -116,8 +121,21 @@ def mount_signup(app: FastAPI, deps: SignupDeps) -> None:
 
     @app.post("/signup/{account_id}/checkout")
     def checkout(account_id: str, body: CheckoutBody, request: Request):
-        if deps.accounts.store.get(account_id) is None:
+        acct = deps.accounts.store.get(account_id)
+        if acct is None:
             raise HTTPException(status_code=404, detail="no such account")
+        # TESTING-ONLY internal bypass (default OFF — empty set): a VERIFIED signup whose
+        # SERVER-STORED email domain is allow-listed settles via the SAME idempotent ledger +
+        # on_paid path as the webhook (PaymentService.internal_comp), with no Stripe call.
+        # The domain comes from the account row (set + normalized at signup, then verified),
+        # never from anything the client sends on this request.
+        domain = (acct.email or "").rsplit("@", 1)[-1].lower()
+        if deps.internal_bypass_domains and domain in deps.internal_bypass_domains:
+            try:
+                res = deps.payment.internal_comp(account_id, body.plan)
+            except PaymentError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            return {"checkout_url": None, "bypass": "internal_comp", **res}
         # Idempotency key from the client (a double-click reuses it) or derived deterministically.
         idem = request.headers.get("idempotency-key") or f"{account_id}:{body.plan}"
         try:
@@ -125,7 +143,14 @@ def mount_signup(app: FastAPI, deps: SignupDeps) -> None:
         except PaymentError as e:
             # e.g. not yet verified (verify before pay)
             raise HTTPException(status_code=400, detail=str(e))
-        return {"checkout_id": res.checkout_id, "stripe_customer_id": res.stripe_customer_id}
+        # checkout_url is the Stripe-hosted page the SPA must send the browser to. Returning it
+        # (instead of discarding it) is what makes the revenue path real — the client no longer
+        # fakes payment success; the signed webhook remains the only provisioning trigger.
+        return {
+            "checkout_id": res.checkout_id,
+            "stripe_customer_id": res.stripe_customer_id,
+            "checkout_url": res.checkout_url,
+        }
 
     @app.post("/signup/{account_id}/retry-provision")
     def retry_provision(account_id: str, request: Request):

@@ -19,11 +19,16 @@ class NotAuthorized(Exception):
 
 
 class FakeCidp:
-    """boto3 cognito-idp stand-in: in-memory user pool + recorded calls + exception shapes."""
+    """boto3 cognito-idp stand-in: in-memory user pool + recorded calls + exception shapes.
+
+    Models the REAL status machine that broke login (revenue lane): admin_create_user lands the
+    user in FORCE_CHANGE_PASSWORD (where the Hosted UI password flow refuses to sign them in),
+    and only admin_set_user_password(Permanent=True) flips them to CONFIRMED.
+    """
 
     def __init__(self):
         self.calls = []
-        self.users = {}  # username(email) -> {"sub", "attrs", "confirmed"}
+        self.users = {}  # username(email) -> {"sub", "attrs", "status", "password"}
         self._n = 0
         self.exceptions = types.SimpleNamespace(
             UsernameExistsException=UsernameExists,
@@ -45,7 +50,9 @@ class FakeCidp:
             raise UsernameExists(username)
         self._n += 1
         sub = f"sub-{self._n}"
-        self.users[username] = {"sub": sub, "attrs": {}, "confirmed": False}
+        # The REAL post-admin_create_user state — NOT 'UNCONFIRMED' (that's self-signup only).
+        self.users[username] = {"sub": sub, "attrs": {},
+                                "status": "FORCE_CHANGE_PASSWORD", "password": None}
         return {"User": {"Username": username,
                          "Attributes": [{"Name": "sub", "Value": sub},
                                         {"Name": "email", "Value": username}]}}
@@ -54,6 +61,7 @@ class FakeCidp:
         self.calls.append(("admin_get_user", kw))
         u = self._lookup(kw["Username"])
         return {"Username": kw["Username"],
+                "UserStatus": u["status"],
                 "UserAttributes": [{"Name": "sub", "Value": u["sub"]}]}
 
     def admin_update_user_attributes(self, **kw):
@@ -62,12 +70,24 @@ class FakeCidp:
         for attr in kw["UserAttributes"]:
             u["attrs"][attr["Name"]] = attr["Value"]
 
+    def admin_set_user_password(self, **kw):
+        self.calls.append(("admin_set_user_password", kw))
+        u = self._lookup(kw["Username"])
+        u["password"] = kw["Password"]
+        if kw.get("Permanent"):
+            u["status"] = "CONFIRMED"   # the act that actually CONFIRMs an admin-created user
+
     def admin_confirm_sign_up(self, **kw):
         self.calls.append(("admin_confirm_sign_up", kw))
         u = self._lookup(kw["Username"])
-        if u["confirmed"]:
+        if u["status"] == "CONFIRMED":
             raise NotAuthorized("User cannot be confirmed. Current status is CONFIRMED")
-        u["confirmed"] = True
+        if u["status"] == "FORCE_CHANGE_PASSWORD":
+            # The real API refuses admin-created users here — the exact bug this lane fixes.
+            raise NotAuthorized(
+                "User cannot be confirmed. Current status is FORCE_CHANGE_PASSWORD"
+            )
+        u["status"] = "CONFIRMED"
 
 
 def _client(fake=None):
@@ -121,7 +141,8 @@ def test_create_user_suppresses_cognito_email_and_returns_sub():
     assert attrs["email"] == "u@x.com"
     assert attrs["email_verified"] == "false"          # verification is OURS (Resend link)
     assert "custom:tenant_id" not in attrs             # NO tenant at signup — minted at provisioning
-    assert fake.users["u@x.com"]["confirmed"] is False  # user starts unconfirmed
+    # The REAL post-create state: NOT usable for Hosted UI login until confirm() fixes it.
+    assert fake.users["u@x.com"]["status"] == "FORCE_CHANGE_PASSWORD"
 
 
 @pytest.mark.unit
@@ -151,15 +172,57 @@ def test_set_tenant_id_writes_exactly_custom_tenant_id():
     assert fake.users["u@x.com"]["attrs"]["custom:tenant_id"] == "tenant-42"
 
 
-# ---------------- confirm: ordering-VERIFY'd + idempotent ----------------
+# ---------------- confirm: the FORCE_CHANGE_PASSWORD fix + idempotency ----------------
 @pytest.mark.unit
-def test_confirm_calls_admin_confirm_sign_up_and_redelivery_is_noop():
+def test_confirm_admin_created_user_sets_permanent_password_and_confirms():
+    """The login fix: an admin-created (FORCE_CHANGE_PASSWORD) user is CONFIRMed via
+    admin_set_user_password(Permanent=True) — NOT admin_confirm_sign_up (which the real API
+    refuses for admin-created users, leaving them unable to log in via the Hosted UI)."""
     client, fake = _client()
     sub = client.create_unconfirmed_user("u@x.com")
     client.confirm(sub)
-    assert fake.users["u@x.com"]["confirmed"] is True
-    client.confirm(sub)  # already CONFIRMED -> NotAuthorizedException tolerated (idempotent)
-    assert [c[0] for c in fake.calls].count("admin_confirm_sign_up") == 2
+    user = fake.users["u@x.com"]
+    assert user["status"] == "CONFIRMED"               # Hosted UI login now possible
+    name, kw = next(c for c in fake.calls if c[0] == "admin_set_user_password")
+    assert kw["Permanent"] is True
+    assert kw["Username"] == sub
+    pw = kw["Password"]
+    # The generated single-use credential is strong (every Cognito policy class) and DISCARDED.
+    assert len(pw) >= 12
+    assert any(c.isupper() for c in pw) and any(c.islower() for c in pw)
+    assert any(c.isdigit() for c in pw) and any(not c.isalnum() for c in pw)
+    # email_verified flips true (OUR Resend flow verified it) so Hosted UI forgot-password —
+    # the user's real onboarding credential path — can deliver its reset code.
+    assert user["attrs"]["email_verified"] == "true"
+    # The dead-for-admin-created-users API was never called.
+    assert all(c[0] != "admin_confirm_sign_up" for c in fake.calls)
+
+
+@pytest.mark.unit
+def test_confirm_redelivery_never_clobbers_a_user_set_password():
+    client, fake = _client()
+    sub = client.create_unconfirmed_user("u@x.com")
+    client.confirm(sub)
+    first_pw = fake.users["u@x.com"]["password"]
+    # The user has since set their own password via forgot-password.
+    fake.users["u@x.com"]["password"] = "user-chose-this"
+    client.confirm(sub)   # re-delivered webhook / SFN retry — must be a pure no-op
+    assert fake.users["u@x.com"]["password"] == "user-chose-this"
+    assert fake.users["u@x.com"]["status"] == "CONFIRMED"
+    assert [c[0] for c in fake.calls].count("admin_set_user_password") == 1
+    assert first_pw != "user-chose-this"
+
+
+@pytest.mark.unit
+def test_confirm_unconfirmed_self_signup_keeps_legacy_path():
+    # A self-signed-up (UNCONFIRMED) user still goes through admin_confirm_sign_up.
+    client, fake = _client()
+    sub = client.create_unconfirmed_user("u@x.com")
+    fake.users["u@x.com"]["status"] = "UNCONFIRMED"   # simulate a self-signup pool
+    client.confirm(sub)
+    assert fake.users["u@x.com"]["status"] == "CONFIRMED"
+    assert [c[0] for c in fake.calls].count("admin_confirm_sign_up") == 1
+    assert all(c[0] != "admin_set_user_password" for c in fake.calls)
 
 
 @pytest.mark.unit
@@ -168,6 +231,8 @@ def test_confirm_reraises_not_authorized_that_is_not_already_confirmed():
     # only the already-CONFIRMED replay may be swallowed; anything else must surface so the
     # provisioning step fails (and parks/rolls back) instead of silently passing.
     fake = FakeCidp()
+    fake.users["u@x.com"] = {"sub": "sub-1", "attrs": {}, "status": "UNCONFIRMED",
+                             "password": None}
 
     def deny(**kw):
         raise NotAuthorized("Access denied: not authorized to perform AdminConfirmSignUp")
@@ -204,4 +269,4 @@ def test_provisioning_pipeline_runs_through_the_real_client():
     assert res.ok
     user = fake.users["u@x.com"]
     assert user["attrs"]["custom:tenant_id"] == "tenant-a1"  # claim written at provisioning
-    assert user["confirmed"] is True                          # confirmed AFTER the claim was set
+    assert user["status"] == "CONFIRMED"   # confirmed (permanent-password path) AFTER the claim
