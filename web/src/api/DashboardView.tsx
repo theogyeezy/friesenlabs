@@ -38,6 +38,10 @@ export interface DashboardViewProps {
 
 export function DashboardView({ client, viewId = "demo_pipeline" }: DashboardViewProps) {
   const api = client ?? defaultClient();
+  // The selected saved view — seeded from the prop, switched via the views dropdown.
+  const [currentViewId, setCurrentViewId] = useState(viewId);
+  // The tenant's saved views (latest version per view_id) backing the dropdown.
+  const [views, setViews] = useState<Array<{ view_id: string; title: string }>>([]);
   const [spec, setSpec] = useState<Record<string, unknown> | null>(null);
   const [version, setVersion] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
@@ -52,7 +56,7 @@ export function DashboardView({ client, viewId = "demo_pipeline" }: DashboardVie
     setError(null);
     setEmpty(false);
     try {
-      const row = await api.getView(viewId);
+      const row = await api.getView(currentViewId);
       setSpec(row.spec_json);
       setVersion(row.version);
     } catch (e) {
@@ -66,11 +70,34 @@ export function DashboardView({ client, viewId = "demo_pipeline" }: DashboardVie
     } finally {
       setLoading(false);
     }
-  }, [api, viewId]);
+  }, [api, currentViewId]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  // The dropdown's list — degrades silently to an empty list (the selected view
+  // still loads on its own; a list failure must not take the dashboard down).
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const rows = await api.listViews();
+        if (cancelled) return;
+        setViews(
+          rows.map((r) => ({
+            view_id: r.view_id,
+            title: String((r.spec_json as Record<string, unknown>).title ?? r.view_id),
+          })),
+        );
+      } catch {
+        // keep the empty list — the dropdown simply has nothing to offer
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [api, savedNote]);
 
   const save = useCallback(async () => {
     if (!spec) return;
@@ -98,6 +125,32 @@ export function DashboardView({ client, viewId = "demo_pipeline" }: DashboardVie
     >
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 18 }}>
         <strong style={{ fontSize: 14 }}>Saved view</strong>
+        {views.length > 0 && (
+          <select
+            data-testid="views-dropdown"
+            aria-label="Select a saved view"
+            value={currentViewId}
+            onChange={(e) => setCurrentViewId(e.target.value)}
+            style={{
+              padding: "6px 10px",
+              borderRadius: 8,
+              border: "1px solid var(--line, #ccc)",
+              background: "#fff",
+              fontSize: 13,
+              fontFamily: "inherit",
+            }}
+          >
+            {/* Keep the current id selectable even if it isn't in the list (fresh 404 state). */}
+            {!views.some((v) => v.view_id === currentViewId) && (
+              <option value={currentViewId}>{currentViewId}</option>
+            )}
+            {views.map((v) => (
+              <option key={v.view_id} value={v.view_id}>
+                {v.title}
+              </option>
+            ))}
+          </select>
+        )}
         {version !== null && (
           <span data-testid="view-version" style={{ fontSize: 12, color: "var(--ink-3, #8a8278)" }}>
             version {version}

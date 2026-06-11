@@ -65,6 +65,10 @@ class ApiDeps:
     # the dial and the gate read/write ONE persisted per-tenant level.
     autonomy_dial: Any | None = None
     view_patcher: Callable[[dict, str], dict] | None = None  # NL refine: (spec, instruction) -> spec
+    # Balto (conv/views.py ViewSynthesizer): NL view creation from chat — saved-view coverage
+    # check, Cube member-catalog gate, build_view generation, ephemeral drafts. None -> the
+    # /views/synthesize + draft routes answer an honest 503 (never a fake view).
+    view_synthesizer: Any | None = None
     signup: Any = None                                  # optional SignupDeps (mounts public routes)
     # /integrations deps (TODO INT/P2). Env-built by default so api/asgi.py needs no change:
     # with no env set every piece is the honest unconfigured stub (credentials/sync 503,
@@ -124,6 +128,11 @@ class SaveViewBody(BaseModel):
 
 class RefineBody(BaseModel):
     instruction: str
+
+
+class SynthesizeViewBody(BaseModel):
+    # The NL ask Balto synthesizes a view for (echoed back by the chat turn's view_request).
+    request: str
 
 
 class ChatBody(BaseModel):
@@ -277,6 +286,42 @@ def create_app(deps: ApiDeps) -> FastAPI:
                                               deps.view_patcher, created_by=claims.sub)
         except Exception as e:  # validation error on the patched spec -> 422
             raise HTTPException(status_code=422, detail=str(e))
+
+    @app.post("/views/synthesize")
+    def synthesize_view(body: SynthesizeViewBody, claims: TenantClaims = Depends(current_tenant)):
+        """Balto: synthesize a NEW tenant view from an NL ask (conv/views.py ViewSynthesizer).
+
+        Tenant from the VERIFIED claim only. The result is status-keyed and honest:
+        `exists` (a saved view already covers it), `data_not_found` (no Cube member can answer
+        it — never hallucinated), `invalid` (generation failed validation), or `ok` with the
+        validated spec + an ephemeral draft_id. Nothing is persisted here.
+        """
+        if deps.view_synthesizer is None:
+            raise HTTPException(status_code=503, detail="view synthesis not configured")
+        result = deps.view_synthesizer.synthesize(claims.tenant_id, body.request)
+        if result.get("status") == "unavailable":
+            raise HTTPException(status_code=503,
+                                detail=result.get("error") or "view synthesis unavailable")
+        return result
+
+    @app.post("/views/drafts/{draft_id}/save")
+    def save_view_draft(draft_id: str, claims: TenantClaims = Depends(current_tenant)):
+        """Persist a Balto draft via the EXISTING saved-view store (the explicit user save).
+
+        Drafts are tenant-keyed: another tenant's draft id 404s here, never resolves. The spec
+        is re-validated by SavedViews.save; discarding a draft is simply never calling this.
+        """
+        if deps.view_synthesizer is None:
+            raise HTTPException(status_code=503, detail="view synthesis not configured")
+        try:
+            row = deps.view_synthesizer.save_draft(
+                claims.tenant_id, draft_id, created_by=claims.sub,
+            )
+        except Exception as e:  # validation error on the drafted spec -> 422
+            raise HTTPException(status_code=422, detail=str(e))
+        if row is None:
+            raise HTTPException(status_code=404, detail="no such draft")
+        return row
 
     @app.post("/chat")
     def chat(body: ChatBody, claims: TenantClaims = Depends(current_tenant)):
