@@ -7,6 +7,8 @@ From a `/fleet` read-wave (10 parallel assessors + verifiers over the whole feat
 Balto view-creation, auth, billing portal, revenue backend, accountability, RLS) is complete;
 gaps cluster in landing-legal, web-not-showing-live-data, owner-gated flips, and missing CRUD.
 
+**Gaps re-verified (2026-06-11):** 23/24 previously rate-limited gaps confirmed real by independent skeptics (6 high, 16 medium, 1 low); 1 refuted (lead-capture/Book-a-call/Email-us confirmations ARE wired correctly — not a gap). The 6 high-severity confirmed: web→Cube live-data resolution, Balto view renders no rows, Integrations credential-storage off, CSV-import has no real UI, sync-connectors don't land rows in CRM tables, playbooks never execute on triggers.
+
 ### P0 — before real paying customers
 - [ ] **Landing legal/honesty** (HIGH legal risk): remove/relabel the fake **501(c)(3) + placeholder EIN `00-0000000` + tax-deductible donation flow** (charitable-solicitation fraud risk), **fabricated testimonials labeled "Real owners"** + invented metrics (FTC), fabricated research papers, "LIVE" demos shown as the real product, dead Foundation link, fake "Now on iPhone / App Store" claim, PBC/Foundation corporate claims. Ship real **Terms + Privacy** (#119/#121).
 - [ ] **Seed the workspace-key pool** (owner: Anthropic Console pre-mint → `scripts/ops/load_workspace_keys.py`) — real provisioning parks `pool_empty` until then.
@@ -170,7 +172,7 @@ gaps cluster in landing-legal, web-not-showing-live-data, owner-gated flips, and
   - Confirm the actual legal entity and only state what is true; otherwise reword the PBC/Foundation narrative to aspirational and remove the PBC copyright assertion.
 - [ ] **Foundation.html link target — missing file (dead link)** — `not-wired`
   - Either build a real Foundation page/route or remove the Foundation.html links until the page (and entity) exist.
-- [ ] **Lead-capture / Book-a-call / Email-us / Donate confirmations honesty** — `partial`
+- [x] **Lead-capture / Book-a-call / Email-us / Donate confirmations honesty** — `partial`  _(re-verified: NOT a gap — handlers call real endpoints)_
   - Verify Book/Email modal confirm()/send() actually await the POST /public/leads (or mailto fallback) and only show success on a real response, not optimistically.
 
 
