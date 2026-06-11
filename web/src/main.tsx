@@ -56,6 +56,12 @@ const ReportsView = React.lazy(() => import("./api/ReportsView"));
 const DashboardsView = React.lazy(() => import("./api/DashboardsView"));
 const KnowledgeView = React.lazy(() => import("./api/KnowledgeView"));
 const SignupFlow = React.lazy(() => import("./signup/SignupFlow"));
+// Public support surface — the contact/help page (?view=help) and the public
+// status page (?view=status). Both are pre-auth by design (a confused trial
+// user or a prospect must reach them without a session) and code-split off the
+// landing chunk.
+const HelpPage = React.lazy(() => import("./support/HelpForm"));
+const StatusPage = React.lazy(() => import("./support/StatusPage"));
 
 // Demo/wiring seams reachable via ?view=. The normal SPA shell renders otherwise.
 const search = window.location.search;
@@ -172,6 +178,13 @@ function Root() {
     // Pre-auth by design: the signup funnel runs before any tenant or token exists.
     case "signup":
       return <React.Suspense fallback={null}><SignupFlow /></React.Suspense>;
+    // Public, ungated by design: a confused trial user or a prospect must reach
+    // help/status without a session. No API client beyond the public
+    // /public/support + /healthz contracts; never mounts a gated surface.
+    case "help":
+      return <React.Suspense fallback={null}><HelpPage /></React.Suspense>;
+    case "status":
+      return <React.Suspense fallback={null}><StatusPage /></React.Suspense>;
     // API-wired surfaces — gated like the default shell, or a real build would
     // mount them signed-out and 401 on every call. seam: a deep link gets the
     // focused SignInGate when signed out, never the marketing page.
