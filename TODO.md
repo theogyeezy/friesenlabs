@@ -9,19 +9,29 @@ gaps cluster in landing-legal, web-not-showing-live-data, owner-gated flips, and
 
 **Gaps re-verified (2026-06-11):** 23/24 previously rate-limited gaps confirmed real by independent skeptics (6 high, 16 medium, 1 low); 1 refuted (lead-capture/Book-a-call/Email-us confirmations ARE wired correctly — not a gap). The 6 high-severity confirmed: web→Cube live-data resolution, Balto view renders no rows, Integrations credential-storage off, CSV-import has no real UI, sync-connectors don't land rows in CRM tables, playbooks never execute on triggers.
 
+**Backlog build waves shipped (2026-06-11, `/fleet`, PRs #222–#226, all CI-green + adversarially verified):**
+- **Wave 1 (#222):** abuse controls wired into `prod_deps`/`SignupDeps`; Cube data endpoint (`POST /views/{id}/data`); CRM structured sink; Cortex `run_model`→`PgPredictionLog` prediction logging; status-page rollup fix.
+- **Wave 2 (#223):** web→Cube live-data loader (kills "No data yet" in dashboards/reports/Balto); `PlaybookRunner` (execution engine); `GET /account/export` (GDPR egress).
+- **Wave 3 (#224):** NL view-refine (`view_patcher` → `POST /views/{id}/refine`); connectors VERIFY hardening (HubSpot/GHL/Stripe, code-level); Cognito first-login password fix.
+- **CRUD (#225):** create/edit contacts & deals from the directory/board; fixed a latent silent-`contact_id`-drop data-loss bug in `POST /deals`.
+- **Wave 4 (#226):** `POST /studio/playbooks/{id}/run` (manual playbook trigger, draft-only through Greenlight); `POST /account/delete` (GDPR teardown, confirm-gated, append-only-aware, inert-by-default → honest 503 until a deliberate asgi wiring); `GET /billing/invoices` (real Stripe invoices).
+
+What remains is **owner-gated** (infra flips/seeding — see P0/P1 below), **web-UI screens** (Cortex screen, CSV upload UI, settings surface, invoice display — sequentially coupled through `web/src/api/client.ts`, best done directly not fanned out), and the **landing-legal** work (deliberately deferred).
+
 ### P0 — before real paying customers
 - [ ] **Landing legal/honesty** (HIGH legal risk): remove/relabel the fake **501(c)(3) + placeholder EIN `00-0000000` + tax-deductible donation flow** (charitable-solicitation fraud risk), **fabricated testimonials labeled "Real owners"** + invented metrics (FTC), fabricated research papers, "LIVE" demos shown as the real product, dead Foundation link, fake "Now on iPhone / App Store" claim, PBC/Foundation corporate claims. Ship real **Terms + Privacy** (#119/#121).
 - [ ] **Seed the workspace-key pool** (owner: Anthropic Console pre-mint → `scripts/ops/load_workspace_keys.py`) — real provisioning parks `pool_empty` until then.
-- [ ] **Wire signup abuse controls into `SignupDeps`** (`api/prod_deps.py` omits `disposable=/velocity=/captcha=/session_tokens=` — written but dead in prod).
+- [x] **Wire signup abuse controls into `SignupDeps`** — `api/prod_deps.py` now passes `disposable=/velocity=/captcha=/session_tokens=` (Wave 1, #222).
 
 ### P1 — make built features actually usable
-- [ ] **Web→Cube live data endpoint** (`POST /views/{id}/data` or `/cube/load`) + wire dashboards/Cortex/Reports UI to it — today they render "No data yet" because no web path resolves a view-spec into rows.
-- [ ] **Seed the knowledge corpus** → live `/chat` citations appear (today empty).
-- [ ] **Flip owner-gated registries when ready:** Cortex S3 (`cortex_s3_registry=false`) + attach the retrain EventBridge target; enable ingest schedule (`ingest_tenants` + flip); `INTEGRATIONS_REAL_SECRETS`.
-- [ ] **Contacts/deals create-edit UI** (today move-stage only); **account data-export + deletion** (GDPR/offboarding — neither exists).
+- [x] **Web→Cube live data endpoint** (`POST /views/{id}/data`) + web loader wiring dashboards/reports/Balto to it — Waves 1+2 (#222, #223). _(Live-rows still need the prod Cube env flag flipped — owner-gated, below.)_
+- [ ] **Seed the knowledge corpus** → live `/chat` citations appear (today empty). _(owner-gated: run `seed_knowledge.py` as a one-off ECS task with `INGEST_REAL_STORES=1`.)_
+- [ ] **Flip owner-gated registries when ready:** Cortex S3 (`cortex_s3_registry=false`) + attach the retrain EventBridge target; enable ingest schedule (`ingest_tenants` + flip); `INTEGRATIONS_REAL_SECRETS`; `api_cube_env` for live Cube rows.
+- [x] **Contacts/deals create-edit** (#225) + **`GET /account/export`** (Wave 2) + **`POST /account/delete`** (Wave 4, inert-by-default → asgi must wire a live `PgAccountDeleter` to enable the destructive path). _(Web entry points for export/delete still pending — web-UI wave.)_
 
 ### P2 — depth
-- [ ] Wire `view_patcher` (NL view-refine, 501 today); **playbook execution** (Agent Studio CRUD+activate work but nothing runs them on triggers); integrations live-sync VERIFY pass + land structured rows in CRM tables; **status page real probes** (permanently "degraded" today); Agent marketplace real-mode (placeholder).
+- [x] `view_patcher` NL view-refine (Wave 3, #224); **manual playbook execution** `POST /studio/playbooks/{id}/run` (Wave 4 — runs activated playbooks draft-only; **scheduled/event triggers still need the owner-gated EventBridge legs**); connectors VERIFY pass at the code level (Wave 3 — a live per-connector VERIFY against real APIs is still owner-gated).
+- [ ] Land structured rows in the CRM tables (sync/CSV currently land in `documents` only — `PgCrmStructuredSink` exists; ref→uuid resolution + wiring it onto the ingest/API task is owner-gated); **status page real per-subsystem probes**; **Agent marketplace** real-mode; **Cortex web UI** + **CSV upload UI** + **settings surface** + **invoice display** (web-UI wave).
 
 ### Full per-feature breakdown (all incomplete features, by area)
 

@@ -805,3 +805,23 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
 - **Still owner-gated:** seed the workspace-key pool (Anthropic Console) for real paid provisioning;
   (Cortex) live S3 registry + a real retrain + seeded knowledge corpus. Legal/Terms/Privacy pages
   + placeholder-501(c)(3) landing copy still deferred (#119/#121).
+
+### Site-completeness backlog build — `/fleet` waves (2026-06-11)
+After a 10-assessor site-completeness audit (78 features → `TODO.md`), the buildable backlog (excluding
+landing-legal + owner-gated infra flips) ran as serial `/fleet` build waves — each: file-disjoint
+tiered builders in isolated worktrees → 3-haiku refute-by-default panel → boss squash-merge → CI gate.
+- **Wave 1 (#222):** abuse controls→prod_deps; Cube data endpoint (`POST /views/{id}/data`); CRM
+  structured sink; Cortex prediction logging; status rollup fix. **3 confirmed, 0 rejected.**
+- **Wave 2 (#223):** web→Cube live-data loader; `PlaybookRunner`; `GET /account/export`. **3/0.**
+- **Wave 3 (#224):** `view_patcher` NL refine; connectors VERIFY hardening; Cognito password fix.
+  **3 confirmed, 1 rejected** (contacts-deals-crud — skeptic caught a REAL silent-`contact_id`-drop
+  data-loss bug in `POST /deals` + a misleading error; boss-fixed → #225).
+- **CRUD (#225):** create/edit contacts & deals + the `contact_id` boss-fix. _(The fix rippled into a
+  SQL-pin unit test + a "contacts read-only → 405" integration guard — both caught by CI, updated.)_
+- **Wave 4 (#226):** `POST /studio/playbooks/{id}/run` (manual playbook trigger, draft-only);
+  `POST /account/delete` (GDPR teardown, confirm-gated, append-only-aware, inert-by-default);
+  `GET /billing/invoices`. **3 confirmed** (1 was a verifier FALSE-NEGATIVE — diffed the wrong git
+  base inside the worktree and claimed "no code"; boss hand-verified: 11 tests pass, endpoint mounted).
+- **Metrics across waves:** 12 build tasks, 11 merged, 1 genuine rejection (real bug, then fixed), 1
+  false-rejection (recovered). Main stayed green throughout; every feature CI-gated + adversarially
+  reviewed. **Remaining work is owner-gated, web-UI (client.ts-coupled), or landing-legal.**
