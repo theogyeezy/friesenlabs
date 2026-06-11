@@ -7,7 +7,9 @@ all by injection.
 
 Offline-safe: importing this module needs no AWS/Anthropic. The runtime defaults to FakeRuntime via
 `agents.runtime.get_runtime`; every other client (rag, crm, cube, greenlight, synthesizer, analytics)
-is injected. `today` is injected for deterministic date math.
+is injected. `today` is injected for deterministic date math — a plain `date` for fixed-clock tests,
+or a zero-arg callable resolved FRESH PER TURN (the prod /chat path: a Conversation is cached across
+requests per tenant, so a frozen construction-time date would silently rot date math).
 
 A turn returns a structured result:
   {answer, citations, pending_approvals, slots, delegations, session_id, tenant_id}
@@ -18,33 +20,35 @@ Routing (TODO AI/P1 resolved — coordinator-driven on real runtimes):
       * an *action* utterance (matched to a side-effecting Phase 4 tool) -> the tool is invoked,
         which — by the Phase 4 base-class guarantee — routes a proposal to Greenlight WITHOUT
         performing the side effect, surfacing a pending approval.
-  - Any real runtime (ManagedAgentsRuntime): tool selection comes from the COORDINATOR — the
-    `send_message` event digest carries the agent.custom_tool_use events + delegations.
-    READ-ONLY (Policy.AUTO) tools are executed CLIENT-SIDE inside the runtime's send_message
-    loop (docs/decisions/custom-tool-execution-path.md, ratified #123 — the Conversation binds
-    its tenant-scoped ToolContext builder onto the runtime's `tool_context_factory` seam, and
-    results feed back as user.custom_tool_result). SIDE-EFFECTING (ALWAYS_ASK) tools are
-    likewise ROUTED to Greenlight inside that loop when the bound context carries a greenlight
-    client (the session gets an immediate queued_for_approval reply, per the ratified brief) —
-    they arrive here as already-routed `tool_name` entries and pass through untouched. A
-    side-effecting `tool` entry that reaches the digest UN-routed (no greenlight in the bound
-    context, or a stub runtime without the seam) is resolved through the TRUSTED registry and
-    invoked here (=> Greenlight proposal, draft-only). Read-only/unknown events that reach the
-    digest un-executed (no clients configured, unresolvable round, round bound) are surfaced
-    untouched — an unknown name is never default-allowed. Knowledge-shaped turns (nothing
-    queued for approval) additionally run the SAME grounded-citation RAG path as the facade
-    (`_grounded_answer`), so live chat answers carry citations whose source_refs exist in the
-    tenant-scoped retrieved set — the citation invariant holds on BOTH runtimes.
+  - Any real runtime: tool selection comes from the COORDINATOR — the `send_message` event
+    digest carries the answer, delegations, served tool calls and surfaced pending events.
+    THE CONV LAYER EXECUTES NO REGISTRY TOOLS (docs/decisions/custom-tool-execution-path.md:
+    ONE executor owns tool execution). On ManagedAgentsRuntime that executor is the deployed
+    EnvironmentWorker (read-only tools auto-run SERVER-SIDE in the VPC; side-effecting tools
+    land a Greenlight proposal via the Phase 4 base class IN THE WORKER, draft-only). On the
+    HIPAA fallback (SelfHostedToolUseRuntime) the runtime's own tool-use loop is that executor,
+    fed by the tenant-scoped ToolContext builder this Conversation binds onto its
+    `tool_context_factory` seam. Either way the digest is handled identically here:
+      * `tool_results` (served calls) are recorded to analytics — never re-run;
+      * already-routed `tool_name` entries (a gated call's Greenlight proposal) pass through
+        untouched — the proposal is never enqueued twice; their approvals hit analytics;
+      * anything that reaches `pending_approvals` UN-served (worker down, unknown tool) is
+        surfaced untouched — an unknown name is never default-allowed and NOTHING is resolved
+        through the registry or invoked in this process.
+    Knowledge-shaped turns (nothing queued for approval) additionally run the SAME
+    grounded-citation RAG path as the facade (`_grounded_answer`), so live chat answers carry
+    citations whose source_refs exist in the tenant-scoped retrieved set — the citation
+    invariant holds on BOTH runtimes.
 """
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Any
+from typing import Any, Callable
 
 from agents.runtime import FakeRuntime, Session, get_runtime
-from agents.tools.base import Policy, ToolContext
+from agents.tools.base import ToolContext
 from agents.tools.sideeffecting import IssueQuote, SendEmail, UpdateDeal
 
 from .analytics import Analytics, Event, EventType
@@ -103,7 +107,7 @@ class Conversation:
         self,
         *,
         tenant_id: str,
-        today: date,
+        today: date | Callable[[], date],
         runtime: Any = None,
         coordinator_id: str | None = None,
         environment_id: str | None = None,
@@ -121,7 +125,10 @@ class Conversation:
         agent: str | None = "uplift-orchestrator",
     ) -> None:
         self.tenant_id = tenant_id
-        self.today = today
+        # `today` may be a fixed date (deterministic tests) or a zero-arg callable resolved
+        # FRESH PER ACCESS (prod: `date.today` — a cached Conversation outlives the day it was
+        # built on, so date math must never freeze at construction time).
+        self._today = today
         # Default to the offline FakeRuntime — import + construction never touch the network.
         self.runtime = runtime or get_runtime({"runtime": "fake"})
         self.rag = rag
@@ -161,19 +168,29 @@ class Conversation:
             environment_id=environment_id,
         )
 
-        # CLIENT-SIDE AUTO-TOOL EXECUTION (custom-tool-execution-path decision, ratified #123):
-        # when the runtime exposes the `tool_context_factory` seam (ManagedAgentsRuntime) and the
-        # caller injected nothing, bind this conversation's tenant-scoped context builder so the
-        # coordinator's read-only tool calls execute in-process during send_message and feed back
-        # as user.custom_tool_result. A factory injected at runtime construction always wins.
-        # FakeRuntime / stub runtimes don't carry the seam — nothing changes for them.
+        # THE HIPAA-FALLBACK EXECUTION SEAM ONLY: SelfHostedToolUseRuntime (a direct Messages
+        # tool-use loop — no Managed Agents, no worker) carries a `tool_context_factory` seam and
+        # IS its own single tool executor; when the caller injected nothing, bind this
+        # conversation's tenant-scoped context builder so that loop can run tenant-bound. A
+        # factory injected at runtime construction always wins. ManagedAgentsRuntime does NOT
+        # carry the seam (the deployed EnvironmentWorker is the single executor there —
+        # docs/decisions/custom-tool-execution-path.md), and FakeRuntime/stubs don't either —
+        # nothing binds for them.
         if getattr(self.runtime, "tool_context_factory", _SEAM_ABSENT) is None:
             self.runtime.tool_context_factory = self._session_tool_ctx
 
     # ------------------------------------------------------------------ helpers
+    @property
+    def today(self) -> date:
+        """The CURRENT date for this turn: a callable provider is resolved fresh per access
+        (frozen-'today' fix — cached Conversations outlive their construction day); a plain
+        date passes through unchanged (deterministic tests)."""
+        provider = self._today
+        return provider() if callable(provider) else provider
+
     def _session_tool_ctx(self, session: Session) -> ToolContext:
-        """ToolContext for the runtime's client-side AUTO-tool execution. THE TRUST RULE: the
-        tenant comes from the SESSION metadata only (set from the verified claim at
+        """ToolContext for the self-hosted (HIPAA-fallback) runtime's tool-use loop. THE TRUST
+        RULE: the tenant comes from the SESSION metadata only (set from the verified claim at
         create_session) — never re-read from conversation/request state. Fresh extra dict per
         call — tool invocations must never share mutable context state."""
         extra: dict = {}
@@ -268,55 +285,46 @@ class Conversation:
         return self._handle_knowledge(message, slots, ambiguous)
 
     def _handle_coordinator(self, message, slots, ambiguous, action_kwargs) -> Turn:
-        """Real-runtime turn: tool selection comes from the COORDINATOR, never a local regex.
+        """Real-runtime turn: tool selection comes from the COORDINATOR, never a local regex —
+        and tool EXECUTION belongs to the runtime's single executor, never to this layer
+        (docs/decisions/custom-tool-execution-path.md: the deployed EnvironmentWorker on
+        ManagedAgentsRuntime; the runtime's own loop on the self-hosted HIPAA fallback).
 
-        `send_message` (the MA stream-first/drain-to-idle adapter) returns the event digest:
-        answer text, delegations (session.thread_created), and agent.custom_tool_use events
-        surfaced as pending entries `{status, tool, input, custom_tool_use_id}`. Routing:
+        `send_message` returns the event digest: answer text, delegations
+        (session.thread_created), `tool_results` (calls the executor served this turn) and
+        `pending_approvals` (already-routed `tool_name` entries + any call that reached the
+        digest UN-served). Handling:
 
-        - a SIDE-EFFECTING tool the runtime ALREADY ROUTED to Greenlight (ratified #123: gated
-          calls get an immediate queued_for_approval reply inside send_message when the bound
-          context carries greenlight) arrives as a `tool_name` entry — passed through untouched,
-          the proposal is never enqueued twice (`action_kwargs` top-ups apply only to the
-          un-routed path below);
-        - a side-effecting `tool` entry that reached the digest UN-routed resolves through the
-          TRUSTED registry and is invoked here — the Phase 4 base class routes a proposal to
-          Greenlight WITHOUT performing the side effect (draft-only stays guaranteed);
-        - READ-ONLY (AUTO) tools were already executed CLIENT-SIDE inside the runtime's
-          send_message loop (ratified #123) — resolved calls arrive in the digest's
-          `tool_results` (recorded to analytics here, never re-run); any read-only event that
-          reaches `pending_approvals` un-executed passes through untouched;
-        - an UNKNOWN tool name is never default-allowed: the event is surfaced as-is, nothing
-          resolves or executes.
+        - `tool_results` are recorded to analytics — the work already happened server-side,
+          NOTHING is re-run here;
+        - an already-routed `tool_name` entry (a gated call's Greenlight proposal, built by
+          `Tool.invoke` in the executor — draft-only) passes through untouched; its approval is
+          recorded to analytics. The proposal is never enqueued twice;
+        - every other pending entry (read-only/side-effecting/unknown `tool` events that nothing
+          served — worker down, unknown name) is surfaced UNTOUCHED: this layer never resolves a
+          name through the registry, never invokes, never default-allows.
+
+        `action_kwargs` is facade-only (FakeRuntime regex path): with one server-side executor
+        there is no in-process invocation to top up, so explicit caller args are ignored here.
         """
-        from agents.tools.registry import get_tool  # noqa: PLC0415 — trusted server-side registry
+        del action_kwargs  # facade-only (see docstring) — nothing is invoked in this layer
 
         resp = self.runtime.send_message(self.session, message)
 
-        # Client-side executions the runtime already performed this turn (AUTO tools only) —
-        # recorded for the trace; the results were fed back into the session, nothing re-runs.
+        # Executor-served calls this turn (worker / self-hosted loop) — recorded for the trace;
+        # the results were fed back into the session by the executor, nothing re-runs.
         for tr in resp.get("tool_results") or []:
             self._record(EventType.TOOL_CALL, {"tool": tr.get("tool"), "status": tr.get("status")})
 
         pending: list[dict] = []
         for event in resp.get("pending_approvals") or []:
-            name = event.get("tool") if isinstance(event, dict) else None
-            tool_cls = get_tool(name) if name else None
-            if tool_cls is None or tool_cls.policy is not Policy.ALWAYS_ASK:
-                pending.append(event)  # read-only/unknown: surfaced, never executed here
-                continue
-            kwargs = dict(event.get("input") or {})
-            kwargs.update(action_kwargs)  # explicit caller args win (parity with the facade)
-            out = tool_cls().invoke(self._tool_ctx(), **kwargs)
-            self._record(EventType.TOOL_CALL, {"tool": name, "status": out.get("status")})
-            if out.get("status") == "pending_approval":
-                approval = out.get("approval")
-                if approval is not None:
-                    pending.append(approval)
-                    self._record(EventType.APPROVAL, {"approval_id": approval.get("id"), "action": name})
-                else:
-                    # Greenlight unconfigured — still surface the proposal; nothing silently runs.
-                    pending.append({"status": "pending", "proposal": out.get("proposal")})
+            pending.append(event)  # surfaced verbatim — served or not, nothing executes here
+            if isinstance(event, dict) and event.get("tool_name"):
+                approval = event.get("approval")
+                if isinstance(approval, dict):
+                    self._record(EventType.APPROVAL, {
+                        "approval_id": approval.get("id"), "action": event.get("tool_name"),
+                    })
 
         answer = resp.get("answer") or ""
         citations: list[dict] = []

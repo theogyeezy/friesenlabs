@@ -26,7 +26,12 @@ from typing import Any, Protocol
 # --------------------------------------------------------------------------- clients (injected)
 class CrmLookup(Protocol):
     """Tenant-bound CRM read client. Implementations resolve a human name to entity rows already
-    scoped to the tenant (RLS). They MUST NOT accept cross-tenant input."""
+    scoped to the tenant (RLS). They MUST NOT accept cross-tenant input.
+
+    The prod implementation is `api.pg_clients.TenantBoundCrm` (the same per-request adapter
+    `ToolContext.db` rides): ILIKE PREFIX search ('Acme' matches 'Acme Corp'), capped at 10
+    candidates, every query inside a per-op `SET LOCAL app.current_tenant` transaction. Row
+    shapes: companies -> {id, name, domain}; contacts -> {id, name, email}."""
 
     def find_companies(self, tenant_id: str, name: str) -> list[dict]: ...
     def find_contacts(self, tenant_id: str, name: str) -> list[dict]: ...
