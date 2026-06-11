@@ -140,6 +140,17 @@ class PgAccountStore(_PgBase):
             row = cur.fetchone()
         return _row_to_account(dict(row)) if row else None
 
+    def get_by_stripe_customer_id(self, customer_id: str) -> Account | None:
+        # The `invoice.paid` fallback (signup/payment.py _resolve_account): invoices carry no
+        # client_reference_id, so the mapping start_checkout persisted (meta.stripe_customer_id)
+        # is the last-resort account resolver. The value compared is the one WE wrote from
+        # Stripe's create-customer response — never client input.
+        with self._tx() as cur:
+            cur.execute("SELECT * FROM accounts WHERE meta->>'stripe_customer_id' = %s",
+                        (str(customer_id),))
+            row = cur.fetchone()
+        return _row_to_account(dict(row)) if row else None
+
     def insert(self, acct: Account) -> None:
         # ON CONFLICT (id) DO NOTHING: AccountService.create is idempotent by account_id; a raced
         # re-submission must not raise. A raced DUPLICATE EMAIL still surfaces as the unique-

@@ -36,6 +36,12 @@ from api.workflows_routes import WorkflowsDeps
 logger = logging.getLogger(__name__)
 
 
+def _build_public_deps():
+    """Lazy default for ApiDeps.public (import api.public_routes only when constructed)."""
+    from api.public_routes import build_public_deps  # noqa: PLC0415 — avoid an import cycle
+    return build_public_deps()
+
+
 @dataclass
 class ApiDeps:
     verifier: JwtVerifier
@@ -81,6 +87,11 @@ class ApiDeps:
     # pool; api/asgi.py is the ONLY real wiring (the SAME PgRagClient instance the executor/chat
     # RAG tool rides). Pass None to skip mounting the routes entirely.
     knowledge: KnowledgeDeps | None = field(default_factory=KnowledgeDeps)
+    # /public/leads deps (unauthenticated lead capture). Env-built by default so api/asgi.py
+    # needs no change: the real PgLeadStore is selected ONLY under SIGNUP_REAL_DEPS + the
+    # crm_app DSN (api/public_routes.build_public_deps); otherwise the route answers an honest
+    # 503 after validation. Pass None to skip mounting the route entirely.
+    public: Any | None = field(default_factory=lambda: _build_public_deps())
 
 
 # --- request bodies (note: NONE carry tenant_id — the trust rule forbids it) ---
@@ -332,5 +343,11 @@ def create_app(deps: ApiDeps) -> FastAPI:
     if deps.signup is not None:
         from api.signup_routes import mount_signup
         mount_signup(app, deps.signup)
+
+    # Public, unauthenticated lead capture (POST /public/leads) — validated, 1KB-capped,
+    # per-IP rate-limited; the store is honest-503 until the prod gates select PgLeadStore.
+    if deps.public is not None:
+        from api.public_routes import mount_public
+        mount_public(app, deps.public)
 
     return app
