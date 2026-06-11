@@ -159,40 +159,65 @@ export async function fetchStatus(
       state: "operational",
       note: "Sign-in, chat, and the dashboard are responding.",
     });
-  } else {
-    let apiState: ProbeState = "unknown";
-    try {
-      const res = await fetchImpl(`${apiBaseURL()}/healthz`, { method: "GET" });
-      apiState = res.ok ? "operational" : "down";
-    } catch {
-      // Unreachable probe: honest "unknown", never a fabricated state.
-      apiState = "unknown";
-    }
     components.push({
-      id: "api",
-      label: "Application & API",
-      state: apiState,
-      note:
-        apiState === "operational"
-          ? "Sign-in, chat, and the dashboard are responding."
-          : apiState === "down"
-            ? "The API health check is failing. We're on it."
-            : "We couldn't reach the health check just now.",
+      id: "subsystems",
+      label: "Agent, data & ingest planes",
+      state: "operational",
+      note: "All subsystems responding.",
     });
+    return { overall: "operational", components, checkedAt };
   }
 
-  // The platform exposes a single overall liveness probe today (GET /healthz).
-  // As component-level readiness lands (the agent plane, data plane, ingest),
-  // infra can surface them through this same shape — see the PR notes
-  // (STATUS_COMPONENTS). Until then we show the honest note below as a
-  // non-probed informational row. The rollupState function correctly ignores
-  // unknown rows when at least one real probe is operational, so this row
-  // does NOT force the overall status to "degraded".
+  // Real mode: read the rich per-subsystem feed (GET /public/status). The API
+  // aggregates an "api" component (always operational — it answered) plus the
+  // agent/data/ingest planes from injected probes; unknown subsystems never drag
+  // the rollup below operational (the server enforces that, and rollupState here
+  // mirrors it). If /public/status is unreachable or malformed, fall back to the
+  // bare /healthz liveness so the page still shows an honest signal.
+  try {
+    const res = await fetchImpl(`${apiBaseURL()}/public/status`, { method: "GET" });
+    if (res.ok) {
+      const body = (await res.json()) as {
+        status?: ProbeState;
+        checked_at?: string;
+        components?: Array<{ key: string; label: string; state: ProbeState; detail?: string | null }>;
+      };
+      const mapped: ComponentStatus[] = (body.components ?? []).map((c) => ({
+        id: c.key,
+        label: c.label,
+        state: c.state,
+        note: c.detail ?? defaultNoteFor(c.key, c.state),
+      }));
+      if (mapped.length > 0) {
+        return {
+          overall: body.status ?? rollupState(mapped.map((c) => c.state)),
+          components: mapped,
+          checkedAt: body.checked_at ?? checkedAt,
+        };
+      }
+    }
+  } catch {
+    // Unreachable/malformed — fall through to the /healthz liveness below.
+  }
+
+  // Fallback: the bare overall liveness probe (older API image without /public/status).
+  let apiState: ProbeState = "unknown";
+  try {
+    const res = await fetchImpl(`${apiBaseURL()}/healthz`, { method: "GET" });
+    apiState = res.ok ? "operational" : "down";
+  } catch {
+    apiState = "unknown";
+  }
   components.push({
-    id: "subsystems",
-    label: "Agent, data & ingest planes",
-    state: "unknown",
-    note: "Per-component health is not individually probed yet; it follows the API status above.",
+    id: "api",
+    label: "Application & API",
+    state: apiState,
+    note:
+      apiState === "operational"
+        ? "Sign-in, chat, and the dashboard are responding."
+        : apiState === "down"
+          ? "The API health check is failing. We're on it."
+          : "We couldn't reach the health check just now.",
   });
 
   return {
@@ -200,4 +225,14 @@ export async function fetchStatus(
     components,
     checkedAt,
   };
+}
+
+/** Honest default note when the server gives no detail for a component. */
+function defaultNoteFor(key: string, state: ProbeState): string {
+  if (state === "operational") return "Responding normally.";
+  if (state === "degraded") return "Degraded — some requests may be slow or failing.";
+  if (state === "down") return "Not responding. We're on it.";
+  return key === "api"
+    ? "We couldn't reach the health check just now."
+    : "Not individually reporting on this deployment.";
 }
