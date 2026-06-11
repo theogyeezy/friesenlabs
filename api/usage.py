@@ -83,9 +83,16 @@ class PgUsageStore:
     so a concurrent bump never loses an increment.
     """
 
-    def __init__(self, dsn: str | None = None, *, conn_factory=None):
-        from api.pg_clients import _PgTenantClient  # noqa: PLC0415 — shared pool plumbing
-        self._client = _PgTenantClient(dsn, conn_factory=conn_factory)
+    def __init__(self, dsn: str | None = None, *, conn_factory=None, client=None):
+        # A shared `_PgTenantClient` (one pool reused across the usage stores) may be passed as
+        # `client` to avoid opening a fresh pool per store — important when several Pg-backed
+        # stores are built in one process (the api task / test app would otherwise exhaust the
+        # connection budget). Otherwise build our own from dsn/conn_factory.
+        if client is not None:
+            self._client = client
+        else:
+            from api.pg_clients import _PgTenantClient  # noqa: PLC0415 — shared pool plumbing
+            self._client = _PgTenantClient(dsn, conn_factory=conn_factory)
 
     def bump(self, tenant_id: str, metric: str, *, amount: int = 1) -> int:
         from api.pg_clients import _dict_rows  # noqa: PLC0415
@@ -189,9 +196,12 @@ class PgPlanLookup:
     pool for connection management but issues a PLAIN query (no SET LOCAL — accounts has no
     tenant policy)."""
 
-    def __init__(self, dsn: str | None = None, *, conn_factory=None):
-        from api.pg_clients import _PgTenantClient  # noqa: PLC0415 — shared pool plumbing
-        self._client = _PgTenantClient(dsn, conn_factory=conn_factory)
+    def __init__(self, dsn: str | None = None, *, conn_factory=None, client=None):
+        if client is not None:
+            self._client = client
+        else:
+            from api.pg_clients import _PgTenantClient  # noqa: PLC0415 — shared pool plumbing
+            self._client = _PgTenantClient(dsn, conn_factory=conn_factory)
 
     def plan(self, tenant_id: str) -> str | None:
         from api.pg_clients import _dict_one  # noqa: PLC0415
@@ -222,9 +232,12 @@ class PgCostRecorder:
     the DB clock to agree with the app's notion of "this month".
     """
 
-    def __init__(self, dsn: str | None = None, *, conn_factory=None):
-        from api.pg_clients import _PgTenantClient  # noqa: PLC0415 — shared pool plumbing
-        self._client = _PgTenantClient(dsn, conn_factory=conn_factory)
+    def __init__(self, dsn: str | None = None, *, conn_factory=None, client=None):
+        if client is not None:
+            self._client = client
+        else:
+            from api.pg_clients import _PgTenantClient  # noqa: PLC0415 — shared pool plumbing
+            self._client = _PgTenantClient(dsn, conn_factory=conn_factory)
 
     def record(self, tenant_id: str, *, model: str | None, in_tok: int, out_tok: int) -> None:
         in_tok, out_tok = max(0, int(in_tok)), max(0, int(out_tok))

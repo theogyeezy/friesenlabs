@@ -277,10 +277,12 @@ def build_app():
         trace_store: TraceStore = PgTraceStore(dsn)  # the gate's per-run writes land in Pg
         # Per-tenant usage counter (monthly quota) + Anthropic cost attribution — same per-op
         # SET LOCAL RLS plumbing as the trace store. The cost recorder is observational
-        # (never blocks a turn); the usage store backs the quota gate + GET /usage.
-        usage_store: Any = PgUsageStore(dsn)
-        cost_recorder: Any = PgCostRecorder(dsn)
-        plan_lookup: Any = PgPlanLookup(dsn)
+        # (never blocks a turn); the usage store backs the quota gate + GET /usage. REUSE the
+        # PgCrmClient's pool (it IS a _PgTenantClient) so these open NO extra connection pools —
+        # the Aurora connection budget is finite and the api task already builds several Pg stores.
+        usage_store: Any = PgUsageStore(client=crm)
+        cost_recorder: Any = PgCostRecorder(client=crm)
+        plan_lookup: Any = PgPlanLookup(client=crm)
         # Governed metrics: live only when CUBE_ENDPOINT + CUBEJS_API_SECRET_VALUE are BOTH
         # injected (api_cube_env flag). None only when both are unset; endpoint-without-secret
         # (cube_endpoint wired, flag not yet flipped — the live state at this commit) yields the
