@@ -37,9 +37,14 @@ jobs:
           docker buildx build --platform linux/arm64 -f semantic/Dockerfile \
             -t "$ECR/uplift-cube:${GITHUB_SHA::7}" --push semantic
       - name: provisioning-lambda
+        # AWS Lambda only accepts the Docker v2 image manifest. buildx defaults to an OCI
+        # image index with provenance/SBOM attestations, which Lambda rejects with
+        # InvalidParameterValueException ("media type ... is not supported"). Force a single
+        # Docker-manifest image: --provenance=false (no attestation index) + docker mediatypes.
         run: |
           docker buildx build --platform linux/arm64 -f provisioning-lambda.Dockerfile \
-            -t "$ECR/uplift-provisioning:${GITHUB_SHA::7}" --push .
+            --provenance=false --output type=image,oci-mediatypes=false,push=true \
+            -t "$ECR/uplift-provisioning:${GITHUB_SHA::7}" .
       - name: worker
         run: |
           docker buildx build --platform linux/arm64 -f worker/Dockerfile \
