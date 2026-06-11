@@ -542,8 +542,23 @@ export interface CheckoutBody {
 }
 
 export interface CheckoutResponse {
-  checkout_id: string;
-  stripe_customer_id: string;
+  /**
+   * The Stripe-hosted Checkout page the BROWSER must be sent to
+   * (window.location.assign). Payment success is never assumed client-side:
+   * provisioning fires only off the signed Stripe webhook, and after the
+   * round-trip the flow polls GET /signup/{id} for the real state. null on
+   * the env-gated internal bypass (settled server-side, no Stripe page).
+   */
+  checkout_url: string | null;
+  /**
+   * "internal_comp" when the env-gated internal-domain bypass settled the
+   * payment immediately through the SAME idempotent ledger + provisioning
+   * path as the webhook. Absent on the normal Stripe path.
+   */
+  bypass?: string;
+  /** Present on the Stripe path only (absent on the bypass response). */
+  checkout_id?: string;
+  stripe_customer_id?: string;
 }
 
 /** Response from GET /signup/{account_id}: the current funnel state. */

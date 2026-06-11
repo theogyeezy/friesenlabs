@@ -21,6 +21,7 @@ import { test, expect, type Page } from "@playwright/test";
 const isListDashboards = (url: URL) => url.pathname === "/dashboards";
 const isGetDashboard = (url: URL) => /^\/dashboards\/[^/]+$/.test(url.pathname);
 const isListViews = (url: URL) => url.pathname === "/views";
+const isGetView = (url: URL) => /^\/views\/[^/]+$/.test(url.pathname);
 
 const PIPELINE_ROW = {
   tenant_id: "tenant-e2e",
@@ -280,4 +281,27 @@ test("a 500 renders friendly copy with retry; raw API strings never reach the DO
 
   await page.getByTestId("dashboards-retry").click();
   await expect(page.getByTestId("dashboard-card")).toHaveCount(1, { timeout: 15_000 });
+});
+
+test("the sidebar has a Dashboards entry that mounts the screen", async ({ page }) => {
+  // The screen must be REACHABLE, not just deep-linkable: the shell's
+  // "Insights & admin" nav carries a Dashboards item (window.FL_DATA NAV2)
+  // that routes to the API-wired DashboardsView.
+  await page.route(isListDashboards, (route) =>
+    route.fulfill({ json: { dashboards: [DASHBOARD_ROW] } })
+  );
+  await page.route(isListViews, (route) =>
+    route.fulfill({ json: { views: [PIPELINE_ROW, FUNNEL_ROW] } })
+  );
+  // The shell lands on Command Center first; give its saved-view fetch an
+  // answer so the page settles (content irrelevant to this test).
+  await page.route(isGetView, (route) => route.fulfill({ json: PIPELINE_ROW }));
+
+  await page.goto("/");
+  const navItem = page.locator(".nav-item", { hasText: "Dashboards" });
+  await expect(navItem).toBeVisible({ timeout: 15_000 });
+  await navItem.click();
+
+  await expect(page.getByTestId("dashboards-view")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId("dashboard-card")).toHaveCount(1);
 });
