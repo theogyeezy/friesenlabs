@@ -28,6 +28,7 @@
 
 import {
   buildAuthorizeUrl,
+  buildHostedUiPasswordUrl,
   buildLogoutUrl,
   clearTokens,
   createPkcePair,
@@ -124,17 +125,30 @@ export function getIdToken(): string | null {
 }
 
 /**
- * Begin sign-in: mint a PKCE pair + state, stash them in sessionStorage, and
- * redirect to the Hosted UI authorize endpoint. No-op when auth is disabled.
+ * Mint a fresh PKCE pair + CSRF state, stash them in sessionStorage, and
+ * redirect to a Hosted UI managed page (authorize / forgotPassword /
+ * changePassword). All three speak the same authorization-code + PKCE S256
+ * grant and redirect back to /auth/callback with a `code`, so the existing
+ * callback exchange (exchangeCallbackCode) finishes every one of them — the
+ * user lands signed in and the password (if any) only ever lived in Cognito.
  */
-export async function signIn(): Promise<void> {
+async function redirectToHostedUi(
+  build: (p: {
+    domain: string;
+    clientId: string;
+    redirectUri: string;
+    scope: string;
+    state: string;
+    codeChallenge: string;
+  }) => string,
+): Promise<void> {
   if (!isAuthEnabled()) return;
   const { domain, clientId } = cognitoEnv();
   const { verifier, challenge } = await createPkcePair();
   const state = newState();
   savePkce(window.sessionStorage, { verifier, state });
   window.location.assign(
-    buildAuthorizeUrl({
+    build({
       domain,
       clientId,
       redirectUri: redirectUri(),
@@ -143,6 +157,37 @@ export async function signIn(): Promise<void> {
       codeChallenge: challenge,
     }),
   );
+}
+
+/**
+ * Begin sign-in: redirect to the Hosted UI authorize endpoint. No-op when auth
+ * is disabled.
+ */
+export async function signIn(): Promise<void> {
+  await redirectToHostedUi(buildAuthorizeUrl);
+}
+
+/**
+ * Begin account recovery: redirect to the Hosted UI managed /forgotPassword
+ * page (verification-code entry + new-password set + resend, all rate-limited
+ * and rendered by Cognito). On success Cognito redirects back to
+ * /auth/callback with a code, so the user lands signed in. We NEVER see or
+ * store the password — THE TRUST RULE, Cognito owns creds. No-op when auth is
+ * disabled.
+ */
+export async function forgotPassword(): Promise<void> {
+  await redirectToHostedUi((p) => buildHostedUiPasswordUrl({ action: "forgotPassword", ...p }));
+}
+
+/**
+ * Change the password of an already-signed-in user: redirect to the Hosted UI
+ * managed /changePassword page (old + new password, rendered + validated by
+ * Cognito against the live Hosted-UI session cookie set at sign-in). On
+ * success Cognito redirects back to /auth/callback with a fresh code. The raw
+ * passwords never touch our app or DB. No-op when auth is disabled.
+ */
+export async function changePassword(): Promise<void> {
+  await redirectToHostedUi((p) => buildHostedUiPasswordUrl({ action: "changePassword", ...p }));
 }
 
 // One-shot guard: authorization codes are single-use and React.StrictMode

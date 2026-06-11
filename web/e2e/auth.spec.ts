@@ -16,7 +16,13 @@ import { test, expect, type Page } from "@playwright/test";
 //   2. the stubbed Hosted UI round-trip (PKCE callback + code exchange) lands
 //      in the authed shell with tokens stored,
 //   3. a 401 whose refresh fails ends the session: storage cleared, stale
-//      query stripped, back on the sign-in route.
+//      query stripped, back on the sign-in route,
+//   4. account recovery: "Forgot password?" drives the Hosted UI managed
+//      /forgotPassword flow (same code+PKCE grant) and lands signed in,
+//   5. a signed-in user's "Change password" drives the /changePassword managed
+//      page and lands back signed in,
+//   6. the recovery edge: an expired/invalid reset code surfaces an honest
+//      error and returns to the sign-in route (no password ever touches us).
 
 const HOSTED_UI = "https://auth-e2e.uplift.invalid";
 const TOKEN_KEY = "uplift_auth_tokens"; // AUTH_TOKEN_STORAGE_KEY in auth/core.js
@@ -193,6 +199,168 @@ test("a 401 whose refresh fails ends the session: cleared storage, back to sign-
 
   // No authed surface lingers behind the gate.
   await expect(page.getByTestId("dashboard-view")).toHaveCount(0);
+
+  expect(errors, `page errors: ${errors.join("\n")}`).toHaveLength(0);
+});
+
+// --- account recovery + password self-service -------------------------------
+//
+// All three of /forgotPassword, /changePassword, and the failed-recovery edge
+// run through the SAME authorization-code + PKCE grant the sign-in flow uses,
+// and finish via the existing /auth/callback exchange — so the password only
+// ever lives in Cognito (THE TRUST RULE), never our app or DB.
+
+/** Stub a Hosted UI managed page (action) to 302 back with a code, asserting
+ *  it carried the code+PKCE grant. Returns a counter of how often it was hit. */
+function stubManagedPage(page: Page, action: string): { calls: () => number } {
+  let n = 0;
+  void page.route(`${HOSTED_UI}/${action}*`, (route) => {
+    n += 1;
+    const url = new URL(route.request().url());
+    expect(url.searchParams.get("response_type")).toBe("code");
+    expect(url.searchParams.get("code_challenge_method")).toBe("S256");
+    expect(url.searchParams.get("code_challenge")).toBeTruthy();
+    const redirectUri = url.searchParams.get("redirect_uri") ?? "";
+    const state = url.searchParams.get("state") ?? "";
+    return route.fulfill({
+      status: 302,
+      headers: { location: `${redirectUri}?code=${action}-code&state=${encodeURIComponent(state)}` },
+    });
+  });
+  return { calls: () => n };
+}
+
+/** Stub the token endpoint to return canned tokens for any code. */
+function stubToken(page: Page): { calls: () => number } {
+  let n = 0;
+  void page.route(`${HOSTED_UI}/oauth2/token`, (route) => {
+    n += 1;
+    return route.fulfill({
+      headers: { "access-control-allow-origin": "*" },
+      json: {
+        id_token: freshIdToken(),
+        access_token: "e2e-access-token",
+        refresh_token: "e2e-refresh-token",
+        token_type: "Bearer",
+        expires_in: 3600,
+      },
+    });
+  });
+  return { calls: () => n };
+}
+
+test("account recovery: Forgot password? drives /forgotPassword and lands signed in", async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+  await stubApi(page);
+  const fp = stubManagedPage(page, "forgotPassword");
+  const token = stubToken(page);
+
+  // The focused sign-in gate (deep link into a gated seam) carries the
+  // "Forgot password?" entry from the sign-in path.
+  await page.goto("/?view=dashboard");
+  const forgot = page.locator("a.lp-forgot", { hasText: "Forgot password?" }).first();
+  await expect(forgot).toBeVisible({ timeout: 15_000 });
+  await forgot.click();
+
+  // Through the (stubbed) managed reset page and back: the user lands in the
+  // authed shell with a stored session, the URL stripped to root.
+  await expect(page.getByRole("button", { name: "Ask agents" })).toBeVisible({ timeout: 15_000 });
+  expect(fp.calls()).toBe(1);
+  expect(token.calls()).toBe(1);
+  const stored = await page.evaluate((key) => window.localStorage.getItem(key), TOKEN_KEY);
+  expect(stored).toBeTruthy();
+  expect(new URL(page.url()).pathname).toBe("/");
+
+  expect(errors, `page errors: ${errors.join("\n")}`).toHaveLength(0);
+});
+
+test("change password: a signed-in user's Change password drives /changePassword", async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+  await stubApi(page);
+  stubManagedPage(page, "oauth2/authorize"); // sign-in hop
+  const cp = stubManagedPage(page, "changePassword");
+  stubToken(page);
+
+  // Arrive already signed in (skip the sign-in hop: seed a live session).
+  await page.addInitScript(
+    ({ key, tokens }) => window.localStorage.setItem(key, JSON.stringify(tokens)),
+    {
+      key: TOKEN_KEY,
+      tokens: {
+        id_token: freshIdToken(),
+        access_token: "e2e-access-token",
+        refresh_token: "e2e-refresh-token",
+      },
+    },
+  );
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: "Ask agents" })).toBeVisible({ timeout: 15_000 });
+
+  // Open the profile menu and pick Change password.
+  await page.locator("button.user-chip").click();
+  const changePw = page.locator("a.pm-change-pw", { hasText: "Change password" });
+  await expect(changePw).toBeVisible({ timeout: 10_000 });
+  await changePw.click();
+
+  // Through the (stubbed) managed change-password page and back: still signed
+  // in (the callback re-exchanged a fresh code), URL stripped to root.
+  await expect(page.getByRole("button", { name: "Ask agents" })).toBeVisible({ timeout: 15_000 });
+  expect(cp.calls()).toBe(1);
+  expect(new URL(page.url()).pathname).toBe("/");
+  const stored = await page.evaluate((key) => window.localStorage.getItem(key), TOKEN_KEY);
+  expect(stored).toBeTruthy();
+
+  expect(errors, `page errors: ${errors.join("\n")}`).toHaveLength(0);
+});
+
+test("recovery edge: an expired reset code surfaces an honest error, not the app", async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+  await stubApi(page);
+
+  // The managed reset page bounces back with an OAuth error (Cognito's signal
+  // for an expired/invalid code), NOT a usable authorization code.
+  await page.route(`${HOSTED_UI}/forgotPassword*`, (route) => {
+    const url = new URL(route.request().url());
+    const redirectUri = url.searchParams.get("redirect_uri") ?? "";
+    const state = url.searchParams.get("state") ?? "";
+    return route.fulfill({
+      status: 302,
+      headers: {
+        location: `${redirectUri}?error=expired_token&error_description=injected&state=${encodeURIComponent(state)}`,
+      },
+    });
+  });
+  // No token exchange must happen on the error path.
+  let tokenCalls = 0;
+  await page.route(`${HOSTED_UI}/oauth2/token`, (route) => {
+    tokenCalls += 1;
+    return route.fulfill({ status: 400, json: { error: "invalid_grant" } });
+  });
+
+  await page.goto("/?view=dashboard");
+  const forgot = page.locator("a.lp-forgot", { hasText: "Forgot password?" }).first();
+  await expect(forgot).toBeVisible({ timeout: 15_000 });
+  await forgot.click();
+
+  // Honest failure copy (the canned copy, NOT the attacker-influenceable
+  // error_description), no token exchange, no authed shell, no stored session.
+  await expect(page.getByRole("heading", { name: /didn.t complete/i })).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(page.getByText("injected")).toHaveCount(0);
+  expect(tokenCalls).toBe(0);
+  await expect(page.getByRole("button", { name: "Ask agents" })).toHaveCount(0);
+  const stored = await page.evaluate((key) => window.localStorage.getItem(key), TOKEN_KEY);
+  expect(stored).toBeNull();
 
   expect(errors, `page errors: ${errors.join("\n")}`).toHaveLength(0);
 });
