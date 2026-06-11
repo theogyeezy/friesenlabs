@@ -499,7 +499,7 @@ function App() {
                   and remounts the surfaces (sampleReloadKey) so populated views
                   surface immediately. */}
               <FirstRunChecklist onNavigate={navTo} onOpenChat={() => setChat(true)} />
-              {route === "dashboard" && <DashboardView />}
+              {route === "dashboard" && <DashboardView key={sampleReloadKey} />}
               {/* Pipeline is LIVE in real mode: RLS-scoped deals from GET /deals;
                   stage moves queue through Greenlight (never a direct write). */}
               {route === "crm" && <PipelineBoard key={sampleReloadKey} onOpenGreenlight={() => navTo("approvals")} onLoadSample={loadSampleData} />}
@@ -527,7 +527,7 @@ function App() {
                   /refine NL route (honest "not live yet" until the agent runtime
                   is wired) — never the FLStore Reports prototype + DataAssistant
                   overlay. */}
-              {route === "reports" && <ReportsView />}
+              {route === "reports" && <ReportsView onAskAgents={() => setChat(true)} />}
               {/* Dashboards is LIVE in real mode: named compositions of saved
                   views over GET/POST /dashboards (kind=dashboard rows), each
                   referenced view rendered through the SAME trusted SpecRenderer
