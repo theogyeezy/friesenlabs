@@ -60,3 +60,6 @@ infra/prod.auto.tfvars
 
 # Agent-fleet (/fleet skill) isolated worktrees — runtime only, never committed
 .claude/worktrees/
+
+# Superpowers brainstorming companion artifacts (local mockups)
+.superpowers/
