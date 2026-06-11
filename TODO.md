@@ -1,5 +1,180 @@
 # Uplift — TODO
 
+## Site completeness audit — TODOs (2026-06-11)
+
+From a `/fleet` read-wave (10 parallel assessors + verifiers over the whole feature surface).
+**78 features assessed: 37 complete · 17 partial · 14 stub · 10 not-wired.** The core (chat,
+Balto view-creation, auth, billing portal, revenue backend, accountability, RLS) is complete;
+gaps cluster in landing-legal, web-not-showing-live-data, owner-gated flips, and missing CRUD.
+
+### P0 — before real paying customers
+- [ ] **Landing legal/honesty** (HIGH legal risk): remove/relabel the fake **501(c)(3) + placeholder EIN `00-0000000` + tax-deductible donation flow** (charitable-solicitation fraud risk), **fabricated testimonials labeled "Real owners"** + invented metrics (FTC), fabricated research papers, "LIVE" demos shown as the real product, dead Foundation link, fake "Now on iPhone / App Store" claim, PBC/Foundation corporate claims. Ship real **Terms + Privacy** (#119/#121).
+- [ ] **Seed the workspace-key pool** (owner: Anthropic Console pre-mint → `scripts/ops/load_workspace_keys.py`) — real provisioning parks `pool_empty` until then.
+- [ ] **Wire signup abuse controls into `SignupDeps`** (`api/prod_deps.py` omits `disposable=/velocity=/captcha=/session_tokens=` — written but dead in prod).
+
+### P1 — make built features actually usable
+- [ ] **Web→Cube live data endpoint** (`POST /views/{id}/data` or `/cube/load`) + wire dashboards/Cortex/Reports UI to it — today they render "No data yet" because no web path resolves a view-spec into rows.
+- [ ] **Seed the knowledge corpus** → live `/chat` citations appear (today empty).
+- [ ] **Flip owner-gated registries when ready:** Cortex S3 (`cortex_s3_registry=false`) + attach the retrain EventBridge target; enable ingest schedule (`ingest_tenants` + flip); `INTEGRATIONS_REAL_SECRETS`.
+- [ ] **Contacts/deals create-edit UI** (today move-stage only); **account data-export + deletion** (GDPR/offboarding — neither exists).
+
+### P2 — depth
+- [ ] Wire `view_patcher` (NL view-refine, 501 today); **playbook execution** (Agent Studio CRUD+activate work but nothing runs them on triggers); integrations live-sync VERIFY pass + land structured rows in CRM tables; **status page real probes** (permanently "degraded" today); Agent marketplace real-mode (placeholder).
+
+### Full per-feature breakdown (all incomplete features, by area)
+
+### Chat & agent plane (Balto, citations, tools)
+- [ ] **Live-runtime citations (grounded RAG on the real coordinator path)** — `partial`
+  - Seed the demo tenant knowledge corpus (RAG embeddings) so live chat returns >=1 grounded citation.
+  - Add a live or near-live integration test that proves a populated corpus yields grounded citations through ManagedAgentsRuntime (current coverage is FakeRuntime/unit only).
+- [ ] **NL refine of an existing saved view (POST /views/{id}/refine)** — `not-wired`
+  - Wire a real view_patcher (an agent-runtime spec patcher, analogous to AnthropicSpecGenerator) into build_app() ApiDeps so POST /views/{id}/refine works, or remove the route if NL-refine is deferred.
+  - Add a real-mode test for view refine once wired.
+
+### Revenue & signup
+- [ ] **Workspace-key pool (pre-minted keys, consumed at provisioning)** — `partial` _(verified real, sev high)_
+  - OWNER-GATED: pre-mint Anthropic workspace keys in Console and run scripts/ops/load_workspace_keys.py to seed the pool (last mile to real paid customers)
+  - Rename db/schema.sql workspace_keys.key_material -> secret_ref to remove the alias debt
+- [ ] **Cognito provisioning + first login** — `partial`
+  - Either (a) carry the chosen password to provisioning and admin_set_user_password(Permanent=True) with it, or (b) update the SPA success copy to tell the user to use 'Forgot password' to set their first password — current flow is confusing
+  - Add an integration/e2e assertion that a provisioned user can actually authenticate
+- [ ] **Signup abuse controls (disposable-email block, per-IP velocity, captcha seam)** — `not-wired` _(verified real, sev medium)_
+  - In build_signup_deps, construct DisposableEmailBlocklist (ships in-repo disposable_email_domains.txt), SignupVelocityLimiter (in-process), and the CaptchaVerifier seam from env, and pass disposable=/velocity=/captcha=/trusted_hops= into SignupDeps
+  - Construct SignupSessionTokens from a signing secret and pass session_tokens= so account_id stops being a bare bearer on checkout/verify-redirect
+
+### Data, dashboards & views
+- [ ] **Web-to-Cube live data resolution (rendering real tenant rows in dashboards/reports)** — `stub`
+  - Add an authed, RLS-scoped API endpoint (e.g. POST /views/{id}/data or POST /cube/load) that accepts a validated CubeQuery, forwards it to cube_client_from_env() with the JWT tenant security context, and returns rows
+  - Add a client.ts method (loadViewData) and replace noLiveData in DashboardView/DashboardsView/ReportsView/ChatDock with a real loader that calls it
+  - Add e2e coverage proving a populated tenant renders real numbers (current dashboard.spec.ts/reports.spec.ts only assert empty/mock states)
+  - Verify the Cube CUBE_ENDPOINT + CUBEJS_API_SECRET_VALUE flag (api_cube_env) is flipped in prod — asgi.py:283-290 notes the live state is the DEGRADED client returning {status:'unconfigured', rows:[]}
+- [ ] **'Ask for a chart' — NL refine over an existing saved view (POST /views/{id}/refine)** — `stub`
+  - Wire a real view_patcher (spec, instruction) -> spec into ApiDeps in asgi.py, built on the existing AnthropicSpecGenerator / build_view tool path the synthesizer already uses
+  - Pass view_patcher=... in the ApiDeps(...) call and gate on api_key like the synthesizer does
+  - Add an integration test that refine returns 200 with a patched, re-validated spec when a patcher is configured
+- [ ] **Balto NL view creation from chat (POST /views/synthesize + draft save)** — `partial`
+  - Replace noLiveData with the real loader once the web->Cube data endpoint exists, so Balto views show numbers
+  - Confirm ENV_ANTHROPIC_API_KEY + cube env are live on the API task (CLAUDE.md says yes; verify the api_cube_env flag specifically)
+  - Add an e2e that drives chat -> Balto -> view-with-data (current balto.spec.ts likely only covers the status-line/empty path)
+- [ ] **Cube semantic layer — tenant-scoped real rows (#177 RLS fix)** — `partial`
+  - Verify (read-only) CUBE_ENDPOINT + CUBEJS_API_SECRET_VALUE are both set on the live API task so the cube client is the real (not degraded) one
+  - Wire the dashboard data endpoint (feature 1) so the #177 live-rows path is actually used by dashboards/reports, not just agent tools
+
+### CRM core (contacts/pipeline/deals)
+- [ ] **Create / edit contacts & deals from the directory/board UI** — `not-wired` _(verified real, sev medium)_
+  - Add a 'New deal' control on the board and 'Add/Edit contact' in the directory drawer that route through the existing create_deal/update_contact appliers via the ActionGate (Greenlight-gated), mirroring move-stage
+  - Optionally expose a POST/PATCH on contacts_routes.py that proposes update_contact through the gate (parity with deals_routes move-stage) so the UI write path doesn't have to go through chat
+
+### Connectors & ingest
+- [ ] **Integrations API (GET /integrations, POST credentials, POST sync) + IntegrationsPanel UI** — `partial`
+  - Flip api_integrations_real=1 (REQ-008) after a live # VERIFY of put/create/describe_secret shapes.
+  - Broaden the connector-write IAM resource (and the ingest read role) from uplift/*/hubspot* to uplift/*/{hubspot,gohighlevel,stripe}* so non-HubSpot connectors are actually connectable/syncable.
+  - Decide the API-kicked-sync story: either wire INGEST_REAL_STORES + DB_* onto the API task or make the panel's 'Sync now' point users at the scheduler; today it's a guaranteed 503.
+  - Special-case the csv card in IntegrationsPanel (or filter kind=file out) so it doesn't present a credential form that always 409s.
+- [ ] **CSV import backend (POST /integrations/csv/import + ingest/connectors/csv_import.py)** — `stub`
+  - Add a real csvImport(name,entity,file,mapping) method to ApiClient and a file-upload UI (drop zone + entity picker + mapping override) wired to POST /integrations/csv/import in real mode.
+  - Wire the importer dep on the API task (INGEST_REAL_STORES + DB_* + raw bucket) so the endpoint isn't a permanent 503, or document that CSV import only runs on the ingest task.
+  - Replace import-data.tsx's hardcoded FLStore.addDeal demo import with the real upload, or clearly scope it as mock-only.
+- [ ] **Knowledge corpus seed (scripts/demo/seed_knowledge.py + agents/knowledge_seed)** — `partial` _(verified real, sev medium)_
+  - Run seed_knowledge.py as a one-off ECS task against the live demo tenant with INGEST_REAL_STORES=1 (Titan embedder) so /knowledge/search returns real hits and chat grounding has a positive citation.
+- [ ] **Sync connectors (HubSpot / GoHighLevel / Stripe) + run_sync pipeline** — `partial`
+  - Build a PgStructuredSink with ref->uuid resolution so synced + CSV rows land in the CRM tables, not only documents.
+  - Run a live VERIFY pass per connector (HubSpot CRM v3 datetime filter format, notes searchability, GHL v2 Version header + cursor params, Stripe param shapes) before any prod sync.
+  - Extend the connector secret IAM + ingest read role to gohighlevel/stripe slots.
+- [ ] **Ingest scheduler (nightly EventBridge -> Fargate run_sync --all)** — `not-wired` _(verified real, sev medium)_
+  - Populate ingest_tenants with the demo/first-customer tenant id(s), ensure their per-tenant HubSpot secret is vaulted, flip ingest_schedule_enabled=true, targeted apply, and verify a run lands documents (and ~0 on the next incremental run).
+  - Land the PgStructuredSink first if synced data is expected to show up in Pipeline/Contacts.
+
+### Cortex / ML
+- [ ] **Cortex web UI (web/src/screens/cortex.tsx)** — `stub` _(verified real, sev medium)_
+  - Wire cortex.tsx to GET /cortex/health and render the real champion {version, estimator, metrics}, model_count, and drift verdict
+  - Render the four ml.health statuses (no_registry, no_champion, serving, drifting) as honest empty/degraded states instead of always-green animation
+  - Make Flywheel/Fine-tuning plugin activation hit a real billing+entitlement backend (currently a local toggle)
+  - Either remove the fabricated accuracy/trace numbers or back them with registry data; remove Math.random retrain simulation
+- [ ] **GET /cortex/health route + ml.health payload** — `partial` _(verified real, sev medium)_
+  - Flip cortex_s3_registry=true in prod.tfvars and apply (grants task-role S3 + sets CORTEX_S3_BUCKET) so the route can return real champion state
+  - Build the frontend consumer for /cortex/health
+  - Confirm CORTEX_SIGNING_KEY is provisioned on the api/worker tasks (champion load fails closed without it)
+- [ ] **Retrain entrypoint + schedule** — `partial` _(verified real, sev medium)_
+  - At apply: attach aws_cloudwatch_event_target pointing the retrain rule at compute that runs scripts/ml/retrain_tenant.py per tenant; grant PassRole/invoke
+  - Wire a per-tenant fan-out (iterate active tenants) since the EventBridge rule fires once but each tenant needs its own retrain
+  - Subscribe an alarm/notification to the uplift-cortex-drift SNS topic so drift actually pages someone
+- [ ] **Drift detection (inputs + outputs)** — `partial` _(verified real, sev medium)_
+  - Add prediction_log to ToolContext and have RunModel.log() each score (deal_id, model_version, score, features) so the live-AUC input actually accumulates — this is the missing flywheel close-loop
+  - Publish a drift alert to the uplift-cortex-drift SNS topic when status=='drifting'
+  - Surface drift in the Cortex UI
+- [ ] **Live S3 registry applied (per-tenant model store in prod)** — `not-wired` _(verified real, sev medium)_
+  - Set cortex_s3_registry=true in infra/envs/prod.tfvars, apply, and grant the api+worker task roles S3 read/write on the datalake cortex/* prefix
+  - Provision CORTEX_SIGNING_KEY (Secrets Manager) on api+worker tasks
+  - Run an initial retrain to populate at least one tenant's champion so run_model + /cortex/health return real data
+- [ ] **run_model serving tool (agent-facing)** — `partial` _(verified real, sev medium)_
+  - Once the registry is live, have run_model also log each prediction to PgPredictionLog to close the flywheel
+  - Verify featurize() handles partial/missing record fields the agent might pass (edge cases)
+
+### Agent Studio & workflows
+- [ ] **Agent Studio — activate / deactivate (live roster registration)** — `partial`
+  - (gap) StudioDeps.registrar is hardcoded None everywhere in prod: build_studio_deps() (routes_studio.py:80-92) deliberately never wires a registrar, and api/asgi.py never passes one (grep for 'registrar' in asgi/agents returns nothing). So on the LIVE deployment activate ALWAYS returns registered:false with registration_reason='agent plane not configured...' — it only flips the DB status, never actually registers agents with Managed Agents. This is honest (UI says 'Active (record-only)') but means live activation is record-only, not a live crew.
+  - (gap) Activation has no live-mode integration test against ManagedAgentsRuntime (activation.py docstring admits it 'only runs where the agent plane is deliberately configured'); only FakeRuntime coverage exists.
+- [ ] **Agent Studio — playbook trigger execution (the playbook actually RUNNING)** — `stub`
+  - Build a playbook runner: a manual 'Run now' endpoint that opens an MA session against the playbook's coordinator (behind agents/runtime.py), plus an EventBridge/scheduler leg for kind=schedule and an event-dispatch hook for kind=event.
+  - Wire the activated coordinator into the live agent plane so its draft outputs land in Greenlight (the draft-only path already exists for /chat — reuse it).
+- [ ] **Agent Studio — registrar wiring to live Managed Agents** — `not-wired`
+  - In asgi.py, when the agent plane is configured (MA env id + org key present, the same gate signup uses), build a ManagedAgentsRuntime and pass it as StudioDeps.registrar so activate registers a real crew.
+  - Add a live/integration smoke that activates a playbook against the real runtime seam and asserts registered:true + draft-only on a side-effecting tool.
+- [ ] **Workflows screen (GET /workflows — provisioning machine view)** — `partial`
+  - Inject PROVISIONING_SFN_ARN on the API task and grant states:ListExecutions scoped to the machine ARN (REQ-009) to light up the live run feed.
+  - If a real per-tenant workflow/automation builder is intended, it does not exist — only the provisioning-machine viewer does; that is a separate feature to build.
+- [ ] **Agent marketplace (agent-market) in real mode** — `stub`
+  - Either remove the Marketplace nav entry in real mode or build a real backend (a curated/template-backed agent catalog over the owned roster + a real create path) and a real-mode render branch.
+  - If kept, at minimum render an honest 'rolling out' card in real mode rather than the generic ComingSoon, matching the Studio/Workflows rollout pattern.
+- [ ] **Mock-mode studio/workflow screens (screens/studio.tsx, screens/workflow.tsx)** — `not-wired`
+  - Confirm whether screens/studio.tsx is still imported/used anywhere; if orphaned, remove it to avoid drift.
+  - Keep screens/workflow.tsx only as the mock-build WorkflowBuilder; it is not a real feature.
+
+### Lifecycle, onboarding & support
+- [ ] **Status page (/status, public health)** — `partial`
+  - Either expose real per-component readiness probes (agent plane, data plane, ingest) and feed them through fetchStatus, or drop the permanently-'unknown' subsystems row so a healthy system can show green overall.
+  - Fix the rollup so a single overall-operational /healthz yields 'operational' rather than 'degraded' (don't let an informational placeholder row pin the rollup to degraded).
+- [ ] **Self-serve billing (Stripe Customer Portal)** — `partial`
+  - Build a real-mode workspace/team/notifications/agent-defaults settings surface, or clearly fold those into other live screens - right now real tenants can't edit workspace name, invite/manage team, or set notification prefs.
+  - Surface real invoices/next-bill/usage in the real-mode billing panel (today it's only plan+status+portal redirect; the invoice table is mock-only).
+- [ ] **Account lifecycle - data export / account deletion (GDPR/offboarding)** — `not-wired`
+  - Add a tenant data-export endpoint (RLS-scoped dump of contacts/deals/knowledge to S3/CSV) + a UI entry point.
+  - Add an account/workspace deletion + data-teardown flow (privileged ops path given the REVOKE DELETE grants), wired to or after Stripe cancellation.
+  - Ship Terms/Privacy pages to close the compliance gap that account-deletion/export typically requires.
+- [ ] **Product tour / intake (first-run guidance & capture)** — `not-wired`
+  - If a product tour is desired in prod, build a real-mode tour (or remove tour.tsx as dead demo code).
+  - If Intake is a real product surface, wire routeIntake to real endpoints (Memory/Knowledge ingest, CRM create) behind Greenlight; otherwise document it as demo-only.
+
+### Landing & marketing (legal/honesty)
+- [ ] **Fabricated customer testimonials presented as real** — `stub` _(verified real, sev medium)_
+  - Replace with real, permissioned customer testimonials, OR relabel the section as illustrative/sample scenarios and remove the 'Real owners' claim and all named people/businesses + hard metrics until backed by consenting customers.
+- [ ] **501(c)(3) / EIN / tax-deductible donation claims** — `stub` _(verified real, sev high)_
+  - Remove all 501(c)(3)/EIN/tax-deductible language until the entity is actually formed and IRS-recognized; replace the placeholder EIN and Austin address or remove them.
+  - Gate the entire nonprofit/Foundation narrative behind real legal status, or reword to a clearly aspirational 'we intend to' framing reviewed by counsel.
+- [ ] **Donation flow (DonateModal) — fake, takes no money but issues a 'gift' confirmation + tax claim** — `stub` _(verified real, sev high)_
+  - Either wire DonateModal to a real payment processor for a real (and legally-recognized) charity, or remove the donation CTA and modal entirely until the Foundation exists.
+  - Remove the 'receipt is emailed' and tax-deductible copy from the modal until true.
+- [ ] **"LIVE" product-window demos presented as the real product** — `stub` _(verified real, sev medium)_
+  - Relabel the demo windows as 'interactive demo / simulated' and drop the 'this is the real product running live' claim, OR wire the windows to a real read-only demo-tenant backend.
+  - Remove or soften the fake address bar + 'Live' badge so they don't imply real-time tenant data.
+- [ ] **Fabricated research papers attributed to a non-existent Foundation** — `stub` _(verified real, sev medium)_
+  - Remove the fabricated studies or relabel clearly as forward-looking product theses/illustrative, stripping invented sample sizes and metrics.
+  - Stop attributing them to a Foundation/peer-reviewed program until real.
+- [ ] **App Store / 'Now on iPhone' download claim — dead, no app** — `stub` _(verified real, sev low)_
+  - Relabel to 'Coming soon to iPhone' in the visible copy and disable/remove the App Store badge until a real listing exists, or remove the section.
+- [ ] **Legal pages (Terms / Privacy / Donor Privacy / Form 990 / Accessibility) — placeholder modal only** — `stub`
+  - Author real Terms of Service and Privacy Policy (signup/payments/PII handling) and serve them as real pages/routes.
+  - Remove Form 990 / Donor Privacy links until the nonprofit is real; ship a real Accessibility Statement or drop the link.
+- [ ] **Public benefit corporation (PBC) / 'company with a foundation' positioning** — `stub`
+  - Confirm the actual legal entity and only state what is true; otherwise reword the PBC/Foundation narrative to aspirational and remove the PBC copyright assertion.
+- [ ] **Foundation.html link target — missing file (dead link)** — `not-wired`
+  - Either build a real Foundation page/route or remove the Foundation.html links until the page (and entity) exist.
+- [ ] **Lead-capture / Book-a-call / Email-us / Donate confirmations honesty** — `partial`
+  - Verify Book/Email modal confirm()/send() actually await the POST /public/leads (or mailto fallback) and only show success on a real response, not optimistically.
+
+
+
 ## FLEETAGENT session follow-ups (2026-06-11)
 
 - [x] Live DB migrate (new schema: workspace_keys/leads/playbooks/predictions + tenant_settings
