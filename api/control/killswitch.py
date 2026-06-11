@@ -27,6 +27,29 @@ class KillSwitch:
     def is_paused(self, tenant_id: str) -> bool:
         return self._global or tenant_id in self._tenants
 
+    # --- the /control/killswitch route surface (api/routes_control.py) ---
+    # The SAME status/set shape as api/control/settings.py PersistedKillSwitch, so the routes
+    # serve either interchangeably: in-memory here (offline/unconfigured — instance-local by
+    # design), Pg-backed there (prod — shared across API tasks). Authorization (who may flip
+    # which scope) is the ROUTE's job; these just flip state.
+    def status(self, tenant_id: str) -> dict:
+        if self._global:
+            return {"engaged": True, "scope": "global"}
+        if tenant_id in self._tenants:
+            return {"engaged": True, "scope": "tenant"}
+        return {"engaged": False, "scope": "tenant"}
+
+    def set(self, tenant_id: str, engaged: bool, *, scope: str = "tenant") -> None:
+        if scope == "global":
+            self._global = bool(engaged)
+        elif scope == "tenant":
+            if engaged:
+                self._tenants.add(tenant_id)
+            else:
+                self._tenants.discard(tenant_id)
+        else:
+            raise ValueError(f"scope must be 'tenant' or 'global', got {scope!r}")
+
     def interrupt_event(self, session_id: str) -> dict:
         """The MA interrupt event for a paused session (VERIFY; not sent here)."""
         return {"type": "user.interrupt", "session_id": session_id}

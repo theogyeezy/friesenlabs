@@ -59,7 +59,7 @@ def refund_stub(account: Account) -> str:
 class Provisioner:
     def __init__(self, *, store, mint_tenant_id, db, anthropic_admin, secrets, cognito, cube, resend,
                  agent_plane=None, funnel=None, workspace_store=None, refund=None,
-                 tenant_defaults=None):
+                 tenant_defaults=None, key_pool=None):
         self.store = store
         self.mint_tenant_id = mint_tenant_id      # injected (deterministic in tests)
         self.db = db
@@ -83,6 +83,13 @@ class Provisioner:
         # level + cost tag, SET LOCAL pattern). None = step 5 falls back to `db` — the _Noop in
         # an unconfigured deploy, a recorder in tests.
         self.tenant_defaults = tenant_defaults
+        # Optional signup.key_pool.PgWorkspaceKeyPool (issue #152 — the ratified Console
+        # pre-minted-key pool: the Admin API cannot mint keys, 405). When present, step 2
+        # CONSUMES one pre-minted key per tenant (idempotent per-tenant claim; an EMPTY pool
+        # raises WorkspaceKeyPoolEmpty -> the signup parks as pool_empty for retry) instead of
+        # calling the dead admin.create_workspace_key endpoint. None = the legacy admin-mint
+        # seam (offline tests / unconfigured deploys keep their stub behavior).
+        self.key_pool = key_pool
 
     # ------------------------------------------------------------------ full pipeline
     def provision(self, account: Account) -> ProvisionResult:
@@ -254,12 +261,36 @@ class Provisioner:
 
     def _step_workspace(self, account: Account, created: dict | None) -> None:
         # 2. Anthropic workspace + scoped key -> Secrets Manager (key never returned again).
+        secret_path = f"uplift/{account.tenant_id}/anthropic_key"
+        if self.key_pool is not None:
+            # The ratified pool flow (issue #152: the Admin API CANNOT mint keys — 405): consume
+            # one Console-pre-minted key for this tenant. The claim is idempotent per tenant (a
+            # retried step re-reads the SAME row), and an EMPTY pool raises WorkspaceKeyPoolEmpty
+            # ("pool_empty: ...") so the signup parks in provisioning_failed for a clean retry
+            # once the owner loads more keys (scripts/ops/load_workspace_keys.py).
+            self._require_tenant(account)
+            entry = self.key_pool.consume(account.tenant_id)
+            # The pool entry's Console workspace (when recorded) IS the tenant's workspace —
+            # keys are workspace-scoped, so the key dictates the workspace, not ensure_workspace.
+            # Entries without one fall back to the idempotent check-then-create. A pool-supplied
+            # workspace is pre-minted infrastructure: deliberately NOT recorded in `created`,
+            # so a mid-failure rollback never archives it (the pool row keeps the audit trail).
+            if entry.workspace_id:
+                ws_id = entry.workspace_id
+            else:
+                ws_id = self._workspace_id(account)
+                if created is not None:
+                    created["workspace"] = ws_id
+            if not self.secrets.exists(secret_path):
+                self.secrets.put(secret_path, entry.key)
+            self.admin.set_limits(ws_id, account.tenant_id)  # Console act today; soft-fails
+            return
         ws_id = self._workspace_id(account)
         if created is not None:
             created["workspace"] = ws_id
-        if not self.secrets.exists(f"uplift/{account.tenant_id}/anthropic_key"):
+        if not self.secrets.exists(secret_path):
             key = self.admin.create_workspace_key(ws_id, account.tenant_id)
-            self.secrets.put(f"uplift/{account.tenant_id}/anthropic_key", key)
+            self.secrets.put(secret_path, key)
         self.admin.set_limits(ws_id, account.tenant_id)   # per-workspace spend + rate limits
 
     def _step_agent_plane(self, account: Account, created: dict | None) -> None:
@@ -306,6 +337,13 @@ class Provisioner:
 
     def _workspace_id(self, account: Account):
         self._require_tenant(account)
+        if self.key_pool is not None:
+            # Pool mode: the tenant's workspace is the one its pre-minted key is scoped to
+            # (consume is idempotent per tenant — step 3 re-resolves the SAME entry step 2
+            # claimed). Entries without a recorded workspace fall back to check-then-create.
+            entry = self.key_pool.consume(account.tenant_id)
+            if entry.workspace_id:
+                return entry.workspace_id
         return self.admin.ensure_workspace(account.tenant_id)
 
     @staticmethod

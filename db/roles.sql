@@ -25,8 +25,28 @@ ALTER ROLE crm_app NOCREATEDB NOCREATEROLE;
 GRANT USAGE ON SCHEMA public TO crm_app;
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON
-    documents, companies, contacts, deals, activities, saved_views, approvals, traces, ingest_cursor
+    documents, companies, contacts, deals, activities, saved_views, ingest_cursor
 TO crm_app;
+
+-- Audit trail (approvals + traces): the app may APPEND and (approvals only) flip a decision,
+-- never erase history.
+--   approvals: Greenlight needs UPDATE for the pending->approved/denied flip (status, decided_by,
+--   deny_message, edited proposed_action) and the post-approval apply audit (applied_at,
+--   apply_result) — but a decision row is never deleted by the app.
+--   traces:    strictly append-only (INSERT + SELECT). No UPDATE, no DELETE: a decision trace
+--   that can be rewritten or removed is not an audit trail.
+GRANT SELECT, INSERT, UPDATE ON approvals TO crm_app;
+GRANT SELECT, INSERT ON traces TO crm_app;
+
+-- Per-tenant control rows (RLS-FORCEd tenant tables; see schema.sql): tenant_workspaces is
+-- merge-upserted at provisioning (agents/workspace_store.py) and read back by the conversation
+-- factory + worker; tenant_settings is seeded idempotently at provisioning step 5
+-- (signup/tenant_defaults.py) and read/tuned afterwards. EXPLICIT grants are required: the
+-- ALTER DEFAULT PRIVILEGES below only covers tables created AFTER it runs, and on a fresh load
+-- schema.sql creates these BEFORE roles.sql — without this line crm_app has ZERO privileges on
+-- them (prod only worked because the live roles.sql predated the tables). No DELETE: a tenant's
+-- agent-plane ids / settings are flipped or re-upserted, never deleted by the app.
+GRANT SELECT, INSERT, UPDATE ON tenant_workspaces, tenant_settings TO crm_app;
 
 -- documents.id is an identity column; grant sequence usage for the others' gen_random_uuid is not
 -- needed, but future serial columns would be: keep default privileges sane for new objects.
@@ -51,3 +71,13 @@ GRANT SELECT, INSERT, UPDATE ON accounts, stripe_events TO crm_app;
 -- created later by the migration role — including these two. Revoke it
 -- explicitly or the no-DELETE intent is silently superseded.
 REVOKE DELETE ON accounts, stripe_events FROM crm_app;
+
+-- ---------------------------------------------------------------------------
+-- Append-only audit trail — explicit REVOKEs (idempotent; safe on fresh AND live loads).
+-- GRANT is additive, so a live database that ever held the old broad
+-- SELECT/INSERT/UPDATE/DELETE grant keeps DELETE until it is revoked here. Re-asserting the
+-- REVOKEs makes a roles.sql re-run (api.migrate runs it on every migration) converge the live
+-- grant surface to the design above, instead of depending on grant history.
+REVOKE DELETE ON approvals, traces FROM crm_app;          -- audit rows are never erased
+REVOKE UPDATE ON traces FROM crm_app;                     -- traces are append-only, not editable
+REVOKE DELETE ON tenant_workspaces, tenant_settings FROM crm_app;

@@ -6,6 +6,7 @@ the level only governs side-effecting actions. L2 uses threshold logic (value-at
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Callable
 
 from .types import Action, Decision, Level
 
@@ -23,6 +24,11 @@ class AutonomyConfig:
     # {(agent, tenant): Level} overrides; falls back to per-tenant then default.
     overrides: dict | None = None
     thresholds: Thresholds = None  # type: ignore[assignment]
+    # The PERSISTED per-tenant level seam (api/control/settings.py PersistedAutonomyDial.provider):
+    # tenant_id -> Level | None. Consulted after explicit overrides, before the default — so the
+    # gate reads the level a tenant set via PUT /control/autonomy instead of the hardcoded
+    # default. None (or a None return) = unconfigured -> default_level applies (today's behavior).
+    level_provider: Callable[[str], Level | None] | None = None
 
     def __post_init__(self):
         if self.overrides is None:
@@ -32,12 +38,17 @@ class AutonomyConfig:
 
 
 def resolve(config: AutonomyConfig, agent: str | None, tenant_id: str) -> Level:
-    """Resolve the effective level for (agent, tenant)."""
+    """Resolve the effective level for (agent, tenant): explicit overrides win, then the
+    persisted per-tenant level (level_provider), then the config default."""
     ov = config.overrides
     if (agent, tenant_id) in ov:
         return ov[(agent, tenant_id)]
     if tenant_id in ov:
         return ov[tenant_id]
+    if config.level_provider is not None:
+        level = config.level_provider(tenant_id)
+        if level is not None:
+            return level
     return config.default_level
 
 

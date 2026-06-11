@@ -101,14 +101,46 @@ class CognitoAdminClient:
     def confirm(self, sub: str) -> None:
         """Flip the user usable after provisioning (step 4, after set_tenant_id).
 
-        # VERIFY (call ordering / user state): admin_confirm_sign_up only transitions a
-        # SELF-signed-up user out of UNCONFIRMED. A user minted by admin_create_user lands in
-        # FORCE_CHANGE_PASSWORD instead, where the confirming act is
-        # admin_set_user_password(..., Permanent=True) during the user's password setup. The
-        # confirm-after-set_tenant_id ordering and the exact status transition must be validated
-        # against the live pool (LANE NICK) before this path is trusted end-to-end.
+        FIXED (revenue lane — "newly provisioned users cannot log in"): a user minted by
+        ``admin_create_user`` lands in FORCE_CHANGE_PASSWORD, and the Hosted UI rejects a
+        password-flow login from there (and ``admin_confirm_sign_up`` does NOT apply — it only
+        transitions SELF-signed-up UNCONFIRMED users). The act that actually CONFIRMs an
+        admin-created user is ``admin_set_user_password(..., Permanent=True)``:
+
+          * we check the live ``UserStatus`` first (idempotent: CONFIRMED is a no-op replay,
+            and a re-run can never clobber a password the user has since set themselves);
+          * FORCE_CHANGE_PASSWORD -> set a GENERATED, single-use, immediately-discarded strong
+            password (Permanent=True flips the user to CONFIRMED) and mark ``email_verified``
+            true — the address WAS verified, by OUR signed Resend link (verify-before-pay), so
+            the user onboards via the Hosted UI "Forgot your password?" flow, which emails a
+            Cognito reset code to that verified address. No credential ever travels by email
+            or persists anywhere;
+          * the legacy UNCONFIRMED path (self-signup pools) keeps the old
+            ``admin_confirm_sign_up`` + narrow already-CONFIRMED tolerance.
         """
         client = self._cidp()
+        status = ""
+        if hasattr(client, "admin_get_user"):
+            user = client.admin_get_user(UserPoolId=self._pool_id, Username=sub)
+            status = user.get("UserStatus", "")
+        if status == "CONFIRMED":
+            return  # idempotent replay — and never reset a password the user now owns
+        if status == "FORCE_CHANGE_PASSWORD":
+            # The documented working path for admin-created users + the Hosted UI.
+            client.admin_set_user_password(
+                UserPoolId=self._pool_id,
+                Username=sub,
+                Password=generate_permanent_password(),  # discarded — never stored or sent
+                Permanent=True,
+            )
+            # Our Resend flow verified the address (verify-before-pay) — flip the Cognito flag
+            # so the Hosted UI forgot-password flow can deliver the user's real first password.
+            client.admin_update_user_attributes(
+                UserPoolId=self._pool_id,
+                Username=sub,
+                UserAttributes=[{"Name": "email_verified", "Value": "true"}],
+            )
+            return
         try:
             client.admin_confirm_sign_up(UserPoolId=self._pool_id, Username=sub)
         except client.exceptions.NotAuthorizedException as e:
@@ -116,12 +148,31 @@ class CognitoAdminClient:
             # NotAuthorizedException both for that AND for real authorization failures (missing
             # IAM perms, disabled user, wrong pool) — swallowing those would mark a broken
             # provisioning step as done. Match the status wording narrowly; re-raise the rest.
-            # VERIFY (live pool): the already-confirmed message is
-            # "User cannot be confirmed. Current status is CONFIRMED" — note the substring must
-            # not also match "... status is UNCONFIRMED" (it doesn't: "is CONFIRMED" != "is
-            # UNCONFIRMED"); confirm exact wording against the live pool before trusting e2e.
+            # The already-confirmed message is "User cannot be confirmed. Current status is
+            # CONFIRMED" — note the substring must not also match "... status is UNCONFIRMED"
+            # (it doesn't: "is CONFIRMED" != "is UNCONFIRMED").
             if "status is CONFIRMED" not in str(e):
                 raise
+
+
+def generate_permanent_password(length: int = 32) -> str:
+    """A strong random password satisfying every Cognito policy class (upper/lower/digit/symbol).
+
+    Single-use credential material for ``admin_set_user_password(Permanent=True)`` — generated,
+    used for the one API call, and discarded. Never logged, stored, or transmitted.
+    """
+    import secrets as _secrets  # noqa: PLC0415 — stdlib, imported where used
+    import string  # noqa: PLC0415
+
+    classes = [string.ascii_uppercase, string.ascii_lowercase, string.digits, "!@#$%^&*()-_=+"]
+    alphabet = "".join(classes)
+    chars = [_secrets.choice(c) for c in classes]
+    chars += [_secrets.choice(alphabet) for _ in range(max(length, 12) - len(chars))]
+    # Order-shuffle with CSPRNG draws (avoid random.shuffle's non-crypto PRNG).
+    for i in range(len(chars) - 1, 0, -1):
+        j = _secrets.randbelow(i + 1)
+        chars[i], chars[j] = chars[j], chars[i]
+    return "".join(chars)
 
 
 def from_config(cfg: Any = None) -> CognitoAdminClient:

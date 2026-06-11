@@ -164,6 +164,34 @@ def test_dsn_guard_selects_aurora_backed_stores(monkeypatch):
     assert isinstance(deps.accounts.store, PgAccountStore)
     assert isinstance(deps.payment.event_ledger, PgStripeEventLedger)
     assert isinstance(deps.accounts.otp._store, PgOtpStore)  # OTP state shared across tasks
+    # The pre-minted workspace-key pool (issue #152) rides the same dsn guard: provisioning
+    # consumes Console-pre-minted keys, never the dead Admin-API key-create endpoint.
+    from signup.key_pool import PgWorkspaceKeyPool
+    provisioner = deps.payment.on_paid.__self__
+    assert isinstance(provisioner.key_pool, PgWorkspaceKeyPool)
+
+
+@pytest.mark.unit
+def test_key_pool_absent_without_dsn(monkeypatch):
+    _cfg(monkeypatch, signup_real_deps=True)
+    deps = prod_deps.build_signup_deps()
+    assert deps.payment.on_paid.__self__.key_pool is None
+
+
+# ------------------------------------------------- the internal bypass (its own env switch)
+@pytest.mark.unit
+def test_internal_bypass_default_is_off(monkeypatch):
+    _cfg(monkeypatch, signup_real_deps=True)
+    deps = prod_deps.build_signup_deps()
+    assert deps.internal_bypass_domains == frozenset()   # default EMPTY = feature off
+
+
+@pytest.mark.unit
+def test_internal_bypass_wired_from_config(monkeypatch):
+    _cfg(monkeypatch, signup_real_deps=True,
+         signup_internal_bypass_domains="friesenlabs.com, Example.io")
+    deps = prod_deps.build_signup_deps()
+    assert deps.internal_bypass_domains == frozenset({"friesenlabs.com", "example.io"})
 
 
 # ------------------------------------------------- the SIGNUP_REAL_DEPS master switch
