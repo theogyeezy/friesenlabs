@@ -85,8 +85,10 @@ class Provisioner:
         self.tenant_defaults = tenant_defaults
         # Optional signup.key_pool.PgWorkspaceKeyPool (issue #152 — the ratified Console
         # pre-minted-key pool: the Admin API cannot mint keys, 405). When present, step 2
-        # CONSUMES one pre-minted key per tenant (idempotent per-tenant claim; an EMPTY pool
-        # raises WorkspaceKeyPoolEmpty -> the signup parks as pool_empty for retry) instead of
+        # CONSUMES one pre-minted key REFERENCE per tenant (a Secrets Manager name, NOT material —
+        # the pool table is not the secret store; idempotent per-tenant claim; an EMPTY pool
+        # raises WorkspaceKeyPoolEmpty -> the signup parks as pool_empty for retry) and resolves
+        # it to material via `self.secrets.get` before writing the per-tenant secret, instead of
         # calling the dead admin.create_workspace_key endpoint. None = the legacy admin-mint
         # seam (offline tests / unconfigured deploys keep their stub behavior).
         self.key_pool = key_pool
@@ -282,7 +284,12 @@ class Provisioner:
                 if created is not None:
                     created["workspace"] = ws_id
             if not self.secrets.exists(secret_path):
-                self.secrets.put(secret_path, entry.key)
+                # The pool hands back a Secrets Manager REFERENCE, never the key — material lives
+                # only in Secrets Manager (the DB is not the secret store; issue: workspace-key
+                # plaintext). Resolve the reference to material, then write it to the per-tenant
+                # secret. `secrets.get` is the read seam (raises if the referenced secret is
+                # missing -> the step fails loudly -> the signup parks for a clean retry).
+                self.secrets.put(secret_path, self.secrets.get(entry.secret_ref))
             self.admin.set_limits(ws_id, account.tenant_id)  # Console act today; soft-fails
             return
         ws_id = self._workspace_id(account)
