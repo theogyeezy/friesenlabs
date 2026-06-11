@@ -87,6 +87,30 @@ export interface ChatResponse {
   delegations?: string[];
   session_id?: string | null;
   tenant_id?: string | null;
+  /** Balto (conv/views.py): true when the turn is a view-shaped ask — the answer is the exact
+   * Balto status line and `view_request` is what the client forwards to synthesizeView. */
+  view_intent?: boolean;
+  view_request?: string | null;
+}
+
+/** Body for POST /views/synthesize — the NL ask Balto builds a view for. No tenant_id. */
+export interface SynthesizeViewBody {
+  request: string;
+}
+
+/** Mirrors conv.views.ViewSynthesizer.synthesize results (status-keyed, honest). */
+export interface SynthesizeViewResponse {
+  status: "ok" | "exists" | "data_not_found" | "invalid";
+  /** status=ok: the ephemeral draft handle (save persists it; discard = never saving). */
+  draft_id?: string;
+  /** status=ok: the validated view-spec JSON (schema + real Cube members — spec, not code). */
+  spec?: Record<string, unknown>;
+  /** status=exists: the saved view that already covers the ask. */
+  view?: SavedViewRow;
+  /** status=data_not_found: the honest "data does not exist on the platform" copy. */
+  message?: string;
+  error?: string;
+  attempts?: number;
 }
 
 /** Body for POST /actions. Note: carries no tenant_id. */
@@ -933,6 +957,30 @@ export class ApiClient {
       return (await this.mockApi()).chat(message);
     }
     return this.request<ChatResponse>("POST", "/chat", { message });
+  }
+
+  /**
+   * Balto: synthesize a NEW tenant view from an NL ask (POST /views/synthesize).
+   * Status-keyed and honest — `data_not_found` when no Cube member can answer the ask
+   * (never a hallucinated view), `exists` when a saved view already covers it. Nothing
+   * is persisted by this call; `ok` returns an ephemeral draft.
+   */
+  async synthesizeView(body: SynthesizeViewBody): Promise<SynthesizeViewResponse> {
+    if (this.mock) {
+      return (await this.mockApi()).synthesizeView(body);
+    }
+    return this.request<SynthesizeViewResponse>("POST", "/views/synthesize", body);
+  }
+
+  /** Persist a Balto draft via the existing saved-view store (the explicit user save). */
+  async saveViewDraft(draftId: string): Promise<SavedViewRow> {
+    if (this.mock) {
+      return (await this.mockApi()).saveViewDraft(draftId);
+    }
+    return this.request<SavedViewRow>(
+      "POST",
+      `/views/drafts/${encodeURIComponent(draftId)}/save`,
+    );
   }
 
   async runAction(body: ActionBody): Promise<ActionResponse> {

@@ -28,7 +28,10 @@ export type FunnelEvent =
   | "payment_succeeded"
   | "instance_provisioned"
   | "first_login"
-  | "chat_message_sent";
+  | "chat_message_sent"
+  // Balto (NL view creation): coarse outcome signals only — never the ask text.
+  | "view_synthesis_finished"
+  | "view_synthesis_saved";
 
 /** Non-secret, coarse properties only. Never a password, token, or tenant_id. */
 export type EventProps = Record<string, string | number | boolean | null | undefined>;

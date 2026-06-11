@@ -62,6 +62,15 @@ const kpiTotals: Record<string, DataRow[]> = {
   "Deals.count": [{ "Deals.count": 42 }],
 };
 
+// Deal counts per stage — the Balto demo spec's chart query (Deals.count by Deals.stage).
+const dealsByStage: DataRow[] = [
+  { stage: "Qualify", value: 9 },
+  { stage: "Discovery", value: 12 },
+  { stage: "Proposal", value: 8 },
+  { stage: "Negotiation", value: 7 },
+  { stage: "Closing", value: 6 },
+];
+
 /**
  * Offline data stub for the demo and e2e. Resolves a CubeQuery to fixture rows.
  * Injected into SpecRenderer as the loadData prop; the renderer itself never
@@ -80,6 +89,11 @@ export async function sampleLoadData(query: CubeQuery): Promise<DataRow[]> {
   // Pipeline value by stage chart.
   if (dimensions.includes("Deals.stage") && measures.includes("Deals.totalValue")) {
     return pipelineByStage;
+  }
+
+  // Deal count by stage chart (the Balto-synthesized demo view).
+  if (dimensions.includes("Deals.stage") && measures.includes("Deals.count")) {
+    return dealsByStage;
   }
 
   return [];
