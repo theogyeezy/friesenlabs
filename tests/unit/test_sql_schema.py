@@ -3,6 +3,14 @@
 This is a static gate that runs with no database — it parses the SQL against the real Postgres
 grammar (libpg_query via pglast) and asserts the RLS contract, catching the #1 isolation gotcha
 ("forgot FORCE") automatically.
+
+HONESTY GUARANTEE: the tenant-table list is DERIVED from db/schema.sql itself, never frozen in
+this file. A tenant table is any CREATE TABLE whose tenant_id column is mandatory (NOT NULL or
+PRIMARY KEY) and that is not explicitly marked `-- RLS-EXEMPT: <reason>` in the comment block
+above its CREATE TABLE (the pre-tenant signup tables). The gate cross-checks that derived set
+against the schema's own `tenant_tables` DO-block array AND against the crm_app GRANTs in
+roles.sql — so adding a tenant table without RLS, without the array entry, or without a GRANT
+(the fresh-load zero-privilege gap) fails here instead of silently going stale.
 """
 import os
 import re
@@ -14,27 +22,55 @@ DB_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "db")
 SCHEMA = os.path.join(DB_DIR, "schema.sql")
 ROLES = os.path.join(DB_DIR, "roles.sql")
 
-TENANT_TABLES = [
-    "documents", "companies", "contacts", "deals",
-    "activities", "saved_views", "approvals", "traces", "ingest_cursor",
-    "tenant_workspaces", "tenant_settings",
-]
-
-# THE static-gate exemption list: tables deliberately OUTSIDE the RLS contract. Every entry is
-# PRE-TENANT infrastructure (rows exist before any tenant_id is minted, so a tenant_isolation
-# policy cannot apply) and MUST carry an `RLS-EXEMPT` comment in db/schema.sql; access control
-# is the crm_app GRANT surface, not RLS. Adding a table here is a deliberate reviewed act.
-RLS_EXEMPT_TABLES = [
-    "accounts",        # signup rows precede tenant minting (Phase 10)
-    "stripe_events",   # webhook idempotency ledger (pre-tenant)
-    "workspace_keys",  # pre-minted Anthropic key pool (issue #152 — pre-tenant infrastructure)
-    "leads",           # public marketing leads (precede any account or tenant)
-]
-
 
 def _read(path: str) -> str:
     with open(path, "r", encoding="utf-8") as f:
         return f.read()
+
+
+# --------------------------------------------------------------------------- #
+# Derivation — the table lists below come from the schema, not from this file.
+# --------------------------------------------------------------------------- #
+_CREATE_RE = re.compile(
+    r"((?:^[ \t]*--[^\n]*\n)*)^CREATE TABLE IF NOT EXISTS (\w+) \((.*?)\n\);",
+    re.S | re.M,
+)
+
+
+def _tables(sql: str) -> dict[str, dict]:
+    """Every CREATE TABLE in schema.sql -> {name: {comment, body}}.
+
+    `comment` is the contiguous `--` comment block immediately above the CREATE
+    (where the RLS-EXEMPT marker lives, per the schema.sql convention).
+    """
+    out: dict[str, dict] = {}
+    for m in _CREATE_RE.finditer(sql):
+        out[m.group(2)] = {"comment": m.group(1), "body": m.group(3)}
+    return out
+
+
+def _has_mandatory_tenant_id(body: str) -> bool:
+    return bool(re.search(r"tenant_id\s+uuid\s+(NOT NULL|PRIMARY KEY)", body))
+
+
+def derive_tenant_tables(sql: str) -> list[str]:
+    """Tenant tables = mandatory tenant_id, minus explicit RLS-EXEMPT markers."""
+    return sorted(
+        name
+        for name, t in _tables(sql).items()
+        if _has_mandatory_tenant_id(t["body"]) and "RLS-EXEMPT" not in t["comment"]
+    )
+
+
+def do_block_tenant_tables(sql: str) -> list[str]:
+    """The schema's own source of truth: the tenant_tables array in the RLS DO block."""
+    m = re.search(r"tenant_tables text\[\] := ARRAY\[(.*?)\];", sql, re.S)
+    assert m, "RLS DO-block tenant_tables array not found in schema.sql"
+    return sorted(re.findall(r"'(\w+)'", m.group(1)))
+
+
+_SCHEMA_SQL = _read(SCHEMA)
+TENANT_TABLES = derive_tenant_tables(_SCHEMA_SQL)
 
 
 @pytest.mark.unit
@@ -51,60 +87,53 @@ def test_roles_parses():
 
 
 @pytest.mark.unit
-def test_every_tenant_table_has_tenant_id():
-    sql = _read(SCHEMA)
-    for t in TENANT_TABLES:
-        # crude but effective: the CREATE TABLE block for t must declare a non-nullable
-        # tenant_id uuid (NOT NULL, or PRIMARY KEY which implies it).
-        m = re.search(rf"CREATE TABLE IF NOT EXISTS {t} \((.*?)\n\);", sql, re.S)
-        assert m, f"no CREATE TABLE found for {t}"
-        assert re.search(r"tenant_id\s+uuid\s+(NOT NULL|PRIMARY KEY)", m.group(1)), \
-            f"{t} missing a non-nullable 'tenant_id uuid'"
+def test_derivation_sees_the_full_schema():
+    """The derivation regex actually matched the schema's tables (guards the gate's own
+    machinery: a formatting change that blinds the regex must fail loudly, not shrink
+    the gate to an empty list)."""
+    tables = _tables(_SCHEMA_SQL)
+    assert len(tables) >= 13, f"only matched {sorted(tables)} — derivation regex went blind?"
+    # Known anchors on both sides of the split:
+    assert "documents" in TENANT_TABLES
+    assert "tenant_workspaces" in TENANT_TABLES
+    assert "tenant_settings" in TENANT_TABLES
+    assert "accounts" not in TENANT_TABLES        # RLS-EXEMPT (pre-tenant)
+    assert "stripe_events" not in TENANT_TABLES   # RLS-EXEMPT (pre-tenant, no tenant scope)
 
 
 @pytest.mark.unit
-def test_every_created_table_is_tenant_scoped_or_explicitly_rls_exempt():
-    """The exemption gate: NO table may silently sit outside the RLS contract.
+def test_do_block_array_matches_derived_tenant_tables():
+    """The schema's tenant_tables array == the derived set. A new tenant table missing from
+    the array (no RLS policy!) or a stale array entry both fail here."""
+    assert do_block_tenant_tables(_SCHEMA_SQL) == TENANT_TABLES
 
-    Every CREATE TABLE in schema.sql must be either in TENANT_TABLES (FORCE'd RLS, asserted
-    below) or in the deliberate RLS_EXEMPT_TABLES list above — a new table that is neither
-    fails here and forces the author to choose (and document) a side.
-    """
-    sql = _read(SCHEMA)
-    created = re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)", sql)
-    assert created, "no CREATE TABLE statements found"
-    unaccounted = [t for t in created if t not in TENANT_TABLES and t not in RLS_EXEMPT_TABLES]
-    assert unaccounted == [], (
-        f"tables outside both the RLS contract and the exemption list: {unaccounted} — "
-        "add FORCE'd RLS (tenant_tables array + EOF statements) or, for pre-tenant "
-        "infrastructure, an RLS-EXEMPT comment + the RLS_EXEMPT_TABLES list here"
+
+@pytest.mark.unit
+def test_every_rls_exempt_table_carries_a_reason():
+    """Pre-tenant tables opt out of RLS only via an explicit `-- RLS-EXEMPT: <reason>` marker."""
+    for name, t in _tables(_SCHEMA_SQL).items():
+        if name in TENANT_TABLES:
+            continue
+        assert "RLS-EXEMPT" in t["comment"], (
+            f"{name} is not in the tenant tables but has no RLS-EXEMPT marker — "
+            "either add it to RLS (tenant_tables array + FORCE) or mark the exemption"
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("table", TENANT_TABLES)
+def test_every_tenant_table_has_mandatory_tenant_id(table):
+    body = _tables(_SCHEMA_SQL)[table]["body"]
+    assert _has_mandatory_tenant_id(body), (
+        f"{table} missing a mandatory tenant_id (uuid NOT NULL / uuid PRIMARY KEY)"
     )
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("table", RLS_EXEMPT_TABLES)
-def test_exempt_table_carries_rls_exempt_comment_and_no_policy(table):
-    """Every exempt table documents WHY (the RLS-EXEMPT comment convention) — and none of them
-    accidentally grows a tenant_isolation policy (which would break pre-tenant writes)."""
-    sql = _read(SCHEMA)
-    create = sql.find(f"CREATE TABLE IF NOT EXISTS {table} ")
-    assert create != -1, f"no CREATE TABLE found for {table}"
-    # The RLS-EXEMPT comment sits in the block ABOVE the CREATE (schema convention).
-    preceding = sql[max(0, create - 1500):create]
-    assert "RLS-EXEMPT" in preceding, \
-        f"{table} is exempt but carries no 'RLS-EXEMPT: <reason>' comment block"
-    assert not re.search(rf"CREATE POLICY \w+ ON {table}\b", sql), \
-        f"{table} is RLS-EXEMPT but has a policy"
-    # And it must NOT be in the DO-block tenant_tables array.
-    do_block = re.search(r"tenant_tables text\[\] := ARRAY\[(.*?)\];", sql, re.S).group(1)
-    assert f"'{table}'" not in do_block, f"{table} is exempt but listed in tenant_tables"
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize("table", TENANT_TABLES)
 def test_table_enables_and_forces_rls(table):
     """Without FORCE, the table owner bypasses RLS — tenant isolation silently fails."""
-    sql = _read(SCHEMA)
+    sql = _SCHEMA_SQL
     assert re.search(rf"ALTER TABLE {table}\s+ENABLE ROW LEVEL SECURITY", sql), \
         f"{table} never ENABLEs RLS"
     assert re.search(rf"ALTER TABLE {table}\s+FORCE ROW LEVEL SECURITY", sql), \
@@ -133,3 +162,101 @@ def test_app_role_is_non_bypass():
     assert "NOBYPASSRLS" in roles
     assert "NOSUPERUSER" in roles
     assert re.search(r"GRANT SELECT, INSERT, UPDATE, DELETE", roles)
+
+
+# --------------------------------------------------------------------------- #
+# Grant-surface gate (static): every tenant table must be granted to crm_app in
+# roles.sql, and the audit-trail tables must stay append-only.
+# --------------------------------------------------------------------------- #
+def _granted_tables(roles_sql: str) -> dict[str, set[str]]:
+    """{table: union of privileges GRANTed to crm_app} from roles.sql (REVOKEs subtracted,
+    in file order — the effective fresh-load surface)."""
+    grants: dict[str, set[str]] = {}
+    stmt_re = re.compile(
+        r"^\s*(GRANT|REVOKE)\s+([A-Z, ]+?)\s+ON\s+([\w, \n]+?)\s+(?:TO|FROM)\s+crm_app",
+        re.M,
+    )
+    # Strip comments so commented-out examples never count.
+    src = re.sub(r"--[^\n]*", "", roles_sql)
+    for verb, privs, tables in stmt_re.findall(src):
+        privset = {p.strip() for p in privs.split(",") if p.strip()}
+        for table in (t.strip() for t in tables.split(",") if t.strip()):
+            if verb == "GRANT":
+                grants.setdefault(table, set()).update(privset)
+            else:
+                grants.setdefault(table, set()).difference_update(privset)
+    return grants
+
+
+@pytest.mark.unit
+def test_every_tenant_table_is_granted_to_crm_app():
+    """The fresh-load GRANT gap: ALTER DEFAULT PRIVILEGES only covers tables created AFTER
+    roles.sql runs, and schema.sql runs first — so every tenant table needs an explicit GRANT
+    or crm_app has ZERO privileges on it on a fresh load (tenant_workspaces/tenant_settings
+    had exactly this hole)."""
+    grants = _granted_tables(_read(ROLES))
+    for table in TENANT_TABLES:
+        effective = grants.get(table, set())
+        assert {"SELECT", "INSERT"} <= effective, (
+            f"{table} has no usable crm_app GRANT in roles.sql (fresh-load gap): {effective}"
+        )
+
+
+@pytest.mark.unit
+def test_audit_trail_grants_are_append_only():
+    """approvals: the Greenlight decided-flip needs UPDATE, but never DELETE.
+    traces: strictly append-only — neither UPDATE nor DELETE."""
+    grants = _granted_tables(_read(ROLES))
+    assert "DELETE" not in grants["approvals"], "crm_app must not DELETE approvals (audit trail)"
+    assert "UPDATE" in grants["approvals"], "Greenlight needs UPDATE for the decided flip"
+    assert "DELETE" not in grants["traces"], "crm_app must not DELETE traces (audit trail)"
+    assert "UPDATE" not in grants["traces"], "traces are append-only — no UPDATE"
+    # Per-tenant control rows: upserted, never deleted by the app.
+    for table in ("tenant_workspaces", "tenant_settings"):
+        assert "DELETE" not in grants[table], f"crm_app must not DELETE {table}"
+        assert {"SELECT", "INSERT", "UPDATE"} <= grants[table]
+
+
+# --------------------------------------------------------------------------- #
+# Composite same-tenant FKs — FK checks run as the table owner (RLS does NOT
+# scope them), so single-column FKs to companies(id)/contacts(id)/deals(id)
+# could validate against ANOTHER tenant's parent row. The schema must carry the
+# composite (tenant_id, id) constraints instead.
+# --------------------------------------------------------------------------- #
+COMPOSITE_FKS = [
+    ("contacts", "company_id", "companies"),
+    ("deals", "company_id", "companies"),
+    ("deals", "contact_id", "contacts"),
+    ("activities", "contact_id", "contacts"),
+    ("activities", "deal_id", "deals"),
+]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("child,col,parent", COMPOSITE_FKS)
+def test_child_fk_is_composite_same_tenant(child, col, parent):
+    pattern = (
+        rf"ALTER TABLE {child} ADD CONSTRAINT \w+\s+"
+        rf"FOREIGN KEY \(tenant_id, {col}\) REFERENCES {parent} \(tenant_id, id\)"
+    )
+    assert re.search(pattern, _SCHEMA_SQL), (
+        f"{child}.{col} -> {parent} must be a composite (tenant_id, {col}) FK — "
+        "a single-column FK validates across tenants (FK checks bypass RLS)"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("parent", sorted({p for _, _, p in COMPOSITE_FKS}))
+def test_fk_parent_has_tenant_scoped_unique_key(parent):
+    assert re.search(
+        rf"ALTER TABLE {parent} ADD CONSTRAINT \w+ UNIQUE \(tenant_id, id\)", _SCHEMA_SQL
+    ), f"{parent} needs UNIQUE (tenant_id, id) to anchor the composite FKs"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("child,col,parent", COMPOSITE_FKS)
+def test_single_column_fk_is_dropped(child, col, parent):
+    """The inline single-column FK (cross-tenant capable) must be retired by the migration."""
+    assert re.search(
+        rf"ALTER TABLE {child}\s+DROP CONSTRAINT IF EXISTS {child}_{col}_fkey", _SCHEMA_SQL
+    ), f"{child}.{col}: the single-column {child}_{col}_fkey is never dropped"
