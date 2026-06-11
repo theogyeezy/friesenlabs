@@ -113,3 +113,30 @@ multi-instance (integration, 4), web approve/edit e2e (2), live `verify_agent_pl
 
 Not covered: approvals-table RLS probe, expiry (nothing to test), deny e2e, stale/double-decide
 e2e, pool exhaustion, dial cache read-back.
+
+## Hardening implemented (same branch, 2026-06-11)
+
+Everything above except the two documented postures below was implemented on this branch:
+expiry (lazy, `expires_at` + `GREENLIGHT_TTL_HOURS`, default 7d), `GET /approvals` keyset
+pagination + `total_pending`, the partial pending index, the isolation-gate approvals probe,
+the `/chat` kill-switch gate, draft-only logging + honest UI outcome copy, status-named decide
+errors + stale-decided UX, queue 404 degrade, real-mode nav badge + quiet polling + refresh,
+structured "what this will do" panel, deny reasons, worker TOOLS derived from grants,
+timezone-aware quiet hours + compliance block logging, applier audit linkage
+(`approval_id`/`decided_by` on `apply_result`), and tests for the pool-retry/dial-cache gaps.
+
+### Documented postures (deliberate, not gaps)
+
+* **Authorization (v1):** any authed member of a tenant may approve/deny that tenant's
+  approvals and flip its kill switch/autonomy dial — the Cognito ID token carries no role
+  claim today, so every authed tenant user is a tenant admin (`api/routes_control.py` module
+  docstring is the canonical statement; global kill-switch scope stays operator-allowlisted).
+  Tighten to a role-claim check when one lands in the pool.
+* **Retention:** decided/expired approval rows are kept indefinitely (append-forever audit
+  trail; DELETE is revoked from `crm_app` by design). The pending index is partial, so queue
+  reads don't degrade as history accumulates. Revisit with a compliance-driven archival policy
+  if a customer contract requires one.
+* **MA pause semantics:** while the kill switch is engaged, `/chat` refuses turns (409) and
+  approval-execution refuses (409, the approval stays pending). Proposals already in flight
+  inside the Managed-Agents plane may still land in the queue during a pause — they are
+  drafts, not effects, and cannot execute until the pause lifts.

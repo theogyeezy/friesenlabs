@@ -627,8 +627,12 @@ export class MockApi {
 
   decideApproval(id: number, body: DecideBody): Approval {
     const rec = this.approvals.find((a) => a.id === id);
-    if (!rec || rec.status !== "pending") {
+    if (!rec) {
       throw new ApiError(400, `approval ${id} not pending`);
+    }
+    if (rec.status !== "pending") {
+      // Message parity with api/control/greenlight.py: name where the row actually landed.
+      throw new ApiError(400, `approval ${id} already ${rec.status}`);
     }
     if (body.decision === "deny") {
       rec.status = "denied";
@@ -638,6 +642,14 @@ export class MockApi {
         rec.proposed_action = { ...rec.proposed_action, ...body.edits };
       }
       rec.status = "approved";
+      // apply_result parity: send_email/issue_quote are record-only (draft-only guarantee);
+      // everything else reports an applied write.
+      const action = String(rec.proposed_action.action ?? "");
+      rec.apply_result =
+        action === "send_email" || action === "issue_quote"
+          ? { performed: false, reason: "draft-only until provider go-live" }
+          : { performed: true, action };
+      rec.applied_at = new Date().toISOString();
     } else {
       throw new ApiError(400, `unknown decision ${String(body.decision)}`);
     }

@@ -31,13 +31,24 @@ export interface Approval {
   agent: string | null;
   reasoning: string;
   value_at_stake: number | null;
-  status: "pending" | "approved" | "denied";
+  status: "pending" | "approved" | "denied" | "expired";
   deny_message?: string;
   decided_by?: string | null;
+  created_at?: string | null;
+  /** Approval TTL (server-stamped); an expired draft can no longer be approved. */
+  expires_at?: string | null;
+  applied_at?: string | null;
+  /** Post-approval execution audit. `performed: false` means NOTHING real happened
+   * (e.g. send_email is draft-only until provider go-live) — surface that honestly. */
+  apply_result?: (Record<string, unknown> & { performed?: boolean; reason?: string }) | null;
 }
 
+/** GET /approvals — one keyset page + the tenant's total pending count (nav badge).
+ * cursor/total_pending are optional so older intercepts/mocks remain valid. */
 export interface ListApprovalsResponse {
   approvals: Approval[];
+  cursor?: string | null;
+  total_pending?: number;
 }
 
 export type Decision = "approve" | "edit" | "deny";
@@ -1314,12 +1325,18 @@ export class ApiClient {
 
   // --- API methods ----------------------------------------------------------
 
-  async listApprovals(): Promise<Approval[]> {
+  async listApprovals(opts?: { limit?: number; cursor?: string }): Promise<ListApprovalsResponse> {
     if (this.mock) {
-      return (await this.mockApi()).listApprovals();
+      const approvals = (await this.mockApi()).listApprovals();
+      return { approvals, cursor: null, total_pending: approvals.length };
     }
-    const data = await this.request<ListApprovalsResponse>("GET", "/approvals");
-    return data.approvals;
+    // No-opts calls keep the bare /approvals URL (server applies its default page size) so
+    // existing e2e route intercepts on "**/approvals" stay valid.
+    const q = new URLSearchParams();
+    if (opts?.limit !== undefined) q.set("limit", String(opts.limit));
+    if (opts?.cursor) q.set("cursor", opts.cursor);
+    const qs = q.toString();
+    return this.request<ListApprovalsResponse>("GET", qs ? `/approvals?${qs}` : "/approvals");
   }
 
   async decideApproval(id: number, body: DecideBody): Promise<Approval> {

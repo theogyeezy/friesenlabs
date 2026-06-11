@@ -293,6 +293,60 @@ test("network failure shows friendly connection copy, not the transport error", 
   expect(text).not.toMatch(/API \d+/);
 });
 
+test("greenlight: a 404 control plane degrades to the honest not-yet-enabled card", async ({ page }) => {
+  await page.route("**/approvals", (route) =>
+    route.fulfill({ status: 404, json: { detail: "not found" } }),
+  );
+
+  await page.goto("/?view=greenlight");
+
+  await expect(page.getByTestId("gl-not-enabled")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId("gl-not-enabled")).toContainText("isn't enabled on this deployment yet");
+  await expect(page.getByTestId("gl-error")).toHaveCount(0);
+  await expect(page.getByTestId("gl-empty")).toHaveCount(0);
+
+  const text = await bodyText(page);
+  expect(text).not.toMatch(/API \d+/);
+});
+
+test("greenlight: an already-decided approval explains itself and refreshes the queue", async ({ page }) => {
+  const ITEM = {
+    id: 7,
+    tenant_id: "tenant-e2e",
+    proposed_action: { action: "update_deal", deal_id: "d-1", changes: { stage: "closed_won" } },
+    agent: "ledger",
+    reasoning: "stale row another reviewer already handled",
+    value_at_stake: 900,
+    status: "pending",
+  };
+  let listCalls = 0;
+  await page.route("**/approvals", (route) => {
+    listCalls += 1;
+    // First load shows the (stale) item; the refresh after the 400 shows it gone.
+    route.fulfill({
+      json: listCalls === 1
+        ? { approvals: [ITEM], cursor: null, total_pending: 1 }
+        : { approvals: [], cursor: null, total_pending: 0 },
+    });
+  });
+  await page.route("**/approvals/7/decide", (route) =>
+    route.fulfill({ status: 400, json: { detail: "approval 7 already approved" } }),
+  );
+
+  await page.goto("/?view=greenlight");
+  await expect(page.getByTestId("approval-item")).toHaveCount(1, { timeout: 15_000 });
+
+  await page.getByTestId("approve-btn").click();
+
+  // A SPECIFIC notice (not the generic failure copy), then the queue re-syncs.
+  await expect(page.getByTestId("gl-toast")).toContainText("already decided elsewhere", { timeout: 15_000 });
+  await expect(page.getByTestId("approval-item")).toHaveCount(0, { timeout: 15_000 });
+  await expect(page.getByTestId("gl-error")).toHaveCount(0);
+
+  const text = await bodyText(page);
+  expect(text).not.toMatch(/API \d+/);
+});
+
 // --- Security & control surface (real mode) --------------------------------
 // The kill switch + autonomy dial PUT real state through /control/*, and each
 // control feature-detects a 404 and degrades to a disabled "not yet enabled"

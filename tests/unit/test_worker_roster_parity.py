@@ -63,3 +63,20 @@ def test_every_served_tool_resolves_in_the_trusted_registry():
 def test_worker_tool_names_are_unique():
     names = [t.name for t in worker.TOOLS]
     assert len(names) == len(set(names))
+
+
+@pytest.mark.unit
+def test_tools_are_derived_from_the_grants_not_hand_curated():
+    # The drift fix (Greenlight audit P1): TOOLS is BUILT from the roster grants through the
+    # trusted registry, so a new grant is served automatically — parity by construction.
+    from agents.roster import SCOUT
+    built = worker.build_tools([SCOUT])
+    assert {t.name for t in built} == set(SCOUT.tools)
+
+
+@pytest.mark.unit
+def test_build_tools_rejects_a_grant_with_no_registry_tool():
+    from agents.roster import AgentSpec, HAIKU
+    ghost = AgentSpec("ghost", HAIKU, "spec granting a tool that does not exist", ["no_such_tool"])
+    with pytest.raises(KeyError):
+        worker.build_tools([ghost])
