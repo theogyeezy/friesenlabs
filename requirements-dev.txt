@@ -5,6 +5,7 @@ anthropic>=0.40
 psycopg2-binary>=2.9
 pglast>=7.0          # libpg_query — static SQL grammar + RLS-contract tests (no DB needed)
 jsonschema>=4.20     # view-spec validation (Phase 7: spec-not-code)
+joblib>=1.3          # signed Cortex model artifacts (ml/artifacts.py)
 fastapi>=0.115       # control-plane HTTP API (Phase 9)
 httpx>=0.27          # FastAPI TestClient
 python-multipart>=0.0.9  # multipart forms (POST /integrations/csv/import) + its tests

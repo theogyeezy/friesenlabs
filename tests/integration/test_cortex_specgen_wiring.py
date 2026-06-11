@@ -31,6 +31,13 @@ from ml.registry import LocalFsRegistry
 from worker import worker
 
 
+@pytest.fixture(autouse=True)
+def _signing_key(monkeypatch):
+    """The persistent registry writes/reads HMAC-SIGNED artifacts (ml/artifacts.py) — every test
+    here gets a key, exactly like the deployed task env."""
+    monkeypatch.setenv("CORTEX_SIGNING_KEY", "test-signing-key")
+
+
 class StubModel:
     """Tiny sklearn-free estimator (module-level so the registry pickle round-trips)."""
 

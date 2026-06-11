@@ -30,6 +30,12 @@ ENV_DB_HOST, ENV_DB_NAME, ENV_DB_PORT = "DB_HOST", "DB_NAME", "DB_PORT"
 ENV_CORTEX_S3_BUCKET = "CORTEX_S3_BUCKET"  # S3 bucket holding serialized tenant models (prod)
 ENV_CORTEX_S3_PREFIX = "CORTEX_S3_PREFIX"  # key prefix in that bucket (empty -> cortex/registry)
 ENV_CORTEX_LOCAL_DIR = "CORTEX_LOCAL_DIR"  # local-filesystem registry root — dev/tests fallback
+# HMAC signing key for model ARTIFACTS (ml/artifacts.py) — the RESOLVED secret VALUE; LANE NICK
+# wires a Secrets Manager secret into the api/worker task-def `secrets` block under THIS name.
+# Unset = artifacts can be neither written nor verified, so nothing is ever unpickled
+# (run_model degrades cleanly). This closes RCE-via-bucket-write: a writer who can plant a blob
+# in the Cortex bucket cannot make this build deserialize it without the signing key.
+ENV_CORTEX_SIGNING_KEY = "CORTEX_SIGNING_KEY"
 # Cube REST auth (agents/tools/cube_client.py). The RESOLVED HS256 signing-secret VALUE — the same
 # secret the Cube service itself reads as CUBEJS_API_SECRET (infra/modules/cube, SM
 # uplift/cube-api-secret); LANE NICK wires it into the task-def `secrets` block under THIS name.
@@ -165,6 +171,10 @@ class Config:
     cortex_s3_bucket: str = os.environ.get("CORTEX_S3_BUCKET", "")
     cortex_s3_prefix: str = os.environ.get("CORTEX_S3_PREFIX", "")  # '' -> ml.registry default
     cortex_local_dir: str = os.environ.get("CORTEX_LOCAL_DIR", "")  # dev/tests fallback root
+    # The RESOLVED artifact-signing key VALUE (see ENV_CORTEX_SIGNING_KEY above). Empty =
+    # unconfigured: signed artifacts can be neither written nor loaded — never a silent fallback
+    # to unsigned pickle.
+    cortex_signing_key: str = os.environ.get("CORTEX_SIGNING_KEY", "")
 
     # --- Provisioning Step Functions trigger (api/prod_deps.SfnProvisioningTrigger; REQ-005) ---
     # The uplift-provisioning state machine ARN. A NEW, deliberate env name (never keyed off env
