@@ -549,6 +549,16 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   usable + safe; RAG-embed IAM gap closed live.
 
 ## Lane Matt (app code) — log
+- 2026-06-11 — **Neural constellation hero (landing):** the hero is now a live, dependency-free
+  canvas render of the real 11-product suite — Command Center at the heart, any-to-any transient
+  signal routes, product-true activity cards, and a ~9s Security guardrail interception (shield +
+  green card + relay to Greenlight) animating the draft-only guarantee. Previous hero (product
+  window + roster + trust) moved to the section below; blended H1 "Your AI workforce, working.
+  Watched by you." Perf/a11y held: rAF only on-screen + tab-visible, reduced-motion static frame,
+  DPR cap, mobile lite density, cards measure-fenced off the text block, canvas layer aria-hidden,
+  single `.lp-hero-cta` preserved for e2e. typecheck/build green; 111 Playwright + 30 unit pass.
+  Spec: `docs/superpowers/specs/2026-06-11-constellation-hero-design.md`. (Design brainstormed
+  against youtiva.com — verified their "globe" is a stock MP4 on a Webflow template; ours is real.)
 - 2026-06-10 — **LANE PRODUCT (real-mode tab build-out) — Pipeline · Contacts · Agents · Workflows · Reports:**
   converted five sidebar surfaces from FLStore prototypes to honest, API-wired real-mode views, each
   with loading/empty/error states, no fabricated data, and offline Playwright vs the REAL bundle.
