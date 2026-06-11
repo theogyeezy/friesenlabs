@@ -207,6 +207,7 @@ resource "aws_iam_role_policy" "api_task_cognito_signup" {
         "cognito-idp:AdminGetUser",
         "cognito-idp:AdminConfirmSignUp",
         "cognito-idp:AdminUpdateUserAttributes",
+        "cognito-idp:AdminSetUserPassword",
       ]
       Resource = var.cognito_user_pool_arn
     }]

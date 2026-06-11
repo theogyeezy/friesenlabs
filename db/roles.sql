@@ -97,3 +97,26 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON playbooks TO crm_app;
 -- drift evidence trail — rows resolve, they are never erased by the app.
 GRANT SELECT, INSERT, UPDATE ON predictions TO crm_app;
 REVOKE DELETE ON predictions FROM crm_app;
+
+-- ---------------------------------------------------------------------------
+-- Pre-tenant infrastructure / acquisition tables (RLS-EXEMPT by design; see schema.sql) —
+-- rows exist before any tenant_id, so access control is GRANT-based, not RLS. EXPLICIT grants
+-- are required for the same fresh-load reason as the other pre-tenant tables: schema.sql creates
+-- these BEFORE roles.sql, so the ALTER DEFAULT PRIVILEGES block above (which only covers tables
+-- created AFTER it runs) never reaches them — without these lines crm_app has ZERO privileges and
+-- a fresh deploy permission-denies key consumption + lead capture.
+--   workspace_keys: the pre-minted Anthropic workspace-key POOL. crm_app SELECTs an available row
+--     and UPDATEs it to 'consumed' in the atomic claim (signup/key_pool.py), and the loader INSERTs
+--     pool rows (scripts/ops/load_workspace_keys.py). NO DELETE: consumed rows are the
+--     key-allocation audit trail — they are never erased by the app.
+--   leads: public marketing-site lead capture. crm_app INSERTs a validated row per submission
+--     (signup/leads.py) and SELECTs for ops read-back. NO DELETE/UPDATE: a captured lead is an
+--     append-only record, never edited or erased by the app.
+GRANT SELECT, INSERT, UPDATE ON workspace_keys TO crm_app;
+GRANT SELECT, INSERT ON leads TO crm_app;
+-- The ALTER DEFAULT PRIVILEGES block above hands DELETE (and, for leads, UPDATE) to crm_app on any
+-- table created later by the migration role. Revoke the unintended privileges explicitly, or the
+-- no-DELETE intent is silently superseded — and re-asserting them makes a roles.sql re-run
+-- (api.migrate runs it on every migration) converge a grant-history live DB to this design.
+REVOKE DELETE ON workspace_keys FROM crm_app;
+REVOKE UPDATE, DELETE ON leads FROM crm_app;
