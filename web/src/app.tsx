@@ -394,6 +394,12 @@ function App() {
                     </div>
                   </div>
                   <div style={{ borderTop: "1px solid var(--line)", padding: 6 }}>
+                    {auth.isAuthenticated && (
+                      // Routes through Cognito's managed /changePassword (old +
+                      // new password, validated against the live Hosted-UI
+                      // session). The raw passwords never reach our app or DB.
+                      <a className="pm-item pm-change-pw" href="#" onClick={(e) => { e.preventDefault(); auth.changePassword(); }} style={{ textDecoration: "none" }}><Icon name="lock" size={16} /><span>Change password</span></a>
+                    )}
                     <a className="pm-item" href="Home.html" onClick={(e) => { if (auth.isAuthenticated) { e.preventDefault(); try { localStorage.removeItem("fl_me"); } catch (err) {} auth.signOut(); } }} style={{ color: "var(--rose)", textDecoration: "none" }}><Icon name="arrowRight" size={16} /><span>Sign out</span></a>
                   </div>
                 </div>

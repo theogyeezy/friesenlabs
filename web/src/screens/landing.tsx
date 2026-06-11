@@ -807,8 +807,9 @@ function ProductPage({ id, onClose, onAdd, onBook }) {
 }
 
 // onSignIn: wired by main.tsx to the Cognito Hosted UI signIn() when the
-// sign-in gate is active. Defaults to a no-op so the screen is render-safe
-// standalone.
+// sign-in gate is active. onForgotPassword: same wiring to the Hosted UI
+// managed /forgotPassword flow (account recovery). Both default to no-ops so
+// the screen is render-safe standalone.
 // Magnetic pull for primary CTAs — the button leans toward the cursor.
 function useMagnetic() {
   useEffect(() => {
@@ -1063,7 +1064,7 @@ function RoiCalculator() {
   );
 }
 
-function Landing({ onSignIn = () => {} } = {}) {
+function Landing({ onSignIn = () => {}, onForgotPassword = () => {} } = {}) {
   // The global app shell sets `body { overflow: hidden }` (it scrolls inside its
   // own panes). The marketing landing is a full-page document, so it must opt the
   // body back into scrolling via `body.lp-body` while mounted — without this the
@@ -1108,6 +1109,7 @@ function Landing({ onSignIn = () => {} } = {}) {
   // Anchors that act as buttons (sign-in, in-page modals): carry an href so
   // they're focusable + probe-visible, but the action runs in the SPA.
   const signInClick = (e) => { e.preventDefault(); setNavOpen(false); onSignIn(); };
+  const forgotClick = (e) => { e.preventDefault(); setNavOpen(false); onForgotPassword(); };
   const actionLink = (fn) => ({ href: "#", role: "button", onClick: (e) => { e.preventDefault(); fn(); } });
   // Lock body scroll while the mobile menu is open.
   useEffect(() => {
@@ -1178,6 +1180,7 @@ function Landing({ onSignIn = () => {} } = {}) {
             <a className="btn btn-primary btn-lg" href={SIGNUP_HREF}><LpIcon name="bolt" size={16} />Build your suite</a>
             <button className="btn btn-ghost btn-lg" onClick={() => { setNavOpen(false); setModal("book"); }}><LpIcon name="calendar" size={15} />Book a call</button>
             <a className="lp-mnav-signin" href={SIGNIN_HREF} onClick={signInClick}>Sign in</a>
+            <a className="lp-mnav-forgot lp-forgot" href={SIGNIN_HREF} onClick={forgotClick}>Forgot password?</a>
           </div>
         </div>
       </div>,

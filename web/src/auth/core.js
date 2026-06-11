@@ -102,6 +102,35 @@ export function buildAuthorizeUrl(p) {
 }
 
 /**
+ * Hosted UI managed account-recovery / password URL. The /forgotPassword and
+ * /changePassword managed pages take the SAME OAuth2 params as the authorize
+ * endpoint (client_id, response_type=code, scope, redirect_uri, state, PKCE
+ * S256) and, on completion, redirect back to redirect_uri with an
+ * authorization `code` — which the existing /auth/callback exchange turns into
+ * a session. So the password never touches our app or DB: Cognito owns creds.
+ *
+ *   forgotPassword — reset a forgotten password: code-entry + new-password,
+ *     then a code redirect (the user lands signed in).
+ *   changePassword — change the password of an ALREADY-signed-in user (it
+ *     relies on the Hosted UI session cookie set at sign-in).
+ *
+ * @param {{ action: "forgotPassword" | "changePassword", domain: string, clientId: string, redirectUri: string, scope: string, state: string, codeChallenge: string }} p
+ * @returns {string}
+ */
+export function buildHostedUiPasswordUrl(p) {
+  const q = new URLSearchParams({
+    client_id: p.clientId,
+    response_type: "code",
+    scope: p.scope,
+    redirect_uri: p.redirectUri,
+    state: p.state,
+    code_challenge: p.codeChallenge,
+    code_challenge_method: "S256",
+  });
+  return `https://${p.domain}/${p.action}?${q.toString()}`;
+}
+
+/**
  * Hosted UI GET /logout URL. logout_uri must exactly match a registered
  * logout URL (the site roots, with trailing slash — see infra/variables.tf).
  * @param {{ domain: string, clientId: string, logoutUri: string }} p
