@@ -1,0 +1,18 @@
+{
+  "template_id": "data-quality-auditor",
+  "summary": "Weekly CRM audit: missing fields, duplicate-looking contacts and inconsistent records, with proposed fixes queued for approval.",
+  "definition": {
+    "name": "Data quality auditor",
+    "description": "Weekly audit: scout profiles the CRM for gaps (missing emails/amounts, stale records, duplicate-looking contacts) and builds an audit view; ledger proposes record fixes for the worst offenders. Every proposed fix is a Greenlight draft.",
+    "trigger": {"kind": "schedule", "schedule": "0 14 * * 2"},
+    "roster": [
+      {"agent": "scout", "tools": ["read_crm", "query_cube", "build_view"]},
+      {"agent": "ledger", "tools": ["read_crm", "update_deal"]}
+    ],
+    "autonomy": "L1",
+    "greenlight": {
+      "side_effects": "always_ask",
+      "note": "Audit fixes are proposals only; nothing mutates the CRM without approval."
+    }
+  }
+}
