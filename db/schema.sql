@@ -330,3 +330,85 @@ CREATE INDEX IF NOT EXISTS leads_created_idx ON leads (created_at);
 -- policy (who may flip which scope) is enforced at the API boundary (api/routes_control.py).
 ALTER TABLE tenant_settings ADD COLUMN IF NOT EXISTS killswitch_engaged boolean NOT NULL DEFAULT false;
 ALTER TABLE tenant_settings ADD COLUMN IF NOT EXISTS killswitch_updated_at timestamptz;
+
+-- ---------------------------------------------------------------------------
+-- Cross-tenant FK hardening (appended; idempotent — psql ON_ERROR_STOP / api.migrate re-runs
+-- safely on fresh AND live databases).
+--
+-- THE HOLE: the inline single-column FKs (contacts.company_id -> companies(id),
+-- deals.company_id/contact_id, activities.contact_id/deal_id) validate against the parent's bare
+-- id — and Postgres FK checks run with the table OWNER's rights, so RLS does NOT scope the
+-- lookup. A row could therefore pass FK validation by pointing at ANOTHER tenant's parent row.
+--
+-- THE FIX: make tenant_id part of referential integrity itself. Each parent gets
+-- UNIQUE (tenant_id, id) (anchoring composite FKs; trivially satisfied — id alone is already the
+-- PK), and each child FK becomes (tenant_id, <parent>_id) REFERENCES parent (tenant_id, id), so a
+-- child can only ever reference a parent in the SAME tenant. The default MATCH SIMPLE keeps the
+-- nullable child columns optional (a NULL company_id/contact_id/deal_id still passes, exactly
+-- like the single-column FKs replaced here). The old single-column FKs are dropped LAST, inside
+-- the same DO block (one transaction): on a fresh load the inline FKs are created then replaced;
+-- if adding a composite FK fails on a live DB (pre-existing cross-tenant row = real data damage,
+-- surface it loudly), the whole block rolls back and the old FKs remain in place.
+-- ---------------------------------------------------------------------------
+DO $$
+BEGIN
+    -- Parents: UNIQUE (tenant_id, id) so the composite FKs have a key to reference.
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                   WHERE conname = 'companies_tenant_id_id_key'
+                     AND conrelid = 'companies'::regclass) THEN
+        ALTER TABLE companies ADD CONSTRAINT companies_tenant_id_id_key UNIQUE (tenant_id, id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                   WHERE conname = 'contacts_tenant_id_id_key'
+                     AND conrelid = 'contacts'::regclass) THEN
+        ALTER TABLE contacts ADD CONSTRAINT contacts_tenant_id_id_key UNIQUE (tenant_id, id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                   WHERE conname = 'deals_tenant_id_id_key'
+                     AND conrelid = 'deals'::regclass) THEN
+        ALTER TABLE deals ADD CONSTRAINT deals_tenant_id_id_key UNIQUE (tenant_id, id);
+    END IF;
+
+    -- Children: composite same-tenant FKs.
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                   WHERE conname = 'contacts_tenant_company_fkey'
+                     AND conrelid = 'contacts'::regclass) THEN
+        ALTER TABLE contacts ADD CONSTRAINT contacts_tenant_company_fkey
+            FOREIGN KEY (tenant_id, company_id) REFERENCES companies (tenant_id, id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                   WHERE conname = 'deals_tenant_company_fkey'
+                     AND conrelid = 'deals'::regclass) THEN
+        ALTER TABLE deals ADD CONSTRAINT deals_tenant_company_fkey
+            FOREIGN KEY (tenant_id, company_id) REFERENCES companies (tenant_id, id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                   WHERE conname = 'deals_tenant_contact_fkey'
+                     AND conrelid = 'deals'::regclass) THEN
+        ALTER TABLE deals ADD CONSTRAINT deals_tenant_contact_fkey
+            FOREIGN KEY (tenant_id, contact_id) REFERENCES contacts (tenant_id, id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                   WHERE conname = 'activities_tenant_contact_fkey'
+                     AND conrelid = 'activities'::regclass) THEN
+        ALTER TABLE activities ADD CONSTRAINT activities_tenant_contact_fkey
+            FOREIGN KEY (tenant_id, contact_id) REFERENCES contacts (tenant_id, id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                   WHERE conname = 'activities_tenant_deal_fkey'
+                     AND conrelid = 'activities'::regclass) THEN
+        ALTER TABLE activities ADD CONSTRAINT activities_tenant_deal_fkey
+            FOREIGN KEY (tenant_id, deal_id) REFERENCES deals (tenant_id, id);
+    END IF;
+
+    -- Retire the cross-tenant-capable single-column FKs (default psql names from the inline
+    -- REFERENCES above). Dropped only after every composite FK exists in this transaction —
+    -- there is no window where a child column has no tenant-aware FK. Also closes the existence
+    -- oracle: with both FKs in place, the error for "uuid exists in another tenant" differed
+    -- from "uuid does not exist".
+    ALTER TABLE contacts   DROP CONSTRAINT IF EXISTS contacts_company_id_fkey;
+    ALTER TABLE deals      DROP CONSTRAINT IF EXISTS deals_company_id_fkey;
+    ALTER TABLE deals      DROP CONSTRAINT IF EXISTS deals_contact_id_fkey;
+    ALTER TABLE activities DROP CONSTRAINT IF EXISTS activities_contact_id_fkey;
+    ALTER TABLE activities DROP CONSTRAINT IF EXISTS activities_deal_id_fkey;
+END $$;
