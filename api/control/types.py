@@ -43,4 +43,4 @@ class GateResult:
     detail: str = ""
     result: Any = None                   # executor output when executed
     approval: dict | None = None         # Greenlight record when pending
-    trace_id: int | None = None
+    trace_id: int | str | None = None    # int (in-memory store) or uuid str (PgTraceStore)

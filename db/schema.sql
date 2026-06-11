@@ -318,3 +318,15 @@ CREATE TABLE IF NOT EXISTS leads (
     created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS leads_created_idx ON leads (created_at);
+
+-- tenant_settings.killswitch_* — the PERSISTED kill switch (appended per the Matt-append rule;
+-- idempotent). Reuses the existing tenant_settings table (no new table): TENANT scope lives on the
+-- tenant's own row; GLOBAL scope lives on the reserved all-zeros control row
+-- (api/control/settings.py GLOBAL_CONTROL_TENANT — uuid4 minting always sets version/variant bits,
+-- so a provisioned tenant can never collide with it). Reads/writes ride the same per-op
+-- `SET LOCAL app.current_tenant` pattern as every tenant table (RLS scopes both scopes' rows);
+-- crm_app DML arrives via the ALTER DEFAULT PRIVILEGES grant in db/roles.sql (live-proven by
+-- signup/tenant_defaults.py writing this table). killswitch_updated_at is ops audit only —
+-- policy (who may flip which scope) is enforced at the API boundary (api/routes_control.py).
+ALTER TABLE tenant_settings ADD COLUMN IF NOT EXISTS killswitch_engaged boolean NOT NULL DEFAULT false;
+ALTER TABLE tenant_settings ADD COLUMN IF NOT EXISTS killswitch_updated_at timestamptz;
