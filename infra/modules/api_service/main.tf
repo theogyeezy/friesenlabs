@@ -118,6 +118,14 @@ variable "stripe_price_id_scale" {
   type    = string
   default = ""
 }
+# Phase-2 "selection sets the price": per-module recurring Stripe Price ids, keyed by the EXACT env
+# var name shared/modules.py reads (STRIPE_PRICE_ID_MODULE_<ID>, e.g. STRIPE_PRICE_ID_MODULE_CORTEX).
+# Empty map (default) => no per-module billing wired => the PUT /account/modules sync stays inert
+# (the toggle still persists + re-gates the UI). Owner mints the Prices in Stripe, then sets this map.
+variable "stripe_module_price_ids" {
+  type    = map(string)
+  default = {}
+}
 variable "stripe_success_url" {
   type    = string
   default = ""
@@ -167,18 +175,23 @@ variable "desired_count" {
 # Plain env entries injected only when set, so an apply with the "" defaults changes nothing on
 # the live task (deploy invariance). Names mirror shared/config.py — never invented here.
 locals {
-  plain_env = { for k, v in {
-    STRIPE_PRICE_ID_STARTER        = var.stripe_price_id_starter
-    STRIPE_PRICE_ID_TEAM           = var.stripe_price_id_team
-    STRIPE_PRICE_ID_SCALE          = var.stripe_price_id_scale
-    STRIPE_SUCCESS_URL             = var.stripe_success_url
-    STRIPE_CANCEL_URL              = var.stripe_cancel_url
-    RESEND_FROM_EMAIL              = var.resend_from_email
-    SIGNUP_VERIFY_URL_BASE         = var.signup_verify_url_base
-    SIGNUP_INTERNAL_BYPASS_DOMAINS = var.signup_internal_bypass_domains
-    CORTEX_S3_BUCKET               = var.cortex_s3_bucket
-    CORTEX_LOCAL_DIR               = var.cortex_local_dir
-  } : k => v if v != "" }
+  plain_env = merge(
+    { for k, v in {
+      STRIPE_PRICE_ID_STARTER        = var.stripe_price_id_starter
+      STRIPE_PRICE_ID_TEAM           = var.stripe_price_id_team
+      STRIPE_PRICE_ID_SCALE          = var.stripe_price_id_scale
+      STRIPE_SUCCESS_URL             = var.stripe_success_url
+      STRIPE_CANCEL_URL              = var.stripe_cancel_url
+      RESEND_FROM_EMAIL              = var.resend_from_email
+      SIGNUP_VERIFY_URL_BASE         = var.signup_verify_url_base
+      SIGNUP_INTERNAL_BYPASS_DOMAINS = var.signup_internal_bypass_domains
+      CORTEX_S3_BUCKET               = var.cortex_s3_bucket
+      CORTEX_LOCAL_DIR               = var.cortex_local_dir
+    } : k => v if v != "" },
+    # Per-module Stripe Price ids (Phase-2 module billing). Same inject-only-when-set discipline:
+    # an empty map adds nothing, so the live task is unchanged until the owner populates it.
+    { for k, v in var.stripe_module_price_ids : k => v if v != "" },
+  )
 }
 
 resource "aws_cloudwatch_log_group" "api" {

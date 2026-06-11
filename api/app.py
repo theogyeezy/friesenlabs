@@ -21,6 +21,7 @@ from api.account_routes import AccountDeps
 from api.account_delete_routes import AccountDeleteDeps
 from api.status_routes import StatusDeps
 from api.settings_routes import SettingsDeps
+from api.modules_routes import ModulesDeps
 from api.agents_routes import AgentsDeps
 from api.auth import JwtVerifier, TenantClaims, make_current_tenant
 from api.control.autonomy import AutonomyConfig
@@ -159,6 +160,10 @@ class ApiDeps:
     # GET/PUT /account/settings deps (persisted workspace name + notification prefs). Same inert
     # default contract (store=None → honest 503); api/asgi.py wires the real PgSettingsStore.
     settings: SettingsDeps | None = field(default_factory=SettingsDeps)
+    # GET/PUT /account/modules deps (per-tenant module entitlements — the "your suite" surface).
+    # Same inert default contract (store=None → honest 503); api/asgi.py wires the real
+    # PgSettingsStore (the app gates its nav/routes to the enabled modules). None = skip mounting.
+    modules: ModulesDeps | None = field(default_factory=ModulesDeps)
     # Per-tenant rate-limit + quota MIDDLEWARE (a 2-tuple (middleware_class, kwargs) added via
     # app.add_middleware). None -> NOT installed (the default for offline tests, so they aren't
     # throttled). api/asgi.py passes a configured spec when tenant_limits_enabled(); a request with
@@ -583,6 +588,13 @@ def create_app(deps: ApiDeps) -> FastAPI:
     if deps.settings is not None:
         from api.settings_routes import mount_settings
         mount_settings(app, deps.settings, current_tenant)
+
+    # Per-tenant module entitlements (GET/PUT /account/modules — the "your suite" surface). The web
+    # app reads it to show only the enabled modules' surfaces; honest 503 when the store is
+    # unconfigured (the web gate degrades to showing everything).
+    if deps.modules is not None:
+        from api.modules_routes import mount_modules
+        mount_modules(app, deps.modules, current_tenant)
 
     # Per-tenant rate-limit + quota middleware. Installed ONLY when api/asgi.py provides a spec
     # (default None = off, so offline tests aren't throttled). The spec is (cls, kwargs); a

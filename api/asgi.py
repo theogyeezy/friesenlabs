@@ -61,6 +61,8 @@ from ml.predictions import PgPredictionLog
 from ml.registry import registry_from_env
 from api.account_routes import AccountDeps
 from api.status_routes import StatusDeps
+from api.modules_routes import ModulesDeps
+from api.pg_settings import PgSettingsStore
 from api.routes_studio import StudioDeps, build_studio_deps
 from shared.config import (
     ENV_ANTHROPIC_API_KEY,
@@ -400,6 +402,19 @@ def build_app():
             return_url=os.environ.get("STRIPE_PORTAL_RETURN_URL", ""),
         )
 
+    # Phase-2 module billing ("selection sets the price"): reconcile a tenant's Stripe subscription
+    # items to its enabled modules on PUT /account/modules. Built from the SAME Stripe adapter +
+    # account store as the portal, plus the per-module Price ids from env (STRIPE_PRICE_ID_MODULE_*).
+    # from_env returns None until at least one per-module Price is configured (owner mints them in
+    # Stripe), so this is fully inert today — the toggle persists + re-gates the UI, no charge moves.
+    from api.module_billing import from_env as _module_billing_from_env
+
+    module_billing = _module_billing_from_env(
+        accounts_store=getattr(_accounts, "store", None) if _accounts is not None else None,
+        stripe=getattr(_pay, "stripe", None) if _pay is not None else None,
+        env=os.environ,
+    )
+
     deps = ApiDeps(
         verifier=verifier,
         greenlight=greenlight,
@@ -469,6 +484,11 @@ def build_app():
         # tenant is provisioned; honest record-only otherwise) — see _studio_registrar_factory above.
         studio=studio_deps,
         account=AccountDeps(crm=crm, rag=rag, saved_views=saved_views) if dsn else AccountDeps(),
+        # GET/PUT /account/modules — per-tenant module entitlements (the "your suite" surface the web
+        # gates its nav/routes against). Wired LIVE (PgSettingsStore over tenant_settings) so the app
+        # can read the enabled set; GET degrades to the default catalog if the column predates the
+        # live migrate. (account_delete + settings stay inert by their own gates.)
+        modules=ModulesDeps(store=PgSettingsStore(dsn), billing=module_billing) if dsn else ModulesDeps(),
         # GET /public/status — per-subsystem readiness. The "api" component is always operational
         # (this endpoint answered); these probes report whether each subsystem is WIRED on this
         # deployment (the API process is up + its dep is configured), not a deep liveness ping —

@@ -32,6 +32,7 @@ import CortexView from "./api/CortexView";
 import AccountDataControls from "./api/AccountDataControls";
 import WorkspaceSettings from "./api/WorkspaceSettings";
 import MarketplaceView from "./api/MarketplaceView";
+import ModulesView from "./api/ModulesView";
 const { useState, useEffect, useRef, useMemo, useCallback, useLayoutEffect, useReducer, useContext, useImperativeHandle, useId } = React;
 const { Icon, Logo, FL_DATA, FLStore, useStore, askClaude, bizContext, confettiBurst, XPBadge, useCountUp, CountUp, AreaChart, Sparkline, LoadBars, Donut, SlideOver, CommandPalette, HEAT, fmtMoney, StatCard, ToneIco, FLflag, useTweaks, TweaksPanel, TweakSection, TweakRow, TweakSlider, TweakToggle, TweakRadio, TweakSelect, TweakText, TweakNumber, TweakColor, TweakButton, FoxDemo, KanbanDemo, WorkflowDemo, GreenlightDemo, CommandDemo, IntegrationDemo, SupportDemo, SecurityDemo, SidecarDemo, CortexDemo } = window as any;
 // app.jsx, shell: sidebar, topbar, routing, tweaks, palette
@@ -66,6 +67,24 @@ const ComingSoon = ({ title, icon }) => (
       <p style={{ color: "var(--ink-3)", fontSize: 14, marginTop: 8, lineHeight: 1.55 }}>
         Friesen Labs is rolling out surface by surface. <b style={{ color: "var(--ink)" }}>Command Center</b>, <b style={{ color: "var(--ink)" }}>Pipeline</b>, <b style={{ color: "var(--ink)" }}>Contacts</b>, <b style={{ color: "var(--ink)" }}>Agents</b>, <b style={{ color: "var(--ink)" }}>Greenlight</b>, <b style={{ color: "var(--ink)" }}>Ask agents</b> and <b style={{ color: "var(--ink)" }}>Switchboard</b> are live today; this area is still being built.
       </p>
+    </div>
+  </div>
+);
+
+// Shown when a tenant navigates to a surface whose module they've turned OFF in
+// Settings → "Your suite". Honest: the surface exists, they just haven't enabled
+// it — with a one-tap path to go enable it.
+const ModuleNotEnabled = ({ title, icon, onManage }) => (
+  <div className="screen screen-anim" data-testid="module-not-enabled" style={{ display: "grid", placeItems: "center", minHeight: "60vh" }}>
+    <div style={{ textAlign: "center", maxWidth: 400 }}>
+      <div style={{ width: 60, height: 60, borderRadius: 16, background: "var(--accent-soft)", color: "var(--accent-ink)", display: "grid", placeItems: "center", margin: "0 auto 18px" }}>
+        <Icon name={icon} size={28} />
+      </div>
+      <h2 style={{ fontSize: 21, fontWeight: 720, letterSpacing: "-.02em" }}>{title} isn&rsquo;t in your suite</h2>
+      <p style={{ color: "var(--ink-3)", fontSize: 14, marginTop: 8, lineHeight: 1.55 }}>
+        This module isn&rsquo;t turned on for your workspace. Add it in Settings to start using it.
+      </p>
+      <button className="btn btn-primary" style={{ marginTop: 18 }} onClick={onManage}>Manage your suite</button>
     </div>
   </div>
 );
@@ -111,6 +130,10 @@ function App() {
   const gamifyOn = useStore((s) => s.gamifyOn);
   const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
   const [route, setRoute] = useState("dashboard");
+  // Per-tenant module entitlements (real mode): the set of route-ids this tenant
+  // has enabled in Settings → "Your suite". null = not loaded / errored / 503 →
+  // we SHOW ALL routes (fail-open: never hide a surface because the gate is down).
+  const [enabledRoutes, setEnabledRoutes] = useState(null);
   // First-run: bumped after a "Load sample data" so the API-wired surfaces remount
   // and re-fetch (the populated views surface immediately).
   const [sampleReloadKey, setSampleReloadKey] = useState(0);
@@ -118,6 +141,31 @@ function App() {
     await defaultClient().loadSampleData();
     setSampleReloadKey((k) => k + 1);
   }, []);
+  // Load this tenant's enabled modules (real mode only) so the app shows ONLY the
+  // surfaces they've chosen. Any failure (503/404/network) leaves enabledRoutes
+  // null → show-all, so the gate can never strand a tenant out of their workspace.
+  useEffect(() => {
+    if (!realMode) return;
+    let live = true;
+    defaultClient().getModules()
+      .then((cat) => { if (live) setEnabledRoutes(new Set(cat.enabled_routes)); })
+      .catch(() => { if (live) setEnabledRoutes(null); });
+    return () => { live = false; };
+  }, [realMode]);
+  // A route is visible when: not real mode, the gate isn't loaded (show-all), or
+  // the tenant has the route enabled. Settings/Security are always-on server-side
+  // (they come back in enabled_routes), so this needs no special-casing here.
+  const routeEnabled = useCallback(
+    (r) => !realMode || enabledRoutes === null || enabledRoutes.has(r),
+    [realMode, enabledRoutes],
+  );
+  // The visible nav per section after entitlement gating (so an all-disabled
+  // section hides its label too, not just its buttons).
+  const navMain = useMemo(() => NAV.filter((n) => n.id !== "sell" || gamifyOn).filter((n) => routeEnabled(n.id)), [NAV, gamifyOn, routeEnabled]);
+  const navCrm = useMemo(() => NAV_CRM.filter((n) => routeEnabled(n.id)), [NAV_CRM, routeEnabled]);
+  const navAgents = useMemo(() => NAV_AGENTS.filter((n) => routeEnabled(n.id)), [NAV_AGENTS, routeEnabled]);
+  const navConnect = useMemo(() => NAV_CONNECT.filter((n) => routeEnabled(n.id)), [NAV_CONNECT, routeEnabled]);
+  const navInsights = useMemo(() => NAV2.filter((n) => routeEnabled(n.id)), [NAV2, routeEnabled]);
   const [collapsed, setCollapsed] = useState(false);
   const [cmdk, setCmdk] = useState(false);
   const [deal, setDeal] = useState(null);
@@ -244,9 +292,9 @@ function App() {
           <span className="intake-nav-hint">log anything</span>
         </button>
         )}
-        <div className="nav-section-label">Workspace</div>
+        {navMain.length > 0 && <div className="nav-section-label">Workspace</div>}
         <nav className="nav">
-          {NAV.filter((n) => n.id !== "sell" || gamifyOn).map((n) => {
+          {navMain.map((n) => {
             // In real mode the FLStore pending count is prototype data, not the
             // tenant's queue — show no badge rather than a fake number.
             const badge = n.id === "approvals" ? (realMode ? null : pendingCount || null) : realMode ? null : n.badge;
@@ -260,9 +308,9 @@ function App() {
           })}
         </nav>
 
-        <div className="nav-section-label">Uplift CRM</div>
+        {navCrm.length > 0 && <div className="nav-section-label">Uplift CRM</div>}
         <nav className="nav">
-          {NAV_CRM.map((n) => {
+          {navCrm.map((n) => {
             // Prototype badge counts ("11" deals) are fake — mock mode only.
             const badge = realMode ? null : n.badge;
             return (
@@ -275,9 +323,9 @@ function App() {
           })}
         </nav>
 
-        <div className="nav-section-label">Agents &amp; intelligence</div>
+        {navAgents.length > 0 && <div className="nav-section-label">Agents &amp; intelligence</div>}
         <nav className="nav">
-          {NAV_AGENTS.map((n) => (
+          {navAgents.map((n) => (
             <button key={n.id} className={"nav-item" + (route === n.id ? " active" : "")} onClick={() => navTo(n.id)}>
               <span className="nav-ico"><Icon name={n.icon} size={18} /></span>
               <span className="nav-label">{n.label}</span>
@@ -285,9 +333,9 @@ function App() {
           ))}
         </nav>
 
-        <div className="nav-section-label">Connect your stack</div>
+        {navConnect.length > 0 && <div className="nav-section-label">Connect your stack</div>}
         <nav className="nav">
-          {NAV_CONNECT.map((n) => (
+          {navConnect.map((n) => (
             <button key={n.id} className={"nav-item" + (route === n.id ? " active" : "")} onClick={() => navTo(n.id)}>
               <span className="nav-ico"><Icon name={n.icon} size={18} /></span>
               <span className="nav-label">{n.label}</span>
@@ -295,9 +343,9 @@ function App() {
           ))}
         </nav>
 
-        <div className="nav-section-label">Insights &amp; admin</div>
+        {navInsights.length > 0 && <div className="nav-section-label">Insights &amp; admin</div>}
         <nav className="nav">
-          {NAV2.map((n) => (
+          {navInsights.map((n) => (
             <button key={n.id} className={"nav-item" + (route === n.id ? " active" : "")} onClick={() => navTo(n.id)}>
               <span className="nav-ico"><Icon name={n.icon} size={18} /></span>
               <span className="nav-label">{n.label}</span>
@@ -434,7 +482,12 @@ function App() {
         )}
 
         <div className="viewport">
-          {realMode ? (
+          {realMode && !routeEnabled(route) ? (
+            // Entitlement gate: the tenant navigated (e.g. via a deep button) to a
+            // surface whose module they've disabled in Settings → "Your suite".
+            // Show the honest "not in your suite" panel with a path to enable it.
+            <ModuleNotEnabled title={meta.h1} icon={navIconFor(route)} onManage={() => navTo("settings")} />
+          ) : realMode ? (
             // REAL MODE: only ApiClient-backed surfaces render data. Every
             // other route gets the honest ComingSoon panel — never an FLStore
             // prototype screen, which would pass demo numbers off as real.
@@ -521,6 +574,11 @@ function App() {
                 <div className="screen-anim" style={{ maxWidth: 720 }}>
                   <div className="ad-sec-label" style={{ marginBottom: 14 }}>Workspace</div>
                   <WorkspaceSettings />
+                  {/* Your suite — toggle modules on/off; the workspace shows only
+                      what's enabled, and the monthly total reflects the selection.
+                      onChange re-gates the app's nav/routes immediately. */}
+                  <div className="ad-sec-label" style={{ margin: "28px 0 14px" }}>Your suite</div>
+                  <ModulesView onChange={(cat) => setEnabledRoutes(new Set(cat.enabled_routes))} />
                   <div className="ad-sec-label" style={{ margin: "28px 0 14px" }}>Plan &amp; billing</div>
                   <BillingManage />
                   <div className="ad-sec-label" style={{ margin: "28px 0 14px" }}>Account &amp; data</div>
