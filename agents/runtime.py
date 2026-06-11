@@ -380,8 +380,35 @@ class ManagedAgentsRuntime(AgentRuntime):
         # ARRIVAL ORDER. Closed by an observed user.custom_tool_result; anything still open at
         # a requires_action idle (or stream end) surfaces as pending — never executed here.
         calls: list[dict] = []
+        # ADDITIVE token-usage observation (cost attribution): MA events MAY carry a `usage`
+        # block (input/output tokens). We accumulate it defensively — any event exposing a
+        # usage object contributes — and surface the running totals in the digest. Purely
+        # observational: a beta stream that never emits usage simply yields {0,0} and nothing
+        # downstream changes (the recorder skips zero-token turns).
+        usage_in = 0
+        usage_out = 0
+        usage_model: str | None = None
         reconnects = 0
         seen = self._seen_event_ids.setdefault(session.id, set())
+
+        def _accumulate_usage(event) -> None:
+            nonlocal usage_in, usage_out, usage_model
+            u = getattr(event, "usage", None)
+            if u is None and isinstance(event, dict):
+                u = event.get("usage")
+            if u is None:
+                return
+            getu = (lambda k: u.get(k)) if isinstance(u, dict) else (lambda k: getattr(u, k, None))
+            for k in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"):
+                v = getu(k)
+                if isinstance(v, (int, float)):
+                    usage_in += int(v)
+            v = getu("output_tokens")
+            if isinstance(v, (int, float)):
+                usage_out += int(v)
+            m = getattr(event, "model", None) or (event.get("model") if isinstance(event, dict) else None)
+            if m:
+                usage_model = m
 
         def handle(event) -> bool:
             """Process ONE session event (live stream or replay); True = the turn is over.
@@ -392,6 +419,7 @@ class ManagedAgentsRuntime(AgentRuntime):
                 if eid in seen:
                     return False  # already processed (reconnect replay / stream-list overlap)
                 seen.add(eid)
+            _accumulate_usage(event)  # additive cost observation — dedup-safe (runs post-seen)
             etype = getattr(event, "type", None)
             if etype == "agent.message":
                 for block in getattr(event, "content", None) or []:
@@ -512,6 +540,8 @@ class ManagedAgentsRuntime(AgentRuntime):
             "answer": "".join(answer_parts),
             "pending_approvals": pending,
             "tool_results": tool_results,
+            # Observed token usage for cost attribution (0/0 when the stream emitted none).
+            "usage": {"input_tokens": usage_in, "output_tokens": usage_out, "model": usage_model},
         }
 
 
