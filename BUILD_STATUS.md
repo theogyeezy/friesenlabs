@@ -549,6 +549,24 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   usable + safe; RAG-embed IAM gap closed live.
 
 ## Lane Matt (app code) — log
+- 2026-06-11 — **Security-audit remediation batch (P0/P1/P2 from the release-readiness audit):**
+  compliance floor moved INTO `Greenlight.propose` (worker/sidecar/playbook paths covered;
+  unknown-action fail-closed; violations stored denied) + post-edit re-validation before the CAS
+  flip; intra-tenant RBAC (`cognito:groups` → one admin policy, 8 privileged writes gated incl.
+  approval-decide, `RBAC_STRICT` migration flag, user-granular global-killswitch operators,
+  provisioning bootstraps first user → "admin"); Pg-backed email-token single-use store (replay
+  closed); worker org-key fail-loud guard; PII-masked send logs; prompt-injection fences around
+  RAG/playbook content; Vega chart-fragment allow-list across all three mirrors + renderer strip;
+  landing innerHTML sinks removed; Turnstile widget seam (env-gated, x-captcha-token); SPA
+  customHttp.yml (HSTS/CSP/XFO; 'unsafe-eval' only for vega, follow-up noted); 422/400 detail
+  hygiene; token_use strict. Infra AUTHORED (REQ-013, zero-diff-at-default): scoped deploy policy
+  (+admin-fallback detach path), ADMIN_USER_PASSWORD_AUTH removed, UPLIFT_ENVIRONMENT=prod,
+  Cognito threat-protection + admin/member groups, VPC flow logs, WAF logging, cube SG split,
+  ECS hardening vars + exec session logging, Aurora-CMK gated vars + runbook, X-Origin-Verify
+  rotation runbook. **Verified: pytest 2104 passed/0 failed; web typecheck+build green;
+  `terraform validate` green.** Review: 5-way spec compliance ✅; quality review → 1 accepted fix
+  (decide admin-gate), 3 findings rejected with evidence (prune `>=` is correct; vega-embed never
+  fetches $schema; span/v2 mirror is pre-existing). Audit: `docs/audits/security-audit-2026-06-11.md`.
 - 2026-06-12 — **Switchboard RELEASED (REQ-012 executed end-to-end):** the $29/mo `integration`
   module is live for customers. Owner-approved deploy 27394841845 applied the #253 IAM deltas
   (connector Delete/Get on the api role, ListSecrets on ingest) + all four flips

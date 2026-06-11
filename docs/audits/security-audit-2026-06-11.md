@@ -16,6 +16,14 @@ customer release: one Critical infra item (CI/CD role = `AdministratorAccess`), 
 of intra-tenant RBAC, and a cluster of latent/medium defense-in-depth items listed below.
 Actionable TODOs: `TODO.md` § "Security audit — TODOs (2026-06-11, Lane Matt)".
 
+> **Remediation (same day):** all four P0s and the P1/P2 code items were implemented on this
+> branch (5 parallel implementers + spec/quality review; suite 2104 passed/0 failed, web build
+> green, `terraform validate` green). Infra changes are authored under REQ-013 with
+> zero-diff-at-default flips — apply/flip = Lane Nick. Review add-on beyond the audit list:
+> `POST /approvals/{id}/decide` is now admin-gated too. Still open: Aurora CMK live migration
+> (gated, runbook'd), CAPTCHA owner flip, the two live VERIFY items, CSV-export escaping (no
+> export surface exists).
+
 ---
 
 ## Findings
