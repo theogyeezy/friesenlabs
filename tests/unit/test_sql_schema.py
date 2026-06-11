@@ -69,8 +69,21 @@ def do_block_tenant_tables(sql: str) -> list[str]:
     return sorted(re.findall(r"'(\w+)'", m.group(1)))
 
 
+def derive_rls_exempt_tables(sql: str) -> list[str]:
+    """RLS-EXEMPT tables = every CREATE TABLE carrying an explicit `-- RLS-EXEMPT` marker.
+
+    These are the pre-tenant tables (signup accounts/ledger, the workspace-key pool, lead
+    capture). They are deliberately NOT in the tenant_tables array, so access control is
+    GRANT-based, not RLS — which means they need EXPLICIT crm_app GRANTs (the same fresh-load
+    gap as the tenant tables) and the tenant-table grant gate never covers them."""
+    return sorted(
+        name for name, t in _tables(sql).items() if "RLS-EXEMPT" in t["comment"]
+    )
+
+
 _SCHEMA_SQL = _read(SCHEMA)
 TENANT_TABLES = derive_tenant_tables(_SCHEMA_SQL)
+RLS_EXEMPT_TABLES = derive_rls_exempt_tables(_SCHEMA_SQL)
 
 
 @pytest.mark.unit
@@ -215,6 +228,51 @@ def test_audit_trail_grants_are_append_only():
     for table in ("tenant_workspaces", "tenant_settings"):
         assert "DELETE" not in grants[table], f"crm_app must not DELETE {table}"
         assert {"SELECT", "INSERT", "UPDATE"} <= grants[table]
+
+
+@pytest.mark.unit
+def test_rls_exempt_derivation_sees_the_pre_tenant_tables():
+    """Guard the derivation's own machinery: the RLS-EXEMPT set must include the known
+    pre-tenant tables, so a formatting change that blinds the marker fails loudly instead of
+    shrinking the gate below to an empty list."""
+    for table in ("accounts", "stripe_events", "workspace_keys", "leads"):
+        assert table in RLS_EXEMPT_TABLES, (
+            f"{table} expected in the RLS-EXEMPT set: {RLS_EXEMPT_TABLES}"
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("table", RLS_EXEMPT_TABLES)
+def test_every_rls_exempt_table_is_granted_to_crm_app(table):
+    """RLS-EXEMPT tables are GRANT-gated, not RLS-gated — so the fresh-load zero-privilege
+    gap bites them too (schema.sql creates them before roles.sql, so ALTER DEFAULT PRIVILEGES
+    never covers them). The tenant-table grant gate skips these, so without this assertion a
+    fresh deploy permission-denies key consumption (workspace_keys) and lead capture (leads).
+    Every pre-tenant table the app touches needs at minimum SELECT+INSERT."""
+    grants = _granted_tables(_read(ROLES))
+    effective = grants.get(table, set())
+    assert {"SELECT", "INSERT"} <= effective, (
+        f"{table} (RLS-EXEMPT) has no usable crm_app GRANT in roles.sql (fresh-load gap): "
+        f"{effective}"
+    )
+
+
+@pytest.mark.unit
+def test_rls_exempt_tables_are_not_deletable_by_app():
+    """The pre-tenant tables are records the app parks/flips/appends but never erases:
+    accounts (parked/flipped), stripe_events (idempotency ledger), workspace_keys (key
+    allocation audit trail), leads (append-only capture). None may carry a crm_app DELETE."""
+    grants = _granted_tables(_read(ROLES))
+    for table in RLS_EXEMPT_TABLES:
+        assert "DELETE" not in grants.get(table, set()), (
+            f"crm_app must not DELETE {table} (pre-tenant record / audit trail)"
+        )
+    # leads is strictly append-only: no UPDATE either (a captured lead is never edited).
+    assert "UPDATE" not in grants.get("leads", set()), "leads is append-only — no UPDATE"
+    # workspace_keys needs UPDATE for the atomic consume (available -> consumed).
+    assert "UPDATE" in grants.get("workspace_keys", set()), (
+        "workspace_keys needs UPDATE for the atomic pool-consume"
+    )
 
 
 # --------------------------------------------------------------------------- #
