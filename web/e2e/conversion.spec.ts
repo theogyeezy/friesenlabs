@@ -158,6 +158,59 @@ test("gated deep link shows the focused sign-in gate when signed out — not the
   expect(errors, `page errors: ${errors.join("\n")}`).toHaveLength(0);
 });
 
+test("Email-us lead posts to /public/leads and confirms only on 2xx", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+
+  let posted: { kind?: string; name?: string; email?: string } | null = null;
+  await page.route("**/public/leads", (route) => {
+    posted = JSON.parse(route.request().postData() || "{}");
+    return route.fulfill({ json: { ok: true, id: "lead_1" } });
+  });
+
+  await page.goto("/");
+  await page.locator("button", { hasText: "Email us" }).first().click();
+
+  await page.getByTestId("email-name").fill("Dana Okafor");
+  await page.getByTestId("email-email").fill("dana@birch.example");
+  await page.getByTestId("email-message").fill("Want to automate quoting.");
+  await page.getByTestId("email-submit").click();
+
+  // Honest confirmation only after a real 2xx.
+  await expect(page.getByTestId("lead-confirm")).toBeVisible({ timeout: 15_000 });
+  expect(posted?.kind).toBe("email");
+  expect(posted?.email).toBe("dana@birch.example");
+  // The trust rule: no tenant_id ever leaves the client.
+  expect(JSON.stringify(posted)).not.toContain("tenant_id");
+
+  expect(errors, `page errors: ${errors.join("\n")}`).toHaveLength(0);
+});
+
+test("Email-us lead degrades to a mailto fallback on 404 (no false confirmation)", async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+
+  // The route isn't deployed yet → 404 on every attempt (incl. the retry).
+  await page.route("**/public/leads", (route) => route.fulfill({ status: 404, body: "not found" }));
+
+  await page.goto("/");
+  await page.locator("button", { hasText: "Email us" }).first().click();
+  await page.getByTestId("email-name").fill("Dana Okafor");
+  await page.getByTestId("email-email").fill("dana@birch.example");
+  await page.getByTestId("email-submit").click();
+
+  // No fake "we'll get back to you" — instead an honest mailto fallback.
+  await expect(page.getByTestId("lead-fallback")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId("lead-confirm")).toHaveCount(0);
+  const href = await page.getByTestId("lead-mailto").getAttribute("href");
+  expect(href).toMatch(/^mailto:[^?]+@/);
+  expect(href).toContain("dana%40birch.example");
+
+  expect(errors, `page errors: ${errors.join("\n")}`).toHaveLength(0);
+});
+
 test("gated deep link mounts the real surface when a session exists (SPA precedence)", async ({
   page,
 }) => {
