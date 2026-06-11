@@ -696,34 +696,6 @@ function DonateModal({ onClose }) {
   );
 }
 
-function ProvisionModal({ selected, byo, onClose }) {
-  const steps = ["Creating your workspace", "Securing your private instance", ...selected.filter((m) => !m.req).map((m) => `Activating ${m.name}`), byo ? "Connecting your CRM" : null, "Hiring your agent team", "Loading starter credits", "Workspace ready"].filter(Boolean);
-  const [done, setDone] = useState(0);
-  const finished = done >= steps.length;
-  useEffect(() => {
-    if (finished) return;
-    const t = setTimeout(() => setDone((d) => d + 1), done === 0 ? 500 : 720);
-    return () => clearTimeout(t);
-  }, [done, finished]);
-  return (
-    <div className="lp-modal-scrim">
-      <div className="lp-prov">
-        {finished ? <div className="lp-prov-check"><LpIcon name="check" size={38} sw={2.6} style={{ color: "#fff" }} /></div> : <div className="lp-prov-ring" />}
-        <div className="lp-eyebrow" style={{ textAlign: "center" }}>{finished ? "All set" : "Provisioning"}</div>
-        <h2 style={{ fontSize: 26, fontWeight: 760, letterSpacing: "-.03em", marginTop: 8 }}>{finished ? "Your instance is ready" : "Spinning up your instance"}</h2>
-        <div className="lp-prov-steps">
-          {steps.map((s, i) => (
-            <div key={s} className={"lp-prov-step" + (i < done ? " done" : "")}>
-              <div className="ps-box">{i < done && <LpIcon name="check" size={13} sw={3} />}</div>{s}
-            </div>
-          ))}
-        </div>
-        {finished && <a className="btn btn-primary btn-lg" href="index.html?onboard=1" style={{ marginTop: 24, width: "100%" }}><LpIcon name="bolt" size={16} />Enter Friesen Labs</a>}
-      </div>
-    </div>
-  );
-}
-
 function ProductPage({ id, onClose, onAdd, onBook }) {
   const p = LP_PRODUCTS.find((x) => x.id === id);
   const demo = LP_DEMOS.find((d) => d.id === id);
@@ -1443,7 +1415,14 @@ function Landing({ onSignIn = () => {}, onForgotPassword = () => {} } = {}) {
                 {byo && <div className="sl" style={{ color: "var(--accent-ink)" }}><LpIcon name="link" size={15} style={{ color: "var(--accent-ink)" }} />Your CRM (HubSpot / Salesforce…)</div>}
                 <div className="sl" style={{ color: "var(--ink-3)" }}><LpIcon name="shield" size={15} style={{ color: "var(--ink-3)" }} />Security &amp; Control <span style={{ marginLeft: "auto", fontSize: 11, fontWeight: 700, color: "var(--green)" }}>FREE</span></div>
               </div>
-              <button className="btn btn-primary btn-lg" style={{ width: "100%" }} onClick={() => { defaultAnalytics().capture("checkout_started", { surface: "landing_builder", modules: selectedMods.length, monthly: total }); setModal("provision"); }}><LpIcon name="bolt" size={16} />Provision my instance</button>
+              <button className="btn btn-primary btn-lg" style={{ width: "100%" }} onClick={() => {
+                try { defaultAnalytics().capture("checkout_started", { surface: "landing_builder", modules: selectedMods.length, monthly: total }); } catch { /* analytics must never block the conversion */ }
+                const params = new URLSearchParams({ view: "signup" });
+                const mods = selectedMods.filter((m) => !m.req).map((m) => m.id).join(",");
+                if (mods) params.set("modules", mods);
+                if (byo) params.set("byo", "1");
+                window.location.assign("/?" + params.toString());
+              }}><LpIcon name="bolt" size={16} />Provision my instance</button>
               <button className="btn btn-ghost" style={{ width: "100%", marginTop: 10 }} onClick={() => setModal("book")}><LpIcon name="calendar" size={15} />Talk to us first</button>
               <p style={{ fontSize: 11.5, color: "var(--ink-4)", textAlign: "center", marginTop: 12 }}>Free to start · starter credits · no card required</p>
             </div>
@@ -1692,7 +1671,6 @@ function Landing({ onSignIn = () => {}, onForgotPassword = () => {} } = {}) {
       {modal === "email" && <EmailModal onClose={() => setModal(null)} />}
       {modal === "help" && <HelpDialog onClose={() => setModal(null)} />}
       {modal === "donate" && <DonateModal onClose={() => setModal(null)} />}
-      {modal === "provision" && <ProvisionModal selected={selectedMods} byo={byo} onClose={() => setModal(null)} />}
       {modal === "statement" && (
         <div className="lp-modal-scrim" onClick={() => setModal(null)} style={{ alignItems: "flex-start", overflowY: "auto", padding: "5vh 16px" }}>
           <div className="lp-paper" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
