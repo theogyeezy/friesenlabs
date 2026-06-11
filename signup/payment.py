@@ -36,6 +36,21 @@ class PaymentError(Exception):
     pass
 
 
+def _field(obj, key, default=None):
+    """Read ``obj[key]`` across BOTH plain dicts (injected fakes) and stripe's StripeObject.
+
+    Current stripe libs route attribute access through ``__getattr__`` and expose NO dict-style
+    ``.get`` — ``obj.get("x")`` raises ``AttributeError: get`` (caught live by the main-only
+    live-signup-e2e job), so the old ``hasattr(obj, "get")`` guards silently disabled account
+    resolution on REAL webhook events. Index access is the one protocol both shapes share.
+    """
+    try:
+        val = obj[key]
+    except (KeyError, TypeError, IndexError):
+        return default
+    return default if val is None else val
+
+
 @dataclass
 class CheckoutResult:
     stripe_customer_id: str
@@ -81,8 +96,8 @@ class PaymentService:
             # Price ID wired) is a client-fixable 400 (the route maps PaymentError), not an
             # opaque 500.
             raise PaymentError(str(e)) from e
-        # session.get: injected fakes may return only {"id": ...} — url is then honestly None.
-        url = session.get("url") if hasattr(session, "get") else None
+        # injected fakes may return only {"id": ...} — url is then honestly None.
+        url = _field(session, "url")
         return CheckoutResult(customer["id"], session["id"], url)
 
     def handle_webhook(self, payload: bytes, sig_header: str, secret: str) -> dict:
@@ -91,7 +106,7 @@ class PaymentService:
         if event["type"] not in ("checkout.session.completed", "invoice.paid"):
             return {"handled": False, "reason": f"ignored {event['type']}"}
 
-        event_id = str(event.get("id") or "") if hasattr(event, "get") else ""
+        event_id = str(_field(event, "id") or "")
         obj = event["data"]["object"]
         acct = self._resolve_account(event["type"], obj)
 
@@ -106,7 +121,7 @@ class PaymentService:
         """Map a verified event object to the signup Account (None = unknown, handled no-op)."""
         # checkout.session.completed carries client_reference_id (set at session create); some
         # injected fakes put it on other event types too — honor it first wherever present.
-        ref = obj.get("client_reference_id") if hasattr(obj, "get") else None
+        ref = _field(obj, "client_reference_id")
         if not ref:
             ref = self._signup_id_from_metadata(obj)
         if ref:
@@ -115,7 +130,7 @@ class PaymentService:
                 return acct
         if event_type == "invoice.paid":
             # Final fallback: the stripe_customer_id mapping start_checkout persisted.
-            customer = obj.get("customer")
+            customer = _field(obj, "customer")
             if customer:
                 return self._account_by_customer(str(customer))
         return None
@@ -128,17 +143,15 @@ class PaymentService:
         shape) or ``parent.subscription_details.metadata`` (2025+ API shapes); line items carry
         their own ``metadata``. Checkout Sessions carry it as plain ``metadata``.
         """
-        if not hasattr(obj, "get"):
-            return None
         candidates = [
-            (obj.get("metadata") or {}),
-            ((obj.get("subscription_details") or {}).get("metadata") or {}),
-            (((obj.get("parent") or {}).get("subscription_details") or {}).get("metadata") or {}),
+            _field(obj, "metadata", {}),
+            _field(_field(obj, "subscription_details", {}), "metadata", {}),
+            _field(_field(_field(obj, "parent", {}), "subscription_details", {}), "metadata", {}),
         ]
-        lines = ((obj.get("lines") or {}).get("data") or [])
-        candidates.extend((line.get("metadata") or {}) for line in lines if hasattr(line, "get"))
+        lines = _field(_field(obj, "lines", {}), "data", [])
+        candidates.extend(_field(line, "metadata", {}) for line in lines)
         for meta in candidates:
-            signup_id = meta.get("signup_id")
+            signup_id = _field(meta, "signup_id")
             if signup_id:
                 return str(signup_id)
         return None
@@ -184,8 +197,8 @@ class PaymentService:
             # H7: emit the revenue event SERVER-side (from the signed webhook) so ad-blockers
             # can't drop it. Optional/injected — None is a no-op so offline tests need no PostHog.
             if self.funnel is not None:
-                plan = obj.get("plan") or (obj.get("metadata") or {}).get("plan") or "unknown"
-                mrr = obj.get("mrr") or (obj.get("metadata") or {}).get("mrr") or 0.0
+                plan = _field(obj, "plan") or _field(_field(obj, "metadata", {}), "plan") or "unknown"
+                mrr = _field(obj, "mrr") or _field(_field(obj, "metadata", {}), "mrr") or 0.0
                 self.funnel.revenue(account_id, plan, mrr)
             self.on_paid(acct)        # start provisioning (Step 55)
         except Exception:
