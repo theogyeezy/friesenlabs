@@ -777,3 +777,21 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   Stripe TEST price IDs ($99/$299/$799).
 - **Not yet rolled:** the customer-readiness + MVP code is on `main` but needs the next Deploy +
   Amplify web build to go live. **Owner-gated:** seed the workspace-key pool (Console).
+
+## 2026-06-11 — customer-readiness DEPLOYED + unit-test wave + /fleet tooling (boss)
+- **Second deploy SUCCEEDED:** api rolled `:12 → :13` from `f9b2df2` (all customer-readiness +
+  MVP backend). The 4 new tables (`support_requests`, `onboarding_state`, `usage_counters`,
+  `cost_events`) + grants migrated live (exit 0) + isolation gate PASS before the roll; `/healthz`
+  200. Web UI ships via Amplify on main push. So customer-readiness + MVP backends are now LIVE
+  (were "merged, awaiting roll" in the prior README — corrected).
+- **Follow-up fixes merged:** lazy DB pools `minconn=1` (#213, was hoarding ~180 idle Aurora conns
+  + exhausting CI Postgres); `support_requests` crm_app grant (#215, the support endpoint was dead
+  code without it).
+- **First `/fleet` agent-skill run (#217):** the v2 fleet skill (model-tiers-in-each-lane) ran its
+  first real wave on this repo — 77 new unit tests across 4 file-disjoint modules (billing/support/
+  limits/leads routes) that had integration-only coverage; 4/4 confirmed by the 3-skeptic panel,
+  boss-verified (pytest), merged green. Repo fleet hygiene: `.claude/worktrees/` gitignored +
+  `.claude/fleet-lessons.md` seeded (#216).
+- **Still owner-gated:** seed the workspace-key pool (Anthropic Console) for real paid provisioning;
+  (Cortex) live S3 registry + a real retrain + seeded knowledge corpus. Legal/Terms/Privacy pages
+  + placeholder-501(c)(3) landing copy still deferred (#119/#121).

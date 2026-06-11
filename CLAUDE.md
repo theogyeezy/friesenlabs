@@ -134,12 +134,18 @@ adversarial audit then a 4-wave build. **22 PRs squash-merged to `main` (green),
   fix** (was a fake animation that threw — now starts the real signup). Plus a latent-bug fix:
   **lazy DB connection pools** (`minconn=1`) — the stores were eagerly opening the full 10-conn pool
   each, hoarding ~180 idle Aurora connections (and exhausting CI Postgres).
+- **Customer-readiness DEPLOYED (2026-06-11):** a second Deploy rolled the api `:12→:13` from
+  `f9b2df2` — all customer-readiness + MVP backend is live; the 4 new tables (`support_requests`,
+  `onboarding_state`, `usage_counters`, `cost_events`) + grants migrated live (isolation PASS),
+  `/healthz` 200; web UI ships via Amplify. Plus follow-up fixes: lazy DB pools `minconn=1` (#213)
+  and the `support_requests` grant (#215).
+- **First `/fleet` agent-skill run (#217):** the v2 fleet skill (model-tiers-per-lane) added 77 unit
+  tests across billing/support/limits/leads (4/4 confirmed by the 3-skeptic panel, boss-merged green).
 - **Still owner-gated (last mile to real paid customers):** **seed the workspace-key pool**
   (Anthropic Console pre-mint → `scripts/ops/load_workspace_keys.py`) — until then real provisioning
-  parks `pool_empty` (the @friesenlabs.com test-bypass + demo path work without it). The
-  customer-readiness code is merged but **not yet rolled** — needs the next Deploy (build-images +
-  approve) to go live. Legal/Terms/Privacy pages + the placeholder-501(c)(3) landing copy are still
-  open (deliberately deferred).
+  parks `pool_empty` (the @friesenlabs.com test-bypass + demo path work without it). (Cortex) live S3
+  registry + a real retrain + seeded knowledge corpus. Legal/Terms/Privacy pages + the
+  placeholder-501(c)(3) landing copy are still open (deliberately deferred).
 
 ## How we build
 - **Dependency order, not feature order.** Phase 0 → 12. Don't start a phase whose inputs
