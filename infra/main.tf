@@ -156,6 +156,7 @@ module "api_service" {
   cube_api_secret_arn            = var.api_cube_env ? module.secrets.cube_api_secret_arn : ""
   api_signup_env                 = var.api_signup_env
   signup_real_deps               = var.signup_real_deps
+  allow_real_sends               = var.allow_real_sends
   stripe_key_arn                 = data.aws_secretsmanager_secret.platform_stripe.arn
   resend_key_arn                 = data.aws_secretsmanager_secret.platform_resend.arn
   stripe_webhook_secret_arn      = module.secrets.stripe_webhook_secret_arn
@@ -256,6 +257,7 @@ module "provisioning_lambda" {
   posthog_host          = var.posthog_host
   # The SAME deliberate go-live flag as the API task (REQ-003 step 0) — one flip, whole plane.
   signup_real_deps = var.signup_real_deps
+  allow_real_sends = var.allow_real_sends
   # AI-plane pair for the agent_plane step (ARN references; resolved in-handler at cold start).
   anthropic_api_key_secret_arn = module.secrets.anthropic_api_key_secret_arn
   env_id_secret_arn            = module.secrets.env_id_secret_arn
