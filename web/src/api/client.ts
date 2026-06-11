@@ -557,7 +557,10 @@ export interface KnowledgeSearchResponse {
 // ---------------------------------------------------------------------------
 
 /** Connection status straight from the API — never invented client-side. */
-export type IntegrationStatus = "connected" | "not_connected" | "unknown";
+export type IntegrationStatus = "connected" | "not_connected" | "unknown" | "available";
+
+/** Connector kind: "sync" = credentialed pull connector; "file" = CSV push import (no vault slot). */
+export type IntegrationKind = "sync" | "file";
 
 /** One known connector + this tenant's connection status (GET /integrations). */
 export interface Integration {
@@ -565,9 +568,13 @@ export interface Integration {
   label: string;
   category: string;
   description: string;
-  /** true/false from the vault check; null = the API honestly couldn't tell. */
+  /** true/false from the vault check; null = the API honestly couldn't tell. File-kind = always null. */
   connected: boolean | null;
   status: IntegrationStatus;
+  /** "sync" = credentialed pull; "file" = CSV push import (POST /integrations/csv/import). */
+  kind: IntegrationKind;
+  /** True when the connector is experimental/preview. */
+  experimental?: boolean;
 }
 
 export interface ListIntegrationsResponse {
@@ -576,6 +583,8 @@ export interface ListIntegrationsResponse {
   secrets_configured: boolean;
   /** False = the ingestion plane isn't wired: sync-now will 503. */
   sync_configured: boolean;
+  /** False = the csv importer isn't wired: POST /integrations/csv/import will 503. */
+  csv_import_configured: boolean;
 }
 
 /**
@@ -783,6 +792,8 @@ export interface CortexDrift {
   drift: boolean;
   recent_auc: number | null;
   n_outcomes: number;
+  /** The champion's registered (training-time) AUC — the baseline drift compares against. */
+  registered_auc: number;
   /** Present when a number can't honestly be computed (#194 drift honesty). */
   reason?: string;
 }
@@ -812,15 +823,31 @@ export interface Invoice {
 }
 
 // --- CSV import (POST /integrations/csv/import) -----------------------------
-/** The csv_import.ImportReport shape (asdict). Per-row problems land in `errors`,
- * never throw; a whole-file problem surfaces as an ApiError(422). */
+/** Per-row error from a CSV import (1-based spreadsheet line). */
+export interface CsvImportRowError {
+  row: number;
+  error: string;
+}
+
+/** The csv_import.ImportReport shape (asdict — mirror of
+ * ingest/connectors/csv_import.py). Counts + errors come straight from the
+ * server; per-row problems land in `errors` (never throw), a whole-file problem
+ * is an ApiError(422). */
 export interface CsvImportReport {
   entity: string;
+  mapping: Record<string, string>;
   total_rows: number;
   imported: number;
-  skipped: number;
-  errors: Array<{ row?: number; reason: string }>;
-  [k: string]: unknown;
+  rows_upserted: number;
+  embedded: number;
+  skipped_unchanged: number;
+  errors: CsvImportRowError[];
+}
+
+/** POST /integrations/csv/import wraps the report as {name, report}. */
+export interface CsvImportResponse {
+  name: string;
+  report: CsvImportReport;
 }
 
 // --- Account data lifecycle (GET /account/export, POST /account/delete) -----
@@ -1795,12 +1822,19 @@ export class ApiClient {
     if (this.mock) {
       // No real ingest offline — report nothing imported (the UI shows the honest
       // "demo mode" notice rather than pretending rows landed).
-      return { entity, total_rows: 0, imported: 0, skipped: 0, errors: [] };
+      return {
+        entity, mapping: {}, total_rows: 0, imported: 0,
+        rows_upserted: 0, embedded: 0, skipped_unchanged: 0, errors: [],
+      };
     }
     const form = new FormData();
     form.append("entity", entity);
     form.append("file", file);
-    return this.requestMultipart<CsvImportReport>("POST", "/integrations/csv/import", form);
+    // The endpoint wraps the report as {name, report} — unwrap to the report.
+    const res = await this.requestMultipart<CsvImportResponse>(
+      "POST", "/integrations/csv/import", form,
+    );
+    return res.report;
   }
 
   // --- Account data lifecycle (GDPR) -----------------------------------------

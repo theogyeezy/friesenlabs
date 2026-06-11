@@ -339,7 +339,8 @@ function seedViews(): SavedViewRow[] {
 
 // Mirrors api/integrations_routes.py KNOWN_INTEGRATIONS. Starts not_connected
 // so the mock walks the same connect -> sync arc as the real API (incl. the
-// 409 "connect first" on a premature sync).
+// 409 "connect first" on a premature sync). CSV is a file-kind connector with
+// no vault slot — it always shows "available" in the mock (importer wired).
 function seedIntegrations(): Integration[] {
   return [
     {
@@ -349,8 +350,22 @@ function seedIntegrations(): Integration[] {
       description:
         "Sync companies, contacts, deals and notes from HubSpot CRM into your " +
         "Uplift data plane (read-only — Uplift never writes back).",
+      kind: "sync" as const,
       connected: false,
       status: "not_connected",
+      experimental: false,
+    },
+    {
+      name: "csv",
+      label: "CSV Import",
+      category: "Files & Imports",
+      description:
+        "Import contacts, companies or deals from a CSV export (up to 5MB). " +
+        "Column mapping is auto-detected and can be overridden per upload.",
+      kind: "file" as const,
+      connected: null,
+      status: "available" as const,
+      experimental: false,
     },
   ];
 }
@@ -1032,6 +1047,7 @@ export class MockApi {
       integrations: this.integrations.map((i) => ({ ...i })),
       secrets_configured: true,
       sync_configured: true,
+      csv_import_configured: true,
     };
   }
 
