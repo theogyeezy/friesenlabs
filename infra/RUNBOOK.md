@@ -210,3 +210,31 @@ in `signup/sms_sender.py` (`BLOCKED: Lane Nick — SNS SMS spend limit / origina
    env gains `ALLOW_REAL_SENDS=true`; roll the service.
 3. Run ONE real signup end-to-end (real email + phone) and confirm the verification email + OTP SMS
    arrive and the account provisions + logs in. Roll back by setting the flag false + apply.
+
+### Email-only launch (ship NOW while SMS approval is pending)
+
+Prereq B (SNS SMS) takes days of AWS approval. Prereq A (Resend domain) is **DONE** (friesenlabs.com
+verified). So you can launch on EMAIL-ONLY verification today and add phone later, via the
+`signup_require_phone` feature flag (SIGNUP_REQUIRE_PHONE; default true). When false: the SPA skips
+the phone step, no OTP is minted/sent, and an email-verified account is ready to pay.
+
+`prod.auto.tfvars`:
+```hcl
+resend_from_email    = "no-reply@friesenlabs.com"   # apex domain is Verified in Resend
+allow_real_sends     = true                          # email now delivers (SMS would fail — not used)
+signup_require_phone = false                          # skip phone until SMS is approved
+```
+Apply + roll:
+```bash
+cd infra
+terraform plan  -target=module.api_service -target=module.provisioning_lambda   # confirm only env adds
+terraform apply -target=module.api_service -target=module.provisioning_lambda
+aws ecs update-service --cluster uplift --service uplift-api --force-new-deployment --region us-east-1
+```
+Verify: ONE real signup → verification EMAIL arrives, verify, pay, provision, login. No phone step.
+Also confirm `signup_verify_url_base` is the live app URL (the link inside the email) and the secret
+`friesenlabs/platform/shared/resend-api-key` holds the active Resend "Onboarding" key.
+
+**Adding phone later (when SNS SMS is approved):** finish Prereq B, then flip
+`signup_require_phone = true` (+ re-apply `module.api_service`). The phone step + OTP re-activate;
+`allow_real_sends` is already on, so SMS starts delivering immediately.
