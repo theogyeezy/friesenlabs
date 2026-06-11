@@ -120,3 +120,48 @@ A full-surface launch audit (7 parallel auditors). Security/RLS/trust-rule/Green
 - [ ] **Dead `Foundation.html` link** (5 places on the landing) — part of the deferred nonprofit/landing-legal narrative; route `foundation.tsx` or remove the CTAs when that work is done.
 - [ ] **`DonateModal` fakes a successful donation** with no payment — relabel/remove until a real donation flow exists (deferred-legal-adjacent).
 - [ ] Cleanup: remove the now-superseded `module "cortex"` (its rule has no target; replaced by `scheduled_jobs`).
+
+---
+
+## Module entitlements — Phase 2 billing activation (owner: mint Prices + set one tfvar)
+
+The "Your suite" feature (Settings → toggle modules on/off; the app shows only enabled modules) is
+**built and live-able as-is** — toggling persists per-tenant and re-gates the nav/routes. The
+**billing sync is built but inert** until you mint per-module Stripe Prices. Code path:
+`PUT /account/modules` → persists the set → (when configured) `api/module_billing.ModuleBillingSync`
+reconciles the tenant's Stripe **subscription items** to the selection ("selection sets the price").
+It only ever adds/removes the module items — the plan-tier line item is never touched.
+
+To turn billing ON (nothing else in code changes; it auto-activates when the env is set):
+
+1. **Mint 10 recurring monthly Prices in Stripe** (one per non-spine module — Command Center is the
+   required spine and can stay bundled or get its own Price). Catalog + amounts: `shared/modules.py`
+   (`uplift` $49, `agents` $39, `workflows` $39, `greenlight` $25, `frontline` $39, `knowledge` $25,
+   `cortex` $45, `integration` $29, `sidecar` $35, `command` $49). Use the **same livemode** as the
+   plan-tier Prices already in use.
+2. **Set the `stripe_module_price_ids` map** in the canonical `prod.auto.tfvars`, keyed by the EXACT
+   env-var names `shared/modules.py` reads:
+   ```hcl
+   stripe_module_price_ids = {
+     STRIPE_PRICE_ID_MODULE_CORTEX      = "price_..."
+     STRIPE_PRICE_ID_MODULE_UPLIFT      = "price_..."
+     STRIPE_PRICE_ID_MODULE_AGENTS      = "price_..."
+     # ...one per module you want billed; omit a module to leave it visibility-only
+   }
+   ```
+   (Wired through `infra/main.tf` → `module.api_service` → `plain_env`, inject-only-when-set, so a
+   partial map is fine and an empty map keeps billing inert.)
+3. **Deploy** via the pipeline (Section 0 / "How applies work"): re-encode the tfvars secret →
+   `gh workflow run deploy.yml` → approve. On the next task rev the `STRIPE_PRICE_ID_MODULE_*` env
+   vars are present → `module_billing.from_env` returns a live sync → toggles start moving the bill.
+4. **Verify:** as a paid test tenant, toggle a module in Settings → "Your suite"; confirm the
+   subscription gains/loses the matching item in Stripe and the next invoice reflects it. (A sync
+   failure is non-fatal — the toggle still saves and the UI shows an honest "billing didn't go
+   through, we'll retry" note; re-saving re-syncs.)
+
+Notes / decisions baked in:
+- **Default suite = full (opt-out).** A tenant with no saved selection (incl. all existing live
+  tenants, pre-migrate) sees **everything**; the new power is turning modules OFF. This is also the
+  fail-open for a store/Stripe error — no one is ever stranded out of a surface.
+- Provisioning still seeds the row from the purchased plan in a later step if you want signup to
+  pre-select modules by tier; today a new tenant simply starts on the full suite.

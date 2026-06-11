@@ -306,6 +306,12 @@ variable "stripe_price_id_scale" {
   description = "Stripe Price ID for the scale plan (STRIPE_PRICE_ID_SCALE on the api task)."
 }
 
+variable "stripe_module_price_ids" {
+  type        = map(string)
+  default     = {} # owner mints per-module Prices, then sets e.g. { STRIPE_PRICE_ID_MODULE_CORTEX = "price_..." }
+  description = "Per-module recurring Stripe Price ids for Phase-2 module billing, keyed by the exact env var name shared/modules.py reads (STRIPE_PRICE_ID_MODULE_<ID>). Empty = module billing inert."
+}
+
 variable "stripe_success_url" {
   type        = string
   default     = ""

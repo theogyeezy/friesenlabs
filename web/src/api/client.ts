@@ -876,6 +876,33 @@ export interface WorkspaceSettingsUpdate {
   notification_prefs?: NotificationPrefs;
 }
 
+// --- Module entitlements (GET/PUT /account/modules — the "your suite" surface) ----
+/** One module in the catalog + whether this tenant has it enabled. */
+export interface ModuleEntry {
+  id: string;
+  name: string;
+  monthly_cents: number;
+  required: boolean;
+  enabled: boolean;
+}
+/** GET/PUT /account/modules — the catalog, the à-la-carte monthly total, and the enabled
+ * route-ids the app gates its nav/routes against. */
+/** Phase-2 billing sync result, present on a PUT response only when module billing is wired
+ * (per-module Stripe Prices configured). status: synced | no_customer | no_subscription | error. */
+export interface ModuleBilling {
+  status: string;
+  added?: string[];
+  removed?: string[];
+  error?: string;
+}
+export interface ModuleCatalog {
+  modules: ModuleEntry[];
+  monthly_total_cents: number;
+  enabled_routes: string[];
+  /** Only on PUT responses, and only when billing is configured server-side. */
+  billing?: ModuleBilling;
+}
+
 // --- Agent marketplace (starter playbook templates) -------------------------
 /** One committed starter template (GET /studio/templates) — a "ready-made agent"
  * a tenant can add to its library. `definition` is the playbook spec (opaque here). */
@@ -1914,6 +1941,31 @@ export class ApiClient {
       };
     }
     return this.request<WorkspaceSettings>("PUT", "/account/settings", body);
+  }
+
+  // --- module entitlements (the "your suite" surface, GET/PUT /account/modules) ----
+
+  /**
+   * GET /account/modules: the module catalog + this tenant's enabled set + monthly total +
+   * the enabled route-ids the app gates its nav/routes against. In mock mode every module is
+   * enabled (the demo shows the full suite).
+   */
+  async getModules(): Promise<ModuleCatalog> {
+    if (this.mock) {
+      return { modules: [], monthly_total_cents: 0, enabled_routes: [] };
+    }
+    return this.request<ModuleCatalog>("GET", "/account/modules");
+  }
+
+  /**
+   * PUT /account/modules: set the enabled module ids (the Settings "your suite" toggles).
+   * Required modules are forced on server-side; unknown ids dropped. Returns the saved catalog.
+   */
+  async putModules(enabled: string[]): Promise<ModuleCatalog> {
+    if (this.mock) {
+      return { modules: [], monthly_total_cents: 0, enabled_routes: [] };
+    }
+    return this.request<ModuleCatalog>("PUT", "/account/modules", { enabled });
   }
 
   // --- agent marketplace (starter templates) ---------------------------------

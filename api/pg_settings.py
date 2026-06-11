@@ -109,5 +109,50 @@ class PgSettingsStore(_PgTenantClient):
             raise RuntimeError("settings upsert returned no row")
         return _row_out(row)
 
+    # --- module entitlements (enabled_modules jsonb) — the "your suite" surface ----------------
+    def get_modules(self, tenant_id) -> list | None:
+        """The tenant's enabled module ids (None when no row yet). RLS-scoped. The route
+        normalizes against the catalog (drops unknowns, forces required on)."""
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "SELECT enabled_modules FROM tenant_settings WHERE tenant_id = %s",
+                (str(tenant_id),),
+            )
+            row = _dict_one(cur)
+        if row is None:
+            return None
+        return _normalize_modules(row.get("enabled_modules"))
+
+    def set_modules(self, tenant_id, module_ids: list) -> list:
+        """Upsert the tenant's enabled module set and RETURN the saved list. Like the settings
+        upsert, an explicit user toggle DO UPDATEs over the provisioning-seeded row."""
+        payload = json.dumps(list(module_ids))
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "INSERT INTO tenant_settings (tenant_id, enabled_modules) "
+                "VALUES (%s, %s::jsonb) "
+                "ON CONFLICT (tenant_id) DO UPDATE SET enabled_modules = EXCLUDED.enabled_modules "
+                "RETURNING enabled_modules",
+                (str(tenant_id), payload),
+            )
+            row = _dict_one(cur)
+        if row is None:
+            raise RuntimeError("modules upsert returned no row")
+        return _normalize_modules(row.get("enabled_modules"))
+
+
+def _normalize_modules(value: Any) -> list:
+    """Coerce the stored enabled_modules jsonb to a plain list of ids (psycopg2 hands back a list;
+    a raw cursor may hand back a JSON string). Non-list -> []."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except (ValueError, TypeError):
+            return []
+        value = decoded
+    return [str(i) for i in value] if isinstance(value, (list, tuple)) else []
+
 
 __all__ = ["PgSettingsStore"]

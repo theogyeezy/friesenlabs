@@ -850,3 +850,27 @@ tiered builders in isolated worktrees → 3-haiku refute-by-default panel → bo
   tfvars, knowledge corpus, EventBridge legs, the settings column-migrate + real status probes in asgi,
   the ingest-env flip for live CRM-table landing) and the deferred landing/demo-honesty + legal pages.
   **Every buildable item (ex-landing-legal) is shipped; what's left needs owner action, not code.**
+
+## Module entitlements ("provision/show only what the user selects") — 2026-06-11
+- **Feature:** per-tenant module catalog (`shared/modules.py`, 10 modules + required Command Center
+  spine, each carrying a route set + price + Stripe `price_env`). The app shows ONLY enabled modules:
+  `GET /account/modules` returns the catalog + enabled route-ids + à-la-carte monthly total; the SPA
+  gates its nav sections + route render against it (fail-OPEN — show-all on 503/404/error so the gate
+  can never strand a tenant). Settings → **"Your suite"** (`web/src/api/ModulesView.tsx`) toggles
+  modules, shows the live monthly total, and re-gates the app on save. Default for an un-tailored
+  tenant = **full suite (opt-out)** so no existing tenant loses a surface on deploy.
+- **Storage:** `tenant_settings.enabled_modules jsonb` (schema.sql) via `PgSettingsStore.get_modules/
+  set_modules`; route in `api/modules_routes.py` (THE TRUST RULE: tenant from the verified claim;
+  required modules forced on; unknown ids dropped; resilient GET → default catalog pre-migrate).
+- **Phase-2 billing ("selection sets the price"):** `StripeAdapter.sync_subscription_modules`
+  reconciles the tenant's subscription items to the enabled set (only ever touches MODULE items, never
+  the plan-tier line); orchestrated by `api/module_billing.ModuleBillingSync` (tenant → account →
+  `stripe_customer_id`). **Inert until the owner mints per-module Prices** — `from_env` returns None
+  with no `STRIPE_PRICE_ID_MODULE_*` set, so the PUT just persists + re-gates (best-effort sync,
+  non-fatal on Stripe error, reported in the response + an honest UI note). Infra carries a new
+  `stripe_module_price_ids` map var (inject-only-when-set; `terraform validate` clean). Activation
+  steps recorded in `GO_LIVE_CHECKLIST.md`.
+- **Tests:** `test_modules_catalog.py` + `test_modules_routes.py` + `test_modules_billing.py`
+  (catalog normalization/routes/totals/price-resolution, GET/PUT incl. trust-rule + billing-wired
+  PUT + non-fatal billing error, adapter add/remove/no-op/no-sub). Web typecheck + mock/real build
+  green.

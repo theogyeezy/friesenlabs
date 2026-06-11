@@ -172,6 +172,7 @@ module "api_service" {
   stripe_price_id_starter        = var.stripe_price_id_starter
   stripe_price_id_team           = var.stripe_price_id_team
   stripe_price_id_scale          = var.stripe_price_id_scale
+  stripe_module_price_ids        = var.stripe_module_price_ids
   stripe_success_url             = var.stripe_success_url
   stripe_cancel_url              = var.stripe_cancel_url
   resend_from_email              = var.resend_from_email

@@ -207,6 +207,72 @@ class StripeAdapter:
             })
         return rows
 
+    def sync_subscription_modules(self, *, customer: str, desired_price_ids,
+                                  managed_price_ids, idempotency_key: str | None = None) -> dict:
+        """Reconcile the customer's active subscription so it carries exactly the desired MODULE
+        price items — the "selection sets the price" billing sync (Phase 2).
+
+        Contract:
+          * ``desired_price_ids`` — the Price ids the ENABLED modules should be billed at.
+          * ``managed_price_ids`` — the FULL set of module Price ids we manage. We only ever add or
+            remove items whose Price is in here, so the plan-tier line item (and anything else on
+            the subscription) is NEVER touched. This is the safety boundary.
+          * Adds a quantity-1 item for each desired Price the subscription lacks; deletes each
+            managed item whose Price is no longer desired. A no-op when already in sync.
+
+        Returns ``{"subscription": id, "added": [...], "removed": [...]}``. Raises
+        :class:`StripeNotConfiguredError` with no api key. If the customer has no active
+        subscription (e.g. internal-comp / unpaid), returns ``{"subscription": None, ...}`` and
+        changes nothing — there is no invoice to move.
+        """
+        self._require_key("sync subscription items")
+        if not customer:
+            raise ValueError("sync_subscription_modules needs a Stripe customer id")
+        desired = {p for p in (desired_price_ids or []) if p}
+        managed = {p for p in (managed_price_ids or []) if p} | desired
+        lib = self._lib()
+        # Resolve the customer's active subscription (one per customer in our single-plan model).
+        subs = lib.Subscription.list(api_key=self._api_key, customer=customer, status="active", limit=1)
+        sub = next(iter(subs), None)
+        if sub is None:
+            return {"subscription": None, "added": [], "removed": []}
+
+        def _idx(obj, key, default=None):
+            try:
+                val = obj[key]
+            except (KeyError, TypeError):
+                return default
+            return default if val is None else val
+
+        sub_id = _idx(sub, "id")
+        # Current items: map Price id -> SubscriptionItem id (only the ones we manage matter).
+        items_obj = _idx(sub, "items", {})
+        present: dict[str, str] = {}
+        for it in _idx(items_obj, "data", []) or []:
+            price = _idx(it, "price", {})
+            pid = _idx(price, "id")
+            iid = _idx(it, "id")
+            if pid and iid:
+                present[pid] = iid
+
+        added, removed = [], []
+        # Add desired prices not present.
+        for pid in sorted(desired - set(present)):
+            kwargs = {"api_key": self._api_key, "subscription": sub_id, "price": pid, "quantity": 1}
+            if idempotency_key:
+                kwargs["idempotency_key"] = f"{idempotency_key}:add:{pid}"
+            lib.SubscriptionItem.create(**kwargs)
+            added.append(pid)
+        # Remove managed prices that are present but no longer desired (never touch unmanaged items).
+        for pid, iid in sorted(present.items()):
+            if pid in managed and pid not in desired:
+                kwargs = {"api_key": self._api_key}
+                if idempotency_key:
+                    kwargs["idempotency_key"] = f"{idempotency_key}:del:{pid}"
+                lib.SubscriptionItem.delete(iid, **kwargs)
+                removed.append(pid)
+        return {"subscription": sub_id, "added": added, "removed": removed}
+
     def construct_event(self, payload: bytes, sig_header: str, secret: str) -> Any:
         """Signature-verify a webhook payload; raises on bad/missing signature.
 

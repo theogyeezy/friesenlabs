@@ -613,3 +613,10 @@ CREATE POLICY tenant_isolation ON onboarding_state
 -- over the provisioning-seeded DO NOTHING row), same as the kill switch / autonomy dial.
 ALTER TABLE tenant_settings ADD COLUMN IF NOT EXISTS workspace_name text;
 ALTER TABLE tenant_settings ADD COLUMN IF NOT EXISTS notification_prefs jsonb NOT NULL DEFAULT '{}'::jsonb;
+-- tenant_settings.enabled_modules — the per-tenant MODULE ENTITLEMENTS (shared/modules.py catalog).
+-- A jsonb array of enabled module ids; the app shows only these modules' routes + the always-on
+-- ones. Empty/absent => the store falls back to shared.modules.default_enabled() (the required
+-- spine). Same tenant-scoped FORCE'd RLS + SET LOCAL discipline as the columns above. Backs
+-- GET/PUT /account/modules (api/modules_routes.py + PgSettingsStore.get_modules/set_modules); each
+-- enabled module is a Stripe subscription item in the Phase-2 "selection sets the price" billing.
+ALTER TABLE tenant_settings ADD COLUMN IF NOT EXISTS enabled_modules jsonb NOT NULL DEFAULT '[]'::jsonb;
