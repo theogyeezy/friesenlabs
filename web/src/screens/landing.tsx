@@ -4,6 +4,8 @@ import { createPortal } from "react-dom";
 import "../globals";
 import mattPhoto from "../assets/matt-yee.jpg";
 import nickPhoto from "../assets/nick-friesen.jpg";
+import { submitLeadWithFallback } from "../api/leads";
+import { defaultAnalytics } from "../analytics/posthog";
 const { useState, useEffect, useRef, useMemo, useCallback, useLayoutEffect, useReducer, useContext, useImperativeHandle, useId } = React;
 const { Icon, Logo, FL_DATA, FLStore, useStore, askClaude, bizContext, confettiBurst, XPBadge, useCountUp, CountUp, AreaChart, Sparkline, LoadBars, Donut, SlideOver, CommandPalette, HEAT, fmtMoney, StatCard, ToneIco, FLflag, useTweaks, TweaksPanel, TweakSection, TweakRow, TweakSlider, TweakToggle, TweakRadio, TweakSelect, TweakText, TweakNumber, TweakColor, TweakButton, FoxDemo, KanbanDemo, WorkflowDemo, GreenlightDemo, CommandDemo, IntegrationDemo, SupportDemo, SecurityDemo, SidecarDemo, CortexDemo } = window as any;
 
@@ -550,31 +552,69 @@ function ProductIco({ tone, icon, big }) {
 }
 
 /* ---------- modals ---------- */
+// A small "fall back to email" panel shown when /public/leads can't take a
+// lead (route not deployed, network, server error). Honest: the lead still
+// reaches a human, just by email instead of silently vanishing.
+function LeadFallback({ mailtoHref }) {
+  return (
+    <div data-testid="lead-fallback" style={{ textAlign: "center", padding: "12px 0" }}>
+      <div className="lp-prod-ico" style={{ background: "var(--amber-soft)", color: "oklch(0.5 0.12 60)", margin: "0 auto 12px" }}><LpIcon name="mail" size={20} /></div>
+      <p style={{ fontSize: 14, color: "var(--ink-2)", marginBottom: 14, lineHeight: 1.5 }}>We couldn't submit that just now. Send it to us by email and we'll get right back to you.</p>
+      <a className="btn btn-primary btn-lg" data-testid="lead-mailto" style={{ width: "100%" }} href={mailtoHref}><LpIcon name="mail" size={16} />Email us instead</a>
+    </div>
+  );
+}
+
 function BookModal({ onClose }) {
   const days = ["Mon 2", "Tue 3", "Wed 4", "Thu 5", "Fri 6"];
   const slots = ["9:00", "10:30", "1:00", "2:30", "4:00"];
-  const [day, setDay] = useState("Tue 3"); const [slot, setSlot] = useState("10:30"); const [done, setDone] = useState(false);
+  const [day, setDay] = useState("Tue 3"); const [slot, setSlot] = useState("10:30");
+  const [name, setName] = useState(""); const [email, setEmail] = useState("");
+  // "idle" | "sending" | "ok" | "fallback"
+  const [status, setStatus] = useState("idle");
+  const [mailtoHref, setMailtoHref] = useState("");
+  const [err, setErr] = useState("");
+
+  const confirm = async () => {
+    setErr("");
+    if (!name.trim()) return setErr("Please add your name.");
+    if (!email.includes("@")) return setErr("Please add a valid email.");
+    setStatus("sending");
+    const res = await submitLeadWithFallback({
+      kind: "book_call", name: name.trim(), email: email.trim(),
+      message: `Requested call slot: ${day} at ${slot}.`,
+    });
+    if (res.ok) { setStatus("ok"); } else { setMailtoHref(res.mailtoHref || ""); setStatus("fallback"); }
+  };
+
+  const heading = status === "ok" ? "Thanks, we'll be in touch" : status === "fallback" ? "One more step" : "Book a call";
+  const sub = status === "ok" ? "We'll confirm your time by email." : status === "fallback" ? "" : "15 minutes with a product specialist.";
   return (
     <div className="lp-modal-scrim" onClick={onClose}>
       <div className="lp-modal" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
         <div className="lp-modal-head">
           <div className="lp-prod-ico" style={{ background: "var(--accent-soft)", color: "var(--accent-ink)", marginBottom: 0 }}><LpIcon name="calendar" size={20} /></div>
-          <div style={{ flex: 1 }}><h3 style={{ fontSize: 19, fontWeight: 730, letterSpacing: "-.02em" }}>{done ? "You're booked!" : "Book a call"}</h3><p style={{ fontSize: 13, color: "var(--ink-3)", marginTop: 2 }}>{done ? "Check your inbox for the invite." : "15 minutes with a product specialist."}</p></div>
+          <div style={{ flex: 1 }}><h3 style={{ fontSize: 19, fontWeight: 730, letterSpacing: "-.02em" }}>{heading}</h3>{sub && <p style={{ fontSize: 13, color: "var(--ink-3)", marginTop: 2 }}>{sub}</p>}</div>
           <button className="icon-btn" aria-label="Close" onClick={onClose}><LpIcon name="x" size={18} /></button>
         </div>
         <div className="lp-modal-body">
-          {done ? (
-            <div style={{ textAlign: "center", padding: "16px 0" }}>
+          {status === "ok" ? (
+            <div data-testid="lead-confirm" style={{ textAlign: "center", padding: "16px 0" }}>
               <div className="lp-prov-check" style={{ width: 60, height: 60, borderRadius: 18 }}><LpIcon name="check" size={30} sw={2.6} style={{ color: "#fff" }} /></div>
-              <p style={{ fontSize: 14, color: "var(--ink-2)", marginTop: 14 }}><b>{day} at {slot}</b>, we'll see you then.</p>
+              <p style={{ fontSize: 14, color: "var(--ink-2)", marginTop: 14 }}>Got it — we'll confirm <b>{day} at {slot}</b> by email shortly.</p>
             </div>
+          ) : status === "fallback" ? (
+            <LeadFallback mailtoHref={mailtoHref} />
           ) : (
             <>
               <label style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-3)" }}>Pick a day</label>
               <div className="lp-slot" style={{ margin: "9px 0 16px" }}>{days.map((d) => <button key={d} className={day === d ? "sel" : ""} onClick={() => setDay(d)}>{d}</button>)}</div>
               <label style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-3)" }}>Pick a time</label>
-              <div className="lp-slot" style={{ margin: "9px 0 20px" }}>{slots.map((s) => <button key={s} className={slot === s ? "sel" : ""} onClick={() => setSlot(s)}>{s}</button>)}</div>
-              <button className="btn btn-primary btn-lg" style={{ width: "100%" }} onClick={() => setDone(true)}><LpIcon name="check" size={16} sw={2.2} />Confirm {day} at {slot}</button>
+              <div className="lp-slot" style={{ margin: "9px 0 16px" }}>{slots.map((s) => <button key={s} className={slot === s ? "sel" : ""} onClick={() => setSlot(s)}>{s}</button>)}</div>
+              <input className="lp-input" data-testid="book-name" placeholder="Your name" value={name} onChange={(e) => setName(e.target.value)} />
+              <input className="lp-input" data-testid="book-email" type="email" placeholder="Work email" value={email} onChange={(e) => setEmail(e.target.value)} />
+              {err && <p style={{ fontSize: 12.5, color: "var(--rose)", marginTop: 8 }}>{err}</p>}
+              <button className="btn btn-primary btn-lg" data-testid="book-submit" style={{ width: "100%", marginTop: 14 }} disabled={status === "sending"} onClick={confirm}><LpIcon name="check" size={16} sw={2.2} />{status === "sending" ? "Sending…" : `Confirm ${day} at ${slot}`}</button>
             </>
           )}
         </div>
@@ -583,24 +623,44 @@ function BookModal({ onClose }) {
   );
 }
 function EmailModal({ onClose }) {
-  const [done, setDone] = useState(false);
+  const [name, setName] = useState(""); const [email, setEmail] = useState(""); const [message, setMessage] = useState("");
+  const [status, setStatus] = useState("idle");
+  const [mailtoHref, setMailtoHref] = useState("");
+  const [err, setErr] = useState("");
+
+  const send = async () => {
+    setErr("");
+    if (!name.trim()) return setErr("Please add your name.");
+    if (!email.includes("@")) return setErr("Please add a valid email.");
+    setStatus("sending");
+    const res = await submitLeadWithFallback({
+      kind: "email", name: name.trim(), email: email.trim(), message: message.trim() || undefined,
+    });
+    if (res.ok) { setStatus("ok"); } else { setMailtoHref(res.mailtoHref || ""); setStatus("fallback"); }
+  };
+
+  const heading = status === "ok" ? "Message sent" : status === "fallback" ? "One more step" : "Email us";
+  const sub = status === "ok" ? "We'll reply within a few hours." : status === "fallback" ? "" : "Tell us about your business.";
   return (
     <div className="lp-modal-scrim" onClick={onClose}>
       <div className="lp-modal" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
         <div className="lp-modal-head">
           <div className="lp-prod-ico" style={{ background: "var(--rose-soft)", color: "oklch(0.48 0.14 18)", marginBottom: 0 }}><LpIcon name="mail" size={20} /></div>
-          <div style={{ flex: 1 }}><h3 style={{ fontSize: 19, fontWeight: 730, letterSpacing: "-.02em" }}>{done ? "Message sent" : "Email us"}</h3><p style={{ fontSize: 13, color: "var(--ink-3)", marginTop: 2 }}>{done ? "We'll reply within a few hours." : "Tell us about your business."}</p></div>
+          <div style={{ flex: 1 }}><h3 style={{ fontSize: 19, fontWeight: 730, letterSpacing: "-.02em" }}>{heading}</h3>{sub && <p style={{ fontSize: 13, color: "var(--ink-3)", marginTop: 2 }}>{sub}</p>}</div>
           <button className="icon-btn" aria-label="Close" onClick={onClose}><LpIcon name="x" size={18} /></button>
         </div>
         <div className="lp-modal-body">
-          {done ? (
-            <div style={{ textAlign: "center", padding: "16px 0" }}><div className="lp-prov-check" style={{ width: 60, height: 60, borderRadius: 18 }}><LpIcon name="check" size={30} sw={2.6} style={{ color: "#fff" }} /></div><p style={{ fontSize: 14, color: "var(--ink-2)", marginTop: 14 }}>Thanks, a human will get back to you soon.</p></div>
+          {status === "ok" ? (
+            <div data-testid="lead-confirm" style={{ textAlign: "center", padding: "16px 0" }}><div className="lp-prov-check" style={{ width: 60, height: 60, borderRadius: 18 }}><LpIcon name="check" size={30} sw={2.6} style={{ color: "#fff" }} /></div><p style={{ fontSize: 14, color: "var(--ink-2)", marginTop: 14 }}>Thanks, a human will get back to you soon.</p></div>
+          ) : status === "fallback" ? (
+            <LeadFallback mailtoHref={mailtoHref} />
           ) : (
             <>
-              <input className="lp-input" placeholder="Your name" />
-              <input className="lp-input" placeholder="Work email" />
-              <textarea className="lp-input" placeholder="What are you hoping to automate?" />
-              <button className="btn btn-primary btn-lg" style={{ width: "100%", marginTop: 14 }} onClick={() => setDone(true)}><LpIcon name="send" size={16} />Send message</button>
+              <input className="lp-input" data-testid="email-name" placeholder="Your name" value={name} onChange={(e) => setName(e.target.value)} />
+              <input className="lp-input" data-testid="email-email" type="email" placeholder="Work email" value={email} onChange={(e) => setEmail(e.target.value)} />
+              <textarea className="lp-input" data-testid="email-message" placeholder="What are you hoping to automate?" value={message} onChange={(e) => setMessage(e.target.value)} />
+              {err && <p style={{ fontSize: 12.5, color: "var(--rose)", marginTop: 8 }}>{err}</p>}
+              <button className="btn btn-primary btn-lg" data-testid="email-submit" style={{ width: "100%", marginTop: 14 }} disabled={status === "sending"} onClick={send}><LpIcon name="send" size={16} />{status === "sending" ? "Sending…" : "Send message"}</button>
             </>
           )}
         </div>

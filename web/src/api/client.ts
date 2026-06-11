@@ -515,6 +515,33 @@ export interface GetSignupResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Public lead capture (pre-auth: no bearer token, no tenant_id).
+//
+// The marketing site's "Book a call" / "Email us" forms POST here. Public by
+// design — there is no account or tenant yet — so the request carries only the
+// visitor's contact details. Callers degrade to a mailto: link on any non-2xx
+// (see web/src/screens/landing.tsx) so a lead is never silently dropped.
+// ---------------------------------------------------------------------------
+
+/** Which marketing form produced the lead. */
+export type LeadKind = "book_call" | "email";
+
+/** Body for POST /public/leads. Carries no tenant_id (none exists yet). */
+export interface LeadBody {
+  kind: LeadKind;
+  name: string;
+  email: string;
+  message?: string;
+  company?: string;
+}
+
+/** Response from POST /public/leads — just an acknowledgement. */
+export interface LeadResponse {
+  ok: boolean;
+  id?: string;
+}
+
+// ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
@@ -1122,6 +1149,23 @@ export class ApiClient {
       "GET",
       `/signup/${encodeURIComponent(accountId)}`,
     );
+  }
+
+  // --- public lead capture (pre-auth) ---------------------------------------
+
+  /**
+   * POST /public/leads: capture a "Book a call" / "Email us" lead. Public, so
+   * it sends no bearer token and no tenant_id. Throws ApiError on non-2xx (incl.
+   * 404 when the route isn't deployed yet) so the caller can fall back to a
+   * mailto: link and keep the user-visible confirmation honest.
+   */
+  async submitLead(body: LeadBody): Promise<LeadResponse> {
+    if (this.mock) {
+      // Offline/test builds: acknowledge without a network call so the funnel
+      // is exercisable without a backend.
+      return { ok: true };
+    }
+    return this.requestPublic<LeadResponse>("POST", "/public/leads", body);
   }
 }
 
