@@ -562,6 +562,29 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   `dispatch_event` callers). 4 P0 / 8 P1 / 3 P2 filed in `TODO.md`; 4 stale Agent-Studio
   site-audit bullets corrected (registrar/marketplace done by #236/#233). Full report:
   `docs/audits/agents-studio-audit-2026-06-11.md`.
+- 2026-06-11 — **Switchboard release readiness (audit → build, `feat/matt-switchboard-audit`):**
+  audited the $29/mo `integration` module end-to-end (`docs/audits/switchboard-audit-2026-06-11.md`
+  — real code, NOT a Sidecar-style empty SKU; blockers were go-live wiring, marketing honesty, and
+  the connect→sync loop) then shipped the code side of every gap. **Backend:** new RLS-FORCEd
+  `integration_sync_runs` table (partial-unique single-runner guard) + `PgSyncRunStore`; POST sync
+  is now ASYNC (202 + background task, concurrent kick 409, 30-min stale-runner reap, exception
+  CLASS names only) with `GET /integrations/{name}/syncs` history + `last_sync` in the listing;
+  `DELETE /integrations/{name}/credentials` (idempotent disconnect; ForceDeleteWithoutRecovery so
+  reconnects never block; DeletedDate = not-connected); verify-on-connect probes (definitive 401/403
+  → 422 + nothing stored, inconclusive → stored `verified:null`); account-delete now purges the
+  `uplift/{tenant}/{source}` vault slots (honest `skipped_unconfigured` until the asgi wiring);
+  `INGEST_TENANTS=auto` — run_sync discovers the tenant set from vaulted slots (ListSecrets
+  names-only) so connecting auto-enrolls the nightly sync. **Web:** panel disconnect (inline
+  confirm), last-synced line, 202-sync polling; client+mock methods/types. **Honesty:** landing
+  "18+ tools"/fake-vendor carousel/"two-way sync & write-back"/"Keep Salesforce or Pipedrive"
+  rewritten to the real read-only 4-connector catalog (+ tour/onboarding/constellation + the mock
+  screen); stale HOTFIX comment reframed as the boot invariant; `shared/modules.py` docstring fixed
+  (no phantom modules.ts). **Verification:** pytest **1994 passed, 0 failed** (+27 new tests across
+  routes-v2/secret-writer/account-delete/run-sync-discovery), web typecheck + build green,
+  **16/16 integrations e2e** vs the real bundle (3 new: disconnect, last-synced, 202-poll). All
+  inert-safe behind the existing switches — the live release is exactly **REQ-012**
+  (migrate + DeleteSecret/ListSecrets IAM + flips + the module Price), runbook also folded into
+  `GO_LIVE_CHECKLIST.md` § 6.
 - 2026-06-11 — **Neural constellation hero (landing):** the hero is now a live, dependency-free
   canvas render of the real 11-product suite — Command Center at the heart, any-to-any transient
   signal routes, product-true activity cards, and a ~9s Security guardrail interception (shield +

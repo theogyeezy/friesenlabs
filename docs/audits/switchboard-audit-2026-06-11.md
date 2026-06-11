@@ -106,3 +106,17 @@ leaks vaulted third-party tokens.
 13. **TODO.md "Connectors & ingest" sub-bullets done but unswept**: IAM broadening (#235), csv
     card special-casing + `csvImport` client method + upload UI (#228/#229), PgStructuredSink
     (#222).
+
+## Addendum — release build shipped (same day, this branch)
+
+Every Lane-Matt item above was built and verified on `feat/matt-switchboard-audit`:
+P0 #2 (honest marketing), #3 (`INGEST_TENANTS=auto` vault discovery), #4 (async 202 syncs over
+`integration_sync_runs` with the partial-unique single-runner guard + 30-min stale reap);
+P1 #5 (DELETE credentials + panel confirm), #6 (account-delete vault purge), #7 (run history +
+last-synced), #8 (verify-on-connect probes); P2 #10-13 (comment/docstring/TODO sweeps).
+Verification: pytest 1994 passed / 0 failed (+27 new), ruff clean, web typecheck + build green,
+16/16 integrations e2e vs the real bundle (3 new). Everything is inert-safe behind the existing
+switches. **The remaining release path is exactly `infra/REQUESTS.md` REQ-012** (live migrate,
+DeleteSecret + ListSecrets IAM, the ordered flips incl. the first-connect live # VERIFYs, and the
+owner-minted module Price), mirrored in `GO_LIVE_CHECKLIST.md` § 6. P1 #9's live per-connector
+VERIFY rides REQ-012 step 5.

@@ -61,11 +61,14 @@ Until this is done, a real paid signup gets charged then parks `provisioning_fai
 - [ ] **Drift alerting (optional but recommended):** set `cortex_drift_alert_email = "you@friesenlabs.com"` to subscribe to the `uplift-cortex-drift` SNS topic (confirm the AWS subscription email), OR subscribe Slack/PagerDuty to the topic yourself. The retrain fan-out auto-publishes a positive live-drift verdict (`CORTEX_DRIFT_TOPIC_ARN` is already injected into the task). No email set = topic exists, no notifications.
 - [ ] _Model note (no action):_ the bake-off now trains a **gradient-boosted-trees** learner alongside logistic regression over a 9-feature vector and keeps the higher held-out-AUC model per tenant. No flag — it's automatic once retrain runs.
 
-## 6. Turn on ingest + connectors
+## 6. Turn on ingest + connectors (= release Switchboard — the full ordered runbook is REQ-012)
 
-- [ ] `ingest_schedule_enabled = true` + `ingest_tenants = "<tenant-id,...>"` (vault each tenant's per-source secret first).
-- [ ] `INTEGRATIONS_REAL_SECRETS` + `INGEST_REAL_STORES` switches for live connector connect/sync + CSV-import landing in the CRM tables.
-- [ ] Live per-connector `# VERIFY` pass against the real vendor APIs (HubSpot + Stripe self-confirmed in code; **GoHighLevel still needs a live verify** — no confirmed server-side incremental filter).
+- [ ] **Migrate first:** one-off `api.migrate` with a fresh image — adds the `integration_sync_runs` table + grants (async "Sync now", the single-runner guard, sync history / last-synced). Isolation gate after.
+- [ ] **IAM deltas:** api task `secretsmanager:DeleteSecret` on `uplift/*/{hubspot,stripe,gohighlevel}*` (disconnect + account-delete vault purge); ingest task `secretsmanager:ListSecrets` (the `auto` tenant discovery). Verify #235's connector-write widening is APPLIED.
+- [ ] `ingest_schedule_enabled = true` + `ingest_tenants = "auto"` — `auto` discovers the tenant set from the vaulted slots, so a customer who connects in the panel is auto-enrolled (no hand-list; a comma list still works). The rule syncs `--source hubspot`; add per-source runs when stripe/gohighlevel tenants exist.
+- [ ] `INTEGRATIONS_REAL_SECRETS` (flag `api_integrations_real`) + `INGEST_REAL_STORES` on the api task for live connector connect/disconnect/sync + CSV-import landing in the CRM tables. (In-request sync risk is gone — API kicks are 202 + background + guarded.)
+- [ ] Live per-connector `# VERIFY` pass against the real vendor APIs on the first connect (HubSpot + Stripe self-confirmed in code; **GoHighLevel still needs a live verify** — incremental filter AND the new connect-probe endpoint). Also verify put/create/describe/delete_secret shapes + the REQ-008 ARN-suffix match.
+- [ ] **Bill the module:** mint the $29/mo `integration` Price → `module_prices = { STRIPE_PRICE_ID_MODULE_INTEGRATION = "price_..." }` (until then Switchboard toggles visibility but never bills).
 
 ## 7. Turn on playbook automation
 
