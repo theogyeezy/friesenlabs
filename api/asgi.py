@@ -366,6 +366,7 @@ def build_app():
         verifier=verifier,
         greenlight=greenlight,
         saved_views=saved_views,
+        cube=cube,  # backs POST /views/{id}/data (cube_data_routes); None -> honest 503
         conversation_factory=conversation_factory,
         autonomy_config=autonomy_config,
         executor=executor,

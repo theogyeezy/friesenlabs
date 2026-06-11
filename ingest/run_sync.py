@@ -50,6 +50,7 @@ from shared.config import (
 )
 
 from . import EMBEDDING_DIM
+from .connectors import default_structured_sink
 from .connectors.registry import SYNC_SOURCES, build_sync_connector
 from .pipeline import (
     InMemoryCursorStore,
@@ -185,7 +186,9 @@ def build_connector(tenant_id: str, *, source: str = "hubspot", raw_sink=None):
         tenant_id,
         secrets=secrets,
         raw_sink=raw_sink if raw_sink is not None else InMemoryRawSink(),
-        structured_sink=InMemoryStructuredSink(),
+        # Land structured rows into the Aurora CRM tables in real mode (gated by
+        # INGEST_REAL_STORES inside the helper); in-memory otherwise.
+        structured_sink=default_structured_sink(),
         client=client,
         real_client=real_mode(),
     )

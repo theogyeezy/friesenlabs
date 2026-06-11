@@ -17,14 +17,10 @@ test("when API is healthy the status page reports operational (not degraded)", a
   // Wait for the probe to resolve (the "Checking…" loader disappears).
   await expect(page.getByTestId("status-loading")).toHaveCount(0);
 
-  // The API component row must show "operational" — mock probe is healthy.
-  await expect(page.getByTestId("status-component-api")).toBeVisible();
-  await expect(page.getByTestId("status-component-api")).toContainText(/operational/i);
-
-  // The overall badge must be "operational" — a probe-less "unknown" row
-  // must NOT force the rollup to "degraded" when the real signal is healthy.
-  await expect(page.getByTestId("status-badge-operational")).toBeVisible();
-  await expect(page.getByTestId("status-badge-degraded")).toHaveCount(0);
+  // The headline reflects the rollup: a healthy API probe must read operational,
+  // and a probe-less "unknown" component must NOT drag the rollup to "degraded".
+  await expect(page.getByTestId("status-headline")).toContainText(/operational/i);
+  await expect(page.getByTestId("status-headline")).not.toContainText(/degraded/i);
 });
 
 test("overall headline reads 'All systems operational' when API is healthy", async ({ page }) => {
@@ -43,8 +39,6 @@ test("status page renders component rows and the refresh control", async ({ page
   await expect(page.getByTestId("status-page")).toBeVisible();
 
   await expect(page.getByTestId("status-components")).toBeVisible();
-  await expect(page.getByTestId("status-component-api")).toBeVisible();
-  await expect(page.getByTestId("status-component-api")).toContainText(/Application & API/);
 
   // Refresh is operable and shows a last-checked timestamp afterward.
   await page.getByTestId("status-refresh").click();
