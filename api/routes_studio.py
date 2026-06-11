@@ -249,3 +249,51 @@ def mount_studio(app: FastAPI, deps: StudioDeps, current_tenant) -> None:
         if updated is None:
             raise HTTPException(status_code=404, detail="no such playbook")
         return _serialize(updated, claims)
+
+    @app.post("/studio/playbooks/{playbook_id}/run")
+    def run_playbook_route(playbook_id: str, claims: TenantClaims = Depends(current_tenant)):
+        """Manual 'Run now' trigger for an active playbook.
+
+        Tenant comes ONLY from the verified claim (THE TRUST RULE). The runner routes every
+        side-effecting tool through Greenlight as a DRAFT — nothing is auto-executed. A run
+        that surfaces draft actions returns status "pending"; that is correct and is NOT
+        presented as "sent".
+        """
+        store = _require_store(deps)
+        row = store.get(claims.tenant_id, playbook_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="no such playbook")
+        if row["status"] != "active":
+            raise HTTPException(status_code=409, detail="playbook is not active — activate before running")
+        # Re-validate the STORED definition (defense in depth: a row that predates a schema
+        # tightening must not run unvalidated).
+        _validate_or_422(row["definition"])
+
+        if deps.registrar is not None:
+            from agents.playbooks.runner import TriggerEvent, run as _run_playbook  # noqa: PLC0415 — lazy
+
+            # environment_id / vault_id are not on StudioDeps (None is acceptable; the runner
+            # passes them into create_session which accepts None for both).
+            environment_id = getattr(deps, "environment_id", None)
+            vault_id = getattr(deps, "vault_id", None)
+            event = TriggerEvent(kind="manual", name="run-now")
+            record = _run_playbook(
+                deps.registrar, store, claims.tenant_id, playbook_id, event,
+                environment_id=environment_id, vault_id=vault_id,
+            )
+            # Serialize the RunRecord. Use as_dict() if present (the public API); draft actions
+            # surface as status "pending" — correct, NOT "sent". Never fabricate a run result.
+            run_dict = record.as_dict() if hasattr(record, "as_dict") else {
+                k: v for k, v in vars(record).items() if not k.startswith("_")
+            }
+            # The tenant_id in the record is the verified claim tenant (set by the runner from
+            # the upstream claim). Drop it from the wire body — internal ids never leave the API.
+            run_dict.pop("tenant_id", None)
+            return {"ran": True, "run": run_dict}
+        else:
+            # No agent plane configured: flip nothing, report honestly. Mirror the activate
+            # record-only shape (_NO_REGISTRAR_REASON / registered:false pattern).
+            out = _serialize(row, claims)
+            out["ran"] = False
+            out["run_reason"] = _NO_REGISTRAR_REASON
+            return out

@@ -18,6 +18,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
 
 from api.account_routes import AccountDeps
+from api.account_delete_routes import AccountDeleteDeps
 from api.agents_routes import AgentsDeps
 from api.auth import JwtVerifier, TenantClaims, make_current_tenant
 from api.control.autonomy import AutonomyConfig
@@ -145,6 +146,10 @@ class ApiDeps:
     # api/asgi.py wires the real crm/rag/saved_views (the same instances every other route uses).
     # Pass None to skip mounting the route entirely (e.g. internal/stripped deployments).
     account: AccountDeps | None = field(default_factory=AccountDeps)
+    # POST /account/delete deps (GDPR/offboarding teardown). Same inert-default contract: the
+    # all-None stub mounts the route answering the honest 503; a destructive live path requires
+    # api/asgi.py to deliberately wire a real PgAccountDeleter. None = skip mounting entirely.
+    account_delete: AccountDeleteDeps | None = field(default_factory=AccountDeleteDeps)
     # Per-tenant rate-limit + quota MIDDLEWARE (a 2-tuple (middleware_class, kwargs) added via
     # app.add_middleware). None -> NOT installed (the default for offline tests, so they aren't
     # throttled). api/asgi.py passes a configured spec when tenant_limits_enabled(); a request with
@@ -546,6 +551,16 @@ def create_app(deps: ApiDeps) -> FastAPI:
     if deps.account is not None:
         from api.account_routes import mount_account
         mount_account(app, deps.account, current_tenant)
+
+    # Authed per-tenant account teardown (POST /account/delete — the GDPR/offboarding erasure
+    # sibling of /account/export). Claims-bound + requires a confirm token matching the verified
+    # tenant; deletes only the tenant's OWN mutable rows (append-only audit tables are reported
+    # retained, never force-deleted), RLS-scoped, idempotent, SAVEPOINT-per-table. Inert by
+    # default (deleter=None -> honest 503): going live is a deliberate api/asgi.py wiring step,
+    # so a destructive path never ships functional without explicit review.
+    if deps.account_delete is not None:
+        from api.account_delete_routes import mount_account_delete
+        mount_account_delete(app, deps.account_delete, current_tenant)
 
     # Per-tenant rate-limit + quota middleware. Installed ONLY when api/asgi.py provides a spec
     # (default None = off, so offline tests aren't throttled). The spec is (cls, kwargs); a

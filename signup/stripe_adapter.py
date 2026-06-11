@@ -164,6 +164,49 @@ class StripeAdapter:
         # __getattr__ and exposes no dict-style `.get` (session.get("url") raises AttributeError).
         return {"id": session["id"], "url": session["url"]}
 
+    def list_invoices(self, *, customer: str, limit: int = 24) -> list[dict]:
+        """List invoices for an EXISTING Stripe customer.
+
+        Returns a list of normalized dicts — each with the keys the billing panel needs. Raises
+        :class:`StripeNotConfiguredError` when no api key is set (same pattern as every other live-
+        call method — clean stub, no network). Results are capped at ``limit`` (default 24).
+
+        Normalized shape per invoice:
+          ``id``, ``number``, ``amount_due``, ``amount_paid``, ``currency``, ``status``,
+          ``created`` (Unix timestamp int), ``hosted_invoice_url``, ``invoice_pdf``.
+        """
+        self._require_key("list invoices")
+        if not customer:
+            raise ValueError("list_invoices needs a Stripe customer id")
+        invoices_resp = self._lib().Invoice.list(
+            api_key=self._api_key,   # per-call key — no global stripe.api_key mutation
+            customer=customer,
+            limit=min(int(limit), 24),
+        )
+        # `auto_paging_iter` or iteration — the stripe lib returns a ListObject that is iterable.
+        rows = []
+        for inv in invoices_resp:
+            def _g(key, default=None, _inv=inv):
+                """Safe index — StripeObject has no dict-style .get on current versions."""
+                try:
+                    val = _inv[key]
+                except (KeyError, TypeError):
+                    return default
+                return default if val is None else val
+
+            rows.append({
+                "id": _g("id", ""),
+                "number": _g("number", ""),
+                "amount_due": _g("amount_due", 0),
+                "amount_paid": _g("amount_paid", 0),
+                "currency": _g("currency", "usd"),
+                "status": _g("status", ""),
+                "created": _g("created", 0),
+                "hosted_invoice_url": _g("hosted_invoice_url", ""),
+                "invoice_pdf": _g("invoice_pdf", ""),
+            })
+        return rows
+
     def construct_event(self, payload: bytes, sig_header: str, secret: str) -> Any:
         """Signature-verify a webhook payload; raises on bad/missing signature.
 

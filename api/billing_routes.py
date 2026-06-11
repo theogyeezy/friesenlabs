@@ -95,6 +95,33 @@ def mount_billing(app: FastAPI, deps: BillingDeps, current_tenant: Callable) -> 
             )
         return {"url": url}
 
+    @app.get("/billing/invoices")
+    @app.get("/api/billing/invoices")
+    def billing_invoices(request: Request):
+        # List the calling tenant's real Stripe invoices (capped at 24) so the billing panel shows
+        # actual history instead of mock data. Tenant identity comes ONLY from the verified claim
+        # (THE TRUST RULE) — the client never names the customer or the tenant.
+        from api.auth import TenantClaims  # noqa: PLC0415
+        claims: TenantClaims = current_tenant(request)
+
+        acct = _resolve_account(claims.tenant_id)
+        customer_id = getattr(acct, "stripe_customer_id", None) if acct else None
+        if not customer_id:
+            # No Stripe customer for this tenant yet (internal-comp / not-yet-paid): no invoices
+            # exist; return an empty list with the same honest posture as the /billing sibling.
+            return {"invoices": []}
+
+        try:
+            rows = deps.stripe.list_invoices(customer=str(customer_id), limit=24)
+        except Exception as e:  # noqa: BLE001 — StripeNotConfiguredError / transient Stripe error
+            # Stripe unconfigured (no api key) or transient failure → honest 503, never a 500.
+            # Parity with the portal-session route's degraded path.
+            raise HTTPException(
+                status_code=503,
+                detail="Billing isn't available right now. Please try again shortly.",
+            ) from e
+        return {"invoices": rows}
+
     @app.get("/billing")
     @app.get("/api/billing")
     def billing_state(request: Request):
