@@ -97,6 +97,9 @@ test("real mode: non-API routes render the honest 'isn't live yet' panel, not th
 
   await page.route("**/views/*", (route) => route.fulfill({ json: VIEW_ROW }));
   await page.route("**/approvals", (route) => route.fulfill({ json: { approvals: [] } }));
+  // Marketplace is now an API-wired real-mode view (GET /studio/templates) — stub
+  // it empty so it renders its honest empty state rather than hitting the network.
+  await page.route("**/studio/templates", (route) => route.fulfill({ json: { templates: [] } }));
 
   await page.goto("/");
   await expect(page.getByTestId("dashboard-view")).toBeVisible({ timeout: 15_000 });
@@ -115,10 +118,12 @@ test("real mode: non-API routes render the honest 'isn't live yet' panel, not th
   await page.locator(".nav-item", { hasText: "Templates" }).click();
   await expect(page.getByTestId("coming-soon")).toBeVisible({ timeout: 15_000 });
 
-  // Marketplace routes to the panel instead of the prototype agent catalog.
+  // Marketplace is LIVE in real mode now: the API-wired MarketplaceView (over
+  // GET /studio/templates), NOT the FLStore prototype agent catalog and NOT a
+  // ComingSoon panel. With an empty catalog it shows the honest empty state.
   await page.locator(".nav-item", { hasText: "Marketplace" }).click();
-  await expect(page.getByTestId("coming-soon")).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByTestId("coming-soon")).toContainText("Marketplace");
+  await expect(page.getByTestId("marketplace-empty")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId("coming-soon")).toHaveCount(0);
 
   // The notifications panel is honest: no scripted FLStore feed events.
   // Topbar icon buttons: [0] mobile menu, [1] bell, [2] theme toggle.

@@ -30,6 +30,8 @@ import SecurityControls from "./api/SecurityControls";
 import BillingManage from "./api/BillingManage";
 import CortexView from "./api/CortexView";
 import AccountDataControls from "./api/AccountDataControls";
+import WorkspaceSettings from "./api/WorkspaceSettings";
+import MarketplaceView from "./api/MarketplaceView";
 const { useState, useEffect, useRef, useMemo, useCallback, useLayoutEffect, useReducer, useContext, useImperativeHandle, useId } = React;
 const { Icon, Logo, FL_DATA, FLStore, useStore, askClaude, bizContext, confettiBurst, XPBadge, useCountUp, CountUp, AreaChart, Sparkline, LoadBars, Donut, SlideOver, CommandPalette, HEAT, fmtMoney, StatCard, ToneIco, FLflag, useTweaks, TweaksPanel, TweakSection, TweakRow, TweakSlider, TweakToggle, TweakRadio, TweakSelect, TweakText, TweakNumber, TweakColor, TweakButton, FoxDemo, KanbanDemo, WorkflowDemo, GreenlightDemo, CommandDemo, IntegrationDemo, SupportDemo, SecurityDemo, SidecarDemo, CortexDemo } = window as any;
 // app.jsx, shell: sidebar, topbar, routing, tweaks, palette
@@ -501,22 +503,31 @@ function App() {
                   "no_champion" degraded states (NEVER fabricated accuracy/
                   drift numbers) — never the FLStore Cortex prototype. */}
               {route === "cortex" && <CortexView />}
-              {/* Settings is LIVE for self-service billing + account data in real
-                  mode: the Plan & billing panel reads GET /billing (+ invoices)
-                  and "Manage billing" redirects to the Stripe Customer Portal;
-                  the Account & data section exports (GET /account/export) and can
-                  request teardown (POST /account/delete, confirm-gated + honest
-                  503 when the destructive path isn't live-wired). Each panel
+              {/* Marketplace is LIVE in real mode: browse the committed starter
+                  "ready-made agents" (GET /studio/templates) and add one to your
+                  library as a draft playbook (POST /studio/templates/{id}/
+                  instantiate) — the honest counterpart of the FLStore agent-market
+                  demo. Nothing runs until you activate it in Studio. */}
+              {route === "marketplace" && <MarketplaceView onOpenStudio={() => navTo("studio")} />}
+              {/* Settings is LIVE for workspace, billing + account data in real
+                  mode: Workspace name + notification prefs PERSIST via GET/PUT
+                  /account/settings; the Plan & billing panel reads GET /billing
+                  (+ invoices) and "Manage billing" redirects to the Stripe Customer
+                  Portal; the Account & data section exports (GET /account/export)
+                  and can request teardown (POST /account/delete, confirm-gated +
+                  honest 503 when the destructive path isn't live-wired). Each panel
                   feature-detects a 404/503 and degrades honestly. */}
               {route === "settings" && (
                 <div className="screen-anim" style={{ maxWidth: 720 }}>
-                  <div className="ad-sec-label" style={{ marginBottom: 14 }}>Plan &amp; billing</div>
+                  <div className="ad-sec-label" style={{ marginBottom: 14 }}>Workspace</div>
+                  <WorkspaceSettings />
+                  <div className="ad-sec-label" style={{ margin: "28px 0 14px" }}>Plan &amp; billing</div>
                   <BillingManage />
                   <div className="ad-sec-label" style={{ margin: "28px 0 14px" }}>Account &amp; data</div>
                   <AccountDataControls />
                 </div>
               )}
-              {route !== "dashboard" && route !== "crm" && route !== "contacts" && route !== "agents" && route !== "studio" && route !== "workflows" && route !== "reports" && route !== "dashboards" && route !== "knowledge" && route !== "approvals" && route !== "integrations" && route !== "security" && route !== "settings" && route !== "cortex" && (
+              {route !== "dashboard" && route !== "crm" && route !== "contacts" && route !== "agents" && route !== "studio" && route !== "workflows" && route !== "reports" && route !== "dashboards" && route !== "knowledge" && route !== "approvals" && route !== "integrations" && route !== "security" && route !== "settings" && route !== "cortex" && route !== "marketplace" && (
                 <ComingSoon title={meta.h1} icon={navIconFor(route)} />
               )}
             </>

@@ -862,6 +862,29 @@ export interface AccountDeleteReport {
   failed: Record<string, string>;
 }
 
+// --- Persisted workspace settings (GET/PUT /account/settings) ---------------
+/** A flat map of notification preference flags (bool) / values (string). */
+export type NotificationPrefs = Record<string, boolean | string>;
+/** GET/PUT /account/settings — workspace name + notification prefs. */
+export interface WorkspaceSettings {
+  workspace_name: string | null;
+  notification_prefs: NotificationPrefs;
+}
+/** PUT /account/settings body — a partial update (only present fields are written). */
+export interface WorkspaceSettingsUpdate {
+  workspace_name?: string;
+  notification_prefs?: NotificationPrefs;
+}
+
+// --- Agent marketplace (starter playbook templates) -------------------------
+/** One committed starter template (GET /studio/templates) — a "ready-made agent"
+ * a tenant can add to its library. `definition` is the playbook spec (opaque here). */
+export interface StudioTemplateSummary {
+  template_id: string;
+  summary: string;
+  definition: Record<string, unknown>;
+}
+
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
@@ -1861,6 +1884,64 @@ export class ApiClient {
       return { deleted: {}, retained: {}, failed: {} };
     }
     return this.request<AccountDeleteReport>("POST", "/account/delete", { confirm });
+  }
+
+  // --- persisted workspace settings (GET/PUT /account/settings) ---------------
+
+  /**
+   * GET /account/settings: the tenant's persisted workspace name + notification
+   * prefs (server derives the tenant from the verified claim). A tenant that has
+   * never saved gets the empty default shape ({workspace_name: null, prefs: {}}),
+   * never a 404. ApiError(503) where the settings store isn't wired.
+   */
+  async getSettings(): Promise<WorkspaceSettings> {
+    if (this.mock) {
+      return { workspace_name: "Acme Co.", notification_prefs: {} };
+    }
+    return this.request<WorkspaceSettings>("GET", "/account/settings");
+  }
+
+  /**
+   * PUT /account/settings: persist a partial update (only the fields present are
+   * written; the rest are left untouched). Returns the full saved row. The client
+   * never sends a tenant_id (the trust rule). 422 on invalid name/prefs.
+   */
+  async putSettings(body: WorkspaceSettingsUpdate): Promise<WorkspaceSettings> {
+    if (this.mock) {
+      return {
+        workspace_name: body.workspace_name ?? "Acme Co.",
+        notification_prefs: body.notification_prefs ?? {},
+      };
+    }
+    return this.request<WorkspaceSettings>("PUT", "/account/settings", body);
+  }
+
+  // --- agent marketplace (starter templates) ---------------------------------
+
+  /**
+   * GET /studio/templates: the committed starter "ready-made agents" a tenant can
+   * add to its library. Read-only; nothing is invented client-side.
+   */
+  async getStudioTemplates(): Promise<StudioTemplateSummary[]> {
+    if (this.mock) {
+      return [];
+    }
+    const data = await this.request<{ templates: StudioTemplateSummary[] }>("GET", "/studio/templates");
+    return data.templates ?? [];
+  }
+
+  /**
+   * POST /studio/templates/{id}/instantiate: copy a starter template into the
+   * tenant's playbooks as a draft ("hire" it). Returns the created row (opaque here).
+   */
+  async instantiateTemplate(templateId: string): Promise<unknown> {
+    if (this.mock) {
+      return { ok: true };
+    }
+    return this.request<unknown>(
+      "POST",
+      `/studio/templates/${encodeURIComponent(templateId)}/instantiate`,
+    );
   }
 }
 
