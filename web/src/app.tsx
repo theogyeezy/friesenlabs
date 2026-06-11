@@ -27,6 +27,7 @@ import ReportsView from "./api/ReportsView";
 import DashboardsView from "./api/DashboardsView";
 import KnowledgeView from "./api/KnowledgeView";
 import SecurityControls from "./api/SecurityControls";
+import BillingManage from "./api/BillingManage";
 const { useState, useEffect, useRef, useMemo, useCallback, useLayoutEffect, useReducer, useContext, useImperativeHandle, useId } = React;
 const { Icon, Logo, FL_DATA, FLStore, useStore, askClaude, bizContext, confettiBurst, XPBadge, useCountUp, CountUp, AreaChart, Sparkline, LoadBars, Donut, SlideOver, CommandPalette, HEAT, fmtMoney, StatCard, ToneIco, FLflag, useTweaks, TweaksPanel, TweakSection, TweakRow, TweakSlider, TweakToggle, TweakRadio, TweakSelect, TweakText, TweakNumber, TweakColor, TweakButton, FoxDemo, KanbanDemo, WorkflowDemo, GreenlightDemo, CommandDemo, IntegrationDemo, SupportDemo, SecurityDemo, SidecarDemo, CortexDemo } = window as any;
 // app.jsx, shell: sidebar, topbar, routing, tweaks, palette
@@ -466,7 +467,18 @@ function App() {
                   feature-detects a 404 and degrades to a disabled "not yet
                   enabled" state rather than a fake working toggle. */}
               {route === "security" && <SecurityControls />}
-              {route !== "dashboard" && route !== "crm" && route !== "contacts" && route !== "agents" && route !== "studio" && route !== "workflows" && route !== "reports" && route !== "dashboards" && route !== "knowledge" && route !== "approvals" && route !== "integrations" && route !== "security" && (
+              {/* Settings is LIVE for self-service billing in real mode: the
+                  Plan & billing panel reads GET /billing and "Manage billing"
+                  redirects to the Stripe-hosted Customer Portal (change card,
+                  cancel, view invoices). It feature-detects a 404 and degrades
+                  to an honest "not yet available" state. */}
+              {route === "settings" && (
+                <div className="screen-anim" style={{ maxWidth: 720 }}>
+                  <div className="ad-sec-label" style={{ marginBottom: 14 }}>Plan &amp; billing</div>
+                  <BillingManage />
+                </div>
+              )}
+              {route !== "dashboard" && route !== "crm" && route !== "contacts" && route !== "agents" && route !== "studio" && route !== "workflows" && route !== "reports" && route !== "dashboards" && route !== "knowledge" && route !== "approvals" && route !== "integrations" && route !== "security" && route !== "settings" && (
                 <ComingSoon title={meta.h1} icon={navIconFor(route)} />
               )}
             </>

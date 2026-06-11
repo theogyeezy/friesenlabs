@@ -632,6 +632,31 @@ export interface DecisionTracesResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Self-service billing (authed, Stripe Customer Portal).
+//
+// The portal is Stripe-hosted: the tenant changes their card, cancels, or views
+// invoices on Stripe's pages, then returns to our return_url. The TRUST RULE
+// holds — the server resolves the Stripe customer from the verified JWT tenant;
+// the client sends no tenant_id and no customer id.
+// ---------------------------------------------------------------------------
+
+/** GET /billing — the settings screen's billing bootstrap read. */
+export interface BillingState {
+  /** True when this tenant has a Stripe customer (so "Manage billing" can do something). */
+  customer: boolean;
+  /** The current plan id (starter/team/scale), or null if not yet on a plan. */
+  plan: string | null;
+  /** Subscription lifecycle: "active" | "past_due" | "unpaid" | "canceled" | ... */
+  status: string;
+}
+
+/** POST /billing/portal-session — the Stripe-hosted portal URL to redirect to. */
+export interface BillingPortalSessionResponse {
+  /** The billing.stripe.com URL the browser must be sent to (window.location.assign). */
+  url: string;
+}
+
+// ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
@@ -1361,6 +1386,38 @@ export class ApiClient {
       `/control/traces?limit=${encodeURIComponent(String(limit))}`,
     );
     return data.traces;
+  }
+
+  // --- self-service billing (authed, Stripe Customer Portal) -----------------
+
+  /**
+   * GET /billing: whether this tenant has a Stripe customer + its plan + billing
+   * status. May throw ApiError(404) where the billing routes aren't deployed yet;
+   * the settings screen feature-detects that and hides the live "Manage billing"
+   * control rather than faking one.
+   */
+  async getBillingState(): Promise<BillingState> {
+    if (this.mock) {
+      // Offline/prototype builds: a stable "on a plan" shape so the settings
+      // screen renders without a backend. No network call.
+      return { customer: true, plan: "team", status: "active" };
+    }
+    return this.request<BillingState>("GET", "/billing");
+  }
+
+  /**
+   * POST /billing/portal-session: mint a Stripe Customer Portal session and get
+   * the URL to send the browser to (window.location.assign). The server resolves
+   * the customer from the verified JWT tenant — the client sends no tenant_id and
+   * no customer id. Throws ApiError(403) when no customer mapping exists yet, 503
+   * when Stripe isn't configured; the caller maps those to honest copy.
+   */
+  async createBillingPortalSession(): Promise<BillingPortalSessionResponse> {
+    if (this.mock) {
+      // No real portal offline — the prototype button just no-ops to a notice.
+      return { url: "" };
+    }
+    return this.request<BillingPortalSessionResponse>("POST", "/billing/portal-session");
   }
 }
 
