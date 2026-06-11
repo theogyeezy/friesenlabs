@@ -216,11 +216,14 @@ def test_managed_send_message_returns_fake_compatible_shape():
     out = r.send_message(session, "find me leads")
 
     # FakeRuntime's shape ({session_id, tenant_id, delegations, answer}) + pending approvals
-    # + tool_results (client-side AUTO executions — ratified #123; empty on a no-tool turn).
+    # + tool_results (client-side AUTO executions — ratified #123; empty on a no-tool turn)
+    # + usage (additive observed token usage for cost attribution; {0,0} on a no-usage stream).
     fake = FakeRuntime()
     fake_keys = set(fake.send_message(fake.create_session("c", "t"), "x"))
-    assert set(out) == fake_keys | {"pending_approvals", "tool_results"}
+    assert set(out) == fake_keys | {"pending_approvals", "tool_results", "usage"}
     assert out["tool_results"] == []
+    # usage defaults to zero tokens when the stream emits no usage block (the cost recorder skips).
+    assert out["usage"] == {"input_tokens": 0, "output_tokens": 0, "model": None}
     assert out["session_id"] == session.id
     assert out["tenant_id"] == "tenant-a"
     assert out["delegations"] == ["scout"]
