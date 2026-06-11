@@ -205,6 +205,10 @@ class Config:
     # deliberate env name (deploy invariance); the default is EMPTY = the feature is OFF — no
     # domain ever bypasses payment unless Lane Nick explicitly injects e.g. "friesenlabs.com".
     signup_internal_bypass_domains: str = os.environ.get("SIGNUP_INTERNAL_BYPASS_DOMAINS", "")
+    # Deploy stage (dev/staging/prod). Unset/empty = non-prod for guard purposes (see assert_*).
+    environment: str = os.environ.get("UPLIFT_ENVIRONMENT", "")
+    # Explicit, deliberate escape hatch for the prod-bypass guard (exactly 'true'/'1' to allow).
+    signup_internal_bypass_allow_in_prod: bool = _switch_env("SIGNUP_INTERNAL_BYPASS_ALLOW_IN_PROD")
 
     def internal_bypass_domain_set(self) -> frozenset:
         """Parse SIGNUP_INTERNAL_BYPASS_DOMAINS into normalized domains (empty = feature OFF)."""
@@ -213,6 +217,25 @@ class Config:
             for d in self.signup_internal_bypass_domains.split(",")
             if d.strip()
         )
+
+    def is_prod(self) -> bool:
+        """True iff the deploy stage names prod (case/space-insensitive). Unset = NOT prod."""
+        return self.environment.strip().lower() in ("prod", "production")
+
+    def assert_bypass_not_enabled_in_prod(self) -> None:
+        """Fail CLOSED at startup: the TESTING-ONLY internal Stripe bypass
+        (SIGNUP_INTERNAL_BYPASS_DOMAINS) must NEVER be enabled in prod — settling a real signup
+        without a real charge is a revenue-integrity hole. If the stage is prod AND any bypass
+        domain is configured, refuse to boot unless SIGNUP_INTERNAL_BYPASS_ALLOW_IN_PROD is the
+        explicit 'true'/'1' escape hatch. Inert in non-prod and when no bypass domain is set."""
+        if self.is_prod() and self.internal_bypass_domain_set() \
+                and not self.signup_internal_bypass_allow_in_prod:
+            raise RuntimeError(
+                "SIGNUP_INTERNAL_BYPASS_DOMAINS is set in a PROD environment "
+                "(UPLIFT_ENVIRONMENT=prod) — the internal Stripe bypass settles signups without a "
+                "real charge and is testing-only. Refusing to start. Unset the bypass domains, or "
+                "set SIGNUP_INTERNAL_BYPASS_ALLOW_IN_PROD=true to override deliberately."
+            )
 
 
 # plan id -> env var that carries its Stripe Price ID (values land via task secrets, never here).
@@ -229,8 +252,14 @@ def stripe_price_ids() -> dict[str, str]:
 
 
 def load() -> Config:
-    """Return the active configuration."""
-    return Config()
+    """Return the active configuration.
+
+    Enforces the prod-enablement guards at load time (the natural startup hook — every plane builds
+    its deps via load()). Currently: the internal Stripe bypass may not be on in prod without the
+    explicit escape hatch (Config.assert_bypass_not_enabled_in_prod)."""
+    cfg = Config()
+    cfg.assert_bypass_not_enabled_in_prod()
+    return cfg
 
 
 # --- Integrations-plane env-var NAMES (api/integrations_routes.py — the api half of TODO INT/P2
@@ -262,12 +291,23 @@ ENV_UPLIFT_VERIFY_EMAIL_TO = "UPLIFT_VERIFY_EMAIL_TO"
 # --- NEW deliberate names (deploy invariance: new behavior never keys off env the live tasks
 # --- already inject). Safe default everywhere is "unset" = feature off / built-in defaults.
 ENV_SIGNUP_INTERNAL_BYPASS_DOMAINS = "SIGNUP_INTERNAL_BYPASS_DOMAINS"  # ""=off (Config field above)
+# Deploy STAGE name (dev/staging/prod). A NEW deliberate name; unset = treated as non-prod, so the
+# guard below is inert until Lane Nick sets UPLIFT_ENVIRONMENT=prod on the prod task. Plain config.
+ENV_UPLIFT_ENVIRONMENT = "UPLIFT_ENVIRONMENT"
+# Explicit escape hatch: permit the TESTING-ONLY internal Stripe bypass even when the stage is
+# prod. Default unset = the bypass is REFUSED at startup in prod (fail closed) — see Config.assert_*.
+ENV_SIGNUP_INTERNAL_BYPASS_ALLOW_IN_PROD = "SIGNUP_INTERNAL_BYPASS_ALLOW_IN_PROD"
 # Low-water mark for the pre-minted workspace-key pool (signup/key_pool.py — issue #152): when
 # the count of available keys after a consume is at or below this, an alarms-friendly
 # `workspace_key_pool_low` warning is logged (CloudWatch metric-filter ready). Junk/unset -> 3.
 ENV_WORKSPACE_KEY_POOL_LOW_WATERMARK = "WORKSPACE_KEY_POOL_LOW_WATERMARK"
 # Per-IP in-process rate limit for POST /public/leads (api/public_routes.py). Junk/unset -> 5/min.
 ENV_PUBLIC_LEADS_RATE_PER_MINUTE = "PUBLIC_LEADS_RATE_PER_MINUTE"
+# Trusted proxy hops in front of the API for the /public/leads X-Forwarded-For parse
+# (api/public_routes._trusted_client_ip). Prod chain CloudFront -> ALB -> Fargate = 2 (the default).
+# Set to 1 for an ALB-only topology. Junk / < 1 -> the safe default (never key the limiter on the
+# ALB socket peer, which is shared across every viewer). Plain config, never a secret.
+ENV_PUBLIC_LEADS_TRUSTED_HOPS = "PUBLIC_LEADS_TRUSTED_HOPS"
 
 # --- Worker liveness heartbeat (worker/worker.py heartbeat_loop — the explicit workers_polling
 # --- emit per docs/decisions/workers-polling-heartbeat-assumption.md, RATIFIED #123). A NEW

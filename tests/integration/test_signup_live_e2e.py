@@ -269,7 +269,11 @@ def test_full_signup_to_active_against_stripe_test_mode(harness):
 
     state = client.get(f"/signup/{aid}").json()
     assert state["state"] == "active"
-    assert state["tenant_id"]          # minted at provisioning, never before
+    # The PRE-AUTH state endpoint no longer leaks tenant_id (it is the value THE TRUST RULE binds
+    # against). The tenant is still minted at provisioning — assert that against the store, not the
+    # public endpoint.
+    assert "tenant_id" not in state
+    assert harness.store.get(aid).tenant_id     # minted at provisioning, never before
     assert harness.provisioned == [aid]
 
     # 5d. re-delivery of the same signed payload is an idempotent no-op.
