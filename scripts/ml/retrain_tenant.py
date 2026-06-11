@@ -5,7 +5,7 @@
 path: per tenant, load labeled CRM records -> champion/challenger bake-off on a held-out split
 -> promote only on AUC improvement (metrics written to the registry) -> sync closed-deal
 outcomes into the prediction log -> live drift check. It is the command the EventBridge-
-scheduled one-off task (infra/modules/cortex — Lane Nick attaches the target) should run.
+scheduled one-off task (infra/modules/scheduled_jobs — the retrain fan-out target) should run.
 
 Usage:
     # real data plane (env: UPLIFT_DB_URL or DB_* parts, CORTEX_S3_BUCKET or CORTEX_LOCAL_DIR,

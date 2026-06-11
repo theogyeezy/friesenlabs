@@ -56,7 +56,10 @@ Until this is done, a real paid signup gets charged then parks `provisioning_fai
 
 - [ ] `cortex_s3_registry = true` (points `CORTEX_S3_BUCKET` at the datalake + grants S3).
 - [ ] Set the **`CORTEX_SIGNING_KEY`** secret value (the terraform secret `uplift/cortex-signing-key` now exists — put a real HMAC key in it; the signed registry fails closed without it).
+- [ ] `cortex_signing_key_available = true` (only AFTER the secret has a value — injects `CORTEX_SIGNING_KEY` into the retrain task; a `valueFrom` on the empty secret blocks startup).
 - [ ] `cortex_retrain_enabled = true` (the EventBridge retrain fan-out is wired + disabled) → seed at least one tenant retrain so `/cortex/health` serves a real champion.
+- [ ] **Drift alerting (optional but recommended):** set `cortex_drift_alert_email = "you@friesenlabs.com"` to subscribe to the `uplift-cortex-drift` SNS topic (confirm the AWS subscription email), OR subscribe Slack/PagerDuty to the topic yourself. The retrain fan-out auto-publishes a positive live-drift verdict (`CORTEX_DRIFT_TOPIC_ARN` is already injected into the task). No email set = topic exists, no notifications.
+- [ ] _Model note (no action):_ the bake-off now trains a **gradient-boosted-trees** learner alongside logistic regression over a 9-feature vector and keeps the higher held-out-AUC model per tenant. No flag — it's automatic once retrain runs.
 
 ## 6. Turn on ingest + connectors
 
@@ -90,7 +93,7 @@ Until this is done, a real paid signup gets charged then parks `provisioning_fai
 ---
 
 **Quick reference — every tfvars flag added for go-live (all default to the safe/off value):**
-`allow_real_sends` · `signup_require_phone` · `api_cube_env` · `cortex_s3_registry` · `cortex_retrain_enabled` · `playbook_dispatch_enabled` · `playbook_dispatch_tenants` · `ingest_schedule_enabled` · `ingest_tenants` · `signup_real_deps` · `api_signup_env`. Each flips via the deploy pipeline (Section 0).
+`allow_real_sends` · `signup_require_phone` · `api_cube_env` · `cortex_s3_registry` · `cortex_retrain_enabled` · `cortex_signing_key_available` · `cortex_drift_alert_email` · `playbook_dispatch_enabled` · `playbook_dispatch_tenants` · `ingest_schedule_enabled` · `ingest_tenants` · `signup_real_deps` · `api_signup_env`. Each flips via the deploy pipeline (Section 0).
 
 ---
 
@@ -119,7 +122,7 @@ A full-surface launch audit (7 parallel auditors). Security/RLS/trust-rule/Green
 - [ ] **No alarms on the two new scheduled jobs** — add a CloudWatch `FailedInvocations` alarm per EventBridge rule (retrain + dispatch), wired to the alarms SNS topic.
 - [ ] **Dead `Foundation.html` link** (5 places on the landing) — part of the deferred nonprofit/landing-legal narrative; route `foundation.tsx` or remove the CTAs when that work is done.
 - [ ] **`DonateModal` fakes a successful donation** with no payment — relabel/remove until a real donation flow exists (deferred-legal-adjacent).
-- [ ] Cleanup: remove the now-superseded `module "cortex"` (its rule has no target; replaced by `scheduled_jobs`).
+- [x] Cleanup: removed the dead `module "cortex"` (target-less rule + unsubscribed topic); the drift SNS topic moved into `scheduled_jobs` and is now wired to a real publisher (the retrain fan-out).
 
 ---
 

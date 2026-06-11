@@ -2,7 +2,7 @@
 
 The flywheel: more usage -> more labeled outcomes -> better per-tenant models -> stickier product.
 EventBridge triggers periodic retrains as new outcomes accumulate; a drift check flags when the live
-champion degrades. The EventBridge schedule itself is authored in infra/modules/cortex (not run);
+champion degrades. The EventBridge schedule itself is authored in infra/modules/scheduled_jobs;
 this module is the orchestration + drift logic, testable offline.
 
 The actually-invokable entrypoint is `run_scheduled_retrain` (CLI: scripts/ml/retrain_tenant.py):

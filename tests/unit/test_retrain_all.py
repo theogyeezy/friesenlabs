@@ -57,6 +57,46 @@ def test_retrain_one_contains_signing_error(monkeypatch):
     assert out["ok"] is False and out["error"].startswith("signing:")
 
 
+class _Notifier:
+    def __init__(self, *, boom=False):
+        self.boom = boom
+        self.calls = []
+
+    def notify(self, tenant_id, drift):
+        self.calls.append((tenant_id, drift))
+        if self.boom:
+            raise RuntimeError("sns down")
+        return bool(drift.get("drift"))
+
+
+@pytest.mark.unit
+def test_retrain_one_alerts_on_drift(monkeypatch):
+    monkeypatch.setattr(mod, "run_scheduled_retrain",
+                        lambda *a, **k: {"version": 2, "drift": {"drift": True, "recent_auc": 0.6}})
+    notifier = _Notifier()
+    out = mod.retrain_one(object(), object(), "t1", prediction_log=object(), seed=0, drift_notifier=notifier)
+    assert out["ok"] is True and out["drift_alerted"] is True
+    assert notifier.calls[-1][0] == "t1"
+
+
+@pytest.mark.unit
+def test_retrain_one_no_alert_when_no_drift(monkeypatch):
+    monkeypatch.setattr(mod, "run_scheduled_retrain",
+                        lambda *a, **k: {"version": 2, "drift": {"drift": False}})
+    out = mod.retrain_one(object(), object(), "t1", prediction_log=object(), seed=0, drift_notifier=_Notifier())
+    assert "drift_alerted" not in out
+
+
+@pytest.mark.unit
+def test_retrain_one_alert_failure_is_nonfatal(monkeypatch):
+    monkeypatch.setattr(mod, "run_scheduled_retrain",
+                        lambda *a, **k: {"version": 2, "drift": {"drift": True}})
+    out = mod.retrain_one(object(), object(), "t1", prediction_log=object(), seed=0,
+                          drift_notifier=_Notifier(boom=True))
+    # The retrain SUCCEEDED; the alert error is recorded, not raised.
+    assert out["ok"] is True and "RuntimeError" in out["drift_alert_error"]
+
+
 # --------------------------------------------------------------------------- main / exit codes
 def _wire(monkeypatch, *, registry, dsn="postgresql://crm_app@h/db", retrain=None):
     monkeypatch.setattr(mod, "registry_from_env", lambda: registry)
