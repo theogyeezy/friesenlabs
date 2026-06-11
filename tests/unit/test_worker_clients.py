@@ -16,7 +16,8 @@ def test_worker_module_is_import_safe():
 
 @pytest.mark.unit
 def test_build_clients_from_env_unconfigured_returns_none_clients(monkeypatch):
-    for var in ("UPLIFT_DB_URL", "DB_USER", "DB_PASS", "DB_HOST", "CUBE_ENDPOINT"):
+    for var in ("UPLIFT_DB_URL", "DB_USER", "DB_PASS", "DB_HOST",
+                "CUBE_ENDPOINT", "CUBEJS_API_SECRET_VALUE"):
         monkeypatch.delenv(var, raising=False)
     clients = worker.build_clients_from_env()
     assert clients == {"db": None, "rag": None, "cube": None, "greenlight": None}
@@ -109,3 +110,61 @@ def test_build_context_passes_plain_clients_through():
     ctx = worker.build_context({"tenant_id": "tenant-A"}, {"db": db, "rag": "r", "greenlight": "g"})
     assert ctx.db is db
     assert ctx.rag == "r" and ctx.greenlight == "g"
+
+
+# --------------------------------------------------------------------------- cube client wiring
+@pytest.mark.unit
+def test_build_clients_from_env_wires_the_real_cube_client(monkeypatch):
+    from agents.tools.cube_client import CubeClient
+
+    for var in ("UPLIFT_DB_URL", "DB_USER", "DB_PASS", "DB_HOST"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("CUBE_ENDPOINT", "http://cube.local:4000")
+    monkeypatch.setenv("CUBEJS_API_SECRET_VALUE", "test-secret")
+
+    clients = worker.build_clients_from_env()
+    assert isinstance(clients["cube"], CubeClient)
+    assert clients["cube"].configured  # both pieces present -> queries can be signed AND sent
+
+
+@pytest.mark.unit
+def test_cube_endpoint_without_secret_degrades_visibly_not_silently(monkeypatch):
+    """Misconfig (endpoint, no secret) shows up in the tool OUTPUT — never as a missing client
+    that silently returns []."""
+    from agents.tools.cube_client import CubeClient
+    from agents.tools.readonly import QueryCube
+
+    for var in ("UPLIFT_DB_URL", "DB_USER", "DB_PASS", "DB_HOST", "CUBEJS_API_SECRET_VALUE"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("CUBE_ENDPOINT", "http://cube.local:4000")
+
+    clients = worker.build_clients_from_env()
+    assert isinstance(clients["cube"], CubeClient)
+    assert not clients["cube"].configured
+
+    ctx = worker.build_context({"tenant_id": "tenant-A"}, clients)
+    out = QueryCube().invoke(ctx, measures=["Deals.count"])
+    result = out["result"]
+    assert result["rows"] == []
+    assert result["cube_status"] == "unconfigured"
+    assert "CUBEJS_API_SECRET_VALUE" in result["detail"]
+
+
+@pytest.mark.unit
+def test_worker_query_cube_errors_loudly_when_cube_unreachable():
+    """An unreachable Cube is an ERROR the agent can see (cube_status/detail) — never a silent
+    empty rows list it would present as 'no data'."""
+    from agents.tools.cube_client import CubeClient
+    from agents.tools.readonly import QueryCube
+
+    def refusing_transport(url, body, headers, timeout_s):
+        raise OSError("connection refused")
+
+    cube = CubeClient(endpoint="http://cube.local:4000", secret="test-secret",
+                      transport=refusing_transport)
+    ctx = worker.build_context({"tenant_id": "tenant-A"}, {"db": None, "cube": cube})
+    out = QueryCube().invoke(ctx, measures=["Deals.count"])
+    result = out["result"]
+    assert result["rows"] == []
+    assert result["cube_status"] == "error"
+    assert "unreachable" in result["detail"]
