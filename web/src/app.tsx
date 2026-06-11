@@ -24,6 +24,7 @@ import AgentsRoster from "./api/AgentsRoster";
 import WorkflowsView from "./api/WorkflowsView";
 import ReportsView from "./api/ReportsView";
 import KnowledgeView from "./api/KnowledgeView";
+import SecurityControls from "./api/SecurityControls";
 const { useState, useEffect, useRef, useMemo, useCallback, useLayoutEffect, useReducer, useContext, useImperativeHandle, useId } = React;
 const { Icon, Logo, FL_DATA, FLStore, useStore, askClaude, bizContext, confettiBurst, XPBadge, useCountUp, CountUp, AreaChart, Sparkline, LoadBars, Donut, SlideOver, CommandPalette, HEAT, fmtMoney, StatCard, ToneIco, FLflag, useTweaks, TweaksPanel, TweakSection, TweakRow, TweakSlider, TweakToggle, TweakRadio, TweakSelect, TweakText, TweakNumber, TweakColor, TweakButton, FoxDemo, KanbanDemo, WorkflowDemo, GreenlightDemo, CommandDemo, IntegrationDemo, SupportDemo, SecurityDemo, SidecarDemo, CortexDemo } = window as any;
 // app.jsx, shell: sidebar, topbar, routing, tweaks, palette
@@ -445,7 +446,13 @@ function App() {
               {route === "knowledge" && <KnowledgeView />}
               {route === "approvals" && <GreenlightQueue />}
               {route === "integrations" && <IntegrationsPanel />}
-              {route !== "dashboard" && route !== "crm" && route !== "contacts" && route !== "agents" && route !== "workflows" && route !== "reports" && route !== "knowledge" && route !== "approvals" && route !== "integrations" && (
+              {/* Security is LIVE in real mode: the kill switch + autonomy dial
+                  PUT real state through GET/PUT /control/*, and a read-only
+                  decision-trace feed renders GET /control/traces — each control
+                  feature-detects a 404 and degrades to a disabled "not yet
+                  enabled" state rather than a fake working toggle. */}
+              {route === "security" && <SecurityControls />}
+              {route !== "dashboard" && route !== "crm" && route !== "contacts" && route !== "agents" && route !== "workflows" && route !== "reports" && route !== "knowledge" && route !== "approvals" && route !== "integrations" && route !== "security" && (
                 <ComingSoon title={meta.h1} icon={navIconFor(route)} />
               )}
             </>
