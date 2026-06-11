@@ -91,3 +91,32 @@ Until this is done, a real paid signup gets charged then parks `provisioning_fai
 
 **Quick reference — every tfvars flag added for go-live (all default to the safe/off value):**
 `allow_real_sends` · `signup_require_phone` · `api_cube_env` · `cortex_s3_registry` · `cortex_retrain_enabled` · `playbook_dispatch_enabled` · `playbook_dispatch_tenants` · `ingest_schedule_enabled` · `ingest_tenants` · `signup_real_deps` · `api_signup_env`. Each flips via the deploy pipeline (Section 0).
+
+---
+
+## Launch-readiness audit (2026-06-11) — findings
+
+A full-surface launch audit (7 parallel auditors). Security/RLS/trust-rule/Greenlight all PASS (0 blockers). Code blockers below were FIXED in this PR; the rest are tracked here.
+
+### Fixed (this PR)
+- ✅ **Verification email was unusable** — the SPA's email-verify step needs a TYPED code but the email only put the long token in a (dead) link. Now the token is rendered as copy-pasteable `<code>`. _(The #1 launch blocker — defeated the email-only launch.)_
+- ✅ **Playbook dispatcher crashed on enable** — `dispatch.py` imported `PgWorkspaceStore` from the wrong module (`api.pg_clients` → `agents.workspace_store`); now fixed + a real-mode `_build_runner` test added.
+- ✅ **`dow=7` Sunday cron never fired** — the cron matcher rejected `7`; now normalizes `7→0` (+ tests).
+- ✅ **Terraform apply would FAIL** — the `scheduled_jobs` retrain rule collided with the legacy `cortex` module's `uplift-cortex-retrain` name; renamed to `-job`.
+- ✅ **`CORTEX_SIGNING_KEY` unguarded** — injected from an empty secret → retrain task `ResourceInitializationError` on enable; now gated behind `cortex_signing_key_available`.
+- ✅ **`_StubCognito` missing `set_signup_password`** — would 500 on non-real/preview deploys; added a no-op.
+
+### Remaining — frontend launch-polish (code; small follow-ups)
+- [ ] **StudioView falsely says "crew is registered"** on a record-only activation — `act()` overwrites the honest record-only notice (`web/src/api/StudioView.tsx:286-312`). Fabricated success state.
+- [ ] **Command Center doesn't refresh after "Load sample data"** — `<DashboardView/>` isn't keyed on `sampleReloadKey` (`app.tsx:448`); add the key.
+- [ ] **No React error boundary** anywhere — one render throw white-screens the whole authed shell. Add an ErrorBoundary around the authed surfaces.
+- [ ] **New-Deal board form has no contact/company picker** (`PipelineBoard.tsx`) and the **Contacts form has no company input** (`ContactsDirectory.tsx`) — primary write actions partially wired (contact↔deal link only via chat).
+- [ ] **Marketplace + Integrations-list** treat 404 as a generic red error instead of an honest "rolling out" state (siblings handle it).
+- [ ] Minor: BillingManage `formatMoney` guard a null currency; ChatDock keep a "Balto synthesizing" spinner; Reports empty-state "Ask Balto" CTA.
+
+### Remaining — owner actions (added to the sections above)
+- [ ] **Captcha is default-OPEN** (`SIGNUP_CAPTCHA_REQUIRED` unset) — at a fully-public self-serve launch this is the one open abuse vector (scripted signup-spam against the email/Cognito budget). Wire a Turnstile/hCaptcha validator + set the flag, OR keep signup invite/bypass-only at first.
+- [ ] **No alarms on the two new scheduled jobs** — add a CloudWatch `FailedInvocations` alarm per EventBridge rule (retrain + dispatch), wired to the alarms SNS topic.
+- [ ] **Dead `Foundation.html` link** (5 places on the landing) — part of the deferred nonprofit/landing-legal narrative; route `foundation.tsx` or remove the CTAs when that work is done.
+- [ ] **`DonateModal` fakes a successful donation** with no payment — relabel/remove until a real donation flow exists (deferred-legal-adjacent).
+- [ ] Cleanup: remove the now-superseded `module "cortex"` (its rule has no target; replaced by `scheduled_jobs`).

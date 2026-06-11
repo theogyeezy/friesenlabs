@@ -41,9 +41,6 @@ log = logging.getLogger("agents.playbooks.dispatch")
 # Fields: minute hour day-of-month month day-of-week. Supports  *  a  a-b  a,b
 # and step  */n / a-b/n . day-of-week 0 and 7 both mean Sunday.
 # --------------------------------------------------------------------------- #
-_FIELD_BOUNDS = ((0, 59), (0, 23), (1, 31), (1, 12), (0, 6))
-
-
 def _expand_field(field: str, lo: int, hi: int) -> set[int]:
     """Expand one cron field to the set of integers it matches in [lo, hi]."""
     out: set[int] = set()
@@ -78,9 +75,12 @@ def cron_due(expr: str, now: datetime) -> bool:
         log.warning("ignoring malformed cron (need 5 fields): %r", expr)
         return False
     try:
-        minute, hour, dom, month, dow = (
-            _expand_field(f, lo, hi) for f, (lo, hi) in zip(fields, _FIELD_BOUNDS)
-        )
+        minute = _expand_field(fields[0], 0, 59)
+        hour = _expand_field(fields[1], 0, 23)
+        dom = _expand_field(fields[2], 1, 31)
+        month = _expand_field(fields[3], 1, 12)
+        # day-of-week: accept 0-7 (both 0 and 7 mean Sunday), then normalize 7 -> 0.
+        dow = {d % 7 for d in _expand_field(fields[4], 0, 7)}
     except (ValueError, TypeError):
         log.warning("ignoring unparseable cron: %r", expr)
         return False
@@ -178,7 +178,7 @@ def _build_runner(dsn: str | None):
         from agents.playbooks import runner as runner_mod  # noqa: PLC0415
         from agents.playbooks.store import PgPlaybookStore  # noqa: PLC0415
         from agents.runtime import get_runtime  # noqa: PLC0415
-        from api.pg_clients import PgWorkspaceStore  # noqa: PLC0415
+        from agents.workspace_store import PgWorkspaceStore  # noqa: PLC0415
 
         store = PgPlaybookStore(dsn)
         workspaces = PgWorkspaceStore(dsn)

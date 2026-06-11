@@ -148,6 +148,9 @@ class _StubCognito:
     def set_tenant_id(self, sub, tenant_id):
         pass  # real Cognito admin update needs COGNITO_USER_POOL_ID
 
+    def set_signup_password(self, sub, password):
+        pass  # real CognitoAdminClient sets the permanent password; stub no-ops (no 500 offline)
+
     def confirm(self, sub):
         pass
 

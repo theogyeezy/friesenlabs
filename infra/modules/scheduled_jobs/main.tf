@@ -29,6 +29,12 @@ variable "retrain_enabled" {
   type    = bool
   default = false
 }
+# Inject CORTEX_SIGNING_KEY into the retrain task only when the secret holds a value (flip with the
+# put-secret-value). Default false avoids a startup-blocking valueFrom on the empty secret.
+variable "cortex_signing_key_available" {
+  type    = bool
+  default = false
+}
 variable "retrain_schedule" {
   type    = string
   default = "rate(7 days)"
@@ -142,11 +148,18 @@ resource "aws_ecs_task_definition" "retrain" {
         { name = "DB_NAME", value = "uplift" },
         { name = "DB_PORT", value = "5432" },
       ]
-      secrets = [
+      # CORTEX_SIGNING_KEY is injected ONLY when the owner has put a value in the secret and
+      # flipped cortex_signing_key_available — a valueFrom on an EMPTY secret blocks task startup
+      # (ResourceInitializationError). Without it the retrain code fails closed cleanly (a clear
+      # SigningKeyError, contained per-tenant), never an opaque init crash.
+      secrets = concat([
         { name = "DB_USER", valueFrom = "${var.db_secret_arn}:username::" },
         { name = "DB_PASS", valueFrom = "${var.db_secret_arn}:password::" },
-        { name = "CORTEX_SIGNING_KEY", valueFrom = aws_secretsmanager_secret.cortex_signing.arn },
-      ]
+        ],
+        var.cortex_signing_key_available ? [
+          { name = "CORTEX_SIGNING_KEY", valueFrom = aws_secretsmanager_secret.cortex_signing.arn }
+        ] : []
+      )
       logConfiguration = {
         logDriver = "awslogs"
         options = {
@@ -160,7 +173,10 @@ resource "aws_ecs_task_definition" "retrain" {
 }
 
 resource "aws_cloudwatch_event_rule" "retrain" {
-  name                = "${var.project}-cortex-retrain"
+  # NOTE: NOT "${var.project}-cortex-retrain" — that name is already owned by the (now superseded)
+  # legacy module "cortex" applied rule; EventBridge rule names are unique per acct/region, so the
+  # "-job" suffix avoids an apply-time collision. (Remove module "cortex" in a later cleanup PR.)
+  name                = "${var.project}-cortex-retrain-job"
   description         = "Per-tenant Cortex model retrain fan-out (the flywheel)."
   schedule_expression = var.retrain_schedule
   state               = var.retrain_enabled ? "ENABLED" : "DISABLED"
