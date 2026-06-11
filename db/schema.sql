@@ -600,3 +600,16 @@ DROP POLICY IF EXISTS tenant_isolation ON onboarding_state;
 CREATE POLICY tenant_isolation ON onboarding_state
     USING (tenant_id = current_setting('app.current_tenant', true)::uuid)
     WITH CHECK (tenant_id = current_setting('app.current_tenant', true)::uuid);
+
+-- tenant_settings.workspace_name / notification_prefs — the PERSISTED workspace-settings surface
+-- (appended per the Matt-append rule; idempotent). Reuses the existing tenant_settings table (no
+-- new table, no new policy): the row is already TENANT-scoped + FORCE'd RLS with a tenant_isolation
+-- policy (autonomy_level/killswitch live here too), so ADDING columns inherits that scoping. Backs
+-- GET/PUT /account/settings (api/settings_routes.py + api/pg_settings.py PgSettingsStore): the
+-- workspace's display name + a flat jsonb bag of notification preferences. Reads/writes ride the
+-- same per-op `SET LOCAL app.current_tenant` pattern as every tenant table; crm_app DML arrives via
+-- the ALTER DEFAULT PRIVILEGES grant in db/roles.sql (already proven live for this table by the
+-- kill-switch upsert). A settings upsert is an explicit user action and DO UPDATEs (it MUST win
+-- over the provisioning-seeded DO NOTHING row), same as the kill switch / autonomy dial.
+ALTER TABLE tenant_settings ADD COLUMN IF NOT EXISTS workspace_name text;
+ALTER TABLE tenant_settings ADD COLUMN IF NOT EXISTS notification_prefs jsonb NOT NULL DEFAULT '{}'::jsonb;
