@@ -2,25 +2,28 @@
 (the second honest-stub tab converted to REAL, after the Pipeline board; the web half is
 web/src/api/ContactsDirectory.tsx).
 
-Four endpoints, all READ-ONLY this cycle (CRM writes arrive with a later update_contact tool
-through the ActionGate — never a direct write here) and all bound to the VERIFIED JWT claims
+Six endpoints, all bound to the VERIFIED JWT claims
 (THE TRUST RULE — tenant never from a header or the request body):
 
-  GET /contacts          paginated directory: contact rows + the joined company name + the
-                         newest activity timestamp; ?q= searches name/email (allow-listed
-                         columns, ILIKE bind params with metacharacter escaping)
-  GET /contacts/{id}     one contact + recent activities + their company's OPEN deals
-                         (ties the directory into the Pipeline board)
-  GET /companies         paginated directory with contact + open-deal counts; ?q= over
-                         name/domain
-  GET /companies/{id}    one company + its contacts + its open deals
+  GET  /contacts              paginated directory: contact rows + the joined company name + the
+                              newest activity timestamp; ?q= searches name/email (allow-listed
+                              columns, ILIKE bind params with metacharacter escaping)
+  GET  /contacts/{id}         one contact + recent activities + their company's OPEN deals
+                              (ties the directory into the Pipeline board)
+  POST /contacts              create a contact: {name, email, phone, company_id?} — direct write,
+                              tenant from the VERIFIED claim, RLS-scoped via SET LOCAL (mirrors
+                              the move-stage direct-write pattern — NOT the Greenlight path)
+  PATCH /contacts/{id}        edit name/company/email/phone — direct write, same pattern
+  GET  /companies             paginated directory with contact + open-deal counts; ?q= over
+                              name/domain
+  GET  /companies/{id}        one company + its contacts + its open deals
 
-Reads ride the same crm_app DSN every live surface (/approvals, /views, /deals) already rides —
-RLS via the per-op `SET LOCAL app.current_tenant` transaction (api/pg_clients.py), allow-listed
-hand-written column lists, no hand-written tenant filter anywhere. Free-text params are
-length-capped (q > 200 chars -> 422) so a hostile query can never become an unbounded scan
-term. Unconfigured (no DSN -> no reader injected) every endpoint answers an honest 503, never
-invented rows.
+Reads (and the write paths) ride the same crm_app DSN every live surface (/approvals, /views,
+/deals) already rides — RLS via the per-op `SET LOCAL app.current_tenant` transaction
+(api/pg_clients.py), allow-listed hand-written column lists, no hand-written tenant filter
+anywhere. Free-text params are length-capped (q > 200 chars -> 422) so a hostile query can
+never become an unbounded scan term. Unconfigured (no DSN -> no reader injected) every
+endpoint answers an honest 503, never invented rows.
 
 IMPORT SAFETY: importing this module touches no AWS/boto3/DB and never imports ingest/ (the
 production API image does not bundle it — see api/integrations_routes.py HOTFIX note; the
@@ -33,6 +36,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException
+from pydantic import BaseModel
 
 from api.auth import TenantClaims
 
@@ -113,10 +117,26 @@ def _checked_rows(rows: list[dict], tenant_id: str) -> list[dict]:
     return out
 
 
+# --------------------------------------------------------------------------- #
+# Request bodies — write paths. THE TRUST RULE: no tenant_id field anywhere.
+# --------------------------------------------------------------------------- #
+class CreateContactBody(BaseModel):
+    name: str
+    email: str | None = None
+    phone: str | None = None
+    company_id: str | None = None
+
+
+class EditContactBody(BaseModel):
+    name: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    company_id: str | None = None
+
+
 def mount_contacts(app: FastAPI, deps: ContactsDeps, current_tenant) -> None:
     """Mount the /contacts + /companies routes on `app`, authed via `current_tenant` (the same
-    verified-claims dependency every other authed route uses). Read-only: no gate deps —
-    there is nothing here for Greenlight to gate yet."""
+    verified-claims dependency every other authed route uses)."""
 
     @app.get("/contacts")
     def list_contacts(q: str | None = None, limit: int = DEFAULT_PAGE, offset: int = 0,
@@ -157,6 +177,59 @@ def mount_contacts(app: FastAPI, deps: ContactsDeps, current_tenant) -> None:
                 claims.tenant_id,
             )
         return {"contact": contact, "activities": activities, "company_deals": company_deals}
+
+    @app.post("/contacts", status_code=201)
+    def create_contact(body: CreateContactBody,
+                       claims: TenantClaims = Depends(current_tenant)):
+        crm = _require_reader(deps)
+        name = (body.name or "").strip()
+        if not name:
+            raise HTTPException(status_code=422, detail="name must be non-empty")
+        # Validate company_id uuid format if supplied.
+        company_id: str | None = None
+        if body.company_id:
+            company_id = _valid_id_or_404(body.company_id, kind="company")
+        # Direct write — tenant from the VERIFIED claim, RLS-scoped via SET LOCAL.
+        row = crm.insert_contact(
+            tenant_id=claims.tenant_id,
+            name=name,
+            email=body.email or None,
+            phone=body.phone or None,
+            company_id=company_id,
+        )
+        return {"contact": row}
+
+    @app.patch("/contacts/{contact_id}")
+    def edit_contact(contact_id: str, body: EditContactBody,
+                     claims: TenantClaims = Depends(current_tenant)):
+        crm = _require_reader(deps)
+        cid = _valid_id_or_404(contact_id, kind="contact")
+        # Build the changes dict from only the supplied (non-None) fields.
+        changes: dict = {}
+        if body.name is not None:
+            name = body.name.strip()
+            if not name:
+                raise HTTPException(status_code=422, detail="name must be non-empty when provided")
+            changes["name"] = name
+        if body.email is not None:
+            changes["email"] = body.email.strip() or None
+        if body.phone is not None:
+            changes["phone"] = body.phone.strip() or None
+        if body.company_id is not None:
+            changes["company_id"] = _valid_id_or_404(body.company_id, kind="company") \
+                if body.company_id else None
+        if not changes:
+            raise HTTPException(status_code=422, detail="at least one field must be provided")
+        try:
+            result = crm.update_contact_fields(
+                tenant_id=claims.tenant_id, contact_id=cid, changes=changes
+            )
+        except ValueError as exc:
+            msg = str(exc)
+            if "not found" in msg:
+                raise HTTPException(status_code=404, detail="no such contact")
+            raise HTTPException(status_code=422, detail=msg)
+        return result
 
     @app.get("/companies")
     def list_companies(q: str | None = None, limit: int = DEFAULT_PAGE, offset: int = 0,

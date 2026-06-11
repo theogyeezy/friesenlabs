@@ -1,20 +1,25 @@
 """Authed per-tenant deals/pipeline endpoints — the api half of the real Pipeline board
 (the first honest-stub tab converted to REAL; the web half is web/src/api/PipelineBoard.tsx).
 
-Three endpoints, all bound to the VERIFIED JWT claims (THE TRUST RULE — tenant never from a
+Five endpoints, all bound to the VERIFIED JWT claims (THE TRUST RULE — tenant never from a
 header or the request body):
 
-  GET  /deals                       the board: deals grouped into ordered stage columns, each
-                                    card carrying the joined company name (RLS-scoped reads)
-  GET  /deals/{deal_id}             one deal + its recent activities (the detail drawer)
-  POST /deals/{deal_id}/move-stage  does NOT write the deal. It builds an `update_deal` Action
-                                    and runs it through the EXISTING ActionGate exactly like
-                                    POST /actions does — autonomy-gated, so under the deployed
-                                    default (L1, and update_deal is ALWAYS_ASK either way) it
-                                    lands ONE Greenlight proposal and answers
-                                    {queued: true, approval_id}. The deal row is untouched
-                                    until a human approves in Greenlight. The draft-gate
-                                    (CLAUDE.md hard constraint #2) stands.
+  GET   /deals                       the board: deals grouped into ordered stage columns, each
+                                     card carrying the joined company name (RLS-scoped reads)
+  GET   /deals/{deal_id}             one deal + its recent activities (the detail drawer)
+  POST  /deals                       create a deal: {title, amount?, stage?, contact_id?} —
+                                     direct write, tenant from the VERIFIED claim, RLS-scoped
+                                     via SET LOCAL (NOT the Greenlight path; user-initiated,
+                                     not agent-side-effecting)
+  PATCH /deals/{deal_id}             edit title/amount — direct write, same pattern
+  POST  /deals/{deal_id}/move-stage  does NOT write the deal. It builds an `update_deal` Action
+                                     and runs it through the EXISTING ActionGate exactly like
+                                     POST /actions does — autonomy-gated, so under the deployed
+                                     default (L1, and update_deal is ALWAYS_ASK either way) it
+                                     lands ONE Greenlight proposal and answers
+                                     {queued: true, approval_id}. The deal row is untouched
+                                     until a human approves in Greenlight. The draft-gate
+                                     (CLAUDE.md hard constraint #2) stands.
 
 Reads ride the same crm_app DSN every live surface (/approvals, /views, the /chat tool clients)
 already rides — RLS via the per-op `SET LOCAL app.current_tenant` transaction
@@ -109,6 +114,21 @@ class DealsDeps:
 
 
 # --------------------------------------------------------------------------- #
+# Request bodies — write paths. THE TRUST RULE: no tenant_id field anywhere.
+# --------------------------------------------------------------------------- #
+class CreateDealBody(BaseModel):
+    title: str
+    amount: float | int | None = None
+    stage: str = "new"
+    contact_id: str | None = None
+
+
+class EditDealBody(BaseModel):
+    title: str | None = None
+    amount: float | int | None = None
+
+
+# --------------------------------------------------------------------------- #
 # Request body — carries the target stage ONLY. There is deliberately no
 # tenant field (THE TRUST RULE) and no other writable deal columns: this
 # endpoint proposes exactly one change, the stage move.
@@ -174,6 +194,58 @@ def mount_deals(app: FastAPI, deps: DealsDeps, current_tenant, *, gate_deps: Any
         deal = _checked_rows([row], claims.tenant_id)[0]
         activities = crm.list_deal_activities(tenant_id=claims.tenant_id, deal_id=did)
         return {"deal": deal, "activities": activities}
+
+    @app.post("/deals", status_code=201)
+    def create_deal(body: CreateDealBody,
+                    claims: TenantClaims = Depends(current_tenant)):
+        crm = _require_reader(deps)
+        title = (body.title or "").strip()
+        if not title:
+            raise HTTPException(status_code=422, detail="title must be non-empty")
+        stage = (body.stage or "new").strip() or "new"
+        contact_id: str | None = None
+        if body.contact_id:
+            contact_id = _valid_deal_id_or_404(body.contact_id)
+        # Direct write — tenant from the VERIFIED claim, RLS-scoped via SET LOCAL.
+        # company_id is empty string when not provided (the DB schema allows null via RLS insert).
+        row = crm.insert_deal(
+            tenant_id=claims.tenant_id,
+            company_id="",
+            name=title,
+            stage=stage,
+            amount=body.amount,
+        )
+        return {"deal": row}
+
+    @app.patch("/deals/{deal_id}")
+    def edit_deal(deal_id: str, body: EditDealBody,
+                  claims: TenantClaims = Depends(current_tenant)):
+        crm = _require_reader(deps)
+        did = _valid_deal_id_or_404(deal_id)
+        changes: dict = {}
+        if body.title is not None:
+            title = body.title.strip()
+            if not title:
+                raise HTTPException(status_code=422, detail="title must be non-empty when provided")
+            changes["name"] = title  # deals.title maps to the "name" change key
+        if body.amount is not None:
+            changes["amount"] = body.amount
+        if not changes:
+            raise HTTPException(status_code=422, detail="at least one field must be provided")
+        # RLS-scoped existence check: a deal this tenant can't see can't be edited.
+        row = crm.get_deal_board(tenant_id=claims.tenant_id, deal_id=did)
+        if row is None:
+            raise HTTPException(status_code=404, detail="no such deal")
+        try:
+            result = crm.update_deal_fields(
+                tenant_id=claims.tenant_id, deal_id=did, changes=changes
+            )
+        except ValueError as exc:
+            msg = str(exc)
+            if "not found" in msg:
+                raise HTTPException(status_code=404, detail="no such deal")
+            raise HTTPException(status_code=422, detail=msg)
+        return result
 
     @app.post("/deals/{deal_id}/move-stage")
     def move_stage(deal_id: str, body: MoveStageBody,

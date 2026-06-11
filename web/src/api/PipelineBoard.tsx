@@ -25,9 +25,11 @@ import {
   ApiError,
   defaultClient,
   friendlyErrorMessage,
+  type CreateDealBody,
   type DealCard,
   type DealDetailResponse,
   type DealStageGroup,
+  type EditDealBody,
   type ListDealsResponse,
   type MoveStageResponse,
 } from "./client";
@@ -131,6 +133,15 @@ interface QueuedMove {
   approval_id: number | string | null;
 }
 
+interface DealFormFields {
+  title: string;
+  amount: string; // string so the input is editable; converted to number on submit
+}
+
+function emptyDealForm(): DealFormFields {
+  return { title: "", amount: "" };
+}
+
 export interface PipelineBoardProps {
   client?: ApiClient;
   /** Navigate to the Greenlight queue (the shell passes navTo("approvals")).
@@ -176,6 +187,12 @@ export function PipelineBoard({ client, onOpenGreenlight, onLoadSample }: Pipeli
   // approval" so the user knows it's pending WITHOUT pretending it happened.
   const [queued, setQueued] = useState<Record<string, QueuedMove>>({});
   const [toast, setToast] = useState<MoveStageResponse | null>(null);
+
+  // Create/edit deal form state.
+  const [dealFormMode, setDealFormMode] = useState<"create" | { kind: "edit"; id: string } | null>(null);
+  const [dealFormFields, setDealFormFields] = useState<DealFormFields>(emptyDealForm);
+  const [dealFormBusy, setDealFormBusy] = useState(false);
+  const [dealFormError, setDealFormError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -258,6 +275,59 @@ export function PipelineBoard({ client, onOpenGreenlight, onLoadSample }: Pipeli
     }
   }, [api, detail, moveTo]);
 
+  const openCreateDealForm = useCallback(() => {
+    setDealFormMode("create");
+    setDealFormFields(emptyDealForm());
+    setDealFormError(null);
+  }, []);
+
+  const openEditDealForm = useCallback((d: DealCard) => {
+    setDealFormMode({ kind: "edit", id: d.id });
+    setDealFormFields({
+      title: d.title ?? "",
+      amount: d.amount !== null && d.amount !== undefined ? String(d.amount) : "",
+    });
+    setDealFormError(null);
+  }, []);
+
+  const closeDealForm = useCallback(() => {
+    setDealFormMode(null);
+    setDealFormError(null);
+    setDealFormBusy(false);
+  }, []);
+
+  const submitDealForm = useCallback(async () => {
+    if (!dealFormMode) return;
+    const title = dealFormFields.title.trim();
+    if (!title) {
+      setDealFormError("Title is required.");
+      return;
+    }
+    const amountRaw = dealFormFields.amount.trim();
+    const amount = amountRaw ? parseFloat(amountRaw) : null;
+    if (amountRaw && (isNaN(amount!) || amount! < 0)) {
+      setDealFormError("Amount must be a positive number.");
+      return;
+    }
+    setDealFormBusy(true);
+    setDealFormError(null);
+    try {
+      if (dealFormMode === "create") {
+        const body: CreateDealBody = { title, amount };
+        await api.createDeal(body);
+      } else {
+        const body: EditDealBody = { title, amount };
+        await api.updateDeal(dealFormMode.id, body);
+      }
+      closeDealForm();
+      void load(); // refresh the board
+    } catch (e) {
+      setDealFormError(friendlyErrorMessage(e, "Couldn't save. Please try again."));
+    } finally {
+      setDealFormBusy(false);
+    }
+  }, [api, dealFormMode, dealFormFields, closeDealForm, load]);
+
   // Stage options for the move control: every stage the board knows about,
   // minus the deal's current one. Labels come from the server's groups.
   const stageOptions = useMemo(() => {
@@ -277,10 +347,32 @@ export function PipelineBoard({ client, onOpenGreenlight, onLoadSample }: Pipeli
       style={{ maxWidth: 1280, margin: "0 auto", padding: "32px 24px", fontFamily: "system-ui, sans-serif" }}
     >
       <div style={{ marginBottom: 20 }}>
-        <div style={{ fontSize: 12, fontWeight: 600, letterSpacing: ".06em", textTransform: "uppercase", color: "var(--ink-3, #8a8278)" }}>
-          Uplift CRM
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 600, letterSpacing: ".06em", textTransform: "uppercase", color: "var(--ink-3, #8a8278)" }}>
+              Uplift CRM
+            </div>
+            <h1 style={{ fontSize: 26, fontWeight: 760, letterSpacing: "-.02em", margin: "6px 0 4px" }}>Pipeline</h1>
+          </div>
+          <button
+            data-testid="new-deal-btn"
+            onClick={openCreateDealForm}
+            style={{
+              padding: "9px 16px",
+              borderRadius: 10,
+              border: "none",
+              background: "var(--accent, #2a2622)",
+              color: "#fff",
+              fontSize: 13.5,
+              fontWeight: 700,
+              cursor: "pointer",
+              fontFamily: "inherit",
+              marginTop: 4,
+            }}
+          >
+            + New deal
+          </button>
         </div>
-        <h1 style={{ fontSize: 26, fontWeight: 760, letterSpacing: "-.02em", margin: "6px 0 4px" }}>Pipeline</h1>
         <p style={{ color: "var(--ink-3, #8a8278)", fontSize: 14 }}>
           Your deals by stage. Stage moves go through Greenlight — nothing changes until you approve it there.
         </p>
@@ -469,9 +561,18 @@ export function PipelineBoard({ client, onOpenGreenlight, onLoadSample }: Pipeli
 
             {detail !== null && (
               <>
-                <h2 data-testid="drawer-title" style={{ fontSize: 20, fontWeight: 760, letterSpacing: "-.02em", margin: "0 0 6px" }}>
-                  {detail.deal.title ?? "Untitled deal"}
-                </h2>
+                <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, marginBottom: 6 }}>
+                  <h2 data-testid="drawer-title" style={{ fontSize: 20, fontWeight: 760, letterSpacing: "-.02em", margin: 0 }}>
+                    {detail.deal.title ?? "Untitled deal"}
+                  </h2>
+                  <button
+                    data-testid="edit-deal-btn"
+                    onClick={() => openEditDealForm(detail.deal)}
+                    style={{ ...ghostBtn, padding: "5px 12px", fontSize: 12.5, flexShrink: 0 }}
+                  >
+                    Edit
+                  </button>
+                </div>
                 <div style={{ fontSize: 13, color: "var(--ink-3, #8a8278)" }}>
                   {detail.deal.company_name ?? "No company"}
                   {detail.deal.contact_name ? ` · ${detail.deal.contact_name}` : ""}
@@ -631,6 +732,130 @@ export function PipelineBoard({ client, onOpenGreenlight, onLoadSample }: Pipeli
             </a>
           )}
         </div>
+      )}
+
+      {/* ----------------------------------------------------------------- create/edit deal form modal */}
+      {dealFormMode !== null && (
+        <>
+          <div
+            data-testid="deal-form-scrim"
+            onClick={closeDealForm}
+            style={{ position: "fixed", inset: 0, background: "rgba(20, 16, 12, .28)", zIndex: 60 }}
+          />
+          <div
+            data-testid="deal-form"
+            role="dialog"
+            aria-label={dealFormMode === "create" ? "New deal" : "Edit deal"}
+            style={{
+              position: "fixed",
+              top: "50%",
+              left: "50%",
+              transform: "translate(-50%, -50%)",
+              width: "min(440px, 92vw)",
+              background: "var(--surface, #fff)",
+              border: "1px solid var(--line, #e3ddd3)",
+              borderRadius: 16,
+              boxShadow: "0 12px 48px rgba(20,16,12,.18)",
+              zIndex: 61,
+              padding: "28px 28px 32px",
+              fontFamily: "system-ui, sans-serif",
+            }}
+          >
+            <h2 style={{ fontSize: 18, fontWeight: 760, letterSpacing: "-.02em", margin: "0 0 20px" }}>
+              {dealFormMode === "create" ? "New deal" : "Edit deal"}
+            </h2>
+
+            <div style={{ marginBottom: 14 }}>
+              <label
+                htmlFor="deal-form-title"
+                style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--ink-3, #8a8278)", marginBottom: 4 }}
+              >
+                Title *
+              </label>
+              <input
+                id="deal-form-title"
+                data-testid="deal-form-title"
+                type="text"
+                value={dealFormFields.title}
+                onChange={(e) => setDealFormFields((f) => ({ ...f, title: e.target.value }))}
+                disabled={dealFormBusy}
+                style={{
+                  width: "100%",
+                  boxSizing: "border-box",
+                  borderRadius: 10,
+                  border: "1px solid var(--line, #e3ddd3)",
+                  padding: "9px 12px",
+                  fontSize: 13.5,
+                  fontFamily: "inherit",
+                  background: "var(--surface, #fff)",
+                  color: "var(--ink, #2a2622)",
+                }}
+              />
+            </div>
+
+            <div style={{ marginBottom: 14 }}>
+              <label
+                htmlFor="deal-form-amount"
+                style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--ink-3, #8a8278)", marginBottom: 4 }}
+              >
+                Amount
+              </label>
+              <input
+                id="deal-form-amount"
+                data-testid="deal-form-amount"
+                type="number"
+                min="0"
+                value={dealFormFields.amount}
+                onChange={(e) => setDealFormFields((f) => ({ ...f, amount: e.target.value }))}
+                disabled={dealFormBusy}
+                placeholder="e.g. 5000"
+                style={{
+                  width: "100%",
+                  boxSizing: "border-box",
+                  borderRadius: 10,
+                  border: "1px solid var(--line, #e3ddd3)",
+                  padding: "9px 12px",
+                  fontSize: 13.5,
+                  fontFamily: "inherit",
+                  background: "var(--surface, #fff)",
+                  color: "var(--ink, #2a2622)",
+                }}
+              />
+            </div>
+
+            {dealFormError && (
+              <div
+                data-testid="deal-form-error"
+                style={{ fontSize: 13, lineHeight: 1.5, marginBottom: 14, padding: "10px 12px", borderRadius: 10, color: "var(--rose, #b4413b)", background: "oklch(0.97 0.02 18)" }}
+              >
+                {dealFormError}
+              </div>
+            )}
+
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <button
+                data-testid="deal-form-cancel"
+                onClick={closeDealForm}
+                disabled={dealFormBusy}
+                style={{ ...ghostBtn }}
+              >
+                Cancel
+              </button>
+              <button
+                data-testid="deal-form-submit"
+                onClick={() => void submitDealForm()}
+                disabled={dealFormBusy || !dealFormFields.title.trim()}
+                style={{
+                  ...primaryBtn,
+                  opacity: dealFormBusy || !dealFormFields.title.trim() ? 0.6 : 1,
+                  cursor: dealFormBusy || !dealFormFields.title.trim() ? "default" : "pointer",
+                }}
+              >
+                {dealFormBusy ? "Saving…" : dealFormMode === "create" ? "Create deal" : "Save changes"}
+              </button>
+            </div>
+          </div>
+        </>
       )}
     </div>
   );

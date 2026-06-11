@@ -35,10 +35,12 @@ import {
   type CompanyRow,
   type ContactDetailResponse,
   type ContactRow,
+  type CreateContactBody,
+  type EditContactBody,
 } from "./client";
 import { Spinner } from "./Spinner";
 
-const { useState, useEffect, useCallback, useRef } = React;
+const { useState, useEffect, useCallback, useRef, useReducer } = React;
 
 // Mirrors api/contacts_routes.py MAX_Q_LEN — the input enforces it so typing
 // can never produce a 422.
@@ -142,6 +144,18 @@ function emptyList<T>(): ListState<T> {
   return { rows: [], hasMore: false, loading: false, error: null, rollout: false, loaded: false };
 }
 
+// Contact form field shape (create + edit share the same form).
+interface ContactFormFields {
+  name: string;
+  email: string;
+  phone: string;
+  company_id: string;
+}
+
+function emptyForm(): ContactFormFields {
+  return { name: "", email: "", phone: "", company_id: "" };
+}
+
 export interface ContactsDirectoryProps {
   client?: ApiClient;
   /** Navigate to the Pipeline board (the shell passes navTo("crm")). Without
@@ -186,6 +200,13 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: Cont
   // A monotonically growing id per load so a stale response can never clobber
   // a newer one (search keystrokes race their fetches).
   const loadSeq = useRef(0);
+
+  // Create/edit form state. `formMode` is null when the form is closed.
+  const [formMode, setFormMode] = useState<"create" | { kind: "edit"; id: string } | null>(null);
+  const [formFields, setFormFields] = useState<ContactFormFields>(emptyForm);
+  const [formBusy, setFormBusy] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [, forceListRefresh] = useReducer((n: number) => n + 1, 0);
 
   const loadPeople = useCallback(
     async (q: string, offset: number, append: boolean) => {
@@ -313,6 +334,67 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: Cont
     setDetailError(null);
   }, []);
 
+  const openCreateForm = useCallback(() => {
+    setFormMode("create");
+    setFormFields(emptyForm());
+    setFormError(null);
+  }, []);
+
+  const openEditForm = useCallback((c: ContactRow) => {
+    setFormMode({ kind: "edit", id: c.id });
+    setFormFields({
+      name: c.name ?? "",
+      email: c.email ?? "",
+      phone: c.phone ?? "",
+      company_id: c.company_id ?? "",
+    });
+    setFormError(null);
+  }, []);
+
+  const closeForm = useCallback(() => {
+    setFormMode(null);
+    setFormError(null);
+    setFormBusy(false);
+  }, []);
+
+  const submitForm = useCallback(async () => {
+    if (!formMode) return;
+    const name = formFields.name.trim();
+    if (!name) {
+      setFormError("Name is required.");
+      return;
+    }
+    setFormBusy(true);
+    setFormError(null);
+    try {
+      if (formMode === "create") {
+        const body: CreateContactBody = {
+          name,
+          email: formFields.email.trim() || undefined,
+          phone: formFields.phone.trim() || undefined,
+          company_id: formFields.company_id.trim() || undefined,
+        };
+        await api.createContact(body);
+      } else {
+        const body: EditContactBody = {
+          name,
+          email: formFields.email.trim() || undefined,
+          phone: formFields.phone.trim() || undefined,
+          company_id: formFields.company_id.trim() || undefined,
+        };
+        await api.updateContact(formMode.id, body);
+      }
+      closeForm();
+      forceListRefresh();
+      // Also refresh the current tab list.
+      if (tab === "people") void loadPeople(query.trim(), 0, false);
+    } catch (e) {
+      setFormError(friendlyErrorMessage(e, "Couldn't save. Please try again."));
+    } finally {
+      setFormBusy(false);
+    }
+  }, [api, formMode, formFields, closeForm, forceListRefresh, tab, loadPeople, query]);
+
   // Esc closes the drawer (house pattern for slide-overs).
   useEffect(() => {
     if (drawer === null) return;
@@ -426,13 +508,37 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: Cont
       style={{ maxWidth: 860, margin: "0 auto", padding: "32px 24px", fontFamily: "system-ui, sans-serif" }}
     >
       <div style={{ marginBottom: 18 }}>
-        <div style={{ fontSize: 12, fontWeight: 600, letterSpacing: ".06em", textTransform: "uppercase", ...muted }}>
-          Uplift CRM
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 600, letterSpacing: ".06em", textTransform: "uppercase", ...muted }}>
+              Uplift CRM
+            </div>
+            <h1 style={{ fontSize: 26, fontWeight: 760, letterSpacing: "-.02em", margin: "6px 0 4px" }}>Contacts</h1>
+          </div>
+          {tab === "people" && (
+            <button
+              data-testid="add-contact-btn"
+              onClick={openCreateForm}
+              style={{
+                padding: "9px 16px",
+                borderRadius: 10,
+                border: "none",
+                background: "var(--accent, #2a2622)",
+                color: "#fff",
+                fontSize: 13.5,
+                fontWeight: 700,
+                cursor: "pointer",
+                fontFamily: "inherit",
+                marginTop: 4,
+              }}
+            >
+              + Add contact
+            </button>
+          )}
         </div>
-        <h1 style={{ fontSize: 26, fontWeight: 760, letterSpacing: "-.02em", margin: "6px 0 4px" }}>Contacts</h1>
         <p style={{ ...muted, fontSize: 14 }}>
-          Everyone your business talks to — synced from your CRM, read-only here. Their open deals
-          live on the Pipeline board.
+          Everyone your business talks to — synced from your CRM or added directly. Their open
+          deals live on the Pipeline board.
         </p>
       </div>
 
@@ -630,9 +736,18 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: Cont
             {/* ------------------------------------------------ contact detail */}
             {drawer.kind === "contact" && contactDetail !== null && (
               <>
-                <h2 data-testid="drawer-title" style={{ fontSize: 20, fontWeight: 760, letterSpacing: "-.02em", margin: "0 0 6px" }}>
-                  {contactDetail.contact.name ?? "Unnamed contact"}
-                </h2>
+                <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, marginBottom: 4 }}>
+                  <h2 data-testid="drawer-title" style={{ fontSize: 20, fontWeight: 760, letterSpacing: "-.02em", margin: 0 }}>
+                    {contactDetail.contact.name ?? "Unnamed contact"}
+                  </h2>
+                  <button
+                    data-testid="edit-contact-btn"
+                    onClick={() => openEditForm(contactDetail.contact)}
+                    style={{ ...ghostBtn, padding: "5px 12px", fontSize: 12.5, flexShrink: 0 }}
+                  >
+                    Edit
+                  </button>
+                </div>
                 <div style={{ fontSize: 13, ...muted }}>
                   {contactDetail.contact.company_name ?? "No company"}
                 </div>
@@ -715,6 +830,108 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: Cont
                 )}
               </>
             )}
+          </div>
+        </>
+      )}
+
+      {/* ----------------------------------------------------------------- create/edit form modal */}
+      {formMode !== null && (
+        <>
+          <div
+            data-testid="form-scrim"
+            onClick={closeForm}
+            style={{ position: "fixed", inset: 0, background: "rgba(20, 16, 12, .28)", zIndex: 60 }}
+          />
+          <div
+            data-testid="contact-form"
+            role="dialog"
+            aria-label={formMode === "create" ? "Add contact" : "Edit contact"}
+            style={{
+              position: "fixed",
+              top: "50%",
+              left: "50%",
+              transform: "translate(-50%, -50%)",
+              width: "min(440px, 92vw)",
+              background: "var(--surface, #fff)",
+              border: "1px solid var(--line, #e3ddd3)",
+              borderRadius: 16,
+              boxShadow: "0 12px 48px rgba(20,16,12,.18)",
+              zIndex: 61,
+              padding: "28px 28px 32px",
+              fontFamily: "system-ui, sans-serif",
+            }}
+          >
+            <h2 style={{ fontSize: 18, fontWeight: 760, letterSpacing: "-.02em", margin: "0 0 20px" }}>
+              {formMode === "create" ? "Add contact" : "Edit contact"}
+            </h2>
+
+            {(["name", "email", "phone"] as const).map((field) => (
+              <div key={field} style={{ marginBottom: 14 }}>
+                <label
+                  htmlFor={`contact-form-${field}`}
+                  style={{ display: "block", fontSize: 12, fontWeight: 600, ...muted, marginBottom: 4 }}
+                >
+                  {field === "name" ? "Name *" : field.charAt(0).toUpperCase() + field.slice(1)}
+                </label>
+                <input
+                  id={`contact-form-${field}`}
+                  data-testid={`contact-form-${field}`}
+                  type={field === "email" ? "email" : "text"}
+                  value={formFields[field]}
+                  onChange={(e) => setFormFields((f) => ({ ...f, [field]: e.target.value }))}
+                  disabled={formBusy}
+                  style={{
+                    width: "100%",
+                    boxSizing: "border-box",
+                    borderRadius: 10,
+                    border: "1px solid var(--line, #e3ddd3)",
+                    padding: "9px 12px",
+                    fontSize: 13.5,
+                    fontFamily: "inherit",
+                    background: "var(--surface, #fff)",
+                    color: "var(--ink, #2a2622)",
+                  }}
+                />
+              </div>
+            ))}
+
+            {formError && (
+              <div
+                data-testid="contact-form-error"
+                style={{ fontSize: 13, lineHeight: 1.5, marginBottom: 14, padding: "10px 12px", borderRadius: 10, color: "var(--rose, #b4413b)", background: "oklch(0.97 0.02 18)" }}
+              >
+                {formError}
+              </div>
+            )}
+
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <button
+                data-testid="contact-form-cancel"
+                onClick={closeForm}
+                disabled={formBusy}
+                style={{ ...ghostBtn }}
+              >
+                Cancel
+              </button>
+              <button
+                data-testid="contact-form-submit"
+                onClick={() => void submitForm()}
+                disabled={formBusy || !formFields.name.trim()}
+                style={{
+                  padding: "8px 16px",
+                  borderRadius: 10,
+                  border: "none",
+                  background: "var(--accent, #2a2622)",
+                  color: "#fff",
+                  fontSize: 13.5,
+                  fontWeight: 650,
+                  cursor: formBusy ? "default" : "pointer",
+                  opacity: formBusy || !formFields.name.trim() ? 0.6 : 1,
+                }}
+              >
+                {formBusy ? "Saving…" : formMode === "create" ? "Add contact" : "Save changes"}
+              </button>
+            </div>
           </div>
         </>
       )}
