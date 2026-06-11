@@ -1,0 +1,95 @@
+# Disposable / throwaway email domains — static blocklist (signup abuse controls).
+#
+# Format: one lowercase domain per line. Blank lines and lines starting with '#' are ignored.
+# Inline comments are NOT supported (the whole line is the domain) — keep one domain per line.
+#
+# This is a REASONABLE static seed, not an exhaustive feed. It is deliberately shipped in-repo so
+# the signup-start check has no network dependency and is fully testable offline. It is OVERRIDABLE
+# at runtime: SIGNUP_DISPOSABLE_DOMAINS_FILE points the loader at an alternate file (e.g. a larger
+# maintained feed synced to the task), and SIGNUP_DISPOSABLE_DOMAINS_EXTRA adds a comma-separated
+# allow-of-blocked set on top. See signup/abuse.py (DisposableEmailBlocklist).
+#
+# Curated from the commonly-referenced public disposable-domain lists; kept conservative so a real
+# customer is never wrongly rejected. When in doubt, leave a domain OUT.
+0-mail.com
+10minutemail.com
+10minutemail.net
+20minutemail.com
+2prong.com
+33mail.com
+guerrillamail.biz
+guerrillamail.com
+guerrillamail.de
+guerrillamail.info
+guerrillamail.net
+guerrillamail.org
+guerrillamailblock.com
+sharklasers.com
+grr.la
+spam4.me
+mailinator.com
+mailinator.net
+mailinator2.com
+mailnesia.com
+maildrop.cc
+mailcatch.com
+dispostable.com
+trashmail.com
+trashmail.net
+trashmail.me
+trashmail.io
+throwawaymail.com
+throwaway.email
+yopmail.com
+yopmail.net
+yopmail.fr
+tempmail.com
+temp-mail.org
+temp-mail.io
+tempmailo.com
+tempr.email
+getnada.com
+nada.email
+discard.email
+discardmail.com
+discardmail.de
+fakeinbox.com
+fakemailgenerator.com
+emailondeck.com
+mohmal.com
+mintemail.com
+mytemp.email
+spamgourmet.com
+spambox.us
+mailtemp.net
+moakt.com
+tmail.com
+tmpmail.org
+tmpmail.net
+tmpeml.com
+inboxkitten.com
+burnermail.io
+mailpoof.com
+luxusmail.org
+tempinbox.com
+tempemail.co
+tempemail.com
+33333.com
+einrot.com
+jetable.org
+fakemail.net
+crazymailing.com
+spambog.com
+deadaddress.com
+maileater.com
+mailexpire.com
+mailnull.com
+no-spam.ws
+notmailinator.com
+reallymymail.com
+rcpt.at
+spamfree24.org
+trbvm.com
+wegwerfmail.de
+wegwerfmail.net
+wegwerfmail.org
