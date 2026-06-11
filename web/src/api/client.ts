@@ -771,6 +771,70 @@ export interface BillingPortalSessionResponse {
   url: string;
 }
 
+// --- Cortex (ML) health (GET /cortex/health) -------------------------------
+/** The champion model summary, or null when the tenant has no champion yet. */
+export interface CortexChampion {
+  version: number;
+  estimator: string;
+  metrics: Record<string, number>;
+}
+/** Live-AUC drift verdict, or null when there's no/insufficient prediction evidence. */
+export interface CortexDrift {
+  drift: boolean;
+  recent_auc: number | null;
+  n_outcomes: number;
+  /** Present when a number can't honestly be computed (#194 drift honesty). */
+  reason?: string;
+}
+/** GET /cortex/health — real per-tenant model health (NO fabricated numbers).
+ * status: "no_registry" (registry unwired) | "no_champion" (no model yet) |
+ * "serving" (champion live) | "drifting" (live-AUC degraded). */
+export interface CortexHealth {
+  tenant_id: string;
+  status: "no_registry" | "no_champion" | "serving" | "drifting";
+  champion: CortexChampion | null;
+  model_count: number;
+  drift: CortexDrift | null;
+}
+
+// --- Billing invoices (GET /billing/invoices) ------------------------------
+/** One Stripe invoice row, normalized server-side from the tenant's customer. */
+export interface Invoice {
+  id: string;
+  number: string | null;
+  amount_due: number;
+  amount_paid: number;
+  currency: string;
+  status: string;
+  created: number;
+  hosted_invoice_url: string | null;
+  invoice_pdf: string | null;
+}
+
+// --- CSV import (POST /integrations/csv/import) -----------------------------
+/** The csv_import.ImportReport shape (asdict). Per-row problems land in `errors`,
+ * never throw; a whole-file problem surfaces as an ApiError(422). */
+export interface CsvImportReport {
+  entity: string;
+  total_rows: number;
+  imported: number;
+  skipped: number;
+  errors: Array<{ row?: number; reason: string }>;
+  [k: string]: unknown;
+}
+
+// --- Account data lifecycle (GET /account/export, POST /account/delete) -----
+/** GET /account/export — the tenant's full RLS-scoped data bundle (sections are
+ * omitted when their store is unconfigured). Typed loosely: it's an egress dump. */
+export type AccountExport = Record<string, unknown>;
+/** POST /account/delete — per-table teardown report. Append-only audit tables are
+ * reported under `retained` (with a reason), never force-deleted. */
+export interface AccountDeleteReport {
+  deleted: Record<string, number>;
+  retained: Record<string, string>;
+  failed: Record<string, string>;
+}
+
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
@@ -1006,6 +1070,33 @@ export class ApiClient {
       // flips to signed-out instead of refresh-churning on every request.
       this.onAuthRejected();
     }
+    if (!res.ok) {
+      let detail = res.statusText;
+      try {
+        const j = (await res.json()) as { detail?: string };
+        if (j && typeof j.detail === "string") detail = j.detail;
+      } catch {
+        // non-JSON error body; keep statusText
+      }
+      throw new ApiError(res.status, detail);
+    }
+    return (await res.json()) as T;
+  }
+
+  // Multipart upload (file bodies — CSV import). Like request() but sends a
+  // FormData body and does NOT set Content-Type (the browser sets the multipart
+  // boundary). Same bearer-auth + 401-refresh-retry discipline; still no tenant_id
+  // (the server derives it from the verified token).
+  private async requestMultipart<T>(method: string, path: string, form: FormData): Promise<T> {
+    const doFetch = async () => {
+      // Auth-only headers — never force Content-Type on a multipart body.
+      const h: Record<string, string> = {};
+      const token = this.getToken ? await this.getToken() : "";
+      if (token) h["Authorization"] = `Bearer ${token}`;
+      return this.fetchImpl(`${this.baseURL}${path}`, { method, headers: h, body: form });
+    };
+    const res = await fetchWithAuthRetry(doFetch, this.refreshAuth);
+    if (res.status === 401 && this.onAuthRejected) this.onAuthRejected();
     if (!res.ok) {
       let detail = res.statusText;
       try {
@@ -1659,6 +1750,83 @@ export class ApiClient {
       return { url: "" };
     }
     return this.request<BillingPortalSessionResponse>("POST", "/billing/portal-session");
+  }
+
+  /**
+   * GET /billing/invoices: the tenant's real Stripe invoices (customer resolved
+   * server-side from the verified JWT — the client sends no customer id). Returns
+   * [] when the tenant has no Stripe customer yet; may throw ApiError(404) where
+   * billing isn't deployed — callers show honest empty/degraded copy, never fakes.
+   */
+  async listInvoices(): Promise<Invoice[]> {
+    if (this.mock) {
+      // Offline/demo builds render the mock billing store, not this path.
+      return [];
+    }
+    const data = await this.request<{ invoices: Invoice[] }>("GET", "/billing/invoices");
+    return data.invoices ?? [];
+  }
+
+  // --- Cortex (ML) health ----------------------------------------------------
+
+  /**
+   * GET /cortex/health: real per-tenant model health — champion + drift verdict,
+   * with NO fabricated numbers. status "no_registry"/"no_champion" are honest
+   * empty states (the registry isn't wired / no model trained yet) the UI renders
+   * as degraded, not as green. May throw ApiError(404) where Cortex isn't deployed.
+   */
+  async getCortexHealth(): Promise<CortexHealth> {
+    if (this.mock) {
+      // Demo builds: an honest "not wired" shape — no invented accuracy/drift.
+      return { tenant_id: "demo", status: "no_registry", champion: null, model_count: 0, drift: null };
+    }
+    return this.request<CortexHealth>("GET", "/cortex/health");
+  }
+
+  // --- CSV import (file upload) ----------------------------------------------
+
+  /**
+   * POST /integrations/csv/import: upload a CSV for `entity` (contacts|companies|
+   * deals) as multipart. The server parses + lands rows; per-row problems come
+   * back in the report's `errors` (never throw), a whole-file problem is an
+   * ApiError(422), and an unconfigured ingest plane is an honest ApiError(503).
+   */
+  async csvImport(entity: string, file: File): Promise<CsvImportReport> {
+    if (this.mock) {
+      // No real ingest offline — report nothing imported (the UI shows the honest
+      // "demo mode" notice rather than pretending rows landed).
+      return { entity, total_rows: 0, imported: 0, skipped: 0, errors: [] };
+    }
+    const form = new FormData();
+    form.append("entity", entity);
+    form.append("file", file);
+    return this.requestMultipart<CsvImportReport>("POST", "/integrations/csv/import", form);
+  }
+
+  // --- Account data lifecycle (GDPR) -----------------------------------------
+
+  /**
+   * GET /account/export: the tenant's full RLS-scoped data bundle for download.
+   * Throws ApiError(503) when all stores are unconfigured (nothing to export).
+   */
+  async exportAccountData(): Promise<AccountExport> {
+    if (this.mock) {
+      return {};
+    }
+    return this.request<AccountExport>("GET", "/account/export");
+  }
+
+  /**
+   * POST /account/delete: teardown of the tenant's own mutable data. Requires a
+   * confirm token equal to the tenant id (422 otherwise). Append-only audit tables
+   * are reported under `retained`, never force-deleted. ApiError(503) when the
+   * destructive path isn't wired live (the default) — a caller must not pretend.
+   */
+  async requestAccountDelete(confirm: string): Promise<AccountDeleteReport> {
+    if (this.mock) {
+      return { deleted: {}, retained: {}, failed: {} };
+    }
+    return this.request<AccountDeleteReport>("POST", "/account/delete", { confirm });
   }
 }
 
