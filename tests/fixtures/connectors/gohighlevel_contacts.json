@@ -1,0 +1,36 @@
+{
+  "_comment": "Recorded GoHighLevel API v2 GET /contacts/ response shape (anonymized). Used by tests/unit/test_gohighlevel_connector.py — no live GHL call ever happens in CI.",
+  "contacts": [
+    {
+      "id": "ghl-c-001",
+      "locationId": "loc-123",
+      "contactName": "Ava Martinez",
+      "firstName": "Ava",
+      "lastName": "Martinez",
+      "email": "ava@acme.test",
+      "phone": "+15125550101",
+      "companyName": "Acme Fencing",
+      "dateAdded": "2026-05-01T10:00:00.000Z",
+      "dateUpdated": "2026-06-01T09:30:00.000Z"
+    },
+    {
+      "id": "ghl-c-002",
+      "locationId": "loc-123",
+      "firstName": "Ben",
+      "lastName": "Okafor",
+      "email": "ben@rivertown.test",
+      "phone": "+15125550102",
+      "dateAdded": "2026-05-15T12:00:00.000Z",
+      "dateUpdated": "2026-06-03T14:45:00.000Z"
+    },
+    {
+      "id": "ghl-c-003",
+      "locationId": "loc-123",
+      "contactName": "Cara Singh",
+      "email": "cara@hilltop.test",
+      "dateAdded": "2026-04-20T08:00:00.000Z",
+      "dateUpdated": "2026-05-20T16:10:00.000Z"
+    }
+  ],
+  "meta": { "total": 3, "startAfterId": null }
+}

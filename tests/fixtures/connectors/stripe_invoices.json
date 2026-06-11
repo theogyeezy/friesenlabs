@@ -1,0 +1,32 @@
+{
+  "_comment": "Recorded Stripe GET /v1/invoices list response shape (anonymized test-mode data). Used by tests/unit/test_stripe_data_connector.py.",
+  "object": "list",
+  "url": "/v1/invoices",
+  "has_more": false,
+  "data": [
+    {
+      "id": "in_Z001",
+      "object": "invoice",
+      "number": "ACME-0001",
+      "customer": "cus_AAA111",
+      "subscription": "sub_X001",
+      "status": "paid",
+      "amount_due": 19900,
+      "amount_paid": 19900,
+      "currency": "usd",
+      "created": 1749254400
+    },
+    {
+      "id": "in_Z002",
+      "object": "invoice",
+      "number": "RIV-0042",
+      "customer": { "id": "cus_BBB222", "object": "customer" },
+      "subscription": null,
+      "status": "open",
+      "amount_due": 4900,
+      "amount_paid": 0,
+      "currency": "usd",
+      "created": 1749340800
+    }
+  ]
+}

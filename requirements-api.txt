@@ -7,3 +7,4 @@ psycopg2-binary>=2.9
 jsonschema>=4.20
 pyjwt[crypto]>=2.8    # Cognito JWKS verification (RS256)
 stripe>=7             # payment adapter (signup/stripe_adapter.py) — imported lazily
+python-multipart>=0.0.9  # FastAPI multipart forms (POST /integrations/csv/import)

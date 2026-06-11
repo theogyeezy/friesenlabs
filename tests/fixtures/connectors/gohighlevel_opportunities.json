@@ -1,0 +1,26 @@
+{
+  "_comment": "Recorded GoHighLevel API v2 GET /opportunities/search response shape (anonymized). Used by tests/unit/test_gohighlevel_connector.py — no live GHL call ever happens in CI.",
+  "opportunities": [
+    {
+      "id": "ghl-o-101",
+      "name": "Acme backyard fence",
+      "monetaryValue": 4800,
+      "pipelineId": "pipe-1",
+      "pipelineStageName": "Proposal Sent",
+      "status": "open",
+      "contactId": "ghl-c-001",
+      "createdAt": "2026-05-02T10:00:00.000Z",
+      "updatedAt": "2026-06-04T11:00:00.000Z"
+    },
+    {
+      "id": "ghl-o-102",
+      "name": "Rivertown gate repair",
+      "monetaryValue": "not-a-number",
+      "status": "won",
+      "contact": { "id": "ghl-c-002" },
+      "createdAt": "2026-05-16T12:00:00.000Z",
+      "updatedAt": "2026-06-02T10:20:00.000Z"
+    }
+  ],
+  "meta": { "total": 2, "nextPage": null }
+}
