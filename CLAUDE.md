@@ -90,6 +90,42 @@ app shell → real RLS-scoped tenant rows. Unauth `/api/*` → 401; **`/chat` is
 **Tooling:** `.claude/settings.json` enables the official-marketplace plugins so collaborators inherit
 them on clone+trust. Don't commit secrets to it.
 
+## FLEETAGENT session — 2026-06-10/11 (revenue, accountability, data-plane, MVP)
+A multi-agent fleet (3 Claude accounts + Codex over Tailscale/SSH; see `scripts/fleet/`) ran an
+adversarial audit then a 4-wave build. **22 PRs squash-merged to `main` (green), tip `20384e9`.**
+- **Revenue path made real:** checkout returns the Stripe `checkout_url` (SPA no longer fakes
+  payment), `invoice.paid` resolves via subscription metadata, atomic per-account settlement +
+  signed-webhook field verification (amount/price/livemode), pre-minted **workspace-key pool**
+  (material in Secrets Manager, only a ref in PG), Cognito `FORCE_CHANGE_PASSWORD` login fix,
+  `POST /public/leads`, and an env-gated **@friesenlabs.com Stripe bypass** (off by default;
+  `SIGNUP_INTERNAL_BYPASS_DOMAINS` + prod escape-hatch; settles via `internal_comp` through the
+  idempotent ledger). Stripe test-mode Prices created: starter `price_1Tgnl3…` $99, team
+  `price_1Tgnl4…` $299, scale `price_1Tgnl5…` $799 (monthly).
+- **Accountability is real, not theater:** persisted kill switch + `GET/PUT /control/killswitch`,
+  `PgTraceStore` over the FORCE-RLS traces table + `GET /control/traces`, persisted autonomy dial the
+  gate actually reads. Web wired with 404-degrade.
+- **Data plane un-severed:** Cube RLS GUC fix (issue #177 — needs the cube image rolled to go live),
+  real worker Cube client, 12/12 tools served, live-runtime citations.
+- **Tenancy hygiene:** fresh-load grants for `workspace_keys`/`leads`, composite same-tenant FKs,
+  append-only audit trail (REVOKE DELETE), schema-derived RLS gate, AdminSetUserPassword IAM parity,
+  ingest shared-token fallback removed.
+- **MVP features (branches `feat/mvp-*` PRESERVED on origin for further dev):** **Balto** NL view
+  creation in chat ("Our synthesizing agent Balto is mushing away…", data-not-exists refusal, view
+  button + X overlay, save option, saved-views dropdown; spec-not-code over Cube), **Agent Studio**
+  + 5 starter playbooks, **connectors** (CSV/GoHighLevel/Stripe-read), **dashboards v2** (funnel/
+  leaderboard/sparkline/cohort/grid), **Cortex depth** (training loader, retrain entrypoint, signed
+  artifacts, live drift), demo-tenant golden path + knowledge-corpus seeding.
+- **Live applies (this session):** DB migrate ran live against Aurora via `uplift-migrate-oneoff:2`
+  (new schema + roles/grants) — **exit 0**; live isolation test **PASS** (RLS holds). The deploy
+  pipeline built image `uplift-api:20384e9` and **paused at the production approval gate** — the
+  apply was NOT approved: its plan flips the provisioning Lambda to ARN-only secrets while the
+  Lambda *container image* lacks #197's ARN-fetch (and `signup_real_deps=true` is already live), so
+  the api/cube roll is blocked on rebuilding the provisioning-Lambda + cube images (or a targeted
+  api-only apply). The 2 plan "destroys" are benign ECS task-def revision replacements.
+- **Still owner-gated:** seed the workspace-key pool (Anthropic Console → `scripts/ops/load_workspace_keys.py`);
+  wire the verified Stripe price IDs into the prod tfvars secret; rebuild+roll provisioning-Lambda +
+  cube images to make the merged code fully live.
+
 ## How we build
 - **Dependency order, not feature order.** Phase 0 → 12. Don't start a phase whose inputs
   don't exist. The Build Guide (`docs/`, local-only) is the source of truth for order + commands.
