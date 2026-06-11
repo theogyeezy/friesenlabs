@@ -153,6 +153,38 @@ resource "aws_iam_role_policy" "worker_task_bedrock_embed" {
   })
 }
 
+# Cortex persistent model registry (ml/registry.py S3Registry): the api task (conversation
+# factory) and the worker (the run_model/retrain tools) read+write serialized tenant models
+# under cortex/* in the datalake bucket. ListBucket (prefix-conditioned) is required so a
+# missing key surfaces as NoSuchKey (the registry's "no champion yet" path) instead of
+# AccessDenied. Empty name = no policy (the registry env is gated by the same root flag).
+variable "cortex_bucket_name" {
+  type    = string
+  default = ""
+}
+
+resource "aws_iam_role_policy" "cortex_registry_s3" {
+  for_each = var.cortex_bucket_name != "" ? toset(["api", "worker"]) : toset([])
+  name     = "cortex-registry-s3"
+  role     = aws_iam_role.task[each.key].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["s3:GetObject", "s3:PutObject"]
+        Resource = "arn:aws:s3:::${var.cortex_bucket_name}/cortex/*"
+      },
+      {
+        Effect    = "Allow"
+        Action    = ["s3:ListBucket"]
+        Resource  = "arn:aws:s3:::${var.cortex_bucket_name}"
+        Condition = { StringLike = { "s3:prefix" = "cortex/*" } }
+      }
+    ]
+  })
+}
+
 # The signup plane's Cognito admin ops (signup/cognito_admin.py: create-unconfirmed user,
 # verify-confirm, set password, stamp the tenant claim) — EXACTLY the five calls the module
 # makes, scoped to the ONE pool. Live 500 on POST /signup without this (AdminCreateUser

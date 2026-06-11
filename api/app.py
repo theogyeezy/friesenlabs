@@ -36,6 +36,12 @@ from api.workflows_routes import WorkflowsDeps
 logger = logging.getLogger(__name__)
 
 
+def _build_public_deps():
+    """Lazy default for ApiDeps.public (import api.public_routes only when constructed)."""
+    from api.public_routes import build_public_deps  # noqa: PLC0415 — avoid an import cycle
+    return build_public_deps()
+
+
 @dataclass
 class ApiDeps:
     verifier: JwtVerifier
@@ -47,6 +53,11 @@ class ApiDeps:
     crm: Any | None = None                              # post-approval CRM appliers
     killswitch: KillSwitch = field(default_factory=KillSwitch)
     trace_store: TraceStore = field(default_factory=InMemoryTraceStore)
+    # /control autonomy dial (api/routes_control.py). None -> the routes fall back to an
+    # AutonomyDial over `autonomy_config` (in-memory; flips are instance-local). api/asgi.py
+    # wires the Pg-backed PersistedAutonomyDial whose provider `autonomy_config` resolves, so
+    # the dial and the gate read/write ONE persisted per-tenant level.
+    autonomy_dial: Any | None = None
     view_patcher: Callable[[dict, str], dict] | None = None  # NL refine: (spec, instruction) -> spec
     signup: Any = None                                  # optional SignupDeps (mounts public routes)
     # /integrations deps (TODO INT/P2). Env-built by default so api/asgi.py needs no change:
@@ -81,6 +92,11 @@ class ApiDeps:
     # pool; api/asgi.py is the ONLY real wiring (the SAME PgRagClient instance the executor/chat
     # RAG tool rides). Pass None to skip mounting the routes entirely.
     knowledge: KnowledgeDeps | None = field(default_factory=KnowledgeDeps)
+    # /public/leads deps (unauthenticated lead capture). Env-built by default so api/asgi.py
+    # needs no change: the real PgLeadStore is selected ONLY under SIGNUP_REAL_DEPS + the
+    # crm_app DSN (api/public_routes.build_public_deps); otherwise the route answers an honest
+    # 503 after validation. Pass None to skip mounting the route entirely.
+    public: Any | None = field(default_factory=lambda: _build_public_deps())
 
 
 # --- request bodies (note: NONE carry tenant_id — the trust rule forbids it) ---
@@ -328,9 +344,21 @@ def create_app(deps: ApiDeps) -> FastAPI:
         from api.knowledge_routes import mount_knowledge
         mount_knowledge(app, deps.knowledge, current_tenant)
 
+    # Authed per-tenant control surface (kill switch · autonomy dial · decision traces) —
+    # always mounted: the deps defaults are in-memory and api/asgi.py wires the Pg-backed
+    # stores in prod. Authorization decisions are documented in api/routes_control.py.
+    from api.routes_control import mount_control
+    mount_control(app, deps, current_tenant)
+
     # Public, pre-tenant signup + Stripe webhook routes (optional).
     if deps.signup is not None:
         from api.signup_routes import mount_signup
         mount_signup(app, deps.signup)
+
+    # Public, unauthenticated lead capture (POST /public/leads) — validated, 1KB-capped,
+    # per-IP rate-limited; the store is honest-503 until the prod gates select PgLeadStore.
+    if deps.public is not None:
+        from api.public_routes import mount_public
+        mount_public(app, deps.public)
 
     return app

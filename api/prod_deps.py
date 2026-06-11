@@ -76,6 +76,7 @@ from signup.agent_plane import AgentPlaneEnsure
 from signup.anthropic_admin import AnthropicAdminClient
 from signup.cognito_admin import CognitoAdminClient
 from signup.funnel import Funnel
+from signup.key_pool import PgWorkspaceKeyPool
 from signup.payment import PaymentService
 from signup.posthog_client import PostHogClient
 from signup.provisioning import Provisioner
@@ -100,6 +101,11 @@ class _AccountStore:
 
     def get_by_email(self, email):
         return next((a for a in self.rows.values() if getattr(a, "email", None) == email), None)
+
+    def get_by_stripe_customer_id(self, customer_id):
+        # The invoice.paid fallback resolver (signup/payment.py) — mirrors PgAccountStore.
+        return next((a for a in self.rows.values()
+                     if getattr(a, "stripe_customer_id", None) == customer_id), None)
 
     def insert(self, acct):
         self.rows[acct.id] = acct
@@ -372,12 +378,17 @@ def build_provisioner(workspace_store=None, *, store=None, cognito=None, email_s
     # The REAL step-5 db seam (tenant_settings seed) rides the same crm_app DSN guard as the
     # stores; None falls back to the Provisioner's `db` (_Noop here) — offline boots unchanged.
     tenant_defaults = PgTenantDefaults(dsn) if dsn else None
+    # The pre-minted workspace-key POOL (issue #152: the Admin API cannot mint keys — 405; the
+    # ratified Console-pool flow). Rides the same crm_app DSN guard (under the master switch):
+    # step 2 consumes a Console-pre-minted key per tenant; an empty pool parks the signup as
+    # pool_empty. None = the legacy admin-mint seam (offline/unconfigured stays all-stub).
+    key_pool = PgWorkspaceKeyPool(dsn) if dsn else None
     return Provisioner(
         store=store, mint_tenant_id=lambda aid: str(uuid.uuid4()), db=_Noop(),
         anthropic_admin=anthropic_admin, secrets=_Noop(), cognito=cognito, cube=_Noop(),
         resend=email_sender, agent_plane=_build_agent_plane(cfg, workspace_store),
         workspace_store=workspace_store,
-        refund=refund, funnel=funnel, tenant_defaults=tenant_defaults,
+        refund=refund, funnel=funnel, tenant_defaults=tenant_defaults, key_pool=key_pool,
     )
 
 
@@ -518,4 +529,9 @@ def build_signup_deps(workspace_store=None, *, now=time.time) -> SignupDeps:
         verify_redirect_url=cfg.signup_verify_url_base,
         retry_provision=retry_provision,
         claims_tenant=claims_tenant,
+        # TESTING-ONLY internal Stripe bypass — its OWN deliberate env switch
+        # (SIGNUP_INTERNAL_BYPASS_DOMAINS, default EMPTY = off): the checkout route settles
+        # allow-listed VERIFIED domains via PaymentService.internal_comp (same idempotent
+        # ledger + on_paid path), no Stripe call.
+        internal_bypass_domains=cfg.internal_bypass_domain_set(),
     )

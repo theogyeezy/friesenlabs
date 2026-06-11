@@ -32,6 +32,8 @@ module "iam" {
     module.data.master_user_secret_arn,
   ])
   provisioning_sfn_arn = module.provisioning.state_machine_arn
+  # Cortex persistent registry S3 grant (api+worker task roles) — rides the same flag as the env.
+  cortex_bucket_name = var.cortex_s3_registry ? module.s3.bucket_names["datalake"] : ""
   # REQ-003: exact platform-secret ARNs for the execution role (listed, not a wildcard widen).
   extra_execution_secret_arns = [
     data.aws_secretsmanager_secret.platform_stripe.arn,
@@ -164,13 +166,25 @@ module "api_service" {
   posthog_key_arn                = data.aws_secretsmanager_secret.platform_posthog.arn
   posthog_host                   = var.posthog_host
   integrations_real              = var.api_integrations_real
-  cognito_user_pool_id           = module.auth.user_pool_id
-  cognito_client_id              = module.auth.user_pool_client_id
-  image                          = var.api_image
-  aurora_endpoint                = module.data.cluster_endpoint
-  aurora_master_secret_arn       = module.data.master_user_secret_arn
-  desired_count                  = var.api_desired_count
-  log_retention_days             = var.log_retention_days
+  # Signup-plane plain config (shared/config.py names; "" = entry omitted, deploy invariant).
+  stripe_price_id_starter        = var.stripe_price_id_starter
+  stripe_price_id_team           = var.stripe_price_id_team
+  stripe_price_id_scale          = var.stripe_price_id_scale
+  stripe_success_url             = var.stripe_success_url
+  stripe_cancel_url              = var.stripe_cancel_url
+  resend_from_email              = var.resend_from_email
+  signup_verify_url_base         = var.signup_verify_url_base
+  signup_internal_bypass_domains = var.signup_internal_bypass_domains
+  # Cortex persistent registry — the bucket name derives from the s3 module (never hand-typed).
+  cortex_s3_bucket         = var.cortex_s3_registry ? module.s3.bucket_names["datalake"] : ""
+  cortex_local_dir         = var.cortex_local_dir
+  cognito_user_pool_id     = module.auth.user_pool_id
+  cognito_client_id        = module.auth.user_pool_client_id
+  image                    = var.api_image
+  aurora_endpoint          = module.data.cluster_endpoint
+  aurora_master_secret_arn = module.data.master_user_secret_arn
+  desired_count            = var.api_desired_count
+  log_retention_days       = var.log_retention_days
 }
 
 # REQ-004: ingestion scheduler — one-off Fargate task on an EventBridge rule (DISABLED by
@@ -217,6 +231,12 @@ module "provisioning_lambda" {
   admin_key_available   = var.provisioning_admin_key_available
   posthog_key_secret_id = data.aws_secretsmanager_secret.platform_posthog.id
   posthog_host          = var.posthog_host
+  # The SAME deliberate go-live flag as the API task (REQ-003 step 0) — one flip, whole plane.
+  signup_real_deps = var.signup_real_deps
+  # AI-plane pair for the agent_plane step (ARN references; resolved in-handler at cold start).
+  anthropic_api_key_secret_arn = module.secrets.anthropic_api_key_secret_arn
+  env_id_secret_arn            = module.secrets.env_id_secret_arn
+  anthropic_env_available      = var.provisioning_anthropic_env
 }
 
 module "provisioning" {
@@ -296,4 +316,7 @@ module "worker" {
   cube_endpoint      = var.cube_endpoint
   log_retention_days = var.log_retention_days
   image              = var.worker_image
+  # Cortex persistent registry (worker reads it via build_clients_from_env -> registry_from_env).
+  cortex_s3_bucket = var.cortex_s3_registry ? module.s3.bucket_names["datalake"] : ""
+  cortex_local_dir = var.cortex_local_dir
 }

@@ -131,7 +131,8 @@ def test_checkout_session_maps_plan_to_price_id():
     adapter = _adapter(calls, success_url="https://app/ok", cancel_url="https://app/no")
     got = adapter.create_checkout_session(customer="cus_123", plan="team",
                                           client_reference_id="acct-1", idempotency_key="idem-2")
-    assert got == {"id": "cs_456"}
+    # The fake returns no url -> honestly None (the real lib returns the hosted-checkout url).
+    assert got == {"id": "cs_456", "url": None}
     name, kw = calls[0]
     assert name == "checkout.Session.create"
     assert kw["line_items"] == [{"price": "price_team", "quantity": 1}]  # plan -> Price ID
@@ -139,9 +140,33 @@ def test_checkout_session_maps_plan_to_price_id():
     assert kw["customer"] == "cus_123"
     assert kw["client_reference_id"] == "acct-1"   # how the webhook finds the account
     assert kw["idempotency_key"] == "idem-2"
-    assert kw["metadata"] == {"plan": "team"}      # read back by the H7 funnel revenue event
+    # Resolution metadata stamped on the SESSION (H7 funnel revenue + completed-event fallback)
+    # AND the SUBSCRIPTION (the ONLY id-bearing thing invoice.paid reliably mirrors).
+    assert kw["metadata"] == {"plan": "team", "signup_id": "acct-1"}
+    assert kw["subscription_data"] == {"metadata": {"plan": "team", "signup_id": "acct-1"}}
     assert kw["success_url"] == "https://app/ok"
     assert kw["cancel_url"] == "https://app/no"
+
+
+@pytest.mark.unit
+def test_checkout_session_returns_hosted_url_when_lib_provides_it():
+    calls = []
+    adapter = StripeAdapter(
+        "sk_test_injected", {"team": "price_team"},
+        stripe_module=_fake_stripe(calls),
+    )
+    # Patch the fake to return a url like the real lib does.
+    real_create = adapter._stripe.checkout.Session.create
+
+    def create_with_url(**kw):
+        out = dict(real_create(**kw))
+        out["url"] = "https://checkout.stripe.com/c/pay/cs_456"
+        return out
+
+    adapter._stripe.checkout.Session.create = create_with_url
+    got = adapter.create_checkout_session(customer="cus_123", plan="team",
+                                          client_reference_id="acct-1", idempotency_key="i")
+    assert got == {"id": "cs_456", "url": "https://checkout.stripe.com/c/pay/cs_456"}
 
 
 @pytest.mark.unit

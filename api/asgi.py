@@ -38,11 +38,14 @@ from api.app import ApiDeps, create_app
 from api.auth import CognitoJwtVerifier, JwtVerifier
 from api.control.autonomy import AutonomyConfig
 from api.control.greenlight import Greenlight, PgApprovalStore
+from api.control.killswitch import KillSwitch
+from api.control.settings import PersistedAutonomyDial, PersistedKillSwitch
+from api.control.traces import InMemoryTraceStore, PgTraceStore, TraceStore
 from api.contacts_routes import ContactsDeps
 from api.control.types import Action
 from api.deals_routes import DealsDeps
 from api.knowledge_routes import KnowledgeDeps
-from api.pg_clients import PgCrmClient, PgRagClient
+from api.pg_clients import PgControlSettingsStore, PgCrmClient, PgRagClient
 from api.views import PgSavedViewStore, SavedViews
 from api.workflows_routes import WorkflowsDeps
 from conv.session import Conversation
@@ -284,6 +287,16 @@ def build_app():
         workspace_store: WorkspaceStore | None = PgWorkspaceStore(dsn)
         crm = PgCrmClient(dsn)
         rag = PgRagClient(dsn)
+        # Persisted control plane (the accountability surface): kill switch + autonomy dial over
+        # tenant_settings, decision traces over the traces table — ALL tenant-scoped via the same
+        # per-op SET LOCAL pattern. The short-TTL read-through facades mean a flip on one API task
+        # is seen by every peer within seconds; the gate (POST /actions, /deals move-stage) and
+        # the approval-decide path consult these SAME objects.
+        control_settings = PgControlSettingsStore(dsn)
+        killswitch = PersistedKillSwitch(control_settings)
+        autonomy_dial = PersistedAutonomyDial(control_settings)
+        autonomy_config = AutonomyConfig(level_provider=autonomy_dial.provider)
+        trace_store: TraceStore = PgTraceStore(dsn)  # the gate's per-run writes land in Pg
         # Governed metrics: live only when CUBE_ENDPOINT + CUBEJS_API_SECRET_VALUE are BOTH
         # injected (api_cube_env flag). None only when both are unset; endpoint-without-secret
         # (cube_endpoint wired, flag not yet flipped — the live state at this commit) yields the
@@ -298,6 +311,11 @@ def build_app():
         saved_views = SavedViews()
         workspace_store = None
         crm = rag = None
+        # Unconfigured: in-memory control plane (instance-local — fine for /healthz-only boots).
+        killswitch = KillSwitch()
+        autonomy_dial = None
+        autonomy_config = AutonomyConfig()
+        trace_store = InMemoryTraceStore()
         executor = lambda action: {"status": "noop"}  # noqa: E731 — unconfigured: today's stub
 
     # /chat factory needs BOTH the DB (workspace rows + tool clients) and the org Anthropic key
@@ -327,9 +345,15 @@ def build_app():
         greenlight=greenlight,
         saved_views=saved_views,
         conversation_factory=conversation_factory,
-        autonomy_config=AutonomyConfig(),
+        autonomy_config=autonomy_config,
         executor=executor,
         crm=crm,
+        # The persisted control plane (Pg-backed when the DSN is configured; in-memory else).
+        # killswitch + trace_store are the gate's own deps; autonomy_dial backs /control/autonomy
+        # and its provider is what autonomy_config resolves — one level, dial and gate agree.
+        killswitch=killswitch,
+        trace_store=trace_store,
+        autonomy_dial=autonomy_dial,
         # mounts /signup, /verify-*, /checkout, /webhooks/stripe; provisioning persists the
         # tenant's Managed Agents ids into tenant_workspaces when the DB is configured.
         signup=build_signup_deps(workspace_store=workspace_store),

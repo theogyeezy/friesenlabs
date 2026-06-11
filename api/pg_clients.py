@@ -763,6 +763,68 @@ class PgCrmClient(_PgTenantClient):
         return TenantBoundCrm(self, tenant_id)
 
 
+class PgControlSettingsStore(_PgTenantClient):
+    """Control-plane settings over the EXISTING `tenant_settings` table (FORCE'd RLS).
+
+    Backs the persisted kill switch + autonomy dial (api/control/settings.py): one row per
+    tenant — `autonomy_level` (seeded 'L1' at provisioning by signup/tenant_defaults.py) and
+    `killswitch_engaged` (db/schema.sql append). The GLOBAL kill-switch scope rides the reserved
+    all-zeros control row (api/control/settings.py GLOBAL_CONTROL_TENANT), written/read by
+    deliberately scoping a transaction to that sentinel — request-path tenant scoping still
+    comes ONLY from the verified claim (THE TRUST RULE).
+
+    Same per-op `SET LOCAL app.current_tenant` transaction discipline as everything above
+    (RLS scopes every read/write; WITH CHECK covers the upserts). Writes are upserts:
+    `ON CONFLICT (tenant_id) DO UPDATE` — unlike the provisioning seed's DO NOTHING, a control
+    flip is an explicit operator action and MUST win over the seeded default.
+    """
+
+    # The persisted autonomy texts (api/control/types.py Level values) — validated before SQL.
+    _VALID_LEVELS = ("L0", "L1", "L2", "L3")
+
+    def get(self, tenant_id) -> dict | None:
+        """The tenant's control row (None when not yet seeded/flipped). RLS-scoped."""
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "SELECT tenant_id, autonomy_level, killswitch_engaged "
+                "FROM tenant_settings WHERE tenant_id = %s",
+                (str(tenant_id),),
+            )
+            row = _dict_one(cur)
+        if row is None:
+            return None
+        return {
+            "tenant_id": _as_str(row.get("tenant_id")),
+            "autonomy_level": row.get("autonomy_level"),
+            "killswitch_engaged": bool(row.get("killswitch_engaged")),
+        }
+
+    def set_killswitch(self, tenant_id, engaged: bool) -> None:
+        """Upsert the kill-switch flag (audit timestamp rides along). RLS WITH CHECK enforces
+        tenant_id == app.current_tenant on both the INSERT and the UPDATE arm."""
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "INSERT INTO tenant_settings (tenant_id, killswitch_engaged, killswitch_updated_at) "
+                "VALUES (%s,%s,now()) "
+                "ON CONFLICT (tenant_id) DO UPDATE SET "
+                "killswitch_engaged = EXCLUDED.killswitch_engaged, killswitch_updated_at = now()",
+                (str(tenant_id), bool(engaged)),
+            )
+
+    def set_autonomy(self, tenant_id, level: str) -> None:
+        """Upsert the tenant's autonomy level ('L0'..'L3' — validated BEFORE any SQL)."""
+        if level not in self._VALID_LEVELS:
+            raise ValueError(
+                f"autonomy level must be one of {', '.join(self._VALID_LEVELS)}, got {level!r}"
+            )
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "INSERT INTO tenant_settings (tenant_id, autonomy_level) VALUES (%s,%s) "
+                "ON CONFLICT (tenant_id) DO UPDATE SET autonomy_level = EXCLUDED.autonomy_level",
+                (str(tenant_id), level),
+            )
+
+
 class TenantBoundCrm:
     """Per-request `ToolContext.db` adapter: `set_tenant(...)` + `read(entity=, limit=)`.
 

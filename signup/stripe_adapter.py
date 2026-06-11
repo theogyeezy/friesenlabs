@@ -5,7 +5,7 @@ already calls:
 
   - ``create_customer(email=..., idempotency_key=...)`` -> ``{"id": "cus_..."}``
   - ``create_checkout_session(customer=..., plan=..., client_reference_id=..., idempotency_key=...)``
-    -> ``{"id": "cs_..."}``
+    -> ``{"id": "cs_...", "url": "https://checkout.stripe.com/..."}``
   - ``construct_event(payload, sig_header, secret)`` -> verified event (RAISES on bad signature)
 
 Security posture:
@@ -77,6 +77,12 @@ class StripeAdapter:
             raise ValueError(
                 f"unknown plan {plan!r}; configured plans: {sorted(self._price_ids) or 'none'}"
             )
+        # Account-resolution metadata, stamped at create time on BOTH the Checkout Session AND
+        # the subscription it mints (subscription_data.metadata): Stripe INVOICES carry no
+        # client_reference_id, so `invoice.paid` resolves the account via the subscription
+        # metadata mirrored onto the invoice (payment.handle_webhook), with the stored
+        # stripe_customer_id mapping as the final fallback.
+        resolution_meta = {"plan": plan, "signup_id": client_reference_id}
         params: dict[str, Any] = {
             "api_key": self._api_key,
             "mode": "subscription",
@@ -85,7 +91,8 @@ class StripeAdapter:
             "client_reference_id": client_reference_id,
             "line_items": [{"price": price_id, "quantity": 1}],
             # Surfaced server-side by payment.handle_webhook for the H7 funnel revenue event.
-            "metadata": {"plan": plan},
+            "metadata": dict(resolution_meta),
+            "subscription_data": {"metadata": dict(resolution_meta)},
             "idempotency_key": idempotency_key,   # no double-charge on double-click
         }
         # Redirect URLs are UX only — provisioning trusts the signed webhook, never the browser.
@@ -96,7 +103,10 @@ class StripeAdapter:
         if self._cancel_url:
             params["cancel_url"] = self._cancel_url
         session = self._lib().checkout.Session.create(**params)
-        return {"id": session["id"]}
+        # `url` is the Hosted Checkout page the BROWSER must be sent to — the checkout route
+        # returns it to the SPA (window.location), so the client never fakes payment success;
+        # the signed webhook remains the only provisioning trigger.
+        return {"id": session["id"], "url": session.get("url")}
 
     def construct_event(self, payload: bytes, sig_header: str, secret: str) -> Any:
         """Signature-verify a webhook payload; raises on bad/missing signature.
