@@ -275,3 +275,20 @@ ENV_PUBLIC_LEADS_RATE_PER_MINUTE = "PUBLIC_LEADS_RATE_PER_MINUTE"
 # --- inject): optional float seconds between PutMetricData emits. Unset/junk/non-positive ->
 # --- the 30s default. The emit itself stays gated on CLOUDWATCH_METRICS=1 (worker task def only).
 ENV_WORKER_HEARTBEAT_SECONDS = "WORKER_HEARTBEAT_SECONDS"
+
+# --- Control-plane operator allowlist (api/routes_control.py global kill-switch scope; #186).
+# --- The name lands here so this module stays the single source of truth for every env var
+# --- Lane Nick mirrors into task defs (CONTRIBUTING.md §Env-var / secret-name contract).
+# --- Comma-separated tenant uuids allowed to flip the GLOBAL kill-switch scope. Safe default
+# --- is unset/empty = NOBODY may flip global (fail closed); read at CALL time (per request in
+# --- the route) so an allowlist rotation needs no task restart. Plain config, never secret.
+ENV_CONTROL_GLOBAL_OPERATOR_TENANTS = "CONTROL_GLOBAL_OPERATOR_TENANTS"
+
+
+def control_global_operator_tenants() -> frozenset[str]:
+    """The operator-tenant allowlist for the GLOBAL kill-switch scope, read from env at call
+    time. Unset/empty/whitespace-only = empty set = global flips are disabled (fail closed).
+    Mirrors the `_global_operators` parse in api/routes_control.py (strip, drop empties — no
+    case folding: tenant ids must match the verified claim byte-for-byte)."""
+    raw = os.environ.get(ENV_CONTROL_GLOBAL_OPERATOR_TENANTS, "")
+    return frozenset(t.strip() for t in raw.split(",") if t.strip())

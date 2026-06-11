@@ -21,6 +21,7 @@ exactly as today (`/chat` 503, `/healthz` 200, executor noop):
 """
 from __future__ import annotations
 
+import logging
 import os
 from datetime import date
 from typing import Any, Callable
@@ -42,6 +43,7 @@ from api.control.settings import PersistedAutonomyDial, PersistedKillSwitch
 from api.control.traces import InMemoryTraceStore, PgTraceStore, TraceStore
 from api.contacts_routes import ContactsDeps
 from api.control.types import Action
+from api.cortex_routes import CortexDeps
 from api.deals_routes import DealsDeps
 from api.knowledge_routes import KnowledgeDeps
 from api.pg_clients import PgControlSettingsStore, PgCrmClient, PgRagClient
@@ -51,8 +53,30 @@ from conv.cache import TenantConversationCache
 from conv.session import Conversation
 from conv.synthesizer import AnthropicSynthesizer
 from conv.views import ViewSynthesizer
+from ml.predictions import PgPredictionLog
 from ml.registry import registry_from_env
 from shared.config import ENV_ANTHROPIC_API_KEY, dsn_from_env, load
+from shared.semantic_catalog import CATALOG_PATH, catalog_members_or_none
+
+log = logging.getLogger("api.asgi")
+
+
+def _catalog_allowed_members() -> set[str] | None:
+    """The governed Cube member catalog (semantic/model/catalog.json) for
+    `SavedViews(allowed_members=...)` — #195's deliberate follow-up, now that the api image
+    ships the file (api/Dockerfile). FALLBACK: when the catalog isn't present (an older image,
+    a stripped fileset) member validation is SKIPPED — exactly the pre-#195 behavior — and a
+    STRUCTURED warning is emitted so the missing file is visible in CloudWatch instead of
+    silently weakening save-time validation."""
+    members = catalog_members_or_none()
+    if members is None:
+        log.warning(
+            "semantic catalog missing — saved-view member validation is OFF "
+            "(event=semantic_catalog_missing path=%s)",
+            CATALOG_PATH,
+            extra={"event": "semantic_catalog_missing", "catalog_path": CATALOG_PATH},
+        )
+    return members
 
 
 def _verifier() -> JwtVerifier:
@@ -218,11 +242,16 @@ def build_app():
     api_key = os.environ.get(ENV_ANTHROPIC_API_KEY)
     spec_generator = AnthropicSpecGenerator(api_key=api_key) if api_key else None
 
+    # Save-time member validation against the governed catalog (None = skipped, with the
+    # structured warning — see _catalog_allowed_members). Resolved once at boot: the catalog is
+    # a build artifact of the image, not runtime state.
+    allowed_members = _catalog_allowed_members()
+
     # Aurora-backed stores when a crm_app DSN is configured; else in-memory (boots for /healthz).
     dsn = dsn_from_env()
     if dsn:
         greenlight = Greenlight(store=PgApprovalStore(dsn))
-        saved_views = SavedViews(store=PgSavedViewStore(dsn))
+        saved_views = SavedViews(store=PgSavedViewStore(dsn), allowed_members=allowed_members)
         workspace_store: WorkspaceStore | None = PgWorkspaceStore(dsn)
         crm = PgCrmClient(dsn)
         rag = PgRagClient(dsn)
@@ -247,7 +276,7 @@ def build_app():
                                  cortex=cortex, spec_generator=spec_generator)
     else:
         greenlight = Greenlight()
-        saved_views = SavedViews()
+        saved_views = SavedViews(allowed_members=allowed_members)
         workspace_store = None
         crm = rag = None
         cube = None
@@ -330,6 +359,12 @@ def build_app():
         # aggregate (no embedder); search embeds lazily via Titan (Bedrock, env-key-gated) and
         # degrades honestly. rag is None when the DSN is unconfigured -> honest 503.
         knowledge=KnowledgeDeps(rag=rag),
+        # GET /cortex/health (the #194 ml/health.py seam) rides the SAME env-built registry
+        # run_model scores with, plus a PgPredictionLog over the shared crm_app DSN (per-op
+        # SET LOCAL — RLS) for the live-AUC drift leg. Unconfigured pieces degrade honestly
+        # inside ml.health.cortex_health ("no_registry" / insufficient-evidence drift).
+        cortex=CortexDeps(registry=cortex,
+                          prediction_log=PgPredictionLog(dsn) if dsn else None),
     )
     return create_app(deps)
 

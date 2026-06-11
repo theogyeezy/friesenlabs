@@ -26,6 +26,11 @@ COPY db/ ./db/
 # scripts/ holds isolation_test.py — run as a one-off Fargate task against live Aurora
 # as crm_app (TODO Sec/P0): `python scripts/isolation_test.py` with UPLIFT_DB_URL set.
 COPY scripts/ ./scripts/
+# semantic/model/catalog.json is the governed Cube member catalog (#195) —
+# shared/semantic_catalog.py loads it for SavedViews(allowed_members=...) save-time member
+# validation (api/asgi.py). ONLY the catalog ships, never the cube .js model sources; if it
+# is ever absent the API still boots — validation is skipped with a structured warning.
+COPY semantic/model/catalog.json ./semantic/model/catalog.json
 
 # Non-root.
 RUN useradd --create-home --uid 10001 appuser
