@@ -71,7 +71,7 @@ test("signup funnel walks to active with price consent and no secret leaks", asy
   const consent = page.getByTestId("price-consent");
   await expect(consent).toBeVisible();
   await expect(consent).toContainText("You'll be charged");
-  await expect(page.getByTestId("price-consent-amount")).toHaveText("$399/mo");
+  await expect(page.getByTestId("price-consent-amount")).toHaveText("$799/mo");
   // The pay button must still be present (i.e., consent precedes the pay action).
   await expect(page.getByTestId("pay-submit")).toBeVisible();
   await page.getByTestId("pay-submit").click();
