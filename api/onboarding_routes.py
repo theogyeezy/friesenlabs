@@ -184,14 +184,18 @@ class OnboardingStateStore:
 # --------------------------------------------------------------------------- #
 # Sample-data loader — reuse the EXISTING demo loader, tenant-scoped.
 # --------------------------------------------------------------------------- #
-def _load_sample_into_tenant(store: OnboardingStateStore, tenant_id: str) -> dict:
-    """Load the committed demo fixture into `tenant_id` via scripts/demo/load_demo_tenant.py.
+def _load_sample_into_tenant(store: OnboardingStateStore, tenant_id: str,
+                             *, fixture_path: str | None = None) -> dict:
+    """Load the demo fixture into `tenant_id` via scripts/demo/load_demo_tenant.py.
 
     Reuses that loader's `load(conn, dataset, tenant_id=, embedder=)` verbatim — the SAME idempotent
     wipe-then-insert under `SET LOCAL app.current_tenant` the live demo path uses. A raw pooled
     connection is handed in (the loader commits/rolls back on it); we always return it to the pool.
     Returns the per-table row counts the loader reports. The embedder is the offline deterministic
-    stub by default, Titan V2 only under INGEST_REAL_STORES=1 (the loader's build_embedder seam)."""
+    stub by default, Titan V2 only under INGEST_REAL_STORES=1 (the loader's build_embedder seam).
+
+    `fixture_path` defaults to the committed demo fixture (the production path); tests override it
+    with a throwaway fixture so a shared test DB never collides on the demo's fixed global PKs."""
     import importlib.util  # noqa: PLC0415
 
     here = os.path.dirname(os.path.abspath(__file__))
@@ -200,7 +204,7 @@ def _load_sample_into_tenant(store: OnboardingStateStore, tenant_id: str) -> dic
     loader = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(loader)  # type: ignore[union-attr]
 
-    dataset = loader.read_fixture()
+    dataset = loader.read_fixture(fixture_path) if fixture_path else loader.read_fixture()
     embedder = loader.build_embedder()
     conn = store._getconn()
     try:
