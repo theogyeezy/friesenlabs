@@ -549,6 +549,29 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   usable + safe; RAG-embed IAM gap closed live.
 
 ## Lane Matt (app code) — log
+- 2026-06-11 — **Agents & Studio audit P0s IMPLEMENTED (`feat/matt-agents-studio-p0s`):** all
+  four release blockers from the morning's audit, TDD throughout (red→green per chunk).
+  (1) `draft_email` now REQUIRES a model-authored `body` stored verbatim — the placeholder
+  `(draft) Re: <goal>` is dead; generation lives in the calling agent, not a nested model call
+  (the worker carries no Anthropic key by design). (2) Run history is real: append-only
+  `playbook_runs` (RLS-FORCEd, SELECT+INSERT only) + `PgPlaybookRunStore`; the runner persists
+  every terminal `RunRecord` (contained); `GET /studio/playbooks/{id}/runs`; StudioView gets
+  **Run now** + a runs panel with draft-only honesty copy ("N drafts wait in Greenlight.
+  Nothing was sent."). (3) The MA orphan leak is closed: `ma_coordinator_id`/`ma_agent_ids`/
+  `ma_registered_version` persisted at activate/first-run; runner + re-activate REUSE the crew
+  while the definition version matches (edits invalidate by construction); full ids never on
+  the wire (tails only); trace carries tails. (4) Starter playbooks are fireable: `POST
+  /contacts` emits `lead.created` (the #248 producer seam), and asgi now ACTUALLY wires the
+  dispatcher to deals+contacts (deal.created was wired-but-inert) behind a fire-and-forget
+  `BackgroundDispatcher` (a create never blocks on an agent run); `GET /studio/playbooks`
+  reports dispatch state and the Studio banners inert schedule/event playbooks. Hardened for
+  schema skew: pre-migrate deploys degrade (activate 200 unpersisted, runs route honest 503),
+  never 500. Tests: backend **1996 passed / 33 skipped** (new: draft_email, run store, runner
+  persistence+reuse, runs route, contacts producer, BackgroundDispatcher, schema-skew, and a
+  `playbook_runs` RLS+append-only proof for CI); web typecheck/build green + a new 6-test
+  `studio.spec.ts` (chromium-real) covering Run-now/runs/banner. **Live DB migrate for the new
+  table/columns: BLOCKED: Lane Nick** (GO_LIVE_CHECKLIST §7 updated — the schedule-leg flip now
+  includes `PLAYBOOK_DISPATCH_ENABLED=1` on the api task).
 - 2026-06-11 — **Agents & Studio customer-readiness audit (`feat/matt-agents-studio-audit`):**
   4-pass read-audit (backend agent plane · web UI · tests/CI · data-layer+infra wiring), claims
   cross-checked between passes; 252 tests green locally (202 unit + 50 integration, RLS-proof

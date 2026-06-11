@@ -177,3 +177,45 @@ def test_playbooks_list_reports_trigger_dispatch_state():
     client2 = _client(StudioDeps(store=store2, scheduling_enabled=True, events_enabled=True))
     assert client2.get("/studio/playbooks", headers=H_A).json()["dispatch"] == {
         "scheduling_enabled": True, "events_enabled": True}
+
+
+# ----------------------------------------------------- schema-skew containment
+# The api image can deploy BEFORE the one-off DB migrate that adds playbook_runs +
+# the ma_* columns. Until the migrate runs, registration persistence and history
+# must DEGRADE (route still works) — never 500 a previously-working route.
+class _NoMigrateStore(InMemoryPlaybookStore):
+    def set_registration(self, *a, **kw):
+        raise RuntimeError('column "ma_coordinator_id" does not exist')
+
+
+class _NoMigrateRunStore(InMemoryPlaybookRunStore):
+    def list(self, *a, **kw):
+        raise RuntimeError('relation "playbook_runs" does not exist')
+
+    def record(self, *a, **kw):
+        raise RuntimeError('relation "playbook_runs" does not exist')
+
+
+@pytest.mark.unit
+def test_activate_survives_a_pre_migrate_store():
+    rt = LongIdRuntime()
+    store = _NoMigrateStore()
+    client = _client(StudioDeps(store=store, registrar=rt))
+    r = client.post("/studio/playbooks", headers=H_A, json={"definition": _good_definition()})
+    pid = r.json()["id"]
+    r2 = client.post(f"/studio/playbooks/{pid}/activate", headers=H_A)
+    assert r2.status_code == 200 and r2.json()["registered"] is True
+
+
+@pytest.mark.unit
+def test_run_and_runs_route_survive_a_pre_migrate_run_store():
+    rt = LongIdRuntime()
+    store = _NoMigrateStore()
+    client = _client(StudioDeps(store=store, registrar=rt, run_store=_NoMigrateRunStore()))
+    r = client.post("/studio/playbooks", headers=H_A, json={"definition": _good_definition()})
+    pid = r.json()["id"]
+    client.post(f"/studio/playbooks/{pid}/activate", headers=H_A)
+    assert client.post(f"/studio/playbooks/{pid}/run", headers=H_A).status_code == 200
+    r3 = client.get(f"/studio/playbooks/{pid}/runs", headers=H_A)
+    assert r3.status_code == 503  # degraded, explained — never a 500
+    assert "history" in r3.json()["detail"]

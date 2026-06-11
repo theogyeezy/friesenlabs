@@ -36,6 +36,7 @@ roster/registry imports are lazy (the agents_routes pattern).
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any
 
@@ -43,6 +44,8 @@ from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
 
 from api.auth import TenantClaims
+
+log = logging.getLogger("api.routes_studio")
 
 _UNCONFIGURED_DETAIL = (
     "studio not configured — no crm_app DSN on this task (DB_*/UPLIFT_DB_URL unset); "
@@ -304,14 +307,19 @@ def mount_studio(app: FastAPI, deps: StudioDeps, current_tenant) -> None:
             result = activate_playbook(runtime, claims.tenant_id, row["definition"])
             # Persist the FULL minted ids on the row (audit P0-3) so run/reactivate reuse the
             # crew instead of leaking a fresh one per invocation. hasattr-guarded for older
-            # store fakes; a store without the seam just re-registers next time.
+            # store fakes; CONTAINED for schema skew (api deployed before the ma_* migrate):
+            # persistence is an optimization — its failure must never fail a working activate.
             if hasattr(store, "set_registration"):
-                store.set_registration(
-                    claims.tenant_id, playbook_id,
-                    coordinator_id=result["coordinator_id"],
-                    agent_ids=result["agent_ids"],
-                    version=row.get("version"),
-                )
+                try:
+                    store.set_registration(
+                        claims.tenant_id, playbook_id,
+                        coordinator_id=result["coordinator_id"],
+                        agent_ids=result["agent_ids"],
+                        version=row.get("version"),
+                    )
+                except Exception:  # noqa: BLE001 — degrade to per-run registration, logged
+                    log.warning("registration persistence failed (pre-migrate schema?); "
+                                "activation proceeds unpersisted", exc_info=True)
             registration = {
                 "agents": result["agents"],
                 # TRUNCATED for display — full Managed Agents ids never leave the API.
@@ -407,5 +415,11 @@ def mount_studio(app: FastAPI, deps: StudioDeps, current_tenant) -> None:
             raise HTTPException(status_code=503, detail=(
                 "run history not configured on this task — runs execute but their digests "
                 "are not persisted here"))
-        rows = deps.run_store.list(claims.tenant_id, playbook_id, limit=limit)
+        try:
+            rows = deps.run_store.list(claims.tenant_id, playbook_id, limit=limit)
+        except Exception:  # noqa: BLE001 — pre-migrate schema (no playbook_runs yet) -> honest 503
+            log.warning("run-history read failed (pre-migrate schema?)", exc_info=True)
+            raise HTTPException(status_code=503, detail=(
+                "run history unavailable — the playbook_runs migration hasn't been applied "
+                "on this deployment yet"))
         return {"runs": [_serialize_run(r, claims) for r in rows]}

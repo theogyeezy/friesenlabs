@@ -203,24 +203,41 @@ run history, and each run leaks MA resources. Already tracked elsewhere (not rep
 owner-gated `playbook_dispatch_enabled` flip + FailedInvocations alarm (GO_LIVE_CHECKLIST.md);
 workspace-key-pool seeding.
 
-### P0 — before paying customers
-- [ ] **Real email drafts** — `DraftEmail._execute` returns the literal placeholder
+### P0 — before paying customers _(all four DONE 2026-06-11, `feat/matt-agents-studio-p0s` — live DB migrate for `playbook_runs` + the `ma_*` columns is `BLOCKED: Lane Nick`)_
+- [x] **Real email drafts** **DONE: `draft_email` now REQUIRES a model-authored `body` (the
+  calling agent writes it; stored verbatim, placeholder dead; no nested model call — the worker
+  carries no Anthropic key by design). Regression tests in `tests/unit/test_draft_email.py`.**
+  — `DraftEmail._execute` returns the literal placeholder
   `(draft) Re: <goal>` (`agents/tools/sideeffecting.py:24`); it's `Policy.AUTO`, so nadia/echo
   and the `lead_followup_drafter` template surface that canned string as the customer's actual
   draft. Generate the body with a real model call (or route through the synthesizer); add a
   regression test asserting the body isn't the placeholder.
-- [ ] **"Run now" + run history in Studio** — the backend route exists
+- [x] **"Run now" + run history in Studio** **DONE: `playbook_runs` table (append-only,
+  RLS-FORCEd) + `PgPlaybookRunStore`; the runner persists every terminal `RunRecord`
+  (contained); `GET /studio/playbooks/{id}/runs` + a Run-now button + runs panel in
+  `StudioView` with honest draft-only copy. Live migrate `BLOCKED: Lane Nick`.** — the backend
+  route exists
   (`POST /studio/playbooks/{id}/run`, #226) but `StudioView.tsx` has no Run button and no runs
   surface, so Activate is a dead end. Wire the button; persist `RunRecord` (today
   `dispatch.main()` only logs it — no `playbook_runs` table exists) + a `GET .../runs` route +
   a runs list in the UI. Migration authored Lane Matt; live apply `BLOCKED: Lane Nick`.
-- [ ] **Stop re-creating the MA crew on every run** — `PlaybookRunner.run()` calls
+- [x] **Stop re-creating the MA crew on every run** **DONE: `ma_coordinator_id`/`ma_agent_ids`/
+  `ma_registered_version` on `playbooks`; activate + first run persist the minted ids (full ids
+  never on the wire — tails only); runner + re-activate REUSE the crew while the definition
+  version matches (an edit invalidates by construction).** — `PlaybookRunner.run()` calls
   `activate_playbook` unconditionally (`agents/playbooks/runner.py:221`), creating fresh MA
   agents + a coordinator per invocation (manual click AND each future scheduler tick —
   O(runs × roster) orphaned MA resources); the ids returned at activation are never persisted.
   Add `ma_coordinator_id`/`ma_agent_ids` to `playbooks`, persist at activation, reuse in the
   runner, clean up on deactivate.
-- [ ] **Make the starter playbooks fireable** — none of the 5 shipped templates ever runs
+- [x] **Make the starter playbooks fireable** **DONE (code): `POST /contacts` emits
+  `lead.created` through the #248 producer seam; `api/asgi.py` now actually wires the
+  dispatcher to BOTH deals + contacts (deal.created was wired-but-inert) behind a
+  fire-and-forget `BackgroundDispatcher` (creates never block on an agent run); the Studio
+  banners inert schedule/event playbooks from the new `dispatch` state in
+  `GET /studio/playbooks`. The schedule leg stays owner-gated: flip `playbook_dispatch_enabled`
+  AND stamp `PLAYBOOK_DISPATCH_ENABLED=1` on the api task (GO_LIVE_CHECKLIST §7).** — none of
+  the 5 shipped templates ever runs
   automatically: 4 are schedule-triggered (EventBridge leg applied-DISABLED + empty static
   tenant list — the flip itself is owner-gated, tracked), 1 is event-triggered and the event
   leg is UNBUILT, not gated — `dispatch_event` has zero production callers
@@ -251,12 +268,16 @@ workspace-key-pool seeding.
   (`api/control/appliers.py:82-92`) while the UI toast implies delivery. Surface the
   `performed` flag; don't offer Approve as if it delivers. _(Greenlight-audit provenance,
   same as above.)_
-- [ ] **StudioView Playwright spec** — zero browser coverage for the flagship builder screen
+- [x] **StudioView Playwright spec** **MOSTLY DONE: `web/e2e/studio.spec.ts` (6 tests,
+  chromium-real) covers the library, Run-now result honesty, the runs panel + 503 degrade,
+  and the dispatch banner. The composer create→422→save flow is still uncovered — fold into
+  a follow-up.** — zero browser coverage for the flagship builder screen
   (Marketplace + Agents both have specs); cover create→422→save→activate→deactivate.
 - [ ] **Schedule-dispatch integration test** — `python -m agents.playbooks.dispatch --schedule`
   has never executed against a real `PgPlaybookStore` + runtime anywhere (unit fakes only;
   the prod rule is DISABLED). Add a real-PG integration test of the schedule leg.
-- [ ] **MarketplaceView 404 parity** — only 503 is special-cased
+- [x] **MarketplaceView 404 parity** **DONE by #248 (fleet wave): 404 now renders the
+  "rolling out" card with a refresh affordance.** — only 503 is special-cased
   (`web/src/api/MarketplaceView.tsx:74`); a 404 shows a generic error instead of StudioView's
   "rolling out" copy.
 

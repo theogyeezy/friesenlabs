@@ -190,12 +190,17 @@ class PlaybookRunner:
         if hasattr(self.store, "set_registration"):
             # Persist the FULL ids on the row (reuse needs them); a store without the seam
             # (older fakes) just re-registers next run — correct, only less efficient.
-            self.store.set_registration(
-                tenant_id, row["id"],
-                coordinator_id=registration["coordinator_id"],
-                agent_ids=registration["agent_ids"],
-                version=row.get("version"),
-            )
+            # CONTAINED for schema skew (api deployed before the ma_* migrate): persistence
+            # failing must never fail the run that is about to happen.
+            try:
+                self.store.set_registration(
+                    tenant_id, row["id"],
+                    coordinator_id=registration["coordinator_id"],
+                    agent_ids=registration["agent_ids"],
+                    version=row.get("version"),
+                )
+            except Exception:  # noqa: BLE001 — degrade to per-run registration
+                record.trace.append({"event": "registration_persist_failed"})
         record.trace.append({"event": "registered",
                              "coordinator_id_tail": self._tail(registration["coordinator_id"]),
                              "agents": registration["agents"]})
