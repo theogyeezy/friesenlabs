@@ -34,6 +34,7 @@ from api.control.types import Action
 from api.contacts_routes import ContactsDeps
 from api.cortex_routes import CortexDeps
 from api.deals_routes import DealsDeps
+from api.sidecar_routes import SidecarDeps
 from api.integrations_routes import IntegrationsDeps, build_integrations_deps
 from api.knowledge_routes import KnowledgeDeps
 from api.views import SavedViews
@@ -102,6 +103,11 @@ class ApiDeps:
     # a DB pool; api/asgi.py is the ONLY real wiring (the same PgCrmClient instance). Pass None
     # to skip mounting the routes entirely.
     contacts: ContactsDeps | None = field(default_factory=ContactsDeps)
+    # /sidecar deps (the real Sidecar agentic layer — grounded next-action suggestions over the
+    # tenant's CRM, accept enqueues a Greenlight draft). Same inert-default contract as `deals`:
+    # the all-None stub mounts honest-503 routes and opens no DB pool; api/asgi.py wires the same
+    # PgCrmClient instance. None skips mounting.
+    sidecar: SidecarDeps | None = field(default_factory=SidecarDeps)
     # /agents deps (the real Agents tab — the tenant's crew). Same inert-default contract:
     # the all-None stub mounts an honest-503 route and constructing deps never opens a DB
     # pool; api/asgi.py is the ONLY real wiring (the same PgWorkspaceStore instance the /chat
@@ -469,6 +475,13 @@ def create_app(deps: ApiDeps) -> FastAPI:
     if deps.deals is not None:
         from api.deals_routes import mount_deals
         mount_deals(app, deps.deals, current_tenant, gate_deps=deps)
+
+    # Authed per-tenant Sidecar (the agentic layer): GET grounded next-action suggestions over the
+    # CRM, POST accept enqueues a DRAFT into THIS app's Greenlight (gate_deps) — same queue/autonomy/
+    # kill switch as every other gated action. Unconfigured deps answer the honest 503.
+    if deps.sidecar is not None:
+        from api.sidecar_routes import mount_sidecar
+        mount_sidecar(app, deps.sidecar, current_tenant, gate_deps=deps)
 
     # Authed per-tenant contacts/companies directory (the real Contacts tab). Claims-bound,
     # READ-ONLY this cycle (no gate deps — CRM writes arrive with a later update_contact tool

@@ -33,6 +33,7 @@ import AccountDataControls from "./api/AccountDataControls";
 import WorkspaceSettings from "./api/WorkspaceSettings";
 import MarketplaceView from "./api/MarketplaceView";
 import ModulesView from "./api/ModulesView";
+import SidecarView from "./api/SidecarView";
 const { useState, useEffect, useRef, useMemo, useCallback, useLayoutEffect, useReducer, useContext, useImperativeHandle, useId } = React;
 const { Icon, Logo, FL_DATA, FLStore, useStore, askClaude, bizContext, confettiBurst, XPBadge, useCountUp, CountUp, AreaChart, Sparkline, LoadBars, Donut, SlideOver, CommandPalette, HEAT, fmtMoney, StatCard, ToneIco, FLflag, useTweaks, TweaksPanel, TweakSection, TweakRow, TweakSlider, TweakToggle, TweakRadio, TweakSelect, TweakText, TweakNumber, TweakColor, TweakButton, FoxDemo, KanbanDemo, WorkflowDemo, GreenlightDemo, CommandDemo, IntegrationDemo, SupportDemo, SecurityDemo, SidecarDemo, CortexDemo } = window as any;
 // app.jsx, shell: sidebar, topbar, routing, tweaks, palette
@@ -539,6 +540,11 @@ function App() {
               {route === "knowledge" && <KnowledgeView />}
               {route === "approvals" && <GreenlightQueue />}
               {route === "integrations" && <IntegrationsPanel />}
+              {/* Sidecar is LIVE in real mode: grounded next-action suggestions over the
+                  tenant's CRM (GET /sidecar/suggestions); accepting one enqueues a DRAFT
+                  into Greenlight (POST /sidecar/act) — never a direct CRM write, never the
+                  FLStore Sidecar prototype with its hard-coded fake agent activity. */}
+              {route === "sidecar" && <SidecarView onOpenGreenlight={() => navTo("approvals")} />}
               {/* Security is LIVE in real mode: the kill switch + autonomy dial
                   PUT real state through GET/PUT /control/*, and a read-only
                   decision-trace feed renders GET /control/traces — each control
@@ -585,7 +591,7 @@ function App() {
                   <AccountDataControls />
                 </div>
               )}
-              {route !== "dashboard" && route !== "crm" && route !== "contacts" && route !== "agents" && route !== "studio" && route !== "workflows" && route !== "reports" && route !== "dashboards" && route !== "knowledge" && route !== "approvals" && route !== "integrations" && route !== "security" && route !== "settings" && route !== "cortex" && route !== "marketplace" && (
+              {route !== "dashboard" && route !== "crm" && route !== "contacts" && route !== "agents" && route !== "studio" && route !== "workflows" && route !== "reports" && route !== "dashboards" && route !== "knowledge" && route !== "approvals" && route !== "integrations" && route !== "sidecar" && route !== "security" && route !== "settings" && route !== "cortex" && route !== "marketplace" && (
                 <ComingSoon title={meta.h1} icon={navIconFor(route)} />
               )}
             </>

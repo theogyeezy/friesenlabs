@@ -585,8 +585,9 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   author `POST /search` (or `GET /knowledge/documents`) over `PgRagClient.search()` bound to the
   verified-claim tenant under RLS, then a `KnowledgeView.tsx` (ingested-sources list + grounded
   semantic search with citations, reusing the ChatDock citation components). Remaining stub tabs for a
-  future cycle: Billing · Calendar · Email · Templates · Reputation · Marketplace · Cortex · Sell ·
-  Frontline · Security · Settings · Sidecar (all render the honest ComingSoon panel in real mode).
+  future cycle: Billing · Calendar · Email · Templates · Reputation · Sell · Frontline (render the
+  honest ComingSoon panel in real mode). (Marketplace, Cortex, Security, Settings, and **Sidecar**
+  have since been built into real API-backed surfaces — see later entries.)
 - 2026-06-09 — **Cycles 5-6 (lane tail) + LANE MATT COMPLETE:** #67(+hotfix #73: the prod image
   bundles no ingest/ — top-level import would have crash-looped the deployed API; caught by
   adversarial review AFTER an early merge → draft-PR discipline adopted; also closed the shared-
@@ -896,3 +897,26 @@ tiered builders in isolated worktrees → 3-haiku refute-by-default panel → bo
   extended `test_retrain_all.py` (alert path + non-fatal alert failure), updated `test_ml_train.py`.
   Full ML suite green. **Still owner-gated:** S3 registry + signing-key value + retrain enable + a
   drift subscription + one seeded retrain (GO_LIVE_CHECKLIST §5).
+
+## Sidecar — built into a real product (was a SKU with no backend) — 2026-06-11
+- The audit found Sidecar was vaporware: a $35/mo module with an empty routes tuple, a static mock
+  screen, landing copy, and **zero backend** (no route/agent/tool/table/tests). Built a real, honest v1.
+- **What it is now:** the agentic layer over the tenant's CRM. `api/sidecar.py` is a PURE suggestion
+  engine that turns already-read deals + contacts into grounded next-actions (aging open deal →
+  follow-up; unreachable contact → enrich; unlinked deal → attach a contact; stale contact →
+  reconnect). Every suggestion references a REAL row — nothing fabricated.
+- **Backend:** `GET /sidecar/suggestions` (RLS reads via the SAME PgCrmClient as /deals + /contacts)
+  and `POST /sidecar/act` — accept enqueues a **Greenlight DRAFT** via the existing gate + appliers
+  (`create_activity`/`update_*`), so Sidecar never writes the CRM directly (the draft-only constraint).
+  Security: accept takes a suggestion **id**, the server recomputes + resolves the action server-side
+  (a client can't inject an arbitrary Greenlight action); THE TRUST RULE (tenant from the claim);
+  defense-in-depth tenant-isolation check on every row; honest 503 (unconfigured) / 409 (stale).
+- **Frontend:** real-mode route `sidecar` → `web/src/api/SidecarView.tsx` (suggestion cards + "Send to
+  Greenlight" → links into the approvals queue; honest empty/503/409/truncation states). The module
+  catalog now gates the `sidecar` route (was empty) so a tenant who enables Sidecar actually gets a
+  surface — closing the "pay $35 for nothing" gap the entitlements/billing work exposed. Mock-mode
+  FLStore Sidecar prototype is unchanged (walled off by realMode).
+- **Wiring:** `SidecarDeps(crm=...)` (inert-None default → honest 503) mounted in api/app.py + wired
+  live in api/asgi.py. **Tests:** `test_sidecar.py` (engine: each kind, closed-skip, determinism,
+  truncation) + `test_sidecar_routes.py` (503/401/grounded items/isolation-500/act-enqueues-draft/
+  tenant-from-claim/409/unconfigured). Web typecheck + mock/real build green.

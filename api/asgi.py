@@ -45,6 +45,7 @@ from api.contacts_routes import ContactsDeps
 from api.control.types import Action
 from api.cortex_routes import CortexDeps
 from api.deals_routes import DealsDeps
+from api.sidecar_routes import SidecarDeps
 from api.knowledge_routes import KnowledgeDeps
 from api.pg_clients import PgControlSettingsStore, PgCrmClient, PgRagClient
 from api.limits import PlanResolver, TenantLimitsMiddleware
@@ -446,6 +447,9 @@ def build_app():
         deals=DealsDeps(crm=crm),
         # /contacts + /companies (the real Contacts directory) — the same single PgCrmClient.
         contacts=ContactsDeps(crm=crm),
+        # /sidecar (the real agentic layer) — reads the SAME PgCrmClient and proposes Greenlight
+        # drafts. crm is None when the DSN is unconfigured -> honest 503.
+        sidecar=SidecarDeps(crm=crm),
         # /agents (the real Agents tab) rides the SAME PgWorkspaceStore instance the /chat
         # conversation factory + signup provisioning use — one pool, one SET LOCAL discipline.
         # workspace_store is None when the DSN is unconfigured, so the route answers its
