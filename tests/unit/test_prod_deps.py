@@ -178,6 +178,77 @@ def test_key_pool_absent_without_dsn(monkeypatch):
     assert deps.payment.on_paid.__self__.key_pool is None
 
 
+# ------------------------------------------------- the provisioning Secrets-Manager seam
+@pytest.mark.unit
+def test_provisioning_secrets_is_noop_without_master_switch(monkeypatch):
+    """Unconfigured boot: the secrets seam is the _Noop stub (no key_pool there either, so
+    nothing tries to resolve a Secrets Manager reference)."""
+    _cfg(monkeypatch)   # signup_real_deps off
+    deps = prod_deps.build_signup_deps()
+    assert isinstance(deps.payment.on_paid.__self__.secrets, prod_deps._Noop)
+
+
+@pytest.mark.unit
+def test_provisioning_secrets_is_real_under_master_switch(monkeypatch):
+    """Under SIGNUP_REAL_DEPS the seam is the real Secrets Manager-backed adapter (get/put/exists)
+    — the pool now hands provisioning a *reference*, so step 2 must resolve it from SM. boto3 is
+    lazy, so building this never touches AWS."""
+    _cfg(monkeypatch, signup_real_deps=True)
+    secrets = prod_deps.build_signup_deps().payment.on_paid.__self__.secrets
+    assert isinstance(secrets, prod_deps.Boto3ProvisioningSecrets)
+    # The full provisioning seam: get (resolve the reference), put (per-tenant secret), exists.
+    assert all(hasattr(secrets, m) for m in ("get", "put", "exists"))
+
+
+def _stub_pg_stores(monkeypatch):
+    """Make the Pg-backed stores construct without a live DB (only the pool guard matters here)."""
+    import psycopg2.pool
+
+    class _FakePool:
+        def getconn(self):
+            raise AssertionError("no DB access expected in this test")
+
+        def putconn(self, conn):
+            pass
+
+    monkeypatch.setattr(psycopg2.pool, "ThreadedConnectionPool",
+                        lambda minc, maxc, dsn: _FakePool())
+
+
+@pytest.mark.unit
+def test_inline_material_pool_refuses_to_boot(monkeypatch):
+    """Security guard: a pool table still holding inline key material (legacy plaintext) is fatal
+    at construction — the DB must never be the secret store."""
+    from signup.key_pool import InlineKeyMaterialError
+
+    class _InlinePool:
+        def assert_no_inline_material(self):
+            raise InlineKeyMaterialError("3 rows hold inline key material")
+
+    _stub_pg_stores(monkeypatch)
+    monkeypatch.setattr(prod_deps, "PgWorkspaceKeyPool", lambda dsn: _InlinePool())
+    _cfg(monkeypatch, dsn="postgresql://crm_app:x@db/uplift", signup_real_deps=True,
+         signup_token_secret_value="sssh")
+    with pytest.raises(InlineKeyMaterialError):
+        prod_deps.build_provisioner()
+
+
+@pytest.mark.unit
+def test_pool_guard_db_unreachable_at_boot_does_not_crash(monkeypatch):
+    """Resilience: a transient DB error while running the guard at construction must NOT crash
+    boot (the guard re-runs on every consume). Only actual inline material is fatal."""
+    class _FlakyPool:
+        def assert_no_inline_material(self):
+            raise RuntimeError("db not ready")
+
+    _stub_pg_stores(monkeypatch)
+    monkeypatch.setattr(prod_deps, "PgWorkspaceKeyPool", lambda dsn: _FlakyPool())
+    _cfg(monkeypatch, dsn="postgresql://crm_app:x@db/uplift", signup_real_deps=True,
+         signup_token_secret_value="sssh")
+    prov = prod_deps.build_provisioner()   # must not raise
+    assert isinstance(prov.key_pool, _FlakyPool)
+
+
 # ------------------------------------------------- the internal bypass (its own env switch)
 @pytest.mark.unit
 def test_internal_bypass_default_is_off(monkeypatch):

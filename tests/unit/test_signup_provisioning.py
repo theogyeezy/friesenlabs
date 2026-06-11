@@ -93,6 +93,13 @@ class Secrets:
     def put(self, k, v):
         self.kv[k] = v
 
+    def get(self, k):
+        # The read seam: resolve a Secrets Manager reference to its material (raises if absent —
+        # mirrors ingest.connectors.base.Boto3SecretProvider.get_secret on ResourceNotFound).
+        if k not in self.kv:
+            raise KeyError(f"secret not found: {k}")
+        return self.kv[k]
+
 
 class DB(Recorder):
     def __init__(self):
