@@ -3,23 +3,29 @@
 // back via saveView. The renderer never fetches; loadData is injected:
 //   - MOCK builds inject the offline sampleLoadData fixture stub, so demos and
 //     tests render deterministic numbers with no network.
-//   - REAL builds inject noLiveData below. The live data plane (the Cube
-//     semantic layer) is not deployed yet, so every block honestly renders its
-//     "No data yet" state — demo fixture numbers must NEVER be presented as a
-//     real tenant's data.
+//   - REAL builds inject a loader built from POST /views/{id}/data — the saved
+//     spec's CubeQueries resolved as the verified tenant (THE TRUST RULE). When
+//     the data plane is unavailable (503/error) the loader degrades to zero rows
+//     so every block honestly renders "No data yet" / "could not be loaded";
+//     demo fixture numbers must NEVER be presented as a real tenant's data.
 
 import React from "react";
-import { ApiClient, ApiError, defaultClient, friendlyErrorMessage } from "./client";
+import {
+  ApiClient,
+  ApiError,
+  buildViewDataLoader,
+  defaultClient,
+  friendlyErrorMessage,
+} from "./client";
 import { SpecRenderer, type LoadData } from "../dashboard/SpecRenderer";
 import { Spinner } from "./Spinner";
 
 const { useState, useEffect, useCallback } = React;
 
-// Real-mode data loader: there is no live query path yet (Cube is authored but
-// unapplied — see TODO.md), so resolve every query to zero rows. SpecRenderer
-// turns that into explicit per-block "No data yet" states. Do NOT swap in
-// sampleLoadData here: canned demo numbers on a real tenant's dashboard are a
-// lie. When the semantic layer ships, this becomes the real query client.
+// Empty real-mode loader: resolve every query to zero rows. Used as the calm
+// fallback when the live data plane is unavailable (503/error) — SpecRenderer
+// turns that into explicit per-block "No data yet" states. Never swap in
+// sampleLoadData here: canned demo numbers on a real tenant's dashboard are a lie.
 const noLiveData: LoadData = async () => [];
 
 // Mock-build data loader: the offline sampleLoadData fixture, lazily loaded
@@ -44,6 +50,12 @@ export function DashboardView({ client, viewId = "demo_pipeline" }: DashboardVie
   const [views, setViews] = useState<Array<{ view_id: string; title: string }>>([]);
   const [spec, setSpec] = useState<Record<string, unknown> | null>(null);
   const [version, setVersion] = useState<number | null>(null);
+  // The injected data loader for the open spec. Mock builds use the offline
+  // fixture; real builds use a loader built from POST /views/{id}/data (or the
+  // empty noLiveData fallback when the data plane is unavailable).
+  const [dataLoader, setDataLoader] = useState<LoadData>(() =>
+    api.isMock() ? mockLoadData : noLiveData,
+  );
   const [loading, setLoading] = useState(true);
   // True when the tenant simply has no saved view yet (a 404, not a failure).
   const [empty, setEmpty] = useState(false);
@@ -59,6 +71,19 @@ export function DashboardView({ client, viewId = "demo_pipeline" }: DashboardVie
       const row = await api.getView(currentViewId);
       setSpec(row.spec_json);
       setVersion(row.version);
+      // Mock builds keep the offline fixture loader; real builds resolve the
+      // spec's CubeQueries via POST /views/{id}/data. A data-plane failure
+      // (503/404/502/network) is NOT a view-load error: keep the spec and fall
+      // back to the empty loader so each panel shows its calm "No data yet" /
+      // "could not be loaded" state instead of crashing the whole view.
+      if (!api.isMock()) {
+        try {
+          const data = await api.loadViewData(currentViewId);
+          setDataLoader(() => buildViewDataLoader(row.spec_json, data));
+        } catch {
+          setDataLoader(() => noLiveData);
+        }
+      }
     } catch (e) {
       if (e instanceof ApiError && e.status === 404) {
         // A fresh tenant with no saved views is the normal empty state,
@@ -237,9 +262,7 @@ export function DashboardView({ client, viewId = "demo_pipeline" }: DashboardVie
         </div>
       )}
 
-      {!loading && spec && (
-        <SpecRenderer spec={spec} loadData={api.isMock() ? mockLoadData : noLiveData} />
-      )}
+      {!loading && spec && <SpecRenderer spec={spec} loadData={dataLoader} />}
     </div>
   );
 }

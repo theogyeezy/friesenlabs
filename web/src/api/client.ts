@@ -14,6 +14,10 @@
 
 import { fetchWithAuthRetry } from "../auth/core.js";
 import { getValidIdToken, isAuthConfigured, refreshAuthForRetry, sessionExpired } from "../auth/cognito";
+// Type-only imports (erased at build, no runtime/module-graph cost): the Cube
+// query + data-row shapes the view-spec renderer is built around.
+import type { CubeQuery } from "../dashboard/viewSpec";
+import type { DataRow, LoadData } from "../dashboard/SpecRenderer";
 
 // ---------------------------------------------------------------------------
 // Wire types (mirror api/app.py request/response shapes)
@@ -69,6 +73,24 @@ export interface SaveViewBody {
 /** Body for POST /views/{id}/refine — the NL "ask for a chart" instruction. */
 export interface RefineViewBody {
   instruction: string;
+}
+
+/** One panel's resolved rows (POST /views/{id}/data). `panel` is the index into
+ * the view-spec's `layout`; `rows` are the Cube result rows for that panel's
+ * CubeQuery, keyed by member name. Mirrors api/cube_data_routes.py. */
+export interface ViewDataPanel {
+  panel: number;
+  rows: DataRow[];
+}
+
+/** Response from POST /views/{id}/data: the primary (first data-bearing) panel's
+ * rows under `rows`, plus the per-panel `panels` array for multi-panel views.
+ * The server runs each panel's CubeQuery as the verified tenant (THE TRUST RULE)
+ * — the client never sends a tenant_id and never a query (the saved spec is the
+ * source of truth server-side). */
+export interface ViewDataResponse {
+  rows: DataRow[];
+  panels: ViewDataPanel[];
 }
 
 /** GET /dashboards — named compositions of saved views (kind=dashboard rows). */
@@ -1018,6 +1040,31 @@ export class ApiClient {
   }
 
   /**
+   * POST /views/{id}/data: resolve a saved view's CubeQueries into rows, run as
+   * the verified tenant server-side (THE TRUST RULE — the client sends no
+   * tenant_id and no query; the saved spec is the source of truth). Returns the
+   * primary panel's `rows` plus the per-panel `panels` array.
+   *
+   * Mock builds have no live data plane, so they return an empty payload — the
+   * caller's per-panel loader then renders the honest "No data yet" state, never
+   * a canned number on a fixture-less view. (Mock SURFACES inject the offline
+   * sampleLoadData fixture directly, bypassing this method; see the view files.)
+   *
+   * Real builds may answer 503 (cube not configured / warming), 404 (no such
+   * view), or 502 (upstream Cube failure). These surface as ApiError for the
+   * caller to map to a calm "data temporarily unavailable" empty state.
+   */
+  async loadViewData(viewId: string): Promise<ViewDataResponse> {
+    if (this.mock) {
+      return { rows: [], panels: [] };
+    }
+    return this.request<ViewDataResponse>(
+      "POST",
+      `/views/${encodeURIComponent(viewId)}/data`,
+    );
+  }
+
+  /**
    * NL refine of a saved view ("ask for a chart"): the agent patches the
    * existing spec ("make it a line chart, last 90 days") and the new version is
    * persisted server-side. Returns the new SavedViewRow.
@@ -1476,6 +1523,99 @@ export class ApiClient {
     }
     return this.request<BillingPortalSessionResponse>("POST", "/billing/portal-session");
   }
+}
+
+// ---------------------------------------------------------------------------
+// View-data loader: turn a /views/{id}/data payload into the SpecRenderer's
+// injected loadData(query) prop.
+//
+// The renderer pulls per-panel: it calls loadData(query) once per data-bearing
+// block, NOT knowing the panel's layout index. The server resolves rows BY
+// layout index (panels[].panel). So we re-derive each layout block's query the
+// same way the server does (mirror of api/cube_data_routes.py `_panel_query`)
+// and the SAME way the renderer will call it, then key the panel rows by a
+// canonical query signature. An incoming query resolves to its panel's rows;
+// anything unmatched (e.g. the stat headline, whose panel query is the trend)
+// falls back to the primary `rows`, then to [] — an honest "No data yet", never
+// a fabricated number and never a crash.
+// ---------------------------------------------------------------------------
+
+/** Stable, order-insensitive signature for a CubeQuery so the renderer's call
+ * and the server's resolved panel query match regardless of key ordering. */
+function querySignature(query: CubeQuery): string {
+  const norm = (arr?: string[]) => [...(arr ?? [])].sort();
+  return JSON.stringify({
+    measures: norm(query.measures),
+    dimensions: norm(query.dimensions),
+    // timeDimensions/filters carry through verbatim (already deterministic
+    // enough for a same-spec round-trip; they originate from the saved spec).
+    timeDimensions: query.timeDimensions ?? [],
+    filters: query.filters ?? [],
+  });
+}
+
+/** Re-derive a layout block's row-bearing CubeQuery, mirroring the server's
+ * `_panel_query`. Returns null for panels that carry no data query (markdown). */
+function blockQuery(block: Record<string, unknown>): CubeQuery | null {
+  const type = block.type;
+  if (
+    type === "chart" ||
+    type === "table" ||
+    type === "funnel" ||
+    type === "leaderboard" ||
+    type === "cohort-grid"
+  ) {
+    const q = block.query;
+    return q && typeof q === "object" ? (q as CubeQuery) : null;
+  }
+  if (type === "kpi") {
+    const metric = block.metric;
+    if (typeof metric !== "string") return null;
+    const query: CubeQuery = { measures: [metric] };
+    const flt = block.filter as Record<string, unknown> | undefined;
+    if (flt && typeof flt === "object") {
+      if (Array.isArray(flt.filters)) query.filters = flt.filters as CubeQuery["filters"];
+      if (Array.isArray(flt.timeDimensions))
+        query.timeDimensions = flt.timeDimensions as CubeQuery["timeDimensions"];
+      if (Array.isArray(flt.dimensions)) query.dimensions = flt.dimensions as string[];
+    }
+    return query;
+  }
+  if (type === "stat-with-sparkline") {
+    const trend = block.trend;
+    return trend && typeof trend === "object" ? (trend as CubeQuery) : null;
+  }
+  return null;
+}
+
+/**
+ * Build the SpecRenderer `loadData(query)` prop from a resolved /views/{id}/data
+ * payload + the view's own spec. Each incoming query resolves to its panel's
+ * rows; unmatched queries fall back to the primary rows, then to []. Pure and
+ * synchronous-resolving (returns a Promise to satisfy the LoadData contract).
+ */
+export function buildViewDataLoader(
+  spec: Record<string, unknown> | null | undefined,
+  data: ViewDataResponse,
+): LoadData {
+  const bySignature = new Map<string, DataRow[]>();
+  const layout = (spec?.layout as unknown[]) ?? [];
+  const rowsForPanel = new Map<number, DataRow[]>();
+  for (const p of data.panels ?? []) rowsForPanel.set(p.panel, p.rows ?? []);
+
+  layout.forEach((block, i) => {
+    if (!block || typeof block !== "object") return;
+    const q = blockQuery(block as Record<string, unknown>);
+    if (q === null) return;
+    const rows = rowsForPanel.get(i);
+    if (rows !== undefined) bySignature.set(querySignature(q), rows);
+  });
+
+  return async (query: CubeQuery): Promise<DataRow[]> => {
+    const hit = bySignature.get(querySignature(query));
+    if (hit !== undefined) return hit;
+    return data.rows ?? [];
+  };
 }
 
 /** Build a client from the Vite environment (mock by default). */

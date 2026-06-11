@@ -15,17 +15,26 @@
 //   - data_not_found-> the honest "data does not exist on the platform" copy.
 
 import React from "react";
-import { ApiClient, ApiError, defaultClient, friendlyErrorMessage, type Citation } from "./client";
+import {
+  ApiClient,
+  ApiError,
+  buildViewDataLoader,
+  defaultClient,
+  friendlyErrorMessage,
+  type Citation,
+} from "./client";
 import { SpecRenderer, type LoadData } from "../dashboard/SpecRenderer";
 import { Spinner } from "./Spinner";
 import { Analytics, defaultAnalytics } from "../analytics/posthog";
 
 const { useState, useCallback, useEffect } = React;
 
-// Data loaders for the view overlay — identical policy to DashboardView: real
-// builds resolve every query to zero rows (honest "No data yet"; canned numbers
-// on a real tenant are a lie), mock builds lazily load the offline fixture
-// behind the BUILD-TIME gate so the demo chunk never ships in production.
+// Data loaders for the view overlay — identical policy to DashboardView. Mock
+// builds lazily load the offline fixture behind the BUILD-TIME gate (the demo
+// chunk never ships in production). Real builds resolve an ALREADY-SAVED view's
+// data via POST /views/{id}/data (the `exists` path); an unsaved Balto draft has
+// no view id yet, so it honestly renders "No data yet" until the user saves it
+// (canned numbers on a real tenant are a lie). The empty loader is the fallback.
 const noLiveData: LoadData = async () => [];
 let mockLoadData: LoadData = noLiveData;
 if (import.meta.env.VITE_API_MOCK !== "0" && import.meta.env.VITE_API_MOCK !== "false") {
@@ -39,6 +48,9 @@ interface ViewAttachment {
   draftId: string | null;
   /** False on the exists path — there is nothing new to save. */
   saveable: boolean;
+  /** The saved view's id when it already exists (exists path) — lets the overlay
+   * resolve real rows via POST /views/{id}/data. null for an unsaved draft. */
+  viewId: string | null;
 }
 
 interface Message {
@@ -55,6 +67,9 @@ interface OverlayState extends ViewAttachment {
   saving: boolean;
   savedNote: string | null;
   saveError: string | null;
+  /** The resolved data loader for this overlay's view (mock fixture, real data,
+   * or the empty fallback for an unsaved draft / data-plane loss). */
+  loadData: LoadData;
 }
 
 export interface ChatDockProps {
@@ -103,7 +118,7 @@ export function ChatDock({ client, analytics, embedded = false }: ChatDockProps)
             {
               who: "agent",
               text: "Balto is back with your view. Open it below — you can save it or let it go.",
-              view: { spec: res.spec, draftId: res.draft_id ?? null, saveable: true },
+              view: { spec: res.spec, draftId: res.draft_id ?? null, saveable: true, viewId: null },
             },
           ]);
         } else if (res.status === "exists" && res.view) {
@@ -116,6 +131,7 @@ export function ChatDock({ client, analytics, embedded = false }: ChatDockProps)
                 spec: res.view.spec_json as Record<string, unknown>,
                 draftId: null,
                 saveable: false,
+                viewId: res.view.view_id,
               },
             },
           ]);
@@ -183,6 +199,36 @@ export function ChatDock({ client, analytics, embedded = false }: ChatDockProps)
       }
     },
     [api, ph, draft, sending, embedded, runBalto],
+  );
+
+  // Open a Balto view in the overlay, resolving its data. A view that already
+  // exists (the `exists` path, carrying a saved viewId) loads real rows via
+  // POST /views/{id}/data; an unsaved draft (viewId null) and mock builds use
+  // the fixture/empty fallback. A data-plane failure degrades to the empty
+  // loader — the overlay still opens, panels just say "No data yet".
+  const openViewOverlay = useCallback(
+    async (attachment: ViewAttachment) => {
+      const fallback: LoadData = api.isMock() ? mockLoadData : noLiveData;
+      setOverlay({
+        ...attachment,
+        saving: false,
+        savedNote: null,
+        saveError: null,
+        loadData: fallback,
+      });
+      if (api.isMock() || !attachment.viewId) return;
+      const viewId = attachment.viewId;
+      try {
+        const data = await api.loadViewData(viewId);
+        const loader = buildViewDataLoader(attachment.spec, data);
+        // Only apply if the overlay still shows THIS view (the user may have
+        // closed it or opened another while the request was in flight).
+        setOverlay((o) => (o && o.viewId === viewId ? { ...o, loadData: loader } : o));
+      } catch {
+        // Keep the empty fallback already in place — honest "No data yet".
+      }
+    },
+    [api],
   );
 
   const saveOverlayView = useCallback(async () => {
@@ -254,9 +300,7 @@ export function ChatDock({ client, analytics, embedded = false }: ChatDockProps)
             {m.view && (
               <button
                 data-testid="balto-open-view"
-                onClick={() =>
-                  setOverlay({ ...m.view!, saving: false, savedNote: null, saveError: null })
-                }
+                onClick={() => void openViewOverlay(m.view!)}
                 style={{
                   marginTop: 8,
                   padding: "8px 14px",
@@ -403,7 +447,7 @@ export function ChatDock({ client, analytics, embedded = false }: ChatDockProps)
 
             {/* The existing trusted renderer: re-validates the spec, draws ONLY catalog
                 components — spec, not code. */}
-            <SpecRenderer spec={overlay.spec} loadData={api.isMock() ? mockLoadData : noLiveData} />
+            <SpecRenderer spec={overlay.spec} loadData={overlay.loadData} />
 
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 16 }}>
               {overlay.saveable && (

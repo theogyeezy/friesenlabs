@@ -17,6 +17,7 @@ from typing import Any, Callable
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
 
+from api.account_routes import AccountDeps
 from api.agents_routes import AgentsDeps
 from api.auth import JwtVerifier, TenantClaims, make_current_tenant
 from api.control.autonomy import AutonomyConfig
@@ -139,6 +140,11 @@ class ApiDeps:
     # 503) and constructing deps never opens a DB pool; api/asgi.py wires the real PgUsageStore +
     # PgCostRecorder on the shared crm_app DSN. Pass None to skip mounting the route entirely.
     usage: Any | None = None
+    # /account/export deps (GDPR/portability egress). Same inert-default contract: the all-None
+    # stub mounts the route answering the honest 503 and constructing deps never opens a DB pool;
+    # api/asgi.py wires the real crm/rag/saved_views (the same instances every other route uses).
+    # Pass None to skip mounting the route entirely (e.g. internal/stripped deployments).
+    account: AccountDeps | None = field(default_factory=AccountDeps)
     # Per-tenant rate-limit + quota MIDDLEWARE (a 2-tuple (middleware_class, kwargs) added via
     # app.add_middleware). None -> NOT installed (the default for offline tests, so they aren't
     # throttled). api/asgi.py passes a configured spec when tenant_limits_enabled(); a request with
@@ -532,6 +538,14 @@ def create_app(deps: ApiDeps) -> FastAPI:
     if deps.usage is not None:
         from api.usage_routes import mount_usage
         mount_usage(app, deps.usage, current_tenant)
+
+    # Authed per-tenant GDPR/portability data export (GET /account/export). Claims-bound;
+    # read-only egress over contacts, companies, deals, saved views, and knowledge doc metadata.
+    # RLS-scoped via the same SET LOCAL discipline every other authed route uses. Honest 503
+    # when all stores are unconfigured — never invented rows, never deletions.
+    if deps.account is not None:
+        from api.account_routes import mount_account
+        mount_account(app, deps.account, current_tenant)
 
     # Per-tenant rate-limit + quota middleware. Installed ONLY when api/asgi.py provides a spec
     # (default None = off, so offline tests aren't throttled). The spec is (cls, kwargs); a
