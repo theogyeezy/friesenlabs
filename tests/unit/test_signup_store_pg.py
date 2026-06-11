@@ -367,3 +367,61 @@ def test_tx_rolls_back_and_returns_conn_on_error(patched, monkeypatch):
         store.get("11111111-1111-1111-1111-111111111111")
     assert patched.conn.rollbacks == 1
     assert patched.conn.commits == 0
+
+
+# ---------------------------------------------------------------------------
+# Billing portal additions (get_by_tenant_id + billing status meta)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_get_by_tenant_id_resolves_account_no_tenant_bind(patched):
+    """The billing-portal resolver: find the account by its provisioner-minted tenant_id (the
+    verified claim). A plain WHERE tenant_id lookup — still RLS-EXEMPT (no SET LOCAL)."""
+    store = PgAccountStore(DSN)
+    patched.conn.results = [{
+        "id": "11111111-1111-1111-1111-111111111111",
+        "email": "a@b.co", "phone": "+15125550100", "status": "active",
+        "plan": "team", "tenant_id": "tenant-9",
+        "meta": {"cognito_sub": "sub-1", "email_verified": True, "phone_verified": True,
+                 "stripe_customer_id": "cus_42", "account": {"plan": "team"}},
+    }]
+    acct = store.get_by_tenant_id("tenant-9")
+    assert acct is not None and acct.tenant_id == "tenant-9"
+    assert acct.stripe_customer_id == "cus_42"
+    sql, params = patched.conn.log[0]
+    assert "WHERE tenant_id = %s" in sql
+    assert params == ("tenant-9",)
+    assert not any("app.current_tenant" in s for s in _sql(patched))
+    # A miss is an honest None.
+    patched.conn.results = [None]
+    assert store.get_by_tenant_id("tenant-nope") is None
+
+
+@pytest.mark.unit
+def test_set_billing_status_is_one_atomic_merge(patched):
+    """The cancellation webhook flips billing status via the SAME atomic jsonb_build_object merge
+    the OTP/intent writers use — no read-modify-write window, never a flat `meta = %s`."""
+    store = PgAccountStore(DSN)
+    store.set_billing_status("11111111-1111-1111-1111-111111111111", "canceled",
+                             reason="customer.subscription.deleted")
+    sql, params = patched.conn.log[0]
+    assert "UPDATE accounts SET" in sql
+    assert "meta = meta || jsonb_build_object('billing_status', %s::jsonb)" in sql
+    assert "updated_at = now()" in sql
+    rec = params[0].adapted
+    assert rec == {"status": "canceled", "reason": "customer.subscription.deleted"}
+    assert params[1] == "11111111-1111-1111-1111-111111111111"
+    assert not any("app.current_tenant" in s for s in _sql(patched))
+
+
+@pytest.mark.unit
+def test_get_billing_status_reads_meta_key(patched):
+    store = PgAccountStore(DSN)
+    patched.conn.results = [{"bs": {"status": "past_due", "reason": "customer.subscription.updated"}}]
+    rec = store.get_billing_status("11111111-1111-1111-1111-111111111111")
+    assert rec == {"status": "past_due", "reason": "customer.subscription.updated"}
+    sql, _ = patched.conn.log[0]
+    assert "meta->'billing_status'" in sql
+    # Absent -> honest None (a never-cancelled account has no billing_status key).
+    patched.conn.results = [{"bs": None}]
+    assert store.get_billing_status("11111111-1111-1111-1111-111111111111") is None

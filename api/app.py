@@ -71,6 +71,10 @@ class ApiDeps:
     # /views/synthesize + draft routes answer an honest 503 (never a fake view).
     view_synthesizer: Any | None = None
     signup: Any = None                                  # optional SignupDeps (mounts public routes)
+    # optional BillingDeps (api/billing_routes.py) — authed self-service Stripe Customer Portal.
+    # None (default) = the routes are not mounted; api/asgi.py wires it from the signup payment
+    # adapter + account store when configured.
+    billing: Any = None
     # /integrations deps (TODO INT/P2). Env-built by default so api/asgi.py needs no change:
     # with no env set every piece is the honest unconfigured stub (credentials/sync 503,
     # status "unknown"); real adapters ride ONLY the deliberate INTEGRATIONS_REAL_SECRETS /
@@ -465,6 +469,11 @@ def create_app(deps: ApiDeps) -> FastAPI:
     if deps.studio is not None:
         from api.routes_studio import mount_studio
         mount_studio(app, deps.studio, current_tenant)
+
+    # Authed self-service billing (Stripe Customer Portal) — claims-bound like every authed route.
+    if deps.billing is not None:
+        from api.billing_routes import mount_billing
+        mount_billing(app, deps.billing, current_tenant)
 
     # Public, pre-tenant signup + Stripe webhook routes (optional).
     if deps.signup is not None:

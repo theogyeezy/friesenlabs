@@ -318,6 +318,24 @@ def build_app():
 
     from api.prod_deps import build_signup_deps
 
+    signup_deps = build_signup_deps(workspace_store=workspace_store)
+    # Authed self-service billing (Stripe Customer Portal): reuse the SAME Stripe adapter the
+    # payment plane uses + the SAME account store (so the stripe_customer_id mapping is the one
+    # checkout wrote). The portal session is claims-bound in api/billing_routes.py. The return URL
+    # is operator-configured (STRIPE_PORTAL_RETURN_URL — Lane Nick injects it; empty = Stripe
+    # default). Built only when the signup deps carry a payment adapter + an account store.
+    from api.billing_routes import BillingDeps
+
+    billing_deps = None
+    _pay = getattr(signup_deps, "payment", None)
+    _accounts = getattr(signup_deps, "accounts", None)
+    if _pay is not None and _accounts is not None:
+        billing_deps = BillingDeps(
+            stripe=getattr(_pay, "stripe", None),
+            accounts_store=getattr(_accounts, "store", None),
+            return_url=os.environ.get("STRIPE_PORTAL_RETURN_URL", ""),
+        )
+
     deps = ApiDeps(
         verifier=_verifier(),
         greenlight=greenlight,
@@ -336,7 +354,9 @@ def build_app():
         view_synthesizer=view_synthesizer,
         # mounts /signup, /verify-*, /checkout, /webhooks/stripe; provisioning persists the
         # tenant's Managed Agents ids into tenant_workspaces when the DB is configured.
-        signup=build_signup_deps(workspace_store=workspace_store),
+        signup=signup_deps,
+        # mounts POST /billing/portal-session + GET /billing (authed, Stripe Customer Portal).
+        billing=billing_deps,
         # /deals (the real Pipeline board) rides the SAME PgCrmClient instance the executor +
         # /chat tool clients use — one pool, one SET LOCAL discipline. crm is None when the
         # DSN is unconfigured, so the routes answer their honest 503s.
