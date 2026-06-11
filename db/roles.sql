@@ -81,3 +81,11 @@ REVOKE DELETE ON accounts, stripe_events FROM crm_app;
 REVOKE DELETE ON approvals, traces FROM crm_app;          -- audit rows are never erased
 REVOKE UPDATE ON traces FROM crm_app;                     -- traces are append-only, not editable
 REVOKE DELETE ON tenant_workspaces, tenant_settings FROM crm_app;
+
+-- ---------------------------------------------------------------------------
+-- playbooks (Agent Studio): a tenant-content table (RLS-FORCEd; see schema.sql) — full DML.
+-- EXPLICIT grant required for the same fresh-load reason as tenant_workspaces/tenant_settings:
+-- ALTER DEFAULT PRIVILEGES only covers tables created AFTER it runs, and schema.sql runs first.
+-- DELETE is deliberate: playbooks are tenant-authored definitions (not audit trail) and the
+-- Studio exposes delete; RLS's WITH CHECK/USING scopes every row either way.
+GRANT SELECT, INSERT, UPDATE, DELETE ON playbooks TO crm_app;
