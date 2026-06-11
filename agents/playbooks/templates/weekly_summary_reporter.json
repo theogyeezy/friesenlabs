@@ -1,0 +1,17 @@
+{
+  "template_id": "weekly-summary-reporter",
+  "summary": "Every Monday, compile the week's numbers into a dashboard view of pipeline movement, wins and stalls.",
+  "definition": {
+    "name": "Weekly summary reporter",
+    "description": "Monday-morning report: scout aggregates last week's governed metrics (new deals, stage movement, won/lost, activity volume) and publishes a weekly-summary saved view grounded in the tenant's corpus.",
+    "trigger": {"kind": "schedule", "schedule": "0 13 * * 1"},
+    "roster": [
+      {"agent": "scout", "tools": ["query_cube", "search_rag", "build_view"]}
+    ],
+    "autonomy": "L1",
+    "greenlight": {
+      "side_effects": "always_ask",
+      "note": "Report-only playbook; it proposes no sends or CRM writes."
+    }
+  }
+}

@@ -42,6 +42,12 @@ def _build_public_deps():
     return build_public_deps()
 
 
+def _build_studio_deps():
+    """Lazy default for ApiDeps.studio (import api.routes_studio only when constructed)."""
+    from api.routes_studio import build_studio_deps  # noqa: PLC0415 — avoid an import cycle
+    return build_studio_deps()
+
+
 @dataclass
 class ApiDeps:
     verifier: JwtVerifier
@@ -101,6 +107,11 @@ class ApiDeps:
     # crm_app DSN (api/public_routes.build_public_deps); otherwise the route answers an honest
     # 503 after validation. Pass None to skip mounting the route entirely.
     public: Any | None = field(default_factory=lambda: _build_public_deps())
+    # /studio deps (Agent Studio — playbook composer + library). Env-built by default so
+    # api/asgi.py needs no change: the PgPlaybookStore rides ONLY the crm_app DSN gate and its
+    # pool opens lazily; with no DSN every store-backed route answers an honest 503 (templates
+    # still serve — committed JSON). Pass None to skip mounting the routes entirely.
+    studio: Any | None = field(default_factory=lambda: _build_studio_deps())
 
 
 # --- request bodies (note: NONE carry tenant_id — the trust rule forbids it) ---
@@ -394,6 +405,13 @@ def create_app(deps: ApiDeps) -> FastAPI:
     # stores in prod. Authorization decisions are documented in api/routes_control.py.
     from api.routes_control import mount_control
     mount_control(app, deps, current_tenant)
+
+    # Authed per-tenant Agent Studio (playbook composer + starter library). Claims-bound like
+    # everything above; definitions are schema-validated SPEC-NOT-CODE and activation registers
+    # through the existing runtime seam with side-effects Greenlight-gated (draft-only).
+    if deps.studio is not None:
+        from api.routes_studio import mount_studio
+        mount_studio(app, deps.studio, current_tenant)
 
     # Public, pre-tenant signup + Stripe webhook routes (optional).
     if deps.signup is not None:

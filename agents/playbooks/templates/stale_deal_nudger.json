@@ -1,0 +1,18 @@
+{
+  "template_id": "stale-deal-nudger",
+  "summary": "Find deals going quiet and draft timely nudges — every send and every stage change waits for your sign-off.",
+  "definition": {
+    "name": "Stale-deal nudger",
+    "description": "Daily sweep: echo finds deals with no recent activity and drafts a re-engagement nudge per contact; ledger proposes stage corrections for deals that have clearly lapsed. Every email and every CRM mutation routes through Greenlight.",
+    "trigger": {"kind": "schedule", "schedule": "30 13 * * 1-5"},
+    "roster": [
+      {"agent": "echo", "tools": ["read_crm", "draft_email"]},
+      {"agent": "ledger", "tools": ["read_crm", "update_deal"]}
+    ],
+    "autonomy": "L1",
+    "greenlight": {
+      "side_effects": "always_ask",
+      "note": "Nudge emails and stage moves from this playbook always wait for approval."
+    }
+  }
+}

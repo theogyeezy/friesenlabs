@@ -1,0 +1,17 @@
+{
+  "template_id": "pipeline-hygiene-scout",
+  "summary": "Every weekday, sweep the pipeline for deals drifting off-process and surface them as a saved view.",
+  "definition": {
+    "name": "Pipeline hygiene scout",
+    "description": "Weekday-morning sweep: scout queries governed pipeline metrics, reads deal records for missing amounts, dead stages and ownerless deals, and publishes the findings as a saved dashboard view. Read-only by construction.",
+    "trigger": {"kind": "schedule", "schedule": "0 13 * * 1-5"},
+    "roster": [
+      {"agent": "scout", "tools": ["query_cube", "read_crm", "build_view"]}
+    ],
+    "autonomy": "L1",
+    "greenlight": {
+      "side_effects": "always_ask",
+      "note": "This playbook only reads and builds views; it proposes no sends or CRM writes."
+    }
+  }
+}

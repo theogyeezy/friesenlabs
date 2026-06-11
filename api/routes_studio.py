@@ -1,0 +1,251 @@
+"""Agent Studio — the api half of the composer + playbook library (web/src/api/StudioView.tsx).
+
+Authed per-tenant CRUD over `playbooks` plus the starter-template library and activation.
+Every route binds the tenant from the VERIFIED JWT claims (THE TRUST RULE — tenant never from
+a header or the request body; a smuggled tenant is ignored by construction since nothing reads
+one). Playbooks are SPEC, NOT CODE: every definition is validated against
+shared/schemas/playbook.schema.json + the owned-roster/registry cross-checks
+(agents/playbooks.validate) BEFORE any write — an invalid definition is a 422, never a row.
+
+  GET    /studio/templates                       the 5 committed starter templates (no store needed)
+  GET    /studio/playbooks                       the tenant's playbooks (RLS-scoped list)
+  POST   /studio/playbooks                       create (validated) -> the new row
+  GET    /studio/playbooks/{id}                  one playbook (404 = absent OR another tenant's)
+  PUT    /studio/playbooks/{id}                  update definition (drafts only; bumps version)
+  DELETE /studio/playbooks/{id}                  delete (drafts only)
+  POST   /studio/templates/{tid}/instantiate     copy a template into the tenant's library
+  POST   /studio/playbooks/{id}/activate         register with the EXISTING roster mechanism
+  POST   /studio/playbooks/{id}/deactivate       back to draft
+
+ACTIVATION stays behind the EXISTING gates: agents/playbooks/activation.py registers the
+playbook's owned AgentSpecs (tools narrowed, never widened) through the swappable AgentRuntime
+— the registered tools come from the trusted registry, whose side-effecting members are
+Policy.ALWAYS_ASK at the Tool base class, so every send/CRM write a playbook agent ever
+proposes lands as a Greenlight DRAFT (draft-only invariant) and autonomy stays governed by the
+per-tenant dial at execution time. Registered Managed Agents ids are TRUNCATED to a display
+tail before serialization (the api/agents_routes.py contract — full ids never leave the API).
+With no registrar configured, activate still flips status but reports `registered: false`
+honestly (record-only) — never a fake registration.
+
+Deps follow the inert-default contract (DealsDeps et al.): the env-built default wires the
+PgPlaybookStore ONLY when the crm_app DSN is present (shared.config.dsn_from_env) and the pool
+opens lazily on first use; without a DSN every store-backed route answers an honest 503.
+
+IMPORT SAFETY: importing this module touches no DB/boto3/anthropic; psycopg2 and the
+roster/registry imports are lazy (the agents_routes pattern).
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+from fastapi import Depends, FastAPI, HTTPException
+from pydantic import BaseModel
+
+from api.auth import TenantClaims
+
+_UNCONFIGURED_DETAIL = (
+    "studio not configured — no crm_app DSN on this task (DB_*/UPLIFT_DB_URL unset); "
+    "playbooks are unavailable"
+)
+_NO_REGISTRAR_REASON = (
+    "agent plane not configured on this task — the playbook is active (record-only) and will "
+    "register when the agent plane is available"
+)
+
+# Display tail for registered Managed Agents ids — the api/agents_routes.py contract.
+ID_TAIL_LEN = 6
+
+
+def _id_tail(value: Any) -> str | None:
+    if not isinstance(value, str) or not value:
+        return None
+    return value[-ID_TAIL_LEN:]
+
+
+# --------------------------------------------------------------------------- #
+# Deps — inert by default; env-built for prod (the integrations/public pattern,
+# so api/asgi.py needs no change). Constructing deps NEVER opens a DB pool:
+# PgPlaybookStore's pool is lazy (first operation).
+# --------------------------------------------------------------------------- #
+@dataclass
+class StudioDeps:
+    # PlaybookStore-shaped (agents/playbooks/store.py). None -> honest 503.
+    store: Any | None = None
+    # AgentRuntime-shaped registrar (create_agent/create_coordinator). None -> activation
+    # flips status record-only and reports registered: false honestly.
+    registrar: Any | None = None
+
+
+def build_studio_deps() -> StudioDeps:
+    """Env-built default: the Pg store rides ONLY the crm_app DSN gate every live sibling uses
+    (shared.config.dsn_from_env); no DSN -> the honest all-None stub. The registrar is left
+    None — live Managed Agents registration is wired deliberately, never as an import side
+    effect (CLAUDE.md hard constraint #4: MA is beta, all calls behind runtime.py)."""
+    from shared.config import dsn_from_env  # noqa: PLC0415 — lazy, keeps import cheap
+
+    dsn = dsn_from_env()
+    if not dsn:
+        return StudioDeps()
+    from agents.playbooks.store import PgPlaybookStore  # noqa: PLC0415
+
+    return StudioDeps(store=PgPlaybookStore(dsn))
+
+
+# --- request bodies (NONE carry tenant_id — the trust rule forbids it) ---
+class PlaybookBody(BaseModel):
+    definition: dict
+
+
+def _require_store(deps: StudioDeps) -> Any:
+    if deps.store is None:
+        raise HTTPException(status_code=503, detail=_UNCONFIGURED_DETAIL)
+    return deps.store
+
+
+def _validate_or_422(definition: dict) -> None:
+    from agents.playbooks import PlaybookValidationError, validate  # noqa: PLC0415 — lazy
+
+    try:
+        validate(definition)
+    except PlaybookValidationError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+def _serialize(row: dict, claims: TenantClaims) -> dict:
+    """One playbook row for the wire. Defense in depth: a row whose tenant_id isn't the
+    verified request tenant fails loud (a silent leak must never propagate); the internal
+    tenant_id is then dropped from the body."""
+    if str(row["tenant_id"]) != str(claims.tenant_id):
+        raise HTTPException(status_code=500, detail="tenant isolation violation")
+    out = {k: v for k, v in row.items() if k != "tenant_id"}
+    for ts in ("created_at", "updated_at"):
+        if out.get(ts) is not None and not isinstance(out[ts], str):
+            out[ts] = out[ts].isoformat()
+    return out
+
+
+def mount_studio(app: FastAPI, deps: StudioDeps, current_tenant) -> None:
+    """Mount the /studio routes on `app`, authed via `current_tenant` (the same verified-claims
+    dependency every other authed route uses)."""
+
+    @app.get("/studio/templates")
+    def list_studio_templates(claims: TenantClaims = Depends(current_tenant)):
+        # Committed JSON, identical for every tenant — but still authed (the Studio is an
+        # app surface, not a public one). No store required.
+        from agents.playbooks.templates import list_templates  # noqa: PLC0415 — lazy
+
+        return {"templates": list_templates()}
+
+    @app.get("/studio/playbooks")
+    def list_playbooks(claims: TenantClaims = Depends(current_tenant)):
+        store = _require_store(deps)
+        rows = store.list(claims.tenant_id)
+        return {"playbooks": [_serialize(r, claims) for r in rows]}
+
+    @app.post("/studio/playbooks", status_code=201)
+    def create_playbook(body: PlaybookBody, claims: TenantClaims = Depends(current_tenant)):
+        store = _require_store(deps)
+        _validate_or_422(body.definition)
+        row = store.create(claims.tenant_id, body.definition, created_by=claims.sub)
+        return _serialize(row, claims)
+
+    @app.get("/studio/playbooks/{playbook_id}")
+    def get_playbook(playbook_id: str, claims: TenantClaims = Depends(current_tenant)):
+        store = _require_store(deps)
+        row = store.get(claims.tenant_id, playbook_id)
+        if row is None:
+            # Absent and another tenant's row are indistinguishable (no existence oracle).
+            raise HTTPException(status_code=404, detail="no such playbook")
+        return _serialize(row, claims)
+
+    @app.put("/studio/playbooks/{playbook_id}")
+    def update_playbook(playbook_id: str, body: PlaybookBody,
+                        claims: TenantClaims = Depends(current_tenant)):
+        store = _require_store(deps)
+        row = store.get(claims.tenant_id, playbook_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="no such playbook")
+        if row["status"] == "active":
+            # An active registration must never be silently mutated: the registered roster
+            # would drift from the stored definition. Deactivate first.
+            raise HTTPException(status_code=409, detail="playbook is active — deactivate before editing")
+        _validate_or_422(body.definition)
+        updated = store.update_definition(claims.tenant_id, playbook_id, body.definition)
+        if updated is None:  # deleted between the read and the write — honest 404
+            raise HTTPException(status_code=404, detail="no such playbook")
+        return _serialize(updated, claims)
+
+    @app.delete("/studio/playbooks/{playbook_id}")
+    def delete_playbook(playbook_id: str, claims: TenantClaims = Depends(current_tenant)):
+        store = _require_store(deps)
+        row = store.get(claims.tenant_id, playbook_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="no such playbook")
+        if row["status"] == "active":
+            raise HTTPException(status_code=409, detail="playbook is active — deactivate before deleting")
+        if not store.delete(claims.tenant_id, playbook_id):
+            raise HTTPException(status_code=404, detail="no such playbook")
+        return {"deleted": True, "id": str(playbook_id)}
+
+    @app.post("/studio/templates/{template_id}/instantiate", status_code=201)
+    def instantiate_template(template_id: str, claims: TenantClaims = Depends(current_tenant)):
+        store = _require_store(deps)
+        from agents.playbooks.templates import get_template  # noqa: PLC0415 — lazy
+
+        template = get_template(template_id)
+        if template is None:
+            raise HTTPException(status_code=404, detail="no such template")
+        # Committed templates are tested-valid, but validate anyway (defense in depth — a
+        # drifted template must fail loud here, never persist invalid).
+        _validate_or_422(template["definition"])
+        row = store.create(claims.tenant_id, template["definition"],
+                           template_id=template_id, created_by=claims.sub)
+        return _serialize(row, claims)
+
+    @app.post("/studio/playbooks/{playbook_id}/activate")
+    def activate_playbook_route(playbook_id: str, claims: TenantClaims = Depends(current_tenant)):
+        store = _require_store(deps)
+        row = store.get(claims.tenant_id, playbook_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="no such playbook")
+        # Re-validate the STORED definition before registering (defense in depth: a row that
+        # predates a schema tightening must not register unvalidated).
+        _validate_or_422(row["definition"])
+
+        registration: dict | None = None
+        if deps.registrar is not None:
+            from agents.playbooks.activation import activate_playbook  # noqa: PLC0415 — lazy
+
+            # Registers owned AgentSpecs through the EXISTING runtime seam. Tools come from
+            # the trusted registry, so side-effecting members stay ALWAYS_ASK (Greenlight
+            # drafts) regardless of anything in the stored JSON.
+            result = activate_playbook(deps.registrar, claims.tenant_id, row["definition"])
+            registration = {
+                "agents": result["agents"],
+                # TRUNCATED for display — full Managed Agents ids never leave the API.
+                "agent_id_tails": [_id_tail(a) for a in result["agent_ids"]],
+                "coordinator_id_tail": _id_tail(result["coordinator_id"]),
+            }
+
+        updated = store.set_status(claims.tenant_id, playbook_id, "active")
+        if updated is None:
+            raise HTTPException(status_code=404, detail="no such playbook")
+        out = _serialize(updated, claims)
+        out["registered"] = registration is not None
+        if registration is not None:
+            out["registration"] = registration
+        else:
+            out["registration_reason"] = _NO_REGISTRAR_REASON
+        return out
+
+    @app.post("/studio/playbooks/{playbook_id}/deactivate")
+    def deactivate_playbook_route(playbook_id: str, claims: TenantClaims = Depends(current_tenant)):
+        store = _require_store(deps)
+        row = store.get(claims.tenant_id, playbook_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="no such playbook")
+        updated = store.set_status(claims.tenant_id, playbook_id, "draft")
+        if updated is None:
+            raise HTTPException(status_code=404, detail="no such playbook")
+        return _serialize(updated, claims)
