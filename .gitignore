@@ -57,3 +57,6 @@ infra/prod.auto.tfvars
 
 # Claude Code per-machine settings (permissions allowlists are machine-specific)
 .claude/settings.local.json
+
+# Agent-fleet (/fleet skill) isolated worktrees — runtime only, never committed
+.claude/worktrees/
