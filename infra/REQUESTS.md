@@ -374,6 +374,28 @@ Rules:
   ```
 - **Done when:** `terraform validate` green; the api task role policy lists `states:ListExecutions` scoped to exactly the provisioning stateMachine ARN (and `StartExecution` from REQ-005 is unchanged; no Describe/History action appears on any role); against the live API, an authed `GET /workflows` returns `executions_available: true` with a `recent_executions` array (name/status/timestamps only — no `arn:` fragment, no account id in the body), and with the grant absent the same call still returns `200` with `executions_available: false, reason: "pending IAM grant (REQ-009)"`.
 
+---
+
+### REQ-011: GRANT crm_app DML on the per-tenant `onboarding_state` table (first-run / onboarding)
+- **Status:** OPEN — already mirrored into `db/roles.sql` (the GRANT/REVOKE pair) so the static grant gate (`tests/unit/test_sql_schema.py`) and the integration DB harness (which loads `db/schema.sql` + `db/roles.sql`) stay green; this entry documents the same SQL for Lane Nick to confirm on the live Aurora migration. Per `CONTRIBUTING.md`, `db/roles.sql` is Nick-only; the edit here is the necessary cross-lane GRANT for a new tenant table — please review on the live `api.migrate` run.
+- **Requested by:** Lane Onboarding @feat/cust-onboarding (PR "feat(onboarding): first-run experience — empty states, guided checklist, load-sample data")
+- **Needed for:** the onboarding routes (`api/onboarding_routes.py`): `GET/PUT /onboarding` (per-tenant first-run checklist state) + `POST /onboarding/load-sample` (one-click demo-fixture load into the calling tenant). All RLS-scoped via `SET LOCAL app.current_tenant`; the route upserts the tenant's `onboarding_state` row.
+- **Env/secret names** (must already exist in shared/config.py): n/a (GRANT only; the route rides the existing crm_app DSN — `dsn_from_env()` — the same one `/contacts`, `/deals`, `/views` already use).
+- **Spec:**
+  ```sql
+  -- For db/roles.sql (Lane Nick's file). onboarding_state is a RLS-FORCEd tenant table (see
+  -- schema.sql: tenant_id PRIMARY KEY, in the tenant_tables array, explicit ENABLE/FORCE + policy).
+  -- crm_app needs SELECT/INSERT/UPDATE (the upsert), NEVER DELETE: a tenant's onboarding row is
+  -- durable upserted state, never erased by the app. Same fresh-load reason as
+  -- tenant_workspaces/tenant_settings (schema.sql runs before roles.sql, so ALTER DEFAULT
+  -- PRIVILEGES never covers it — without this line crm_app has ZERO privileges on a fresh load).
+  GRANT SELECT, INSERT, UPDATE ON onboarding_state TO crm_app;
+  REVOKE DELETE ON onboarding_state FROM crm_app;
+  ```
+- **Done when:** the live `api.migrate` one-off runs `db/roles.sql` clean; a crm_app probe can SELECT/INSERT/UPDATE its own `onboarding_state` row under `SET LOCAL app.current_tenant` and is denied DELETE; `GET /onboarding` returns the tenant's row (or the honest default) on the live API.
+
+---
+
 ### REQ-010: GRANT crm_app DML on the pre-tenant `support_requests` table (public contact/help intake)
 - **Status:** OPEN
 - **Requested by:** Lane Matt @feat/cust-support-surface (PR "feat(support): public contact/help surface + status page")

@@ -432,7 +432,16 @@ def build_app():
             if tenant_limits_enabled() else None
         ),
     )
-    return create_app(deps)
+    app = create_app(deps)
+    # /onboarding (first-run experience: per-tenant checklist state + one-click load-sample) —
+    # mounted here on the SAME crm_app DSN every live surface rides (per-op SET LOCAL RLS). The
+    # all-None default (no DSN) makes GET serve the honest fresh-tenant default and PUT/load-sample
+    # answer the honest 503. Claims-bound via the SAME make_current_tenant(verifier) dependency the
+    # rest of the app uses — the tenant is ONLY ever the verified JWT claim (THE TRUST RULE).
+    from api.auth import make_current_tenant
+    from api.onboarding_routes import deps_from_dsn as onboarding_deps_from_dsn, mount_onboarding
+    mount_onboarding(app, onboarding_deps_from_dsn(dsn), make_current_tenant(deps.verifier))
+    return app
 
 
 app = build_app()

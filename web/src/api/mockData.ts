@@ -52,6 +52,10 @@ import {
   type AutonomyState,
   type DecisionTrace,
   type KillswitchState,
+  type OnboardingState,
+  type OnboardingPutBody,
+  type OnboardingStepId,
+  type LoadSampleResponse,
 } from "./client";
 
 const MOCK_TENANT = "tenant-demo";
@@ -584,6 +588,15 @@ export class MockApi {
   // Control-plane state — stateful within a run so toggles round-trip.
   private killswitch: KillswitchState = { engaged: false, scope: "global" };
   private autonomy: AutonomyState = { level: 1 };
+  // First-run state — starts as a brand-new tenant (nothing done) so the mock/e2e
+  // flow exercises the empty-state -> load-sample -> populated path and the
+  // first-run checklist dismiss/persist. load_sample flips the contacts seed on.
+  private onboarding: OnboardingState = {
+    tenant_id: "demo-tenant",
+    steps: { load_data: false, try_chat: false, invite_team: false },
+    dismissed: false,
+    sample_loaded: false,
+  };
   // Balto drafts — ephemeral, save-or-discard (mirrors conv.views.ViewSynthesizer drafts).
   private viewDrafts = new Map<string, { spec: Record<string, unknown>; request: string }>();
   private draftSeq = 0;
@@ -1149,5 +1162,34 @@ export class MockApi {
       { id: "trace_004", ts: "2026-06-10T13:40:00Z", tool: "search_knowledge", decision: "auto", status: "executed" },
     ];
     return seed.slice(0, Math.max(0, limit));
+  }
+
+  getOnboarding(): OnboardingState {
+    return { ...this.onboarding, steps: { ...this.onboarding.steps } };
+  }
+
+  putOnboarding(body: OnboardingPutBody): OnboardingState {
+    if (body.steps) {
+      for (const [sid, done] of Object.entries(body.steps)) {
+        if (sid in this.onboarding.steps) {
+          this.onboarding.steps[sid as OnboardingStepId] = !!done;
+        }
+      }
+    }
+    if (typeof body.dismissed === "boolean") this.onboarding.dismissed = body.dismissed;
+    return this.getOnboarding();
+  }
+
+  loadSampleData(): LoadSampleResponse {
+    // Idempotent: the demo fixture's counts, the same on every call (a real
+    // wipe-then-insert never duplicates). Marks the load done so populated
+    // views surface immediately.
+    this.onboarding.sample_loaded = true;
+    this.onboarding.steps.load_data = true;
+    return {
+      loaded: true,
+      counts: { companies: 40, contacts: 120, deals: 60, activities: 441, documents: 449 },
+      onboarding: this.getOnboarding(),
+    };
   }
 }

@@ -31,6 +31,8 @@ import BillingManage from "./api/BillingManage";
 const { useState, useEffect, useRef, useMemo, useCallback, useLayoutEffect, useReducer, useContext, useImperativeHandle, useId } = React;
 const { Icon, Logo, FL_DATA, FLStore, useStore, askClaude, bizContext, confettiBurst, XPBadge, useCountUp, CountUp, AreaChart, Sparkline, LoadBars, Donut, SlideOver, CommandPalette, HEAT, fmtMoney, StatCard, ToneIco, FLflag, useTweaks, TweaksPanel, TweakSection, TweakRow, TweakSlider, TweakToggle, TweakRadio, TweakSelect, TweakText, TweakNumber, TweakColor, TweakButton, FoxDemo, KanbanDemo, WorkflowDemo, GreenlightDemo, CommandDemo, IntegrationDemo, SupportDemo, SecurityDemo, SidecarDemo, CortexDemo } = window as any;
 // app.jsx, shell: sidebar, topbar, routing, tweaks, palette
+import { FirstRunChecklist } from "./onboarding/FirstRunChecklist";
+import { defaultClient } from "./api/client";
 
 const ACCENTS = [
   { id: "indigo", name: "Indigo", h: 277 },
@@ -105,6 +107,13 @@ function App() {
   const gamifyOn = useStore((s) => s.gamifyOn);
   const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
   const [route, setRoute] = useState("dashboard");
+  // First-run: bumped after a "Load sample data" so the API-wired surfaces remount
+  // and re-fetch (the populated views surface immediately).
+  const [sampleReloadKey, setSampleReloadKey] = useState(0);
+  const loadSampleData = useCallback(async () => {
+    await defaultClient().loadSampleData();
+    setSampleReloadKey((k) => k + 1);
+  }, []);
   const [collapsed, setCollapsed] = useState(false);
   const [cmdk, setCmdk] = useState(false);
   const [deal, setDeal] = useState(null);
@@ -426,14 +435,20 @@ function App() {
             // other route gets the honest ComingSoon panel — never an FLStore
             // prototype screen, which would pass demo numbers off as real.
             <>
+              {/* First-run checklist (dismissible, never blocks the app): shows
+                  only while this tenant's onboarding_state is incomplete. Its
+                  "Load sample data" step loads the demo fixture into the tenant
+                  and remounts the surfaces (sampleReloadKey) so populated views
+                  surface immediately. */}
+              <FirstRunChecklist onNavigate={navTo} onOpenChat={() => setChat(true)} />
               {route === "dashboard" && <DashboardView />}
               {/* Pipeline is LIVE in real mode: RLS-scoped deals from GET /deals;
                   stage moves queue through Greenlight (never a direct write). */}
-              {route === "crm" && <PipelineBoard onOpenGreenlight={() => navTo("approvals")} />}
+              {route === "crm" && <PipelineBoard key={sampleReloadKey} onOpenGreenlight={() => navTo("approvals")} onLoadSample={loadSampleData} />}
               {/* Contacts is LIVE in real mode: RLS-scoped directory from
                   GET /contacts + /companies, read-only; open deals link to
                   the Pipeline board. */}
-              {route === "contacts" && <ContactsDirectory onOpenPipeline={() => navTo("crm")} />}
+              {route === "contacts" && <ContactsDirectory key={sampleReloadKey} onOpenPipeline={() => navTo("crm")} onLoadSample={loadSampleData} />}
               {/* Agents is LIVE in real mode: the tenant's crew from GET /agents
                   (owned roster + trusted tool policies + truncated provisioned
                   ids) — never the FLStore prototype console. */}

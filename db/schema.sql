@@ -256,6 +256,28 @@ CREATE INDEX IF NOT EXISTS predictions_tenant_deal_open_idx
     ON predictions (tenant_id, deal_id) WHERE outcome IS NULL;
 
 -- ---------------------------------------------------------------------------
+-- onboarding_state — per-tenant first-run progress (appended per the Matt-append rule).
+-- ONE row per tenant (tenant_id PRIMARY KEY): the dismissible first-run checklist's per-step
+-- completion (`steps` jsonb — a flat map of step-id -> bool, NEVER executable content) plus a
+-- `dismissed` flag (the tenant skipped/finished the tour) and a `sample_loaded` flag (the
+-- one-click "Load sample data" landed the demo fixture into THIS tenant). The route reads/writes
+-- it through the same per-op `SET LOCAL app.current_tenant` transaction every tenant store rides,
+-- so RLS scopes every read/write; tenant_id NEVER comes from the request body (THE TRUST RULE) —
+-- only the verified JWT claim. Tenant-scoped + FORCE'd RLS like every other tenant table (it is in
+-- the tenant_tables array above).
+-- NOTE: declared BEFORE the RLS DO block (the block executes when reached; any table named in its
+-- array must already exist or a fresh load — CI psql ON_ERROR_STOP=1, api/migrate.py's single
+-- batch — aborts). Explicit RLS statements are at EOF, same as tenant_settings/playbooks.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS onboarding_state (
+    tenant_id     uuid PRIMARY KEY,
+    steps         jsonb NOT NULL DEFAULT '{}'::jsonb,  -- step-id -> bool (flat map; data only)
+    dismissed     boolean NOT NULL DEFAULT false,      -- tenant skipped/finished the first-run tour
+    sample_loaded boolean NOT NULL DEFAULT false,      -- the demo fixture landed in this tenant
+    created_at    timestamptz NOT NULL DEFAULT now(),
+    updated_at    timestamptz NOT NULL DEFAULT now()
+);
+
 -- usage_counters — per-tenant MONTHLY quota counters (appended per the Matt-append rule;
 -- idempotent — api.migrate re-runs safely on fresh AND live databases). One row per
 -- (tenant_id, period, metric): `period` is the UTC month bucket 'YYYY-MM', `metric` is the
@@ -311,7 +333,7 @@ DECLARE
     tenant_tables text[] := ARRAY[
         'documents', 'companies', 'contacts', 'deals', 'activities',
         'saved_views', 'approvals', 'traces', 'ingest_cursor', 'tenant_workspaces',
-        'tenant_settings', 'playbooks', 'predictions', 'usage_counters', 'cost_events'
+        'tenant_settings', 'playbooks', 'predictions', 'usage_counters', 'cost_events', 'onboarding_state'
     ];
 BEGIN
     FOREACH t IN ARRAY tenant_tables LOOP
@@ -566,5 +588,15 @@ CREATE POLICY tenant_isolation ON usage_counters
 ALTER TABLE cost_events ENABLE ROW LEVEL SECURITY; ALTER TABLE cost_events FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON cost_events;
 CREATE POLICY tenant_isolation ON cost_events
+    USING (tenant_id = current_setting('app.current_tenant', true)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.current_tenant', true)::uuid);
+
+-- ---------------------------------------------------------------------------
+-- onboarding_state — explicit RLS statements (appended; belt and suspenders with the DO block
+-- above, same convention as tenant_settings/playbooks: the FORCE requirement stays greppable).
+-- ---------------------------------------------------------------------------
+ALTER TABLE onboarding_state ENABLE ROW LEVEL SECURITY; ALTER TABLE onboarding_state FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON onboarding_state;
+CREATE POLICY tenant_isolation ON onboarding_state
     USING (tenant_id = current_setting('app.current_tenant', true)::uuid)
     WITH CHECK (tenant_id = current_setting('app.current_tenant', true)::uuid);
