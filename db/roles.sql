@@ -124,12 +124,14 @@ REVOKE DELETE ON onboarding_state FROM crm_app;
 --     append-only record, never edited or erased by the app.
 GRANT SELECT, INSERT, UPDATE ON workspace_keys TO crm_app;
 GRANT SELECT, INSERT ON leads TO crm_app;
+GRANT SELECT, INSERT ON support_requests TO crm_app;  -- public contact/help intake (append-only)
 -- The ALTER DEFAULT PRIVILEGES block above hands DELETE (and, for leads, UPDATE) to crm_app on any
 -- table created later by the migration role. Revoke the unintended privileges explicitly, or the
 -- no-DELETE intent is silently superseded — and re-asserting them makes a roles.sql re-run
 -- (api.migrate runs it on every migration) converge a grant-history live DB to this design.
 REVOKE DELETE ON workspace_keys FROM crm_app;
 REVOKE UPDATE, DELETE ON leads FROM crm_app;
+REVOKE UPDATE, DELETE ON support_requests FROM crm_app;
 
 -- ---------------------------------------------------------------------------
 -- Tenant limits + cost attribution (usage_counters + cost_events — RLS-FORCEd tenant tables;
