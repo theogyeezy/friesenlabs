@@ -9,6 +9,18 @@
 // The validator is hand-written (no runtime schema engine) so the catalog is
 // closed by construction: it rejects unknown component types, any encoding that
 // is not "vega-lite", and any unknown ("additional") property at every level.
+//
+// Spec versioning (additive evolution, mirrors shared/view_spec.py):
+//   * spec_version 1 (default when absent) — kpi / chart / table.
+//   * spec_version 2 — adds funnel, leaderboard, stat-with-sparkline,
+//     cohort-grid, markdown-note and the grid/span layout primitive.
+//     A spec that uses v2 features MUST declare spec_version: 2.
+//
+// Forward compatibility: a layout block whose `type` is a string outside the
+// catalog is NOT a hard error — it is reported in `unknownBlocks` and the
+// renderer draws a safe inert placeholder for it (graceful rejection), so a
+// newer server-side catalog never blanks a whole dashboard on an older client.
+// Nothing inside an unknown block is ever interpreted.
 
 // ---------------------------------------------------------------------------
 // Types (mirror of the JSON schema)
@@ -48,11 +60,17 @@ export interface CubeQuery {
   filters?: QueryFilter[];
 }
 
+/** Grid layout primitive (spec_version 2): how many columns the view's grid has. */
+export interface GridSpec {
+  columns?: number; // 1..12, default 12
+}
+
 export interface KpiBlock {
   type: "kpi";
   title?: string;
   metric: Member;
   filter?: CubeQuery;
+  span?: number;
 }
 
 export interface ChartBlock {
@@ -62,21 +80,78 @@ export interface ChartBlock {
   /** Optional Vega-Lite spec fragment. Treated as untrusted data, never code. */
   spec?: Record<string, unknown>;
   query: CubeQuery;
+  span?: number;
 }
 
 export interface TableBlock {
   type: "table";
   title?: string;
   query: CubeQuery;
+  span?: number;
 }
 
-export type LayoutBlock = KpiBlock | ChartBlock | TableBlock;
+/** spec_version 2: ordered stage funnel — first dimension = stage, first measure = value. */
+export interface FunnelBlock {
+  type: "funnel";
+  title?: string;
+  query: CubeQuery;
+  span?: number;
+}
+
+/** spec_version 2: ranked list — first dimension = label, first measure = score. */
+export interface LeaderboardBlock {
+  type: "leaderboard";
+  title?: string;
+  query: CubeQuery;
+  limit?: number; // 1..100, default 10
+  span?: number;
+}
+
+/** spec_version 2: headline number (like kpi) plus a small trend sparkline. */
+export interface StatSparklineBlock {
+  type: "stat-with-sparkline";
+  title?: string;
+  metric: Member;
+  filter?: CubeQuery;
+  trend: CubeQuery;
+  span?: number;
+}
+
+/** spec_version 2: matrix — first dimension = row, second dimension = column, first measure = cell. */
+export interface CohortGridBlock {
+  type: "cohort-grid";
+  title?: string;
+  query: CubeQuery;
+  span?: number;
+}
+
+/** spec_version 2: narrative panel. Body is a markdown SUBSET rendered to React
+ * nodes only (see markdown.tsx) — never HTML, never code. */
+export interface MarkdownNoteBlock {
+  type: "markdown-note";
+  title?: string;
+  body: string;
+  span?: number;
+}
+
+export type LayoutBlock =
+  | KpiBlock
+  | ChartBlock
+  | TableBlock
+  | FunnelBlock
+  | LeaderboardBlock
+  | StatSparklineBlock
+  | CohortGridBlock
+  | MarkdownNoteBlock;
 
 export interface ViewSpec {
+  kind?: "view";
   view_id: string;
   title: string;
   version?: number;
+  spec_version?: number;
   source_prompt?: string;
+  grid?: GridSpec;
   semantic_refs: Member[];
   layout: LayoutBlock[];
 }
@@ -84,6 +159,9 @@ export interface ViewSpec {
 export interface ValidationResult {
   ok: boolean;
   errors: string[];
+  /** Indices into layout[] whose `type` is outside this client's catalog.
+   * Soft: the spec can still be ok; the renderer shows a placeholder there. */
+  unknownBlocks: number[];
 }
 
 // ---------------------------------------------------------------------------
@@ -104,8 +182,18 @@ const OPERATORS: FilterOperator[] = [
   "contains",
 ];
 
-// Closed catalog of component types. Anything else is refused.
-const COMPONENT_TYPES = ["kpi", "chart", "table"] as const;
+// Closed catalog of component types. Anything else renders only a placeholder.
+const V1_COMPONENT_TYPES = ["kpi", "chart", "table"] as const;
+const V2_COMPONENT_TYPES = [
+  "funnel",
+  "leaderboard",
+  "stat-with-sparkline",
+  "cohort-grid",
+  "markdown-note",
+] as const;
+const COMPONENT_TYPES: readonly string[] = [...V1_COMPONENT_TYPES, ...V2_COMPONENT_TYPES];
+
+export const SPEC_VERSION_LATEST = 2;
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -113,6 +201,10 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 
 function isString(v: unknown): v is string {
   return typeof v === "string";
+}
+
+function isInt(v: unknown): v is number {
+  return typeof v === "number" && Number.isInteger(v);
 }
 
 // Reject any key not in `allowed` (the additionalProperties: false guarantee).
@@ -151,6 +243,16 @@ function checkMemberArray(v: unknown, path: string, errors: string[]): void {
     return;
   }
   v.forEach((item, i) => checkMember(item, `${path}[${i}]`, errors));
+}
+
+function checkSpan(v: unknown, path: string, errors: string[]): void {
+  if (!isInt(v) || v < 1 || v > 12) {
+    errors.push(`${path}: must be an integer from 1 to 12`);
+  }
+}
+
+function checkTitle(v: unknown, path: string, errors: string[]): void {
+  if (v !== undefined && !isString(v)) errors.push(`${path}: must be a string`);
 }
 
 function checkCubeQuery(v: unknown, path: string, errors: string[]): void {
@@ -218,31 +320,37 @@ function checkCubeQuery(v: unknown, path: string, errors: string[]): void {
   }
 }
 
-function checkBlock(v: unknown, path: string, errors: string[]): void {
+// Returns true when the block's type is outside the catalog (soft-unknown).
+function checkBlock(v: unknown, path: string, errors: string[]): boolean {
   if (!isPlainObject(v)) {
     errors.push(`${path}: must be an object`);
-    return;
+    return false;
   }
   const type = v.type;
-  if (!isString(type) || !(COMPONENT_TYPES as readonly string[]).includes(type)) {
-    errors.push(
-      `${path}.type: unknown component type ${JSON.stringify(type)} is not in the catalog (${COMPONENT_TYPES.join(", ")})`
-    );
-    return; // cannot validate further without a known catalog type
+  if (!isString(type)) {
+    errors.push(`${path}.type: must be a string component type`);
+    return false;
+  }
+  if (!COMPONENT_TYPES.includes(type)) {
+    // Soft-unknown: a future catalog component. The renderer shows a safe
+    // placeholder; nothing inside the block is validated or interpreted.
+    return true;
   }
 
+  if (v.span !== undefined) checkSpan(v.span, `${path}.span`, errors);
+
   if (type === "kpi") {
-    rejectUnknownKeys(v, ["type", "title", "metric", "filter"], path, errors);
-    if (v.title !== undefined && !isString(v.title)) errors.push(`${path}.title: must be a string`);
+    rejectUnknownKeys(v, ["type", "title", "metric", "filter", "span"], path, errors);
+    checkTitle(v.title, `${path}.title`, errors);
     if (v.metric === undefined) errors.push(`${path}: "metric" is required`);
     else checkMember(v.metric, `${path}.metric`, errors);
     if (v.filter !== undefined) checkCubeQuery(v.filter, `${path}.filter`, errors);
-    return;
+    return false;
   }
 
   if (type === "chart") {
-    rejectUnknownKeys(v, ["type", "title", "encoding", "spec", "query"], path, errors);
-    if (v.title !== undefined && !isString(v.title)) errors.push(`${path}.title: must be a string`);
+    rejectUnknownKeys(v, ["type", "title", "encoding", "spec", "query", "span"], path, errors);
+    checkTitle(v.title, `${path}.title`, errors);
     // Only the "vega-lite" encoding is in the catalog. Anything else is refused.
     if (v.encoding === undefined) errors.push(`${path}: "encoding" is required`);
     else if (v.encoding !== "vega-lite") {
@@ -253,39 +361,93 @@ function checkBlock(v: unknown, path: string, errors: string[]): void {
     }
     if (v.query === undefined) errors.push(`${path}: "query" is required`);
     else checkCubeQuery(v.query, `${path}.query`, errors);
-    return;
+    return false;
   }
 
-  // type === "table"
-  rejectUnknownKeys(v, ["type", "title", "query"], path, errors);
-  if (v.title !== undefined && !isString(v.title)) errors.push(`${path}.title: must be a string`);
-  if (v.query === undefined) errors.push(`${path}: "query" is required`);
-  else checkCubeQuery(v.query, `${path}.query`, errors);
+  if (type === "table" || type === "funnel" || type === "cohort-grid") {
+    rejectUnknownKeys(v, ["type", "title", "query", "span"], path, errors);
+    checkTitle(v.title, `${path}.title`, errors);
+    if (v.query === undefined) errors.push(`${path}: "query" is required`);
+    else checkCubeQuery(v.query, `${path}.query`, errors);
+    return false;
+  }
+
+  if (type === "leaderboard") {
+    rejectUnknownKeys(v, ["type", "title", "query", "limit", "span"], path, errors);
+    checkTitle(v.title, `${path}.title`, errors);
+    if (v.limit !== undefined && (!isInt(v.limit) || v.limit < 1 || v.limit > 100)) {
+      errors.push(`${path}.limit: must be an integer from 1 to 100`);
+    }
+    if (v.query === undefined) errors.push(`${path}: "query" is required`);
+    else checkCubeQuery(v.query, `${path}.query`, errors);
+    return false;
+  }
+
+  if (type === "stat-with-sparkline") {
+    rejectUnknownKeys(v, ["type", "title", "metric", "filter", "trend", "span"], path, errors);
+    checkTitle(v.title, `${path}.title`, errors);
+    if (v.metric === undefined) errors.push(`${path}: "metric" is required`);
+    else checkMember(v.metric, `${path}.metric`, errors);
+    if (v.filter !== undefined) checkCubeQuery(v.filter, `${path}.filter`, errors);
+    if (v.trend === undefined) errors.push(`${path}: "trend" is required`);
+    else checkCubeQuery(v.trend, `${path}.trend`, errors);
+    return false;
+  }
+
+  // type === "markdown-note"
+  rejectUnknownKeys(v, ["type", "title", "body", "span"], path, errors);
+  checkTitle(v.title, `${path}.title`, errors);
+  if (!isString(v.body) || v.body.length < 1 || v.body.length > 4000) {
+    errors.push(`${path}.body: must be a string of length 1 to 4000`);
+  }
+  return false;
+}
+
+/** The minimum spec_version the features in this (already shape-checked) spec require. */
+function requiredSpecVersion(spec: Record<string, unknown>): number {
+  if (spec.grid !== undefined || spec.kind !== undefined) return 2;
+  const layout = Array.isArray(spec.layout) ? spec.layout : [];
+  for (const block of layout) {
+    if (!isPlainObject(block)) continue;
+    if (
+      (isString(block.type) && (V2_COMPONENT_TYPES as readonly string[]).includes(block.type)) ||
+      block.span !== undefined
+    ) {
+      return 2;
+    }
+  }
+  return 1;
 }
 
 /**
  * Validate an arbitrary value against the view-spec contract.
  *
- * Returns { ok, errors }. `ok` is true only when the value is a fully-formed
- * view-spec drawn entirely from the closed catalog. Unknown component types,
- * non-"vega-lite" chart encodings, and any extra ("additional") property cause
+ * Returns { ok, errors, unknownBlocks }. `ok` is true only when the value is a
+ * fully-formed view-spec drawn from the closed catalog (plus, possibly, blocks
+ * whose type is outside this client's catalog — those are listed in
+ * `unknownBlocks` and rendered as safe placeholders, never interpreted).
+ * Non-"vega-lite" chart encodings and any extra ("additional") property cause
  * a hard rejection. The renderer calls this first and refuses to draw anything
  * on a non-empty error list.
  */
 export function validateViewSpec(spec: unknown): ValidationResult {
   const errors: string[] = [];
+  const unknownBlocks: number[] = [];
 
   if (!isPlainObject(spec)) {
-    return { ok: false, errors: ["root: view-spec must be an object"] };
+    return { ok: false, errors: ["root: view-spec must be an object"], unknownBlocks };
   }
 
   rejectUnknownKeys(
     spec,
-    ["view_id", "title", "version", "source_prompt", "semantic_refs", "layout"],
+    ["kind", "view_id", "title", "version", "spec_version", "source_prompt", "grid", "semantic_refs", "layout"],
     "root",
     errors
   );
 
+  if (spec.kind !== undefined && spec.kind !== "view") {
+    errors.push('root.kind: must be "view" when present (dashboards have their own validator)');
+  }
   if (!isString(spec.view_id) || spec.view_id.length < 1) {
     errors.push('root.view_id: must be a non-empty string');
   }
@@ -293,12 +455,28 @@ export function validateViewSpec(spec: unknown): ValidationResult {
     errors.push("root.title: must be a string of length 1 to 200");
   }
   if (spec.version !== undefined) {
-    if (typeof spec.version !== "number" || !Number.isInteger(spec.version) || spec.version < 1) {
+    if (!isInt(spec.version) || spec.version < 1) {
       errors.push("root.version: must be an integer >= 1");
     }
   }
+  if (spec.spec_version !== undefined && spec.spec_version !== 1 && spec.spec_version !== 2) {
+    errors.push("root.spec_version: must be 1 or 2");
+  }
   if (spec.source_prompt !== undefined && !isString(spec.source_prompt)) {
     errors.push("root.source_prompt: must be a string");
+  }
+  if (spec.grid !== undefined) {
+    if (!isPlainObject(spec.grid)) {
+      errors.push("root.grid: must be an object");
+    } else {
+      rejectUnknownKeys(spec.grid, ["columns"], "root.grid", errors);
+      if (spec.grid.columns !== undefined) {
+        const c = spec.grid.columns;
+        if (!isInt(c) || c < 1 || c > 12) {
+          errors.push("root.grid.columns: must be an integer from 1 to 12");
+        }
+      }
+    }
   }
 
   if (!Array.isArray(spec.semantic_refs) || spec.semantic_refs.length < 1) {
@@ -310,10 +488,24 @@ export function validateViewSpec(spec: unknown): ValidationResult {
   if (!Array.isArray(spec.layout) || spec.layout.length < 1) {
     errors.push("root.layout: must be a non-empty array");
   } else {
-    spec.layout.forEach((block, i) => checkBlock(block, `root.layout[${i}]`, errors));
+    spec.layout.forEach((block, i) => {
+      if (checkBlock(block, `root.layout[${i}]`, errors)) unknownBlocks.push(i);
+    });
   }
 
-  return { ok: errors.length === 0, errors };
+  // spec_version gate: declaring less than the features used is a hard error,
+  // exactly like the server-side validator (shared/view_spec.py).
+  if (errors.length === 0) {
+    const declared = isInt(spec.spec_version) ? (spec.spec_version as number) : 1;
+    const needed = requiredSpecVersion(spec);
+    if (declared < needed) {
+      errors.push(
+        `root.spec_version: declares ${declared} but uses spec_version ${needed} features`
+      );
+    }
+  }
+
+  return { ok: errors.length === 0, errors, unknownBlocks };
 }
 
 /** Type guard built on the validator. */
