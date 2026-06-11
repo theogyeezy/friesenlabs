@@ -28,6 +28,9 @@ from signup.accounts import _EMAIL_RE
 
 MAX_BODY_BYTES = 1024          # the 1KB cap — enforced on the RAW body, before any parse
 DEFAULT_RATE_PER_MINUTE = 5
+# Trusted proxy hops in front of this service (CloudFront -> ALB -> Fargate = 2). The rate-limit
+# key is the viewer IP at this trust boundary, parsed from X-Forwarded-For — see _trusted_client_ip.
+DEFAULT_TRUSTED_HOPS = 2
 _WINDOW_SECONDS = 60.0
 
 _FIELD_LIMITS = {"name": 200, "email": 320, "message": 600, "company": 200}
@@ -69,6 +72,10 @@ class PublicDeps:
     # signup.leads.PgLeadStore / MemoryLeadStore. None = the honest-503 unconfigured posture.
     leads_store: Any | None = None
     rate_per_minute: int = DEFAULT_RATE_PER_MINUTE
+    # Trusted proxy hops in front of this service (X-Forwarded-For parse — see _trusted_client_ip).
+    # Default 2 = CloudFront -> ALB. The rate limit keys on the viewer IP at this trust boundary,
+    # NOT the ALB socket peer (which is shared across every viewer).
+    trusted_hops: int = DEFAULT_TRUSTED_HOPS
     now: Callable[[], float] = time.time
     _limiter: _IpRateLimiter | None = field(default=None, repr=False)
 
@@ -87,24 +94,69 @@ def build_public_deps() -> PublicDeps:
     """
     import os  # noqa: PLC0415
 
-    from shared.config import ENV_PUBLIC_LEADS_RATE_PER_MINUTE, dsn_from_env, load  # noqa: PLC0415
+    from shared.config import (  # noqa: PLC0415
+        ENV_PUBLIC_LEADS_RATE_PER_MINUTE,
+        ENV_PUBLIC_LEADS_TRUSTED_HOPS,
+        dsn_from_env,
+        load,
+    )
 
     cfg = load()
     try:
         rate = int(os.environ.get(ENV_PUBLIC_LEADS_RATE_PER_MINUTE, DEFAULT_RATE_PER_MINUTE))
     except (TypeError, ValueError):
         rate = DEFAULT_RATE_PER_MINUTE
+    # Trusted proxy hops in front of the service (X-Forwarded-For parse). Default 2 (CloudFront ->
+    # ALB); a value < 1 or junk falls back to the safe default — never to keying on the ALB peer.
+    try:
+        hops = int(os.environ.get(ENV_PUBLIC_LEADS_TRUSTED_HOPS, DEFAULT_TRUSTED_HOPS))
+    except (TypeError, ValueError):
+        hops = DEFAULT_TRUSTED_HOPS
+    if hops < 1:
+        hops = DEFAULT_TRUSTED_HOPS
     store = None
     if cfg.signup_real_deps:
         dsn = dsn_from_env()
         if dsn:
             from signup.leads import PgLeadStore  # noqa: PLC0415 — lazy; no driver at import
             store = PgLeadStore(dsn)
-    return PublicDeps(leads_store=store, rate_per_minute=rate)
+    return PublicDeps(leads_store=store, rate_per_minute=rate, trusted_hops=hops)
 
 
-def _client_ip(request: Request) -> str:
-    return request.client.host if request.client else "unknown"
+# In prod the chain is CloudFront -> ALB -> Fargate: ALB appends CloudFront's edge IP to
+# X-Forwarded-For (rightmost), CloudFront appends the real viewer's IP (second-from-right). So the
+# trustworthy viewer IP is `trusted_hops` entries from the RIGHT (default 2, DEFAULT_TRUSTED_HOPS
+# above). Everything left of that is client-supplied and SPOOFABLE — never key a rate limit on it.
+_PEER_IP = "0.0.0.0"   # last-resort key when there is no client peer at all (never None/empty)
+
+
+def _peer_ip(request: Request) -> str:
+    return request.client.host if request.client else _PEER_IP
+
+
+def _trusted_client_ip(request: Request, trusted_hops: int = DEFAULT_TRUSTED_HOPS) -> str:
+    """Best trustworthy viewer IP for rate-limiting, behind `trusted_hops` trusted proxies.
+
+    Behind an ALB the raw socket peer (`request.client.host`) is the LOAD BALANCER, not the
+    viewer — keying a per-IP limit on it lets one attacker drain the shared quota for everyone.
+    We read X-Forwarded-For and take the entry `trusted_hops` from the RIGHT: that is the IP the
+    nearest UNTRUSTED hop presented to our trust boundary (CloudFront, which stamps the real
+    viewer). Entries further left are attacker-controllable and ignored.
+
+    SAFE FALLBACK: if the header is absent, malformed, or shorter than the trusted-hop count
+    (so the expected entry can't be located), fall back to the socket peer — never to an
+    attacker-supplied value. Returns a non-empty string always (so the limiter key is stable)."""
+    hops = trusted_hops if trusted_hops and trusted_hops >= 1 else DEFAULT_TRUSTED_HOPS
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        parts = [p.strip() for p in xff.split(",") if p.strip()]
+        # Need at least `hops` entries to locate the trust-boundary IP; otherwise the chain is
+        # shorter than our topology claims (direct hit / probe) -> fall back to the socket peer.
+        if len(parts) >= hops:
+            candidate = parts[-hops]
+            if candidate:
+                return candidate
+    return _peer_ip(request)
 
 
 def mount_public(app: FastAPI, deps: PublicDeps) -> None:
@@ -114,8 +166,11 @@ def mount_public(app: FastAPI, deps: PublicDeps) -> None:
         raw = await request.body()
         if len(raw) > MAX_BODY_BYTES:
             raise HTTPException(status_code=413, detail="lead payload exceeds 1KB")
-        # In-process per-IP rate limit (honest scope: per task — see module docstring).
-        if not deps.limiter().allow(_client_ip(request)):
+        # In-process per-IP rate limit, keyed on the VIEWER IP at the trust boundary (X-Forwarded-For
+        # parsed `trusted_hops` from the right), NOT the ALB socket peer — otherwise one attacker
+        # drains the shared quota for every viewer. Honest scope: per task — see module docstring.
+        viewer_ip = _trusted_client_ip(request, deps.trusted_hops)
+        if not deps.limiter().allow(viewer_ip):
             raise HTTPException(status_code=429, detail="too many leads from this address")
         try:
             body = LeadBody.model_validate_json(raw)
@@ -147,6 +202,6 @@ def mount_public(app: FastAPI, deps: PublicDeps) -> None:
             email=email,
             message=clean(body.message.strip()) if body.message else None,
             company=clean(body.company.strip()) if body.company else None,
-            source_ip=_client_ip(request),
+            source_ip=viewer_ip,   # the trust-boundary viewer IP (same value the limiter keyed on)
         )
         return {"ok": True, "id": lead_id}
