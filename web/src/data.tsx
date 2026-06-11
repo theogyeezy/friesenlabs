@@ -129,6 +129,7 @@ const NAV_CRM = [
 ];
 const NAV_AGENTS = [
   { id: "agents", label: "Agents", icon: "spark" },
+  { id: "studio", label: "Studio", icon: "bolt" },
   { id: "marketplace", label: "Marketplace", icon: "puzzle" },
   { id: "cortex", label: "Cortex", icon: "network" },
   { id: "knowledge", label: "Knowledge", icon: "doc" },
