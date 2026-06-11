@@ -1,15 +1,19 @@
 """Authed per-tenant integrations endpoints — the api half of TODO INT/P2
 ("Build the real integrations/connect UI + backend"; the web screen rides a later cycle).
 
-Three endpoints, all bound to the VERIFIED JWT claims (THE TRUST RULE — tenant never from a
+Four endpoints, all bound to the VERIFIED JWT claims (THE TRUST RULE — tenant never from a
 header or the request body):
 
-  GET  /integrations                       known connectors + this tenant's connection status
+  GET  /integrations                       known connectors (hubspot|csv|gohighlevel|stripe)
+                                           + this tenant's per-connector status
   POST /integrations/{name}/credentials    store the tenant's token in the per-tenant vault slot
                                            (uplift/{tenant_id}/{source}) via the injected
                                            SecretWriter — the token is never logged or echoed
   POST /integrations/{name}/sync           kick one incremental `sync_tenant` run for THAT
-                                           tenant via the injected runner
+                                           tenant via the injected runner (sync connectors only)
+  POST /integrations/csv/import            multipart CSV import (contacts|companies|deals, 5MB
+                                           cap, mapping auto-detect + override) through the
+                                           tenant-scoped ingest path via the injected importer
 
 This module extends the read-only SecretProvider seam (ingest/connectors/base.py) with a WRITE
 seam: the :class:`SecretWriter` Protocol. The real implementation (:class:`Boto3SecretWriter`,
@@ -24,12 +28,13 @@ inside the writer on first use.
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
 import os
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol, runtime_checkable
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from api.auth import TenantClaims
@@ -71,16 +76,60 @@ def _aws_not_found(exc: Exception) -> bool:
 # Known connectors — the server-side registry the routes trust (the {name}
 # path param is validated against THIS, never used to format a ref blindly).
 # `source` is the vault-slot segment (ingest.connectors.base.tenant_secret_ref).
+#
+# This is the API-side MIRROR of ingest/connectors/registry.py (the ingest
+# plane's canonical connector registry) — mirrored, not imported, because the
+# production API image must boot without ingest/ present (the HOTFIX note
+# above; tests/unit/test_integrations_image_fileset.py). Keep the two in sync;
+# tests/unit/test_connector_registry.py asserts parity.
+#
+# `kind`: "sync" = credentialed pull connector (vault slot + sync route);
+#         "file" = push import (csv) — NO vault slot, NO sync route; data
+#         arrives via POST /integrations/csv/import.
 # --------------------------------------------------------------------------- #
-KNOWN_INTEGRATIONS: dict[str, dict[str, str]] = {
+KNOWN_INTEGRATIONS: dict[str, dict[str, Any]] = {
     "hubspot": {
         "label": "HubSpot",
         "category": "CRM & Marketing",
         "description": "Sync companies, contacts, deals and notes from HubSpot CRM "
                        "into your Uplift data plane (read-only — Uplift never writes back).",
         "source": "hubspot",
+        "kind": "sync",
+        "experimental": False,
+    },
+    "csv": {
+        "label": "CSV Import",
+        "category": "Files & Imports",
+        "description": "Import contacts, companies or deals from a CSV export (up to 5MB). "
+                       "Column mapping is auto-detected and can be overridden per upload.",
+        "source": None,           # no vault slot — the file is the data
+        "kind": "file",
+        "experimental": False,
+    },
+    "gohighlevel": {
+        "label": "GoHighLevel",
+        "category": "CRM & Marketing",
+        "description": "EXPERIMENTAL: sync contacts and opportunities from a GoHighLevel "
+                       "location (read-only — Uplift never writes back).",
+        "source": "gohighlevel",
+        "kind": "sync",
+        "experimental": True,
+    },
+    "stripe": {
+        "label": "Stripe (revenue data)",
+        "category": "Payments & Revenue",
+        "description": "Pull customers, subscriptions and invoices from YOUR Stripe account "
+                       "for revenue views (read-only; connect your own restricted key — "
+                       "this is the tenant's key, never the platform's billing key).",
+        "source": "stripe",
+        "kind": "sync",
+        "experimental": False,
     },
 }
+
+# 5MB upload cap for POST /integrations/csv/import (mirrored in
+# ingest/connectors/csv_import.py MAX_CSV_BYTES — same image-fileset rationale).
+MAX_CSV_IMPORT_BYTES = 5 * 1024 * 1024
 
 
 # --------------------------------------------------------------------------- #
@@ -166,6 +215,11 @@ class IntegrationsDeps:
     # (tenant_id, integration_name) -> ingest.pipeline.SyncResult-shaped result.
     # None = sync unconfigured -> POST .../sync answers 503 (never a fake run).
     sync_runner: Callable[[str, str], Any] | None = None
+    # (tenant_id, entity, csv_bytes, mapping|None) -> report dict
+    # (ingest.connectors.csv_import.CsvImportReport shape). None = csv import
+    # unconfigured -> POST /integrations/csv/import answers 503 (a CSV "import"
+    # into throwaway in-memory stores would be a fake success).
+    csv_importer: Callable[[str, str, bytes, dict | None], Any] | None = None
 
 
 def _real_secrets_mode() -> bool:
@@ -198,8 +252,7 @@ def _build_sync_runner() -> Callable[[str, str], Any] | None:
 
     def run(tenant_id: str, name: str) -> Any:
         # tenant_id arrives from the VERIFIED claim (threaded by the route).
-        if name != "hubspot":
-            raise ValueError(f"no connector wired for integration {name!r}")
+        from ingest.connectors.registry import SYNC_SOURCES  # noqa: PLC0415
         from ingest.run_sync import (  # noqa: PLC0415 — boto3/psycopg2 only at call time
             build_embedder,
             build_raw_sink,
@@ -207,19 +260,63 @@ def _build_sync_runner() -> Callable[[str, str], Any] | None:
             run_one,
         )
 
+        if name not in SYNC_SOURCES:
+            raise ValueError(f"no sync connector wired for integration {name!r}")
         store, cursors = build_stores()
         return run_one(tenant_id, store=store, cursors=cursors,
-                       embedder=build_embedder(), raw_sink=build_raw_sink())
+                       embedder=build_embedder(), raw_sink=build_raw_sink(),
+                       source=name)
+
+    return run
+
+
+def _build_csv_importer() -> Callable[[str, str, bytes, dict | None], Any] | None:
+    """The default csv importer — wired ONLY under the ingest plane's own
+    deliberate master switch (INGEST_REAL_STORES), same rationale as the sync
+    runner: importing into the unswitched in-memory stores would "succeed"
+    while discarding every row (a fake success the draft-gate forbids).
+    Lazy AND absence-tolerant: no ingest/ in the image = no importer = the
+    route answers its honest 503."""
+    try:
+        from ingest.run_sync import real_mode  # noqa: PLC0415
+    except ImportError:
+        return None
+
+    if not real_mode():
+        return None
+
+    def run(tenant_id: str, entity: str, data: bytes, mapping: dict | None) -> Any:
+        # tenant_id arrives from the VERIFIED claim (threaded by the route).
+        from ingest.connectors.csv_import import import_csv  # noqa: PLC0415
+        from ingest.pipeline import InMemoryStructuredSink  # noqa: PLC0415
+        from ingest.run_sync import (  # noqa: PLC0415 — boto3/psycopg2 only at call time
+            build_embedder,
+            build_raw_sink,
+            build_stores,
+        )
+
+        store, cursors = build_stores()
+        # Structured sink stays in-memory in real mode too — same deliberate
+        # posture as ingest/run_sync.build_connector (the normalized rows carry
+        # source-ref columns the CRM tables don't have yet; `documents` is the
+        # real landing zone).
+        report = import_csv(
+            tenant_id, entity, data, mapping,
+            store=store, cursor_store=cursors, embedder=build_embedder(),
+            raw_sink=build_raw_sink(), structured_sink=InMemoryStructuredSink(),
+        )
+        return report.to_dict()
 
     return run
 
 
 def build_integrations_deps() -> IntegrationsDeps:
     """Env-built deps: real writer only under INTEGRATIONS_REAL_SECRETS; real
-    runner only under the ingest plane's own INGEST_REAL_STORES. All-unset =
-    all-None = every endpoint honest about being unconfigured."""
+    runner/importer only under the ingest plane's own INGEST_REAL_STORES.
+    All-unset = all-None = every endpoint honest about being unconfigured."""
     writer = Boto3SecretWriter() if _real_secrets_mode() else None
-    return IntegrationsDeps(secret_writer=writer, sync_runner=_build_sync_runner())
+    return IntegrationsDeps(secret_writer=writer, sync_runner=_build_sync_runner(),
+                            csv_importer=_build_csv_importer())
 
 
 # --------------------------------------------------------------------------- #
@@ -260,32 +357,46 @@ def mount_integrations(app: FastAPI, deps: IntegrationsDeps, current_tenant) -> 
         items = []
         for name, meta in KNOWN_INTEGRATIONS.items():
             connected: bool | None = None
-            if secrets_configured:
-                ref = _tenant_secret_ref(claims.tenant_id, meta["source"])  # claims ONLY
-                try:
-                    connected = bool(deps.secret_writer.secret_exists(ref))
-                except Exception as exc:  # noqa: BLE001 — a status read must not 500 the listing
-                    log.warning("integrations: status check failed for %s (%s)",
-                                ref, type(exc).__name__)
-                    connected = None
+            if meta["kind"] == "file":
+                # csv has no vault slot — it is always usable when the importer
+                # is wired ("available"), never "connected"/"not_connected".
+                status = "available" if deps.csv_importer is not None else "unknown"
+            else:
+                if secrets_configured:
+                    ref = _tenant_secret_ref(claims.tenant_id, meta["source"])  # claims ONLY
+                    try:
+                        connected = bool(deps.secret_writer.secret_exists(ref))
+                    except Exception as exc:  # noqa: BLE001 — a status read must not 500 the listing
+                        log.warning("integrations: status check failed for %s (%s)",
+                                    ref, type(exc).__name__)
+                        connected = None
+                status = _STATUS[connected]
             items.append({
                 "name": name,
                 "label": meta["label"],
                 "category": meta["category"],
                 "description": meta["description"],
-                "connected": connected,           # null = honestly unknown
-                "status": _STATUS[connected],
+                "kind": meta["kind"],
+                "experimental": meta["experimental"],
+                "connected": connected,           # null = honestly unknown / not applicable
+                "status": status,
             })
         return {
             "integrations": items,
             "secrets_configured": secrets_configured,
             "sync_configured": deps.sync_runner is not None,
+            "csv_import_configured": deps.csv_importer is not None,
         }
 
     @app.post("/integrations/{name}/credentials")
     def store_credentials(name: str, body: CredentialsBody,
                           claims: TenantClaims = Depends(current_tenant)):
         meta = _known_or_404(name)
+        if meta["kind"] == "file":
+            # csv has no vault slot — there is no credential to store, ever.
+            raise HTTPException(status_code=409, detail=(
+                f"{name} takes no credentials — upload data via POST /integrations/csv/import"
+            ))
         if deps.secret_writer is None:
             # Honest unconfigured answer — never pretend the token was vaulted.
             raise HTTPException(status_code=503, detail=(
@@ -309,6 +420,12 @@ def mount_integrations(app: FastAPI, deps: IntegrationsDeps, current_tenant) -> 
     @app.post("/integrations/{name}/sync")
     def kick_sync(name: str, claims: TenantClaims = Depends(current_tenant)):
         meta = _known_or_404(name)
+        if meta["kind"] == "file":
+            # csv is push-style: nothing to pull — point at the import endpoint.
+            raise HTTPException(status_code=409, detail=(
+                f"{name} is not a pull-sync source — upload data via "
+                "POST /integrations/csv/import"
+            ))
         if deps.sync_runner is None:
             # Honest unconfigured answer — never a fake zero-record "success".
             raise HTTPException(status_code=503, detail=(
@@ -345,3 +462,65 @@ def mount_integrations(app: FastAPI, deps: IntegrationsDeps, current_tenant) -> 
                       claims.tenant_id, name, type(exc).__name__)
             raise HTTPException(status_code=502, detail="sync failed")
         return {"name": name, "result": _result_dict(res)}
+
+    @app.post("/integrations/csv/import")
+    async def csv_import(
+        file: UploadFile = File(...),
+        entity: str = Form(...),
+        mapping: str | None = Form(None),
+        claims: TenantClaims = Depends(current_tenant),
+    ):
+        """Import a contacts/companies/deals CSV for the CLAIMS tenant.
+
+        Multipart form: `file` (the CSV, 5MB cap), `entity`
+        (contacts|companies|deals), optional `mapping` (a JSON object of
+        canonical field -> CSV column overriding the header heuristics).
+        Rows land through the existing tenant-scoped ingest path; the response
+        carries a per-row error report. THE TRUST RULE: the tenant comes ONLY
+        from the verified claims — the form carries no tenant field and any
+        smuggled one is never read.
+        """
+        if entity not in ("contacts", "companies", "deals"):
+            raise HTTPException(status_code=422, detail=(
+                f"unknown entity {entity!r} — expected contacts, companies or deals"
+            ))
+        mapping_dict: dict | None = None
+        if mapping:
+            try:
+                mapping_dict = json.loads(mapping)
+            except ValueError:
+                raise HTTPException(status_code=422, detail="mapping must be a JSON object")
+            if not isinstance(mapping_dict, dict) or not all(
+                isinstance(k, str) and isinstance(v, str) for k, v in mapping_dict.items()
+            ):
+                raise HTTPException(
+                    status_code=422,
+                    detail="mapping must be a JSON object of field -> CSV column",
+                )
+        if deps.csv_importer is None:
+            # Honest unconfigured answer — never pretend rows were imported.
+            raise HTTPException(status_code=503, detail=(
+                "csv import not configured — the ingestion plane is not wired on "
+                "this task (INGEST_REAL_STORES unset; see infra/REQUESTS.md REQ-004)"
+            ))
+        # 5MB cap: read one byte past the limit so an oversized upload is
+        # detected without buffering the whole excess.
+        data = await file.read(MAX_CSV_IMPORT_BYTES + 1)
+        if len(data) > MAX_CSV_IMPORT_BYTES:
+            raise HTTPException(status_code=413, detail=(
+                f"file exceeds the {MAX_CSV_IMPORT_BYTES // (1024 * 1024)}MB import cap"
+            ))
+        if not data:
+            raise HTTPException(status_code=422, detail="empty file")
+        try:
+            # tenant from the VERIFIED claim only.
+            report = deps.csv_importer(claims.tenant_id, entity, data, mapping_dict)
+        except ValueError as exc:
+            # Whole-file problems (CsvImportError subclasses ValueError):
+            # encoding, no header, unusable mapping — the caller can fix these.
+            raise HTTPException(status_code=422, detail=str(exc))
+        except Exception as exc:  # noqa: BLE001 — surface as 502, generic detail
+            log.error("integrations: csv import failed for tenant %s entity %s (%s)",
+                      claims.tenant_id, entity, type(exc).__name__)
+            raise HTTPException(status_code=502, detail="csv import failed")
+        return {"name": "csv", "report": _result_dict(report)}
