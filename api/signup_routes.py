@@ -98,6 +98,11 @@ class SignupDeps:
 class SignupBody(BaseModel):
     email: str
     phone: str
+    # Optional user-chosen password — carried securely over HTTPS and passed directly to
+    # Cognito via admin_set_user_password(Permanent=True). NEVER logged, stored in the DB,
+    # or echoed in the response. When absent (older clients / back-compat), provisioning
+    # falls back to the existing generated-password + forgot-password onboarding path.
+    password: str | None = None
 
 
 class VerifyEmailBody(BaseModel):
@@ -164,6 +169,12 @@ def mount_signup(app: FastAPI, deps: SignupDeps) -> None:
                 raise HTTPException(status_code=422, detail=str(e))
         account_id = deps.new_account_id()
         acct = deps.accounts.create(account_id, body.email, body.phone)
+        # If the client supplied a password, set it as the user's permanent Cognito credential
+        # immediately — so first login works with what they typed. The password is consumed here
+        # and never stored, logged, or returned. Older clients (no password field) fall back to
+        # the existing generated-password + forgot-password onboarding path at provisioning time.
+        if body.password:
+            deps.accounts.cognito.set_signup_password(acct.cognito_sub, body.password)
         out = {"account_id": acct.id, "state": acct.state.value}
         # When session tokens are wired, hand the SPA a `checkout`-scoped session token so it never
         # has to carry the raw account_id as a bearer secret on the follow-up calls. Returned in

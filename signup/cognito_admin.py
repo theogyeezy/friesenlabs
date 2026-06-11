@@ -98,6 +98,35 @@ class CognitoAdminClient:
             UserAttributes=[{"Name": "custom:tenant_id", "Value": str(tenant_id)}],
         )
 
+    def set_signup_password(self, sub: str, password: str) -> None:
+        """Set the user's chosen password immediately at signup (never log or store it).
+
+        Called from the signup route when the user supplies a password during account creation.
+        Uses ``admin_set_user_password(Permanent=True)`` to flip the admin-created user from
+        ``FORCE_CHANGE_PASSWORD`` straight to ``CONFIRMED`` with the user's real credential —
+        so first login works with what they typed, without any "Forgot password" detour.
+
+        Security contract:
+          * The password is received over HTTPS, held only in this call frame, and passed
+            directly to Cognito — it is NEVER logged, stored in the DB, or echoed in a response.
+          * ``email_verified`` is NOT set here (email is not yet verified at signup time; the
+            provisioning ``confirm()`` step sets it after verify-before-pay is satisfied).
+          * Idempotent: if the user is already CONFIRMED (e.g. from a duplicate signup call),
+            this is a no-op so a replayed request never clobbers a password the user has set.
+        """
+        client = self._cidp()
+        # Guard: never clobber a password after the user is already CONFIRMED (idempotency).
+        if hasattr(client, "admin_get_user"):
+            user = client.admin_get_user(UserPoolId=self._pool_id, Username=sub)
+            if user.get("UserStatus", "") == "CONFIRMED":
+                return
+        client.admin_set_user_password(
+            UserPoolId=self._pool_id,
+            Username=sub,
+            Password=password,   # caller's credential — never logged or stored
+            Permanent=True,
+        )
+
     def confirm(self, sub: str) -> None:
         """Flip the user usable after provisioning (step 4, after set_tenant_id).
 
@@ -107,14 +136,17 @@ class CognitoAdminClient:
         transitions SELF-signed-up UNCONFIRMED users). The act that actually CONFIRMs an
         admin-created user is ``admin_set_user_password(..., Permanent=True)``:
 
-          * we check the live ``UserStatus`` first (idempotent: CONFIRMED is a no-op replay,
-            and a re-run can never clobber a password the user has since set themselves);
-          * FORCE_CHANGE_PASSWORD -> set a GENERATED, single-use, immediately-discarded strong
-            password (Permanent=True flips the user to CONFIRMED) and mark ``email_verified``
-            true — the address WAS verified, by OUR signed Resend link (verify-before-pay), so
-            the user onboards via the Hosted UI "Forgot your password?" flow, which emails a
-            Cognito reset code to that verified address. No credential ever travels by email
-            or persists anywhere;
+          * we check the live ``UserStatus`` first;
+          * CONFIRMED (either via an earlier ``set_signup_password`` call or a re-run) — the
+            user already has a usable credential. We still set ``email_verified`` true here
+            (verify-before-pay is satisfied by this point), so the Hosted UI forgot-password
+            flow can deliver a reset code if ever needed. The password itself is never touched
+            (a re-run can never clobber a password the user has since changed);
+          * FORCE_CHANGE_PASSWORD — no user-supplied password was stored (older client or
+            back-compat): set a GENERATED, single-use, immediately-discarded strong password
+            (Permanent=True flips the user to CONFIRMED) and mark ``email_verified`` true.
+            The user onboards via the Hosted UI "Forgot your password?" flow. No credential
+            ever travels by email or persists anywhere;
           * the legacy UNCONFIRMED path (self-signup pools) keeps the old
             ``admin_confirm_sign_up`` + narrow already-CONFIRMED tolerance.
         """
@@ -124,9 +156,20 @@ class CognitoAdminClient:
             user = client.admin_get_user(UserPoolId=self._pool_id, Username=sub)
             status = user.get("UserStatus", "")
         if status == "CONFIRMED":
-            return  # idempotent replay — and never reset a password the user now owns
+            # The user already has a real credential (either from set_signup_password or a prior
+            # confirm run). Never reset the password. But DO set email_verified=true: by the
+            # time confirm() is called (provisioning step 4), verify-before-pay is satisfied,
+            # and the Cognito flag must be true for the Hosted UI forgot-password flow.
+            client.admin_update_user_attributes(
+                UserPoolId=self._pool_id,
+                Username=sub,
+                UserAttributes=[{"Name": "email_verified", "Value": "true"}],
+            )
+            return
         if status == "FORCE_CHANGE_PASSWORD":
-            # The documented working path for admin-created users + the Hosted UI.
+            # Back-compat / no user-supplied password: set a generated throwaway credential to
+            # flip the user to CONFIRMED (the documented working path for admin-created users).
+            # The generated password is discarded — never stored or sent.
             client.admin_set_user_password(
                 UserPoolId=self._pool_id,
                 Username=sub,

@@ -23,9 +23,10 @@
 //   7. success      done; route to login
 //
 // TRUST + PRIVACY RULES:
-//   - The password never leaves the browser: the API contract takes only
-//     {email, phone}; the password input is local-only and is NEVER sent, logged,
-//     or captured into analytics. The meter reads its length/variety in memory.
+//   - The password is sent exactly once — in the POST /signup body, over HTTPS — so the
+//     server can set it as the user's permanent Cognito credential. It is NEVER logged,
+//     stored in the DB, or echoed in any response. The strength meter reads only derived
+//     signal (length/variety) in memory; after submission the state is zeroed.
 //   - The verify token and OTP code go to their endpoints and are never rendered
 //     back, stored, or captured.
 //   - The client never sends a tenant_id (see client.ts trust rule).
@@ -234,9 +235,14 @@ export function SignupFlow({ client, analytics, pollMs = 600 }: SignupFlowProps)
     if (phone.replace(/\D/g, "").length < 7) return setError("Enter a valid phone number.");
     setBusy(true);
     try {
-      // Contract sends {email, phone} only. Password stays in the browser.
-      const res = await api.signup({ email, phone });
+      // Send email, phone, AND the user's chosen password over HTTPS. The server passes
+      // the password directly to Cognito admin_set_user_password(Permanent=True) so first
+      // login works with what was typed. The password is never logged, stored in the DB, or
+      // echoed in any response. It is zeroed from component state after submission below.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const res = await api.signup({ email, phone, password } as any);
       setAccountId(res.account_id);
+      setPassword(""); // zero out after submit — no longer needed in component state
       ph.capture("signup_started", { surface: "signup" });
       setStep("email");
     } catch (e) {

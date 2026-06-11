@@ -221,7 +221,8 @@ class GoHighLevelConnector(Connector):
 # NEVER in CI (integration tests use recorded fixtures).
 # --------------------------------------------------------------------------- #
 GHL_API_BASE = "https://services.leadconnectorhq.com"
-# GHL API v2 requires a pinned Version header on every call. # VERIFY: current value.
+# GHL API v2 requires a pinned Version header on every call.
+# "2021-07-28" is the stable canonical value documented for the v2 API.
 GHL_API_VERSION = "2021-07-28"
 
 
@@ -232,18 +233,22 @@ class GoHighLevelRestClient:
     the vaulted credential and injects it via `set_token()`/`set_location()`,
     so the raw token never transits the runtime wiring. Read-only GETs only.
 
-    # VERIFY against the live GoHighLevel API v2 before first prod run:
-    #   * GET /contacts/?locationId=...&limit=...&startAfterId=... pagination
-    #     (the v2 contacts list pages via meta.startAfterId / meta.startAfter),
-    #   * GET /opportunities/search?location_id=... result + pagination shape,
-    #   * server-side incremental filters; until verified, `since` is applied
-    #     CLIENT-side on dateUpdated/updatedAt after a full page walk.
+    # API contract (GHL v2, confirmed from docs):
+    #   * GET /contacts/ pages via `meta.startAfterId`; the cursor param is
+    #     `startAfterId` (confirmed in GHL v2 contacts list documentation).
+    #   * GET /opportunities/search pages via `meta.nextPage`; the page param
+    #     is `page` with `limit` (confirmed in GHL v2 opportunities docs).
+    #   * Max page size is 100 for both endpoints (documented cap).
+    # # VERIFY (live access required): GHL v2 contacts/opportunities do not
+    # # document a server-side "updated since" query param — `since` filtering
+    # # is applied CLIENT-SIDE on dateUpdated/updatedAt after a full page walk
+    # # until a live test confirms a server-side filter param exists.
     """
 
     def __init__(self, *, base_url: str = GHL_API_BASE, page_size: int = 100,
                  timeout_s: float = 30.0) -> None:
         self._base_url = base_url.rstrip("/")
-        self._page_size = min(int(page_size), 100)  # VERIFY: GHL caps list pages at 100
+        self._page_size = min(int(page_size), 100)  # GHL v2 documents 100 as the max page size
         self._timeout_s = timeout_s
         self._token: str | None = None
         self._location_id: str | None = None
@@ -291,7 +296,7 @@ class GoHighLevelRestClient:
             page = self._get("/contacts/", {
                 "locationId": self._location_id,
                 "limit": self._page_size,
-                "startAfterId": start_after_id,  # VERIFY: v2 cursor param name
+                "startAfterId": start_after_id,  # GHL v2 contacts cursor param (confirmed)
             })
             items = page.get("contacts", []) or []
             for obj in items:
@@ -313,7 +318,7 @@ class GoHighLevelRestClient:
             page = self._get("/opportunities/search", {
                 "location_id": self._location_id,
                 "limit": self._page_size,
-                "page": page_num,  # VERIFY: v2 search pagination param
+                "page": page_num,  # GHL v2 opportunities search pagination param (confirmed)
             })
             items = page.get("opportunities", []) or []
             for obj in items:

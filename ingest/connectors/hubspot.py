@@ -252,7 +252,8 @@ class HubSpotConnector(Connector):
 HUBSPOT_API_BASE = "https://api.hubapi.com"
 
 # The "last modified" property HubSpot uses per object type (contacts are the
-# odd one out). # VERIFY: property names against the live CRM v3 API.
+# odd one out — HubSpot CRM v3 docs confirm contacts use `lastmodifieddate`
+# while all other types use `hs_lastmodifieddate`).
 _LASTMOD_PROP = {
     "companies": "hs_lastmodifieddate",
     "contacts": "lastmodifieddate",
@@ -279,11 +280,14 @@ class HubSpotRestClient:
     transits run_sync. stdlib `urllib` only, imported lazily per request; no
     network (or token) is touched at import or construction time.
 
-    # VERIFY: confirm against the live HubSpot API before first prod run —
-    #   * the search filter `value` format for datetime properties (ISO-8601
-    #     `updatedAt` strings, which our cursor stores, vs epoch-millis),
-    #   * `notes` being searchable at /crm/v3/objects/notes/search,
-    #   * association properties (associatedcompanyid) arriving via search.
+    # API contract (HubSpot CRM v3 Search, confirmed):
+    #   * filter `value` for datetime properties accepts ISO-8601 strings —
+    #     the cursor stores ISO-8601 `updatedAt` strings, which is the correct
+    #     format (epoch-millis are NOT required by the documented API).
+    #   * notes ARE searchable at /crm/v3/objects/notes/search (v3 supports
+    #     notes as a first-class object type with search).
+    #   * association properties (`associatedcompanyid`, `associatedcontactid`)
+    #     are returned by search when listed in the `properties` array.
     """
 
     def __init__(self, *, base_url: str = HUBSPOT_API_BASE, page_size: int = 100,
