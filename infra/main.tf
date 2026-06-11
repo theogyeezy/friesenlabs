@@ -209,16 +209,13 @@ module "ingest" {
   log_retention_days = var.log_retention_days
 }
 
-# --- Phase 8: Cortex scheduled retrain ---
-module "cortex" {
-  source  = "./modules/cortex"
-  project = var.project
-}
-
 # --- Scheduled jobs: Cortex retrain fan-out + playbook trigger dispatcher ---
 # The two EventBridge → Fargate schedules that fire code which already existed (the retrain
 # fan-out + the playbook dispatcher). Both DISABLED until their flag flips. Also creates the
-# CORTEX_SIGNING_KEY secret (value set out-of-band).
+# CORTEX_SIGNING_KEY secret (value set out-of-band) and the Cortex drift SNS topic (the retrain
+# fan-out publishes positive live-drift verdicts to it). Supersedes the deleted legacy
+# module "cortex" (a target-less rule + an unsubscribed topic — the drift topic now lives here,
+# wired to a real publisher).
 module "scheduled_jobs" {
   source                       = "./modules/scheduled_jobs"
   project                      = var.project
@@ -236,6 +233,7 @@ module "scheduled_jobs" {
   cortex_signing_key_available = var.cortex_signing_key_available
   dispatch_enabled             = var.playbook_dispatch_enabled
   playbook_dispatch_tenants    = var.playbook_dispatch_tenants
+  drift_alert_email            = var.cortex_drift_alert_email
   log_retention_days           = var.log_retention_days
 }
 

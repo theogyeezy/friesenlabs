@@ -355,6 +355,12 @@ variable "cortex_signing_key_available" {
   description = "Inject CORTEX_SIGNING_KEY into the retrain task (a valueFrom on the empty secret blocks startup)."
 }
 
+variable "cortex_drift_alert_email" {
+  type        = string
+  default     = "" # "" => the drift SNS topic exists but no subscription is created (owner subscribes)
+  description = "Email subscribed to the Cortex drift SNS topic; the retrain fan-out publishes positive live-drift verdicts there."
+}
+
 variable "playbook_dispatch_enabled" {
   type        = bool
   default     = false # the EventBridge playbook dispatcher fires only when an owner flips this

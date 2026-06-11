@@ -10,7 +10,7 @@ import random
 from dataclasses import dataclass
 
 from . import metrics
-from .estimator import Estimator, LogisticRegression, MajorityBaseline
+from .estimator import Estimator, GradientBoostedTrees, LogisticRegression, MajorityBaseline
 
 
 @dataclass
@@ -34,8 +34,10 @@ def _split(X, y, holdout: float, seed: int):
 
 
 def _candidates(seed: int) -> list[Estimator]:
-    # Production: LightGBM + XGBoost here too (same protocol). Offline: logreg vs the majority floor.
-    return [LogisticRegression(seed=seed), MajorityBaseline()]
+    # The real bake-off: a linear model + a gradient-boosted tree ensemble, floored by the majority
+    # baseline. The held-out AUC picks the winner per tenant (a future LightGBM/XGBoost candidate
+    # slots in here behind the same protocol).
+    return [LogisticRegression(seed=seed), GradientBoostedTrees(seed=seed), MajorityBaseline()]
 
 
 def train(X: list[list[float]], y: list[int], *, holdout: float = 0.25, seed: int = 0) -> TrainedModel:

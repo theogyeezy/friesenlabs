@@ -1,6 +1,6 @@
 """Cortex retrain FAN-OUT — retrain every tenant that has a model in the registry.
 
-The EventBridge retrain rule (infra/modules/cortex) fires ONCE on its schedule, but each
+The EventBridge retrain rule (infra/modules/scheduled_jobs) fires ONCE on its schedule, but each
 tenant needs its OWN retrain. This is the per-tenant fan-out driver the schedule's target runs:
 
     python scripts/ml/retrain_all.py            # every tenant the registry knows
@@ -30,6 +30,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
 from ml.data_loader import PgTrainingDataLoader  # noqa: E402
+from ml.drift_alert import from_env as drift_notifier_from_env  # noqa: E402
 from ml.predictions import PgPredictionLog  # noqa: E402
 from ml.registry import SigningKeyError, registry_from_env  # noqa: E402
 from ml.retrain import run_scheduled_retrain  # noqa: E402
@@ -46,13 +47,25 @@ def resolve_tenants(registry, explicit: list[str] | None) -> list[str]:
     return list(dict.fromkeys(registry.tenant_ids()))
 
 
-def retrain_one(registry, loader, tenant_id: str, *, prediction_log, seed: int) -> dict:
-    """Retrain ONE tenant; contain any failure into a structured result (never raises)."""
+def retrain_one(registry, loader, tenant_id: str, *, prediction_log, seed: int,
+                drift_notifier=None) -> dict:
+    """Retrain ONE tenant; contain any failure into a structured result (never raises).
+
+    When a drift notifier is wired AND this tenant's live drift verdict is positive, publish a
+    best-effort SNS alert. A notify failure is recorded on the result but never fails the tenant
+    (the retrain itself already succeeded — the alert is downstream)."""
     try:
         result = run_scheduled_retrain(
             registry, loader, tenant_id, prediction_log=prediction_log, seed=seed,
         )
-        return {"tenant": tenant_id, "ok": True, "result": result}
+        out = {"tenant": tenant_id, "ok": True, "result": result}
+        if drift_notifier is not None:
+            try:
+                if drift_notifier.notify(tenant_id, result.get("drift") or {}):
+                    out["drift_alerted"] = True
+            except Exception as exc:  # noqa: BLE001 — alerting is downstream of a successful retrain
+                out["drift_alert_error"] = f"{type(exc).__name__}: {exc}"
+        return out
     except SigningKeyError as exc:
         # A missing/!invalid CORTEX_SIGNING_KEY is a deployment misconfig — it fails identically
         # for every tenant, so surface it but keep going (the summary makes it obvious).
@@ -87,21 +100,29 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     loader = PgTrainingDataLoader(dsn)
     prediction_log = PgPredictionLog(dsn)
+    # Drift alerting: inert (None) unless CORTEX_DRIFT_TOPIC_ARN is set — then a positive live-drift
+    # verdict publishes to the Cortex drift SNS topic so an operator is actually paged.
+    drift_notifier = drift_notifier_from_env(os.environ)
 
     tenants = resolve_tenants(registry, args.tenant)
     if not tenants:
         print("[retrain-all] nothing to do — the registry knows no tenants yet")
         return 0
 
-    print(f"[retrain-all] retraining {len(tenants)} tenant(s)")
+    print(f"[retrain-all] retraining {len(tenants)} tenant(s)"
+          + ("" if drift_notifier else " (drift alerting OFF — no CORTEX_DRIFT_TOPIC_ARN)"))
     results = [
-        retrain_one(registry, loader, t, prediction_log=prediction_log, seed=args.seed)
+        retrain_one(registry, loader, t, prediction_log=prediction_log, seed=args.seed,
+                    drift_notifier=drift_notifier)
         for t in tenants
     ]
     failures = [r for r in results if not r["ok"]]
+    alerted = [r["tenant"] for r in results if r.get("drift_alerted")]
     for r in results:
         print(json.dumps(r, sort_keys=True, default=str))
 
+    if alerted:
+        print(f"[retrain-all] drift ALERT published for {len(alerted)} tenant(s): {', '.join(map(str, alerted))}")
     if failures:
         print(f"[retrain-all] {len(failures)}/{len(tenants)} tenant(s) FAILED")
         return 1

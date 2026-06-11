@@ -51,6 +51,10 @@ variable "playbook_dispatch_tenants" {
   type    = string
   default = "" # "" => dispatch logs 'nothing to do' and exits 0
 }
+variable "drift_alert_email" {
+  type    = string
+  default = "" # "" => the drift topic exists but no email subscription is created (owner subscribes)
+}
 variable "log_retention_days" {
   type    = number
   default = 30
@@ -62,6 +66,21 @@ data "aws_caller_identity" "current" {}
 resource "aws_secretsmanager_secret" "cortex_signing" {
   name        = "${var.project}/cortex-signing-key"
   description = "HMAC key for Cortex signed model artifacts (CORTEX_SIGNING_KEY). Value set out-of-band."
+}
+
+# --- Cortex drift alarm SNS topic — the retrain fan-out publishes a positive live-drift verdict
+# here so an operator is actually paged (the verdict was previously surfaced only in the UI). Moved
+# in from the (now-deleted) legacy module "cortex". A subscription is created only when an email is
+# provided; otherwise the topic exists for the owner to subscribe to (email/Slack/PagerDuty).
+resource "aws_sns_topic" "drift" {
+  name = "${var.project}-cortex-drift"
+}
+
+resource "aws_sns_topic_subscription" "drift_email" {
+  count     = var.drift_alert_email != "" ? 1 : 0
+  topic_arn = aws_sns_topic.drift.arn
+  protocol  = "email"
+  endpoint  = var.drift_alert_email
 }
 
 # --- shared assume-role docs -----------------------------------------------------------------
@@ -107,6 +126,9 @@ resource "aws_iam_role_policy" "retrain_task" {
     # registry bucket is wired (concat with []), mirroring ingest's raw-bucket conditional.
     Statement = concat(
       [{ Effect = "Allow", Action = ["sts:GetCallerIdentity"], Resource = "*" }],
+      # Publish drift alerts to the Cortex drift topic (best-effort; the fan-out degrades cleanly
+      # if this is ever denied, and stays inert unless CORTEX_DRIFT_TOPIC_ARN is injected below).
+      [{ Effect = "Allow", Action = ["sns:Publish"], Resource = aws_sns_topic.drift.arn }],
       var.cortex_s3_bucket != "" ? [
         {
           Effect = "Allow"
@@ -147,6 +169,8 @@ resource "aws_ecs_task_definition" "retrain" {
         { name = "DB_HOST", value = var.db_host },
         { name = "DB_NAME", value = "uplift" },
         { name = "DB_PORT", value = "5432" },
+        # When set, the fan-out publishes positive live-drift verdicts here (else alerting is inert).
+        { name = "CORTEX_DRIFT_TOPIC_ARN", value = aws_sns_topic.drift.arn },
       ]
       # CORTEX_SIGNING_KEY is injected ONLY when the owner has put a value in the secret and
       # flipped cortex_signing_key_available — a valueFrom on an EMPTY secret blocks task startup
@@ -173,9 +197,10 @@ resource "aws_ecs_task_definition" "retrain" {
 }
 
 resource "aws_cloudwatch_event_rule" "retrain" {
-  # NOTE: NOT "${var.project}-cortex-retrain" — that name is already owned by the (now superseded)
-  # legacy module "cortex" applied rule; EventBridge rule names are unique per acct/region, so the
-  # "-job" suffix avoids an apply-time collision. (Remove module "cortex" in a later cleanup PR.)
+  # Keeps the "-job" suffix: the legacy module "cortex" (now deleted) once owned the
+  # "${var.project}-cortex-retrain" rule name. If that rule was ever applied live, renaming back
+  # would force a destroy/create; the suffix is harmless, so it stays. (EventBridge rule names are
+  # unique per acct/region.)
   name                = "${var.project}-cortex-retrain-job"
   description         = "Per-tenant Cortex model retrain fan-out (the flywheel)."
   schedule_expression = var.retrain_schedule
@@ -348,3 +373,4 @@ resource "aws_cloudwatch_event_target" "dispatch" {
 output "cortex_signing_key_secret_arn" { value = aws_secretsmanager_secret.cortex_signing.arn }
 output "retrain_rule_name" { value = aws_cloudwatch_event_rule.retrain.name }
 output "dispatch_rule_name" { value = aws_cloudwatch_event_rule.dispatch.name }
+output "drift_topic_arn" { value = aws_sns_topic.drift.arn }

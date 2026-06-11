@@ -874,3 +874,25 @@ tiered builders in isolated worktrees → 3-haiku refute-by-default panel → bo
   (catalog normalization/routes/totals/price-resolution, GET/PUT incl. trust-rule + billing-wired
   PUT + non-fatal billing error, adapter add/remove/no-op/no-sub). Web typecheck + mock/real build
   green.
+
+## Cortex depth — estimator + features + drift alerting + infra cleanup — 2026-06-11
+- **Estimator bake-off upgraded:** added a real pure-Python **GradientBoostedTrees** (logistic-loss
+  GBDT over shallow CART trees) alongside the existing logistic regression, floored by the majority
+  baseline (`ml/estimator.py`, `ml/train.py`). The held-out-AUC bake-off keeps the winner per tenant;
+  the GBT captures feature interactions logreg can't (proven: out-separates logreg on an interaction
+  pattern). No new deps (stays GPU/heavy-dep-free + offline-testable).
+- **Feature set enriched 5→9:** added derived signal (log-amount, engagement velocity, recency flag,
+  contact-completeness) built only from fields both the training loader and `run_model` inference
+  already produce, so train/serve parity holds by construction (`ml/features.py`). APPEND-ONLY contract.
+- **Drift alerting wired:** `ml/drift_alert.py` publishes a positive live-drift verdict to the Cortex
+  drift SNS topic; the retrain fan-out (`scripts/ml/retrain_all.py`) calls it best-effort (alert
+  failure never fails the retrain). Inert without `CORTEX_DRIFT_TOPIC_ARN`. Infra: the drift topic +
+  an optional email subscription + `sns:Publish` grant + env injection now live in
+  `infra/modules/scheduled_jobs`; new `cortex_drift_alert_email` tfvar.
+- **Legacy infra removed:** deleted the dead, target-less `module "cortex"` (its drift topic moved to
+  `scheduled_jobs`, now wired to a real publisher). `terraform validate` clean.
+- **Tests:** `test_ml_estimator.py` (GBT learns/interaction/deterministic/proba-range + feature
+  contract), `test_ml_drift_alert.py` (publish-on-drift, no-page-when-fine, inert-without-arn),
+  extended `test_retrain_all.py` (alert path + non-fatal alert failure), updated `test_ml_train.py`.
+  Full ML suite green. **Still owner-gated:** S3 registry + signing-key value + retrain enable + a
+  drift subscription + one seeded retrain (GO_LIVE_CHECKLIST §5).

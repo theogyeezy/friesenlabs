@@ -27,7 +27,8 @@ def test_model_beats_random_on_holdout():
     X, y = features.featurize(recs), features.labels(recs)
     model = train.train(X, y, seed=0)
     assert model.metrics["auc"] > 0.7      # genuinely learned signal
-    assert model.estimator_name == "logreg"  # bake-off picked the real model over the baseline
+    # The bake-off picks a REAL learner over the majority floor — logreg or the GBT, on evidence.
+    assert model.estimator_name in ("logreg", "gbt")
 
 
 @pytest.mark.unit
