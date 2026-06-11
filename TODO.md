@@ -268,6 +268,68 @@ workspace-key-pool seeding.
   `screens/agents.tsx` "Add tool"/"Get more skills…" are toast-only dead ends; paid skills'
   "Get · $X" installs free with no payment path (`screens/studio.tsx:88`); unguarded
   `await askClaude` (`screens/studio.tsx:218`); autonomy/status toggles are local-state-only.
+## Switchboard customer-readiness audit — TODOs (2026-06-11, Lane Matt)
+
+From a release-readiness audit of the `integration` module ($29/mo, gates `integrations`;
+`api/integrations_routes.py` + `ingest/connectors/*` + `IntegrationsPanel.tsx`). All claims
+spot-checked against source; 135 Switchboard tests green locally (3 RLS-proof skips need
+`UPLIFT_TEST_DB_URL`). Full report: `docs/audits/switchboard-audit-2026-06-11.md`.
+**Verdict: real, well-built code (NOT a Sidecar-style empty SKU) — but not customer-ready.**
+The trust rule, secrets hygiene, honest-503 posture, registry parity, and the real-mode panel
+are all verified correct. The blockers are go-live wiring, marketing honesty, and the
+connect→sync product loop. Items already tracked under "Connectors & ingest" (live VERIFY
+pass, scheduler enablement) are cross-referenced, not duplicated.
+
+### P0 — before paying customers
+- [ ] **Prod is 100% dark while the SKU is sellable** — `infra/prod.auto.tfvars` carries none
+  of: `api_integrations_real` (credentials POST → 503, all statuses "unknown"), `INGEST_*` on
+  the API task (sync + CSV import → 503), `ingest_schedule_enabled`/`ingest_tenants` (nightly
+  rule DISABLED), `module_prices` → `STRIPE_PRICE_ID_MODULE_INTEGRATION` (the $29 is never
+  billed). A tenant can enable Switchboard in Settings today and every button 503s.
+  _(BLOCKED: Lane Nick flips + owner mints the Stripe Price; api half needs the live
+  put/create/describe_secret # VERIFY on first connect — `integrations_routes.py:163-165`.)_
+- [ ] **Fix the Switchboard marketing overclaims** (`web/src/screens/landing.tsx`) — "18+
+  tools" (~81/164/178) vs 4 real connectors; demo carousel shows Salesforce/Gmail/QuickBooks/
+  Slack which don't exist (~708); "Keep HubSpot, Salesforce, or Pipedrive" (~223 — only
+  HubSpot is real); "Two-way sync & write-back" (~83/164) against a deliberately read-only
+  backend. Align copy with the real catalog (HubSpot · CSV · GoHighLevel-experimental ·
+  Stripe-read, ingest-only) or clearly label the rest as roadmap. _(Pairs with the existing
+  P0 "Landing legal/honesty" item.)_
+- [ ] **Close the connect→sync loop** — connecting a credential enrolls a tenant in NOTHING:
+  the scheduler syncs only the hand-typed `INGEST_TENANTS` env list (`ingest/run_sync.py:198-237`)
+  and is DISABLED. Derive the nightly sync set from vaulted per-tenant credentials (or a
+  `connected_integrations` row written at credential-store time) so "Connect" actually leads
+  to data. Until then a vaulted token is write-only theater.
+- [ ] **Make API-kicked sync asynchronous + race-safe** — `POST /integrations/{name}/sync`
+  runs `run_one` inline in the request (`integrations_routes.py:253-268`): a large first
+  HubSpot pull will blow the ALB/request budget, and two clicks = two concurrent syncs racing
+  the same cursor. Enqueue to the worker / a one-off task with a job-status endpoint
+  (+ per-tenant+source dedupe); panel shows progress instead of blocking.
+
+### P1 — product completeness
+- [ ] **Disconnect/revoke** — add `DELETE /integrations/{name}/credentials` (+ panel button);
+  today a vaulted token can never be removed by the tenant.
+- [ ] **Account-delete must purge connector secrets** — `api/pg_account_delete.py` never
+  touches Secrets Manager, so `uplift/{tenant}/{source}` tokens survive GDPR deletion.
+- [ ] **Sync history / "last synced"** — persist per-run results (when/landed/skipped/errors)
+  + a GET endpoint; the panel currently shows only the in-flight response, so customers can't
+  tell whether their data is fresh.
+- [ ] **Verify-on-connect** — a wrong/revoked token is vaulted and reported "connected",
+  failing only at sync time. Probe the source with a cheap list call before storing (and keep
+  OAuth as the longer-term replacement for paste-a-token, per the original INT/P2 spec).
+
+### P2 — hygiene / staleness (small, code-only)
+- [ ] Fix the stale HOTFIX comment in `api/integrations_routes.py:46-54` — it claims the API
+  image does NOT bundle `ingest/`, but `api/Dockerfile:21` COPYs it now (keep the
+  boot-without-ingest regression test as an invariant; fix the prose).
+- [ ] Fix the `shared/modules.py` docstring — it promises a `web/src/modules.ts` mirror + a
+  pinning unit test; neither exists (the web gate is runtime-driven via `GET /account/modules`,
+  which is fine — fix the docstring or ship the mirror it promises).
+- [ ] Sweep the stale "Connectors & ingest" sub-bullets above: IAM broadening shipped (#235),
+  csv-card special-casing + `csvImport` client method + upload UI shipped (#228/#229),
+  PgStructuredSink shipped (#222). _(Lane Nick: also refresh the REQ-008 status note in
+  `infra/REQUESTS.md` — it still says hubspot-only IAM — and confirm the widened policy is
+  APPLIED live, not just merged.)_
 
 ## FLEETAGENT session follow-ups (2026-06-11)
 
