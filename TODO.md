@@ -199,20 +199,20 @@ tracked elsewhere in this file (seed the corpus, enable the scheduler, live-cita
 connector VERIFY/IAM, batch-embed live run) are NOT repeated below.
 
 ### P0 — before paying customers
-- [ ] **Give customers a path to a populated corpus** — the knowledge API is read-only, the
+- [x] **Give customers a path to a populated corpus** _(implemented in #251)_ — the knowledge API is read-only, the
   ingest scheduler is DISABLED, and seeding is operator-only, yet the empty state
   (`web/src/api/KnowledgeView.tsx:347-350`) promises the corpus "fills in automatically."
   Either ship a tenant-scoped document-add path (upload/paste → the existing
   chunk→embed→upsert pipeline) or make the auto-ingest promise real per tenant and point the
   empty state at connecting sources. Until one of these exists the tab is permanently empty
   for every real customer.
-- [ ] **Fix placeholder citation refs on the live path** — `conv/rag.py:106` `_normalize`
+- [x] **Fix placeholder citation refs on the live path** _(implemented in #251)_ — `conv/rag.py:106` `_normalize`
   checks `ref`/`id` but live `PgRagClient.search` returns **`ref_id`**
   (`api/pg_clients.py:330-337`), so every live citation reads `doc:0`-style positional refs
   and `source="rag"` discards the real source. One-line fix (`or hit.get("ref_id")` + carry
   the hit's source) + a regression test using the live hit shape (FakeRag fixtures returning
   `ref` keys are why tests miss it).
-- [ ] **Make grounding observable** — empty retrieval yields "No supporting material found."
+- [x] **Make grounding observable** _(implemented in #251)_ — empty retrieval yields "No supporting material found."
   with zero citations, indistinguishable from a refusal; `Turn.as_dict()`
   (`conv/session.py:87-99`) drops the `dropped` claims and no retrieval evidence is returned.
   Add `grounding_status` (`grounded` / `no_sources_found` / `synthesis_unavailable`) +
