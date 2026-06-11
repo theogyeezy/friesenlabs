@@ -76,11 +76,12 @@ from signup.agent_plane import AgentPlaneEnsure
 from signup.anthropic_admin import AnthropicAdminClient
 from signup.cognito_admin import CognitoAdminClient
 from signup.funnel import Funnel
-from signup.key_pool import PgWorkspaceKeyPool
+from signup.key_pool import InlineKeyMaterialError, PgWorkspaceKeyPool
 from signup.payment import PaymentService
 from signup.posthog_client import PostHogClient
 from signup.provisioning import Provisioner
 from signup.resend_sender import ResendEmailSender
+from signup.secrets import Boto3ProvisioningSecrets
 from signup.sms_sender import SnsSmsOtpSender
 from signup.store_pg import PgAccountStore, PgOtpStore, PgStripeEventLedger
 from signup.stripe_adapter import StripeAdapter
@@ -275,6 +276,35 @@ def _is_execution_already_exists(exc: Exception) -> bool:
     return False
 
 
+def _build_provisioning_secrets(cfg):
+    """Env-guarded provisioning Secrets-Manager seam (replaces the historic `_Noop`).
+
+    Provisioning step 2 now consumes a Secrets Manager *reference* from the key pool, so the seam
+    must support get (resolve the reference -> material), put (write the per-tenant secret), and
+    exists (idempotency). The REAL `signup.secrets.Boto3ProvisioningSecrets` (a thin composition
+    over the already-VERIFY'd write + read SM clients) is selected ONLY under the SIGNUP_REAL_DEPS
+    master switch — the deliberate Lane Nick go-live act. Everywhere else the _Noop stub stands
+    (and no key_pool is wired there, so nothing tries to resolve a reference). boto3 stays lazy:
+    building this never touches AWS."""
+    if cfg.signup_real_deps:
+        return Boto3ProvisioningSecrets(region=cfg.aws_region)
+    return _Noop()
+
+
+def _guard_no_inline_pool_material(key_pool) -> None:
+    """Prod startup guard: a pool row holding inline key material (legacy plaintext) is fatal —
+    the DB must never be the secret store. An InlineKeyMaterialError propagates (refuse to boot);
+    a transient DB error at construction does NOT (best-effort — the real guard re-runs every
+    consume via key_pool.consume, which raises the same error if it claims an inline row)."""
+    try:
+        key_pool.assert_no_inline_material()
+    except InlineKeyMaterialError:
+        raise
+    except Exception as e:  # noqa: BLE001 — DB not reachable at build time: don't crash boot
+        log.warning("workspace-key pool inline-material guard skipped (db not ready): %s: %s",
+                    type(e).__name__, e)
+
+
 def _build_agent_plane(cfg, workspace_store):
     """Env-guarded agent-plane seam (provisioning step 3) — EAGER per ratified #123
     (docs/decisions/agent-plane-ensure-eager-vs-lazy.md): the roster is created at signup,
@@ -383,9 +413,21 @@ def build_provisioner(workspace_store=None, *, store=None, cognito=None, email_s
     # step 2 consumes a Console-pre-minted key per tenant; an empty pool parks the signup as
     # pool_empty. None = the legacy admin-mint seam (offline/unconfigured stays all-stub).
     key_pool = PgWorkspaceKeyPool(dsn) if dsn else None
+    if key_pool is not None:
+        # Prod startup guard (security fix): refuse to serve provisioning if the pool table still
+        # holds inline key material (a legacy plaintext pool). The DB must never be the secret
+        # store — re-load via scripts/ops/load_workspace_keys.py so material lives in Secrets
+        # Manager and only a reference remains. Best-effort: a DB hiccup at construction must not
+        # crash boot, but an InlineKeyMaterialError (material actually present) propagates.
+        _guard_no_inline_pool_material(key_pool)
+    # The REAL Secrets-Manager seam (this replaces the historic _Noop): the pool hands provisioning
+    # a Secrets Manager *reference*, so step 2 must resolve it (secrets.get) and write the per-tenant
+    # secret (secrets.put). Selected under the master switch; offline/unconfigured stays the _Noop
+    # stub (no key_pool there either, so nothing tries to resolve a reference).
+    secrets = _build_provisioning_secrets(cfg)
     return Provisioner(
         store=store, mint_tenant_id=lambda aid: str(uuid.uuid4()), db=_Noop(),
-        anthropic_admin=anthropic_admin, secrets=_Noop(), cognito=cognito, cube=_Noop(),
+        anthropic_admin=anthropic_admin, secrets=secrets, cognito=cognito, cube=_Noop(),
         resend=email_sender, agent_plane=_build_agent_plane(cfg, workspace_store),
         workspace_store=workspace_store,
         refund=refund, funnel=funnel, tenant_defaults=tenant_defaults, key_pool=key_pool,
