@@ -38,9 +38,14 @@ def _fake_stripe(calls, *, event=None):
             raise FakeSignatureError("signature mismatch")
         return event or {"type": "checkout.session.completed", "data": {"object": {}}}
 
+    def portal_create(**kw):
+        calls.append(("billing_portal.Session.create", kw))
+        return {"id": "bps_789", "url": "https://billing.stripe.com/p/session/bps_789"}
+
     return types.SimpleNamespace(
         Customer=types.SimpleNamespace(create=customer_create),
         checkout=types.SimpleNamespace(Session=types.SimpleNamespace(create=session_create)),
+        billing_portal=types.SimpleNamespace(Session=types.SimpleNamespace(create=portal_create)),
         Webhook=types.SimpleNamespace(construct_event=construct_event),
     )
 
@@ -196,6 +201,48 @@ def test_unconfigured_api_key_never_touches_the_lib():
         adapter.create_checkout_session(customer="c", plan="team",
                                         client_reference_id="a", idempotency_key="i")
     assert calls == []
+
+
+# ---------------- billing portal sessions ----------------
+@pytest.mark.unit
+def test_billing_portal_session_passes_customer_and_return_url():
+    calls = []
+    adapter = _adapter(calls)
+    got = adapter.create_billing_portal_session(
+        customer="cus_42", return_url="https://app.example/settings/billing")
+    assert got == {"id": "bps_789", "url": "https://billing.stripe.com/p/session/bps_789"}
+    name, kw = calls[0]
+    assert name == "billing_portal.Session.create"
+    assert kw["customer"] == "cus_42"
+    assert kw["return_url"] == "https://app.example/settings/billing"
+    assert kw["api_key"] == "sk_test_injected"   # per-call key, injected — never global/hardcoded
+
+
+@pytest.mark.unit
+def test_billing_portal_empty_return_url_becomes_none():
+    calls = []
+    adapter = _adapter(calls)
+    adapter.create_billing_portal_session(customer="cus_42", return_url="")
+    _, kw = calls[0]
+    assert kw["return_url"] is None             # Stripe accepts None; portal still works
+
+
+@pytest.mark.unit
+def test_billing_portal_unconfigured_never_touches_the_lib():
+    calls = []
+    adapter = _adapter(calls, api_key="")
+    with pytest.raises(StripeNotConfiguredError):
+        adapter.create_billing_portal_session(customer="cus_42", return_url="https://x")
+    assert calls == []
+
+
+@pytest.mark.unit
+def test_billing_portal_requires_a_customer_id():
+    calls = []
+    adapter = _adapter(calls)
+    with pytest.raises(ValueError, match="customer id"):
+        adapter.create_billing_portal_session(customer="", return_url="https://x")
+    assert calls == []                          # no Stripe call without a customer
 
 
 # ---------------- the exact PaymentService call-site contract ----------------

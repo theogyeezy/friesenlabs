@@ -332,3 +332,80 @@ def control_global_operator_tenants() -> frozenset[str]:
     case folding: tenant ids must match the verified claim byte-for-byte)."""
     raw = os.environ.get(ENV_CONTROL_GLOBAL_OPERATOR_TENANTS, "")
     return frozenset(t.strip() for t in raw.split(",") if t.strip())
+
+
+# --- Per-tenant rate limiting + plan-tier usage quotas + cost attribution -------------------
+# --- (api/limits.py middleware + api/usage_routes.py). NEW deliberate names (deploy invariance:
+# --- new behavior never keys off env the live tasks already inject). EVERY value below has a
+# --- safe built-in default, so the middleware ships ON with sane limits even with zero env set —
+# --- and each is env-OVERRIDABLE. The plan tier of a request's tenant is resolved from the
+# --- accounts row (signup plane) where available; an unknown/unprovisioned tenant falls back to
+# --- the most generous tier so a missing row never wrongly throttles a paying customer (the AWS
+# --- WAF rate rule remains the real flood gate; this is per-tenant fairness, not the DoS edge).
+PLAN_TIERS = ("starter", "team", "scale")
+
+# Per-tenant request rate limit (sliding window). Requests/minute per plan tier.
+_DEFAULT_RATE_PER_MINUTE = {"starter": 120, "team": 600, "scale": 3000}
+# plan -> env var carrying the requests/minute override.
+RATE_LIMIT_PER_MINUTE_ENV = {
+    "starter": "RATE_LIMIT_STARTER_PER_MINUTE",
+    "team": "RATE_LIMIT_TEAM_PER_MINUTE",
+    "scale": "RATE_LIMIT_SCALE_PER_MINUTE",
+}
+# Monthly usage quota (messages + agent_actions counted together against the cap) per plan tier.
+# A <= 0 override = UNLIMITED (the cap is not enforced) — a deliberate "off" value.
+_DEFAULT_MONTHLY_QUOTA = {"starter": 5_000, "team": 50_000, "scale": 500_000}
+QUOTA_MONTHLY_ENV = {
+    "starter": "QUOTA_STARTER_MONTHLY",
+    "team": "QUOTA_TEAM_MONTHLY",
+    "scale": "QUOTA_SCALE_MONTHLY",
+}
+# Quota enforcement mode: "block" (429 once the cap is hit) or "warn" (never blocks — GET /usage
+# reports over_quota and the gate logs, but the request proceeds). Junk/unset -> "block" (fail
+# closed). A NEW deliberate name; plain config, never a secret.
+ENV_QUOTA_ENFORCEMENT = "QUOTA_ENFORCEMENT"
+# Master switch to DISABLE the rate-limit + quota middleware entirely (exactly "true"/"1" turns it
+# OFF). Default unset = the middleware is ON. Its own deliberate name, defaulting to the
+# protective posture (never key a safety control off env the live task already injects).
+ENV_TENANT_LIMITS_DISABLED = "TENANT_LIMITS_DISABLED"
+
+
+def _generous_tier() -> str:
+    """The most generous plan tier (the fallback for an unknown/unprovisioned tenant — never
+    throttle a paying customer harder because their accounts row is missing)."""
+    return max(PLAN_TIERS, key=lambda p: _DEFAULT_RATE_PER_MINUTE[p])
+
+
+def normalize_plan(plan: str | None) -> str:
+    """Coerce an arbitrary plan label to one of PLAN_TIERS. Unknown/None -> the most generous
+    tier (fail OPEN for fairness — the quota cap + WAF still bound abuse)."""
+    p = (plan or "").strip().lower()
+    return p if p in PLAN_TIERS else _generous_tier()
+
+
+def rate_limit_per_minute(plan: str | None) -> int:
+    """Requests/minute for a plan tier, env-overridable (RATE_LIMIT_<TIER>_PER_MINUTE).
+    Junk/unset override -> the built-in default; a non-positive override clamps to 1."""
+    tier = normalize_plan(plan)
+    val = _int_env(RATE_LIMIT_PER_MINUTE_ENV[tier], _DEFAULT_RATE_PER_MINUTE[tier])
+    return max(1, val)
+
+
+def monthly_quota(plan: str | None) -> int | None:
+    """Monthly usage cap (messages + agent_actions) for a plan tier, env-overridable
+    (QUOTA_<TIER>_MONTHLY). Returns None for UNLIMITED (a <= 0 override deliberately disables the
+    cap); junk/unset -> the built-in default."""
+    tier = normalize_plan(plan)
+    val = _int_env(QUOTA_MONTHLY_ENV[tier], _DEFAULT_MONTHLY_QUOTA[tier])
+    return None if val <= 0 else val
+
+
+def quota_enforcement() -> str:
+    """'block' (default) or 'warn'. Anything but exactly 'warn' -> 'block' (fail closed: an
+    unrecognized mode must enforce, never silently let usage run away)."""
+    return "warn" if os.environ.get(ENV_QUOTA_ENFORCEMENT, "").strip().lower() == "warn" else "block"
+
+
+def tenant_limits_enabled() -> bool:
+    """True unless TENANT_LIMITS_DISABLED is exactly 'true'/'1' (the middleware ships ON)."""
+    return not _switch_env(ENV_TENANT_LIMITS_DISABLED)

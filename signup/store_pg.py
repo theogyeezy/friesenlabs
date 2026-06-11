@@ -151,6 +151,16 @@ class PgAccountStore(_PgBase):
             row = cur.fetchone()
         return _row_to_account(dict(row)) if row else None
 
+    def get_by_tenant_id(self, tenant_id: str) -> Account | None:
+        # The BILLING-PORTAL resolver (api/billing_routes.py): the authed request carries only the
+        # verified Cognito custom:tenant_id claim — the provisioner-minted tenant_id stamped on the
+        # account row at Step 55 — so the account (and its stripe_customer_id) is found by tenant_id,
+        # never by account_id from the client. tenant_id is UNIQUE per provisioned account.
+        with self._tx() as cur:
+            cur.execute("SELECT * FROM accounts WHERE tenant_id = %s", (str(tenant_id),))
+            row = cur.fetchone()
+        return _row_to_account(dict(row)) if row else None
+
     def insert(self, acct: Account) -> None:
         # ON CONFLICT (id) DO NOTHING: AccountService.create is idempotent by account_id; a raced
         # re-submission must not raise. A raced DUPLICATE EMAIL still surfaces as the unique-
@@ -197,6 +207,33 @@ class PgAccountStore(_PgBase):
                         (str(account_id),))
             row = cur.fetchone()
         rec = row.get("ci") if row else None
+        return dict(rec) if rec else None
+
+    def set_billing_status(self, account_id: str, status: str, *, reason: str = "") -> None:
+        # Persist the post-checkout subscription lifecycle state (active / past_due / canceled)
+        # the cancellation webhook flips, via the SAME atomic single-statement merge the OTP +
+        # checkout-intent writers use — no read-modify-write window, and PgAccountStore's other
+        # top-level keys (and 'otp') survive untouched. Idempotent: re-writing the same status is
+        # a harmless no-op overwrite. The app reads it back via get_billing_status so a cancelled
+        # tenant can be reflected in a grace/cancelled state. NOTE: this does NOT touch the
+        # account `status` column (the signup-lifecycle State machine) — billing lifecycle and
+        # provisioning lifecycle are deliberately separate axes (an ACTIVE provisioned tenant whose
+        # subscription later cancels stays ACTIVE-but-billing-canceled).
+        record = {"status": str(status), "reason": str(reason)}
+        with self._tx() as cur:
+            cur.execute(
+                "UPDATE accounts SET "
+                "meta = meta || jsonb_build_object('billing_status', %s::jsonb), "
+                "updated_at = now() WHERE id = %s",
+                (self._Json(record), str(account_id)),
+            )
+
+    def get_billing_status(self, account_id: str) -> dict | None:
+        with self._tx() as cur:
+            cur.execute("SELECT meta->'billing_status' AS bs FROM accounts WHERE id = %s",
+                        (str(account_id),))
+            row = cur.fetchone()
+        rec = row.get("bs") if row else None
         return dict(rec) if rec else None
 
     def settle_paid_atomic(self, account_id: str) -> Account | None:

@@ -110,7 +110,23 @@ function SignInGate() {
         >
           Sign in
         </a>
+        {/* Account recovery: drives the Hosted UI managed /forgotPassword flow
+            (code entry + new password), then lands back signed in via the
+            normal /auth/callback exchange. Cognito owns the credential. */}
         <p style={{ marginTop: 14 }}>
+          <a
+            className="lp-forgot"
+            href="/"
+            onClick={(e) => {
+              e.preventDefault();
+              auth.forgotPassword();
+            }}
+            style={{ fontSize: 13, color: "#8a8278", cursor: "pointer" }}
+          >
+            Forgot password?
+          </a>
+        </p>
+        <p style={{ marginTop: 6 }}>
           <a href="/" style={{ fontSize: 13, color: "#8a8278" }}>
             Back to home
           </a>
@@ -129,7 +145,11 @@ function SignInGate() {
 function Gated({ children, seam = false }: { children: React.ReactElement; seam?: boolean }) {
   const auth = useAuth();
   if (!isAuthEnabled() || auth.isAuthenticated) return children;
-  return seam ? <SignInGate /> : <Landing onSignIn={auth.signIn} />;
+  return seam ? (
+    <SignInGate />
+  ) : (
+    <Landing onSignIn={auth.signIn} onForgotPassword={auth.forgotPassword} />
+  );
 }
 
 function Root() {

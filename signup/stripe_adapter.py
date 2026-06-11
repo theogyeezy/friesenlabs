@@ -142,6 +142,28 @@ class StripeAdapter:
             "livemode": bool(_opt("livemode", self._api_key.startswith("sk_live_"))),
         }
 
+    def create_billing_portal_session(self, *, customer: str, return_url: str) -> dict:
+        """Create a Stripe-hosted Customer Portal session for an EXISTING customer.
+
+        The portal is Stripe-hosted (free): the tenant changes their card, cancels, or views
+        invoices there, then Stripe sends them back to ``return_url``. The ONLY input is the
+        ``customer`` id WE resolved server-side from the verified-claim->account mapping (never
+        anything the client sends) plus the operator-configured ``return_url``. Returns
+        ``{"id": "bps_...", "url": "https://billing.stripe.com/..."}``; the route hands the url
+        to the SPA for ``window.location.assign``. Raises StripeNotConfiguredError when the api
+        key is unset (clean stub, no network)."""
+        self._require_key("create a billing portal session")
+        if not customer:
+            raise ValueError("billing portal session needs a Stripe customer id")
+        session = self._lib().billing_portal.Session.create(
+            api_key=self._api_key,            # per-call key — no global stripe.api_key mutation
+            customer=customer,
+            return_url=return_url or None,    # Stripe accepts None; portal still works
+        )
+        # Index access, not `.get`: the stripe lib's StripeObject routes attribute lookups through
+        # __getattr__ and exposes no dict-style `.get` (session.get("url") raises AttributeError).
+        return {"id": session["id"], "url": session["url"]}
+
     def construct_event(self, payload: bytes, sig_header: str, secret: str) -> Any:
         """Signature-verify a webhook payload; raises on bad/missing signature.
 
