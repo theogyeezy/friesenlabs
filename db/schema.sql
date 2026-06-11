@@ -255,6 +255,52 @@ CREATE INDEX IF NOT EXISTS predictions_tenant_predicted_idx ON predictions (tena
 CREATE INDEX IF NOT EXISTS predictions_tenant_deal_open_idx
     ON predictions (tenant_id, deal_id) WHERE outcome IS NULL;
 
+-- ---------------------------------------------------------------------------
+-- usage_counters — per-tenant MONTHLY quota counters (appended per the Matt-append rule;
+-- idempotent — api.migrate re-runs safely on fresh AND live databases). One row per
+-- (tenant_id, period, metric): `period` is the UTC month bucket 'YYYY-MM', `metric` is the
+-- counted unit ('messages' | 'agent_actions'). The counter is bumped atomically via
+-- INSERT .. ON CONFLICT (tenant_id, period, metric) DO UPDATE SET count = count + EXCLUDED.count
+-- so a concurrent bump never loses an increment (the plan-quota gate reads + bumps this).
+-- RLS-FORCEd tenant table: tenant_id is mandatory (it anchors the per-op SET LOCAL policy) and
+-- the table is in the tenant_tables array below; crm_app gets SELECT/INSERT/UPDATE in roles.sql
+-- (the fresh-load grant gap — schema.sql runs before roles.sql). NO DELETE: a usage counter is a
+-- billing-period record, rolled by the period bucket, never erased by the app.
+-- NOTE: declared BEFORE the RLS DO block (any table named in its tenant_tables array must already
+-- exist or a fresh load — CI psql ON_ERROR_STOP=1 — aborts; same ordering as predictions/playbooks).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS usage_counters (
+    tenant_id  uuid NOT NULL,
+    period     text NOT NULL,          -- UTC month bucket, 'YYYY-MM'
+    metric     text NOT NULL,          -- 'messages' | 'agent_actions'
+    count      bigint NOT NULL DEFAULT 0,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, period, metric)
+);
+
+-- ---------------------------------------------------------------------------
+-- cost_events — per-tenant Anthropic token-usage COST attribution (appended per the Matt-append
+-- rule; idempotent). One row per observed agent/MA turn that returned usage: {tenant_id, ts,
+-- model, in_tok, out_tok, est_cost}. Append-only MEASUREMENT (never blocks a request) — the
+-- per-tenant unit-economics evidence trail (shared/COST.md "per-tenant token logging"). est_cost
+-- is the USD estimate computed at write time from shared/cost.py TIER_PRICES (stored so a later
+-- price-table change never silently rewrites history). RLS-FORCEd tenant table (mandatory
+-- tenant_id; in the tenant_tables array below); crm_app gets SELECT/INSERT in roles.sql. NO
+-- UPDATE/DELETE: a recorded cost event is immutable audit, like traces.
+-- NOTE: declared BEFORE the RLS DO block, same ordering reason as usage_counters above.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS cost_events (
+    id         uuid NOT NULL DEFAULT gen_random_uuid(),
+    tenant_id  uuid NOT NULL,
+    ts         timestamptz NOT NULL DEFAULT now(),
+    model      text,
+    in_tok     bigint NOT NULL DEFAULT 0,
+    out_tok    bigint NOT NULL DEFAULT 0,
+    est_cost   numeric(12,6) NOT NULL DEFAULT 0,
+    PRIMARY KEY (id)
+);
+CREATE INDEX IF NOT EXISTS cost_events_tenant_ts_idx ON cost_events (tenant_id, ts);
+
 -- ===========================================================================
 -- ROW LEVEL SECURITY — apply the identical pattern to every tenant-scoped table.
 -- The DO block keeps it DRY and guarantees no table is missed (and never without FORCE).
@@ -265,7 +311,7 @@ DECLARE
     tenant_tables text[] := ARRAY[
         'documents', 'companies', 'contacts', 'deals', 'activities',
         'saved_views', 'approvals', 'traces', 'ingest_cursor', 'tenant_workspaces',
-        'tenant_settings', 'playbooks', 'predictions'
+        'tenant_settings', 'playbooks', 'predictions', 'usage_counters', 'cost_events'
     ];
 BEGIN
     FOREACH t IN ARRAY tenant_tables LOOP
@@ -481,5 +527,20 @@ CREATE POLICY tenant_isolation ON playbooks
 ALTER TABLE predictions ENABLE ROW LEVEL SECURITY; ALTER TABLE predictions FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON predictions;
 CREATE POLICY tenant_isolation ON predictions
+    USING (tenant_id = current_setting('app.current_tenant', true)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.current_tenant', true)::uuid);
+
+-- usage_counters + cost_events — explicit ENABLE/FORCE + policy (belt and suspenders with the DO
+-- block above; the CREATE TABLEs live BEFORE the block — see the predictions/playbooks precedent —
+-- because any table named in the block's tenant_tables array must already exist on a fresh load).
+ALTER TABLE usage_counters ENABLE ROW LEVEL SECURITY; ALTER TABLE usage_counters FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON usage_counters;
+CREATE POLICY tenant_isolation ON usage_counters
+    USING (tenant_id = current_setting('app.current_tenant', true)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.current_tenant', true)::uuid);
+
+ALTER TABLE cost_events ENABLE ROW LEVEL SECURITY; ALTER TABLE cost_events FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON cost_events;
+CREATE POLICY tenant_isolation ON cost_events
     USING (tenant_id = current_setting('app.current_tenant', true)::uuid)
     WITH CHECK (tenant_id = current_setting('app.current_tenant', true)::uuid);

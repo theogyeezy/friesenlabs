@@ -71,6 +71,10 @@ class ApiDeps:
     # /views/synthesize + draft routes answer an honest 503 (never a fake view).
     view_synthesizer: Any | None = None
     signup: Any = None                                  # optional SignupDeps (mounts public routes)
+    # optional BillingDeps (api/billing_routes.py) — authed self-service Stripe Customer Portal.
+    # None (default) = the routes are not mounted; api/asgi.py wires it from the signup payment
+    # adapter + account store when configured.
+    billing: Any = None
     # /integrations deps (TODO INT/P2). Env-built by default so api/asgi.py needs no change:
     # with no env set every piece is the honest unconfigured stub (credentials/sync 503,
     # status "unknown"); real adapters ride ONLY the deliberate INTEGRATIONS_REAL_SECRETS /
@@ -119,6 +123,16 @@ class ApiDeps:
     # api/asgi.py is the ONLY real wiring (the SAME env-built registry run_model scores with
     # + a PgPredictionLog on the shared crm_app DSN). Pass None to skip mounting entirely.
     cortex: CortexDeps | None = field(default_factory=CortexDeps)
+    # /usage deps (per-tenant monthly usage counter + plan cap + Anthropic cost attribution).
+    # Inert-default: the all-None stub mounts GET /usage answering a stable zeroed shape (never
+    # 503) and constructing deps never opens a DB pool; api/asgi.py wires the real PgUsageStore +
+    # PgCostRecorder on the shared crm_app DSN. Pass None to skip mounting the route entirely.
+    usage: Any | None = None
+    # Per-tenant rate-limit + quota MIDDLEWARE (a 2-tuple (middleware_class, kwargs) added via
+    # app.add_middleware). None -> NOT installed (the default for offline tests, so they aren't
+    # throttled). api/asgi.py passes a configured spec when tenant_limits_enabled(); a request with
+    # no/invalid tenant claim always passes through (the route's own auth dependency 401s).
+    limits_middleware: Any | None = None
 
 
 # --- request bodies (note: NONE carry tenant_id — the trust rule forbids it) ---
@@ -466,6 +480,11 @@ def create_app(deps: ApiDeps) -> FastAPI:
         from api.routes_studio import mount_studio
         mount_studio(app, deps.studio, current_tenant)
 
+    # Authed self-service billing (Stripe Customer Portal) — claims-bound like every authed route.
+    if deps.billing is not None:
+        from api.billing_routes import mount_billing
+        mount_billing(app, deps.billing, current_tenant)
+
     # Public, pre-tenant signup + Stripe webhook routes (optional).
     if deps.signup is not None:
         from api.signup_routes import mount_signup
@@ -476,5 +495,20 @@ def create_app(deps: ApiDeps) -> FastAPI:
     if deps.public is not None:
         from api.public_routes import mount_public
         mount_public(app, deps.public)
+
+    # Authed per-tenant usage view (monthly quota counter + plan cap + Anthropic cost
+    # attribution). Claims-bound, READ-ONLY; inert-default deps answer a stable zeroed shape
+    # (never 503). EXEMPT from the quota meter (reading usage never burns quota).
+    if deps.usage is not None:
+        from api.usage_routes import mount_usage
+        mount_usage(app, deps.usage, current_tenant)
+
+    # Per-tenant rate-limit + quota middleware. Installed ONLY when api/asgi.py provides a spec
+    # (default None = off, so offline tests aren't throttled). The spec is (cls, kwargs); a
+    # request with no/invalid tenant claim passes through (the route's auth dependency 401s),
+    # health + the public/signup surface are exempt by prefix.
+    if deps.limits_middleware is not None:
+        cls, kwargs = deps.limits_middleware
+        app.add_middleware(cls, **kwargs)
 
     return app
