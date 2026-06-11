@@ -168,6 +168,7 @@ module "api_service" {
   posthog_key_arn                = data.aws_secretsmanager_secret.platform_posthog.arn
   posthog_host                   = var.posthog_host
   integrations_real              = var.api_integrations_real
+  ingest_real                    = var.api_ingest_real
   # Signup-plane plain config (shared/config.py names; "" = entry omitted, deploy invariant).
   stripe_price_id_starter        = var.stripe_price_id_starter
   stripe_price_id_team           = var.stripe_price_id_team
