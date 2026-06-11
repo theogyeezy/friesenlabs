@@ -903,6 +903,30 @@ export interface ModuleCatalog {
   billing?: ModuleBilling;
 }
 
+/** A Sidecar next-action suggestion grounded in a real CRM row (GET /sidecar/suggestions). */
+export interface SidecarSuggestion {
+  id: string;
+  kind: string;
+  entity_type: "deal" | "contact";
+  entity_id: string;
+  title: string;
+  detail: string;
+  value_at_stake: number | null;
+  action: { action: string; [k: string]: unknown };
+}
+export interface SidecarSuggestions {
+  suggestions: SidecarSuggestion[];
+  total: number;
+  truncated: boolean;
+}
+/** POST /sidecar/act result — the queued Greenlight draft. */
+export interface SidecarActResult {
+  status: string;
+  approval_id: string | null;
+  suggestion_id: string;
+  action: string;
+}
+
 // --- Agent marketplace (starter playbook templates) -------------------------
 /** One committed starter template (GET /studio/templates) — a "ready-made agent"
  * a tenant can add to its library. `definition` is the playbook spec (opaque here). */
@@ -1966,6 +1990,31 @@ export class ApiClient {
       return { modules: [], monthly_total_cents: 0, enabled_routes: [] };
     }
     return this.request<ModuleCatalog>("PUT", "/account/modules", { enabled });
+  }
+
+  // --- sidecar (the agentic layer: grounded next-action suggestions) ----------
+
+  /**
+   * GET /sidecar/suggestions: grounded next-action suggestions over the tenant's CRM (aging open
+   * deals, unreachable contacts, etc.). Mock mode returns an empty set (no fabricated suggestions).
+   */
+  async getSidecarSuggestions(): Promise<SidecarSuggestions> {
+    if (this.mock) {
+      return { suggestions: [], total: 0, truncated: false };
+    }
+    return this.request<SidecarSuggestions>("GET", "/sidecar/suggestions");
+  }
+
+  /**
+   * POST /sidecar/act: accept a suggestion by id. The server resolves the suggestion's predefined
+   * action and enqueues a DRAFT into Greenlight (Sidecar never writes the CRM directly). Returns the
+   * created approval id + the action name. 409 when the suggestion no longer applies.
+   */
+  async actOnSidecarSuggestion(id: string): Promise<SidecarActResult> {
+    if (this.mock) {
+      return { status: "queued", approval_id: null, suggestion_id: id, action: "create_activity" };
+    }
+    return this.request<SidecarActResult>("POST", "/sidecar/act", { id });
   }
 
   // --- agent marketplace (starter templates) ---------------------------------

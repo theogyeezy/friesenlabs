@@ -51,7 +51,7 @@ MODULES: tuple[Module, ...] = (
            "STRIPE_PRICE_ID_MODULE_CORTEX"),
     Module("integration", "Switchboard", 2900, False, ("integrations",),
            "STRIPE_PRICE_ID_MODULE_INTEGRATION"),
-    Module("sidecar", "Sidecar", 3500, False, (),  # the agentic layer — no dedicated route yet
+    Module("sidecar", "Sidecar", 3500, False, ("sidecar",),  # the agentic layer over your CRM
            "STRIPE_PRICE_ID_MODULE_SIDECAR"),
 )
 
