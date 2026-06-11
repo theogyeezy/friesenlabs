@@ -549,6 +549,16 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   usable + safe; RAG-embed IAM gap closed live.
 
 ## Lane Matt (app code) — log
+- 2026-06-11 — **Knowledge customer-readiness audit (`feat/matt-knowledge-audit`):** 4-pass
+  read-audit (API+DB · web UI · ingest+seeding · RAG/grounding), every claim spot-checked
+  against source; knowledge suites green locally (31 passed / 1 skipped, needs
+  `UPLIFT_TEST_DB_URL`). Verdict: architecturally sound (RLS, citation invariant, honest
+  degraded states all correct), NOT customer-ready — no path populates a customer corpus
+  (read-only API + disabled scheduler + operator-only seeding vs. "fills in automatically"
+  empty-state copy), and a previously-unknown live bug: `conv/rag.py:106` `_normalize` misses
+  the live `ref_id` hit key so citations carry positional `doc:0` refs. 3 P0 / 6 P1 / 5 P2
+  filed in `TODO.md`; 3 agent claims disproven and recorded. Full report:
+  `docs/audits/knowledge-audit-2026-06-11.md`.
 - 2026-06-11 — **Neural constellation hero (landing):** the hero is now a live, dependency-free
   canvas render of the real 11-product suite — Command Center at the heart, any-to-any transient
   signal routes, product-true activity cards, and a ~9s Security guardrail interception (shield +
