@@ -132,7 +132,11 @@ def test_checkout_session_maps_plan_to_price_id():
     got = adapter.create_checkout_session(customer="cus_123", plan="team",
                                           client_reference_id="acct-1", idempotency_key="idem-2")
     # The fake returns no url -> honestly None (the real lib returns the hosted-checkout url).
-    assert got == {"id": "cs_456", "url": None}
+    # Beyond id/url, the adapter surfaces the SERVER-known facts start_checkout persists as the
+    # checkout INTENT (customer/plan/price_id/mode/livemode) — the basis the signed webhook is
+    # later verified against. A test key (`sk_test_...`) implies livemode False.
+    assert got == {"id": "cs_456", "url": None, "customer": "cus_123", "plan": "team",
+                   "price_id": "price_team", "mode": "subscription", "livemode": False}
     name, kw = calls[0]
     assert name == "checkout.Session.create"
     assert kw["line_items"] == [{"price": "price_team", "quantity": 1}]  # plan -> Price ID
@@ -166,7 +170,10 @@ def test_checkout_session_returns_hosted_url_when_lib_provides_it():
     adapter._stripe.checkout.Session.create = create_with_url
     got = adapter.create_checkout_session(customer="cus_123", plan="team",
                                           client_reference_id="acct-1", idempotency_key="i")
-    assert got == {"id": "cs_456", "url": "https://checkout.stripe.com/c/pay/cs_456"}
+    assert got["id"] == "cs_456"
+    assert got["url"] == "https://checkout.stripe.com/c/pay/cs_456"
+    # The intent fields ride alongside id/url (full shape asserted in the plan-mapping test).
+    assert got["price_id"] == "price_team" and got["livemode"] is False
 
 
 @pytest.mark.unit

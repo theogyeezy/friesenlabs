@@ -5,7 +5,10 @@ already calls:
 
   - ``create_customer(email=..., idempotency_key=...)`` -> ``{"id": "cus_..."}``
   - ``create_checkout_session(customer=..., plan=..., client_reference_id=..., idempotency_key=...)``
-    -> ``{"id": "cs_...", "url": "https://checkout.stripe.com/..."}``
+    -> ``{"id": "cs_...", "url": "https://checkout.stripe.com/...", "customer": ...,
+         "plan": ..., "price_id": ..., "mode": "subscription", "livemode": bool}``
+    (the extra fields let start_checkout persist a checkout INTENT the signed webhook is later
+    verified against — a valid signature does not prove the payload matches what we requested)
   - ``construct_event(payload, sig_header, secret)`` -> verified event (RAISES on bad signature)
 
 Security posture:
@@ -114,7 +117,30 @@ class StripeAdapter:
             url = session["url"]
         except KeyError:
             url = None
-        return {"id": session["id"], "url": url}
+        # Surface the canonical, SERVER-known facts about this checkout so start_checkout can
+        # persist a "checkout intent" the signed webhook is later verified against (a valid
+        # signature alone never proves the payload's amount/price/livemode match what we asked
+        # for). `price_id` is the one we sent (authoritative — never read back from the client);
+        # `livemode`/`mode` come from the session Stripe returns when present, else the values we
+        # requested. Index access with KeyError guards — StripeObject exposes no dict `.get`.
+        def _opt(key, default=None):
+            try:
+                val = session[key]
+            except (KeyError, TypeError):
+                return default
+            return default if val is None else val
+
+        return {
+            "id": session["id"],
+            "url": url,
+            "customer": _opt("customer", customer),
+            "plan": plan,
+            "price_id": price_id,
+            # `mode` is always "subscription" here; `livemode` is True on live keys, False on test
+            # keys — Stripe stamps it on the session and mirrors it onto every webhook event.
+            "mode": _opt("mode", "subscription"),
+            "livemode": bool(_opt("livemode", self._api_key.startswith("sk_live_"))),
+        }
 
     def construct_event(self, payload: bytes, sig_header: str, secret: str) -> Any:
         """Signature-verify a webhook payload; raises on bad/missing signature.

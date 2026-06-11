@@ -31,9 +31,21 @@ log = logging.getLogger(__name__)
 # synthetic event id in stripe_events starts with this — trivially greppable/auditable).
 INTERNAL_COMP_EVENT_PREFIX = "internal_comp:"
 
+# Settled values for the two status fields Stripe uses. checkout.session.completed carries
+# `payment_status` ∈ {paid, unpaid, no_payment_required}; invoice.paid carries `status` ∈
+# {paid, open, void, draft, uncollectible}. Only these count as actually-paid; anything else
+# (an `unpaid` session, an `open` invoice) must NOT settle.
+_PAID_STATUSES = frozenset({"paid", "no_payment_required", "active"})
+
 
 class PaymentError(Exception):
     pass
+
+
+class WebhookVerificationError(PaymentError):
+    """A signature-valid webhook whose VERIFIED FIELDS (paid status / customer / price / livemode /
+    session id) do not match what we asked for at checkout-start. The route turns this into a 400;
+    a structured warn line records the attack/misconfig for audit."""
 
 
 def _field(obj, key, default=None):
@@ -49,6 +61,33 @@ def _field(obj, key, default=None):
     except (KeyError, TypeError, IndexError):
         return default
     return default if val is None else val
+
+
+def _prices_in(obj) -> set[str]:
+    """Collect every Stripe Price id referenced by a checkout/invoice object, across shapes.
+
+    Checkout Sessions: line_items are not expanded by default, so the price often rides only in
+    the persisted intent (we compare against that). Invoices: each ``lines.data[*].price`` (or
+    ``price.id``). Returns a set of price-id strings (empty when none are present in the payload —
+    then there is nothing to contradict and the price check is skipped)."""
+    prices: set[str] = set()
+
+    def _add(price):
+        if isinstance(price, str):
+            prices.add(price)
+        elif price is not None:
+            pid = _field(price, "id")
+            if pid:
+                prices.add(str(pid))
+
+    # invoice / session line items
+    for line in _field(_field(obj, "lines", {}), "data", []) or []:
+        _add(_field(line, "price"))
+    for item in _field(_field(obj, "line_items", {}), "data", []) or []:
+        _add(_field(_field(item, "price"), "id") or _field(item, "price"))
+    # a top-level price (rare, but cheap to honor)
+    _add(_field(obj, "price"))
+    return prices
 
 
 @dataclass
@@ -98,7 +137,31 @@ class PaymentService:
             raise PaymentError(str(e)) from e
         # injected fakes may return only {"id": ...} — url is then honestly None.
         url = _field(session, "url")
+        # Persist the SERVER-known checkout INTENT (session id, customer, price, plan, livemode) so
+        # the later signed webhook can be verified field-by-field against it. A valid signature only
+        # proves the payload came from Stripe — NOT that its customer/price/livemode/amount match
+        # what THIS account asked to pay. Best-effort + additive: stores without the method (the
+        # in-memory test fake) simply skip persistence and fall back to status-only verification.
+        self._save_intent(account_id, {
+            "checkout_id": session["id"],
+            "customer": _field(session, "customer", customer["id"]),
+            "plan": plan,
+            "price_id": _field(session, "price_id"),
+            "mode": _field(session, "mode", "subscription"),
+            "livemode": bool(_field(session, "livemode", False)),
+        })
         return CheckoutResult(customer["id"], session["id"], url)
+
+    def _save_intent(self, account_id: str, intent: dict) -> None:
+        saver = getattr(self.accounts.store, "save_checkout_intent", None)
+        if callable(saver):
+            saver(account_id, intent)
+
+    def _get_intent(self, account_id: str) -> dict | None:
+        getter = getattr(self.accounts.store, "get_checkout_intent", None)
+        if callable(getter):
+            return getter(account_id)
+        return None
 
     def handle_webhook(self, payload: bytes, sig_header: str, secret: str) -> dict:
         """The ONLY thing that triggers provisioning. Signature-verified + idempotent."""
@@ -114,7 +177,77 @@ class PaymentService:
         # AttributeError -> opaque 400. (Stale/foreign reference, manual test event, etc.)
         if acct is None:
             return {"handled": False, "reason": "unknown account"}
+
+        # FIELD VERIFICATION (before any settlement): a valid signature proves the payload came
+        # from Stripe, NOT that its paid-status / customer / price / livemode / session id match
+        # what THIS account asked to pay. Mismatch -> structured warn + WebhookVerificationError
+        # (the route maps it to 400). Caught the same way the existing live-e2e job catches shape
+        # bugs — and the unit tests below exercise a valid-signature-but-wrong-amount/price/livemode
+        # attack.
+        self._verify_webhook_fields(event["type"], acct, obj)
         return self._settle_paid(event_id, acct, obj)
+
+    # --------------------------------------------------------- field verification
+    def _verify_webhook_fields(self, event_type: str, acct, obj) -> None:
+        """Reject a signature-valid event whose verified fields contradict the stored intent.
+
+        Two layers, both fail CLOSED on contradiction:
+          1. PAID STATUS — the object must NOT advertise an unpaid/failed status. checkout
+             sessions carry ``payment_status`` ("paid"/"unpaid"/"no_payment_required"); invoices
+             carry ``status`` ("paid"/"open"/"void"/...). If the field is present it must be a
+             settled value; absent = nothing to contradict (older shapes / injected fakes).
+          2. INTENT MATCH — when a checkout intent was persisted at start_checkout, the event's
+             customer, price id, livemode (and, for checkout sessions, the session id) must match
+             it EXACTLY. This is what stops a valid-signature-but-wrong-amount/price/livemode
+             forge: an attacker replaying a real but DIFFERENT Stripe event (another tenant's
+             cheaper plan, a test-mode event against a live account) is rejected here."""
+        # --- layer 1: positive paid/active status -------------------------------------------
+        status = _field(obj, "payment_status") or _field(obj, "status")
+        if status is not None and str(status).lower() not in _PAID_STATUSES:
+            self._reject(acct, "unpaid_status", got=status, event_type=event_type)
+
+        # --- layer 2: exact match against the persisted intent -------------------------------
+        intent = self._get_intent(acct.id)
+        if not intent:
+            return  # no stored intent (offline / legacy / pre-fix) -> status-only verification
+
+        # livemode: a test-mode event must never settle a live-mode checkout (and vice versa).
+        ev_livemode = _field(obj, "livemode")
+        if ev_livemode is not None and bool(ev_livemode) != bool(intent.get("livemode")):
+            self._reject(acct, "livemode_mismatch",
+                         got=bool(ev_livemode), want=bool(intent.get("livemode")),
+                         event_type=event_type)
+
+        # customer: the event must be for the customer we created at checkout-start.
+        ev_customer = _field(obj, "customer")
+        want_customer = intent.get("customer")
+        if ev_customer is not None and want_customer and str(ev_customer) != str(want_customer):
+            self._reject(acct, "customer_mismatch", got=ev_customer, want=want_customer,
+                         event_type=event_type)
+
+        # price: the event must charge the price we asked for (cross-plan downgrade forge guard).
+        want_price = intent.get("price_id")
+        if want_price:
+            ev_prices = _prices_in(obj)
+            if ev_prices and str(want_price) not in ev_prices:
+                self._reject(acct, "price_mismatch", got=sorted(ev_prices), want=want_price,
+                             event_type=event_type)
+
+        # checkout session id: a completed-session event must be the SESSION we created.
+        if event_type == "checkout.session.completed":
+            ev_session = _field(obj, "id")
+            want_session = intent.get("checkout_id")
+            if ev_session is not None and want_session and str(ev_session) != str(want_session):
+                self._reject(acct, "session_mismatch", got=ev_session, want=want_session,
+                             event_type=event_type)
+
+    def _reject(self, acct, reason: str, *, event_type: str, got=None, want=None) -> None:
+        log.warning(
+            "stripe webhook REJECTED (field verification): reason=%s account=%s event_type=%s "
+            "got=%r want=%r — signature was valid but the payload contradicts the checkout intent",
+            reason, getattr(acct, "id", None), event_type, got, want,
+        )
+        raise WebhookVerificationError(f"webhook field verification failed: {reason}")
 
     # ------------------------------------------------------------- account resolution
     def _resolve_account(self, event_type: str, obj):
@@ -170,30 +303,51 @@ class PaymentService:
 
     # ------------------------------------------------------------- settlement (shared core)
     def _settle_paid(self, event_id: str, acct, obj) -> dict:
-        """The idempotent claim -> PAID -> on_paid core, shared by the signed webhook and the
-        env-gated internal_comp path so the two can never drift."""
+        """The idempotent claim -> atomic PAID flip -> on_paid core, shared by the signed webhook
+        and the env-gated internal_comp path so the two can never drift.
+
+        TWO independent idempotency layers, in this order:
+          1. the per-EVENT-id stripe_events claim (``mark_handled``) — serializes a re-delivery of
+             the SAME event id across tasks/restarts;
+          2. the per-ACCOUNT atomic state transition (``settle_paid_atomic`` —
+             ``UPDATE .. SET status='paid' WHERE status NOT IN ('paid','provisioning','active')``)
+             — serializes the DIFFERENT-event-id race: Stripe sends BOTH
+             checkout.session.completed and invoice.paid for one purchase, with different ids, so
+             the per-event claim alone cannot stop them both reaching here and double-provisioning.
+             ONLY the caller that actually flips the row runs on_paid.
+        """
         from .accounts import State
 
         account_id = acct.id
-        # Account-state idempotency: a webhook (this event id or a DIFFERENT one — Stripe sends
-        # both checkout.session.completed and invoice.paid) for an already-paid/provisioned
-        # account is a no-op. Best-effort claim so the ledger short-circuits the replay too.
+        # Fast-path account-state idempotency: an event (this id or a DIFFERENT one) for an
+        # already-paid/provisioned account is a no-op. Best-effort claim so the ledger short-
+        # circuits the replay too. (The atomic flip below is the AUTHORITATIVE guard — this is a
+        # cheap early-out that avoids burning a ledger row when the in-memory view already shows
+        # the account settled.)
         if acct.state in (State.PAID, State.PROVISIONING, State.ACTIVE):
             self._claim(event_id, account_id)
             return {"handled": True, "idempotent": True, "account_id": account_id}
 
-        # THE CLAIM — atomic, and BEFORE any state mutation or work. `mark_handled` is
-        # INSERT .. ON CONFLICT (event_id) (PgStripeEventLedger): of N tasks racing the SAME
-        # event id past the account-state check above, exactly ONE wins the insert and does the
-        # work; every loser lands here and no-ops without touching its account store.
-        # (The old shape — `is_handled` check, work, mark AFTER — let two tasks interleave past
-        # the check and BOTH provision.)
+        # LAYER 1 — THE EVENT-ID CLAIM, atomic and BEFORE any state mutation or work.
+        # `mark_handled` is INSERT .. ON CONFLICT (event_id) (PgStripeEventLedger): of N tasks
+        # racing the SAME event id past the fast-path above, exactly ONE wins the insert; every
+        # loser lands here and no-ops without touching its account store. (The old shape —
+        # `is_handled` check, work, mark AFTER — let two tasks interleave past the check and BOTH
+        # provision.)
         if not self._claim(event_id, account_id):
             return {"handled": True, "idempotent": True, "event_id": event_id}
 
         try:
-            acct.state = State.PAID
-            self.accounts.store.update(acct)
+            # LAYER 2 — the atomic per-account PAID flip. This is the authoritative guard against
+            # the DIFFERENT-event-id double-fire: even if checkout.session.completed and
+            # invoice.paid both pass the fast-path and each win their own (different) event-id
+            # claim, only ONE wins this CAS; the loser sees `flipped is None` and no-ops without
+            # running on_paid.
+            flipped = self._atomic_flip_paid(acct)
+            if flipped is None:
+                self._release(event_id)   # we didn't settle -> don't burn the event id
+                return {"handled": True, "idempotent": True, "account_id": account_id}
+            acct = flipped                # the authoritative post-flip row
             # H7: emit the revenue event SERVER-side (from the signed webhook) so ad-blockers
             # can't drop it. Optional/injected — None is a no-op so offline tests need no PostHog.
             if self.funnel is not None:
@@ -243,6 +397,28 @@ class PaymentService:
         synthetic_obj = {"metadata": {"plan": plan, "internal_comp": "true", "mrr": 0.0}}
         result = self._settle_paid(event_id, acct, synthetic_obj)
         return {**result, "internal_comp": True}
+
+    def _atomic_flip_paid(self, acct):
+        """Atomically flip the account to PAID iff it is not already settled; return the post-flip
+        Account (this caller won) or None (someone else already settled — idempotent no-op).
+
+        Prefers the store's single-statement CAS (``settle_paid_atomic`` — the real Aurora guard);
+        falls back to an in-process compare-and-set for the in-memory test fake (same semantics:
+        flip only from a NOT-yet-settled state). The fallback is not concurrency-safe on its own,
+        but the in-memory store is single-process and the event-id ledger already serializes the
+        same-id cross-task case it can't see."""
+        from .accounts import State
+
+        cas = getattr(self.accounts.store, "settle_paid_atomic", None)
+        if callable(cas):
+            return cas(acct.id)
+        # In-memory fallback CAS.
+        current = self.accounts.store.get(acct.id) or acct
+        if current.state in (State.PAID, State.PROVISIONING, State.ACTIVE):
+            return None
+        current.state = State.PAID
+        self.accounts.store.update(current)
+        return current
 
     def _claim(self, event_id: str, account_id: str | None) -> bool:
         """True = this call owns the event (or no shared ledger is configured / the event has
