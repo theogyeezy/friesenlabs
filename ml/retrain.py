@@ -9,14 +9,33 @@ The actually-invokable entrypoint is `run_scheduled_retrain` (CLI: scripts/ml/re
 load the tenant's labeled records (ml/data_loader.py) -> train champion/challenger with a held-out
 AUC bake-off -> promote only on improvement (registry gate) -> sync closed-deal outcomes into the
 prediction log -> compute LIVE drift from real (score, outcome) pairs.
+
+SNS drift paging
+----------------
+When `run_scheduled_retrain` detects drift it publishes a structured message to the
+`uplift-cortex-drift` SNS topic so the drift actually pages an operator (email/Slack/PagerDuty
+subscription wired in infra). Configuration is entirely via env:
+
+  CORTEX_DRIFT_TOPIC_ARN   The SNS topic ARN.  When unset, publishing is silently skipped
+                           (never a crash) — the offline / unconfigured posture.
+
+The boto3 SNS client is built LAZILY (only when a message is actually sent) via
+`_sns_client()`, so importing this module requires no AWS SDK and no credentials —
+exactly the same lazy pattern used by ingest/embed.py.
 """
 from __future__ import annotations
 
+import json
+import logging
+import os
+from datetime import datetime, timezone
 from typing import Any
 
 from . import features, train
 from .predictions import live_auc
 from .registry import Registry, evaluate_and_gate
+
+logger = logging.getLogger(__name__)
 
 # Flag drift when the champion's recent live AUC falls this far below its registered (training) AUC.
 DRIFT_TOLERANCE = 0.10
@@ -24,6 +43,56 @@ DRIFT_TOLERANCE = 0.10
 # Below this many labeled (closed) deals, a per-tenant model is noise — the scheduled retrain
 # skips honestly instead of registering junk versions.
 MIN_TRAINING_RECORDS = 20
+
+# --------------------------------------------------------------------------- #
+# Lazy SNS client — mirrors ingest/embed.py _default_client().                #
+# boto3 imported INSIDE the function so module-level import is AWS/boto3-free. #
+# --------------------------------------------------------------------------- #
+
+def _sns_client(region: str | None = None) -> Any:
+    """Lazily build a real boto3 SNS client (imported only when actually called)."""
+    import boto3  # noqa: PLC0415 — lazy on purpose; import-safe module
+    r = region or os.environ.get("AWS_REGION", "us-east-1")
+    return boto3.client("sns", region_name=r)
+
+
+def _publish_drift(tenant_id: str, drift: dict, *,
+                   sns_client: Any = None) -> None:
+    """Publish a drift alert to the SNS topic configured by CORTEX_DRIFT_TOPIC_ARN.
+
+    Silently skips (logs only) when the env var is unset or blank — never raises.
+    `sns_client` may be injected in tests; when None the real client is built lazily.
+    """
+    topic_arn = (os.environ.get("CORTEX_DRIFT_TOPIC_ARN") or "").strip()
+    if not topic_arn:
+        logger.debug("CORTEX_DRIFT_TOPIC_ARN not set; skipping drift SNS publish for %s", tenant_id)
+        return
+
+    message = {
+        "tenant_id": str(tenant_id),
+        "metric": "live_auc",
+        "drift_magnitude": round(
+            (drift.get("registered_auc") or 0.0) - (drift.get("recent_auc") or 0.0), 6
+        ),
+        "registered_auc": drift.get("registered_auc"),
+        "recent_auc": drift.get("recent_auc"),
+        "n_outcomes": drift.get("n_outcomes"),
+        "reason": drift.get("reason"),
+        "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+    }
+    subject = f"Cortex drift: tenant {tenant_id}"[:100]  # SNS subject hard limit
+
+    client = sns_client if sns_client is not None else _sns_client()
+    try:
+        client.publish(
+            TopicArn=topic_arn,
+            Subject=subject,
+            Message=json.dumps(message, default=str, sort_keys=True),
+        )
+        logger.info("Drift SNS published for tenant %s (recent_auc=%.4f, registered_auc=%.4f)",
+                    tenant_id, drift.get("recent_auc") or 0.0, drift.get("registered_auc") or 0.0)
+    except Exception:
+        logger.exception("Failed to publish drift alert for tenant %s; continuing", tenant_id)
 
 
 def retrain_tenant(registry: Registry, tenant_id: str, records: list[dict], *,
@@ -117,5 +186,8 @@ def run_scheduled_retrain(registry: Registry, loader: Any, tenant_id: str, *,
     if prediction_log is not None:
         result["outcomes_synced"] = sync_outcomes(prediction_log, tenant_id, records,
                                                   target=target)
-        result["drift"] = live_drift_check(registry, tenant_id, prediction_log)
+        drift = live_drift_check(registry, tenant_id, prediction_log)
+        result["drift"] = drift
+        if drift.get("drift"):
+            _publish_drift(tenant_id, drift)
     return result
