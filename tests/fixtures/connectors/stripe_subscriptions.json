@@ -1,0 +1,53 @@
+{
+  "_comment": "Recorded Stripe GET /v1/subscriptions?status=all list response shape (anonymized test-mode data). Used by tests/unit/test_stripe_data_connector.py.",
+  "object": "list",
+  "url": "/v1/subscriptions",
+  "has_more": false,
+  "data": [
+    {
+      "id": "sub_X001",
+      "object": "subscription",
+      "customer": "cus_AAA111",
+      "status": "active",
+      "created": 1748822400,
+      "items": {
+        "object": "list",
+        "data": [
+          {
+            "id": "si_1",
+            "price": {
+              "id": "price_team",
+              "nickname": "Team plan",
+              "unit_amount": 19900,
+              "currency": "usd",
+              "recurring": { "interval": "month" }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "sub_X002",
+      "object": "subscription",
+      "customer": "cus_BBB222",
+      "status": "canceled",
+      "created": 1749168000,
+      "items": {
+        "object": "list",
+        "data": [
+          {
+            "id": "si_2",
+            "price": {
+              "id": "price_starter",
+              "nickname": null,
+              "product": "prod_starter",
+              "unit_amount": 4900,
+              "currency": "usd",
+              "recurring": { "interval": "month" }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
