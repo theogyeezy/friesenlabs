@@ -110,3 +110,17 @@ def is_valid(definition: dict) -> bool:
         return True
     except PlaybookValidationError:
         return False
+
+
+# Execution lives in agents/playbooks/runner.py (it imports back from this module — validate,
+# STATUS_ACTIVE, PlaybookValidationError — so it is exposed LAZILY here to keep this package's
+# import cheap and cycle-free, the same pattern the roster/registry cross-checks use above).
+_LAZY = {"PlaybookRunner", "RunRecord", "TriggerEvent", "run"}
+
+
+def __getattr__(name: str):  # noqa: D401 — PEP 562 lazy attribute access
+    if name in _LAZY:
+        from . import runner  # noqa: PLC0415 — lazy on purpose
+
+        return getattr(runner, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

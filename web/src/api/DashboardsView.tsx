@@ -23,6 +23,7 @@
 import React from "react";
 import {
   ApiClient,
+  buildViewDataLoader,
   defaultClient,
   friendlyErrorMessage,
   type SavedViewRow,
@@ -34,7 +35,10 @@ import { Spinner } from "./Spinner";
 const { useState, useEffect, useCallback, useMemo } = React;
 
 // ---------------------------------------------------------------------------
-// Data loaders — identical policy to DashboardView/ReportsView.
+// Data loaders — identical policy to DashboardView/ReportsView. A dashboard
+// composes MANY referenced views, each with its own spec and its own data, so
+// the loader is resolved PER referenced view (see loadDashboardData below); the
+// empty noLiveData is the calm fallback when a view's data plane is unavailable.
 // ---------------------------------------------------------------------------
 
 const noLiveData: LoadData = async () => [];
@@ -123,12 +127,16 @@ function ErrorCard({
 function OpenDashboard({
   dashboard,
   views,
-  loadData,
+  loaders,
+  fallbackLoadData,
   onBack,
 }: {
   dashboard: SavedViewRow;
   views: Record<string, SavedViewRow>;
-  loadData: LoadData;
+  /** Per-referenced-view data loaders (built from POST /views/{id}/data). */
+  loaders: Record<string, LoadData>;
+  /** The loader for a view with no resolved data yet (mock fixture or empty). */
+  fallbackLoadData: LoadData;
   onBack: () => void;
 }) {
   const result = useMemo(() => validateDashboardSpec(dashboard.spec_json), [dashboard.spec_json]);
@@ -181,7 +189,13 @@ function OpenDashboard({
               {ref ? (
                 // Each referenced view re-validates inside SpecRenderer — the
                 // composition layer never relaxes the spec-not-code contract.
-                <SpecRenderer spec={ref.spec_json} loadData={loadData} />
+                // Its data comes from its OWN per-view loader (the spec's
+                // CubeQueries resolved server-side); the fallback applies until
+                // resolved or when that view's data plane is unavailable.
+                <SpecRenderer
+                  spec={ref.spec_json}
+                  loadData={loaders[item.view_id] ?? fallbackLoadData}
+                />
               ) : (
                 <div data-testid="dashboard-panel-missing" style={card}>
                   <div style={{ fontSize: 13, fontWeight: 700 }}>View not available</div>
@@ -316,7 +330,9 @@ export interface DashboardsViewProps {
 
 export function DashboardsView({ client }: DashboardsViewProps) {
   const api = client ?? defaultClient();
-  const loadData = api.isMock() ? mockLoadData : noLiveData;
+  // The loader for a referenced view before its data resolves (and for mock
+  // builds, the whole time): the offline fixture in mock, empty in real.
+  const fallbackLoadData = api.isMock() ? mockLoadData : noLiveData;
 
   const [dashboards, setDashboards] = useState<SavedViewRow[]>([]);
   const [availableViews, setAvailableViews] = useState<SavedViewRow[]>([]);
@@ -328,6 +344,8 @@ export function DashboardsView({ client }: DashboardsViewProps) {
   const [composeError, setComposeError] = useState<string | null>(null);
 
   const [open, setOpen] = useState<{ dashboard: SavedViewRow; views: Record<string, SavedViewRow> } | null>(null);
+  // Per-referenced-view data loaders, resolved when a dashboard opens (real mode).
+  const [loaders, setLoaders] = useState<Record<string, LoadData>>({});
   const [openLoading, setOpenLoading] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
 
@@ -353,9 +371,28 @@ export function DashboardsView({ client }: DashboardsViewProps) {
     async (viewId: string) => {
       setOpenLoading(true);
       setOpenError(null);
+      setLoaders({});
       try {
         const resolved = await api.getDashboard(viewId);
         setOpen(resolved);
+        // Real mode: resolve EACH referenced view's data through its own
+        // POST /views/{id}/data, building a per-view loader. A single view's
+        // data-plane failure degrades only that panel (it keeps the empty
+        // fallback); the rest of the dashboard renders real rows. Mock builds
+        // keep the offline fixture loader for every panel.
+        if (!api.isMock()) {
+          const entries = await Promise.all(
+            Object.entries(resolved.views).map(async ([id, row]) => {
+              try {
+                const data = await api.loadViewData(id);
+                return [id, buildViewDataLoader(row.spec_json, data)] as const;
+              } catch {
+                return [id, noLiveData] as const;
+              }
+            }),
+          );
+          setLoaders(Object.fromEntries(entries));
+        }
       } catch (e) {
         setOpenError(friendlyErrorMessage(e, "Couldn't open that dashboard. Please try again."));
       } finally {
@@ -402,7 +439,8 @@ export function DashboardsView({ client }: DashboardsViewProps) {
         <OpenDashboard
           dashboard={open.dashboard}
           views={open.views}
-          loadData={loadData}
+          loaders={loaders}
+          fallbackLoadData={fallbackLoadData}
           onBack={() => setOpen(null)}
         />
       ) : (

@@ -29,6 +29,7 @@ import React from "react";
 import {
   ApiClient,
   ApiError,
+  buildViewDataLoader,
   defaultClient,
   friendlyErrorMessage,
   type SavedViewRow,
@@ -43,10 +44,10 @@ const { useState, useEffect, useCallback } = React;
 // on its own; it pulls only through this injected loader.
 // ---------------------------------------------------------------------------
 
-// Real mode: no live query path yet (Cube authored but unapplied — see
-// TODO.md), so resolve every query to zero rows. SpecRenderer turns that into
-// explicit per-block "No data yet" states. Canned demo numbers on a real
-// tenant's report would be a lie, so we never swap in the fixture here.
+// Empty real-mode loader: the calm fallback when the live data plane is
+// unavailable (503/error) — resolve every query to zero rows so each block
+// honestly renders "No data yet". Canned demo numbers on a real tenant's report
+// would be a lie, so we never swap in the fixture here.
 const noLiveData: LoadData = async () => [];
 
 // Mock build: the offline fixture, behind a BUILD-TIME gate (Vite folds the
@@ -174,6 +175,11 @@ function Detail({
 }) {
   const [spec, setSpec] = useState<Record<string, unknown> | null>(null);
   const [version, setVersion] = useState<number | null>(null);
+  // Injected data loader for the open report (mock fixture, or a real loader
+  // built from POST /views/{id}/data with the empty fallback on data-plane loss).
+  const [dataLoader, setDataLoader] = useState<LoadData>(() =>
+    api.isMock() ? mockLoadData : noLiveData,
+  );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -185,6 +191,23 @@ function Detail({
   const [refineUnavailable, setRefineUnavailable] = useState(false);
   const [refineNote, setRefineNote] = useState<string | null>(null);
 
+  // Resolve the spec's CubeQueries into a real-mode loader. A data-plane failure
+  // (503/404/502/network) is never fatal to the report: fall back to the empty
+  // loader so each panel shows its calm "No data yet" state. Mock builds keep
+  // the offline fixture loader and skip the network entirely.
+  const loadData = useCallback(
+    async (loadedSpec: Record<string, unknown>) => {
+      if (api.isMock()) return;
+      try {
+        const data = await api.loadViewData(viewId);
+        setDataLoader(() => buildViewDataLoader(loadedSpec, data));
+      } catch {
+        setDataLoader(() => noLiveData);
+      }
+    },
+    [api, viewId],
+  );
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -192,12 +215,13 @@ function Detail({
       const row = await api.getView(viewId);
       setSpec(row.spec_json);
       setVersion(row.version);
+      await loadData(row.spec_json);
     } catch (e) {
       setError(friendlyErrorMessage(e, "Couldn't load this report. Please try again."));
     } finally {
       setLoading(false);
     }
-  }, [api, viewId]);
+  }, [api, viewId, loadData]);
 
   useEffect(() => {
     void load();
@@ -213,6 +237,9 @@ function Detail({
       const row = await api.refineView(viewId, { instruction: text });
       setSpec(row.spec_json);
       setVersion(row.version);
+      // The refined spec has new/changed panels — re-resolve its data so the
+      // new version renders real rows, not the previous version's loader.
+      await loadData(row.spec_json);
       setInstruction("");
       setRefineNote(`Updated — version ${row.version}`);
       window.setTimeout(() => setRefineNote(null), 2500);
@@ -229,7 +256,7 @@ function Detail({
     } finally {
       setRefining(false);
     }
-  }, [api, viewId, instruction]);
+  }, [api, viewId, instruction, loadData]);
 
   return (
     <div data-testid="report-detail">
@@ -257,7 +284,7 @@ function Detail({
 
       {!loading && !error && spec && (
         <>
-          <SpecRenderer spec={spec} loadData={api.isMock() ? mockLoadData : noLiveData} />
+          <SpecRenderer spec={spec} loadData={dataLoader} />
 
           {/* "Ask for a chart" — NL refine over the open view. */}
           <div data-testid="refine-composer" style={{ ...card, marginTop: 18 }}>
