@@ -19,6 +19,9 @@ from agents.playbooks.runner import RunRecord, TriggerEvent
     ("0 13 * * 1-5", datetime(2026, 6, 13, 13, 0, tzinfo=timezone.utc), False),  # Sat
     ("0 14 * * 2", datetime(2026, 6, 9, 14, 0, tzinfo=timezone.utc), True),      # Tue
     ("0 14 * * 0", datetime(2026, 6, 14, 14, 0, tzinfo=timezone.utc), True),     # Sun=0
+    ("0 14 * * 7", datetime(2026, 6, 14, 14, 0, tzinfo=timezone.utc), True),     # Sun=7 normalizes to 0
+    ("0 14 * * 7", datetime(2026, 6, 15, 14, 0, tzinfo=timezone.utc), False),    # Mon: dow=7 must NOT fire
+    ("0 13 1 * 1", datetime(2026, 6, 1, 13, 0, tzinfo=timezone.utc), True),      # dom+dow both set -> Mon OR the 1st
     ("*/15 * * * *", datetime(2026, 6, 11, 9, 45, tzinfo=timezone.utc), True),   # step
     ("*/15 * * * *", datetime(2026, 6, 11, 9, 46, tzinfo=timezone.utc), False),
     ("0 0 1 * *", datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc), True),        # day-of-month
@@ -110,3 +113,22 @@ def test_module_is_import_safe():
     # Importing built nothing live; main is callable and the CLI requires a mode.
     from agents.playbooks import dispatch
     assert dispatch.main(["--tenant", "x"]) == 2  # no --schedule -> usage error, no DB touched
+
+
+@pytest.mark.unit
+def test_build_runner_realmode_imports_resolve(monkeypatch):
+    """REGRESSION: the real-mode CLI path imports PgWorkspaceStore — assert it resolves from the
+    correct module (agents.workspace_store, not api.pg_clients) and wires a store + runner."""
+    import agents.playbooks.store as store_mod
+    import agents.workspace_store as ws_mod
+    import agents.runtime as rt_mod
+    from agents.playbooks.dispatch import _build_runner
+
+    monkeypatch.setattr(store_mod, "PgPlaybookStore", lambda dsn: ("store", dsn))
+    monkeypatch.setattr(ws_mod, "PgWorkspaceStore", lambda dsn: object())
+    monkeypatch.setattr(rt_mod, "get_runtime", lambda cfg: object())
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+
+    store, run_playbook = _build_runner("postgresql://crm_app@h/db")
+    assert store == ("store", "postgresql://crm_app@h/db")
+    assert callable(run_playbook)

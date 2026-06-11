@@ -82,6 +82,8 @@ def test_send_verification_payload_shape_and_link():
     assert "Verify" in body["subject"]
     # bare token composed onto the click-through base
     assert "https://app.uplift.test/verify-email/tok123" in body["html"]
+    # AND the bare token is shown as copy-pasteable code (the SPA flow is typed-code)
+    assert "<code>tok123</code>" in body["html"]
 
 
 @pytest.mark.unit

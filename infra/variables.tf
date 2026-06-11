@@ -343,6 +343,12 @@ variable "cortex_retrain_enabled" {
   description = "Enable the scheduled Cortex retrain fan-out (scripts/ml/retrain_all.py)."
 }
 
+variable "cortex_signing_key_available" {
+  type        = bool
+  default     = false # flip ONLY after putting a value in the uplift/cortex-signing-key secret
+  description = "Inject CORTEX_SIGNING_KEY into the retrain task (a valueFrom on the empty secret blocks startup)."
+}
+
 variable "playbook_dispatch_enabled" {
   type        = bool
   default     = false # the EventBridge playbook dispatcher fires only when an owner flips this

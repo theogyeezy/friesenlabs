@@ -70,15 +70,29 @@ class ResendEmailSender:
     # ---------------- public hooks (contracts above) ----------------
 
     def send_verification(self, account, signed_link) -> bool:
-        """Send the signed single-use email-verification link. Returns True iff delivered."""
+        """Send the single-use email-verification code. Returns True iff delivered.
+
+        The signup form asks the user to ENTER this code, so a bare token is rendered as
+        COPY-PASTEABLE TEXT (the link alone is not enough — the SPA flow is typed-code). A
+        pre-composed full URL (legacy/deep-link) is shown as a clickable link instead.
+        """
         email = _email_of(account)
-        link = self._compose_link(signed_link)
+        value = str(signed_link)
+        is_url = value.startswith(("http://", "https://"))
+        link = self._compose_link(value)
         subject = f"Verify your email for {self.product_name}"
+        # Bare token -> show the code to paste into the form; full URL -> a clickable link.
+        code_block = "" if is_url else (
+            "<p>Enter this code in the signup form to confirm your email:</p>"
+            '<p style="font-family:monospace;font-size:15px;word-break:break-all;'
+            'background:#f4f1ea;padding:10px 12px;border-radius:8px;">'
+            f"<code>{escape(value)}</code></p>"
+        )
         html = (
             f"<p>Welcome to {escape(self.product_name)}!</p>"
-            f"<p>Confirm this email address to continue setting up your account:</p>"
+            f"{code_block}"
             f'<p><a href="{escape(link, quote=True)}">Verify my email</a></p>'
-            f"<p>This link is single-use and expires in 15 minutes. "
+            f"<p>This code is single-use and expires in 15 minutes. "
             f"If you didn't sign up, you can ignore this email.</p>"
         )
         return self._send(email, subject, html)
