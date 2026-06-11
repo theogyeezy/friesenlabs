@@ -144,6 +144,12 @@ class ApiDeps:
     # throttled). api/asgi.py passes a configured spec when tenant_limits_enabled(); a request with
     # no/invalid tenant claim always passes through (the route's own auth dependency 401s).
     limits_middleware: Any | None = None
+    # The per-request-token Cube client (agents/tools/cube_client.CubeClient) that POST
+    # /views/{id}/data resolves a saved view-spec's CubeQuery through — the SAME client the
+    # executor/chat tools ride (one tenant JWT mint, queryRewrite enforces the filter server-side).
+    # None (default) OR a wired-but-unconfigured client -> the data route answers an honest 503
+    # (never fake rows). api/asgi.py wires the env-built cube_client_from_env() instance here.
+    cube: Any | None = None
 
 
 # --- request bodies (note: NONE carry tenant_id — the trust rule forbids it) ---
@@ -483,6 +489,13 @@ def create_app(deps: ApiDeps) -> FastAPI:
     # stores in prod. Authorization decisions are documented in api/routes_control.py.
     from api.routes_control import mount_control
     mount_control(app, deps, current_tenant)
+
+    # Authed per-tenant view-data resolution (POST /views/{id}/data — the web data-loader's
+    # dependency). Claims-bound like everything above; loads the saved view RLS-scoped, runs each
+    # panel's CubeQuery through deps.cube carrying the verified-claim tenant (THE TRUST RULE), and
+    # returns {rows:[...]}. Honest 503 when cube is unconfigured (never a 500, never fake rows).
+    from api.cube_data_routes import mount_cube_data
+    mount_cube_data(app, deps, current_tenant)
 
     # Authed per-tenant Agent Studio (playbook composer + starter library). Claims-bound like
     # everything above; definitions are schema-validated SPEC-NOT-CODE and activation registers

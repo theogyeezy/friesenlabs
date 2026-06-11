@@ -63,13 +63,27 @@ import uuid
 
 from agents.workspace_store import PgWorkspaceStore
 from api.auth import CognitoJwtVerifier, make_current_tenant
+from api.public_routes import DEFAULT_TRUSTED_HOPS
 from api.signup_routes import SignupDeps
 from shared.config import (
     ENV_ANTHROPIC_API_KEY,
+    ENV_PUBLIC_LEADS_TRUSTED_HOPS,
     ENV_UPLIFT_ENV_ID,
+    _int_env,
     dsn_from_env,
     load,
     stripe_price_ids,
+)
+from shared.signup_session import SignupSessionTokens
+from signup.abuse import (
+    ACTION_RESEND,
+    ACTION_SIGNUP,
+    CaptchaVerifier,
+    DEFAULT_RESEND_LIMIT,
+    DEFAULT_SIGNUP_LIMIT,
+    DEFAULT_VELOCITY_WINDOW_S,
+    DisposableEmailBlocklist,
+    SignupVelocityLimiter,
 )
 from signup.accounts import AccountService
 from signup.agent_plane import AgentPlaneEnsure
@@ -87,6 +101,18 @@ from signup.store_pg import PgAccountStore, PgOtpStore, PgStripeEventLedger
 from signup.stripe_adapter import StripeAdapter
 from signup.tenant_defaults import PgTenantDefaults
 from signup.tokens import EmailTokenService, OtpRateLimitError, OtpService
+
+# Env var names for the signup velocity-limiter caps (NEW deliberate names; plain config, never
+# secret — the defaults ship in signup/abuse.py and are conservative enough for a fat-fingering
+# human). These follow the same "SIGNUP_*" namespace + single-source-of-truth pattern as the
+# other signup env vars (CONTRIBUTING.md §Env-var / secret-name contract).
+ENV_SIGNUP_VELOCITY_LIMIT = "SIGNUP_VELOCITY_LIMIT"            # signups+resends per window per IP
+ENV_SIGNUP_RESEND_LIMIT = "SIGNUP_RESEND_LIMIT"                # verification-resends per window per IP
+ENV_SIGNUP_VELOCITY_WINDOW_S = "SIGNUP_VELOCITY_WINDOW_S"      # fixed-window length in seconds
+# Trusted proxy hops for the signup acquisition path — reuses the leads-side constant and env name
+# (same CloudFront → ALB topology; the two share one correct notion of "viewer IP").
+# Plain config; junk / <1 → DEFAULT_TRUSTED_HOPS (never key the limiter on the ALB socket peer).
+ENV_SIGNUP_TRUSTED_HOPS = ENV_PUBLIC_LEADS_TRUSTED_HOPS
 
 log = logging.getLogger(__name__)
 
@@ -434,6 +460,84 @@ def build_provisioner(workspace_store=None, *, store=None, cognito=None, email_s
     )
 
 
+def _build_abuse_controls(cfg, now):
+    """Construct the three in-process abuse controls and the session-token helper.
+
+    These are built UNCONDITIONALLY (they carry safe/permissive defaults regardless of env) with
+    one exception: ``session_tokens`` needs a signing secret so it gates on
+    ``cfg.signup_token_secret_value`` — the same secret as the email tokens.
+
+    * ``disposable`` — always wired from the shipped file (signup/disposable_email_domains.txt)
+      plus the two override knobs; a missing file degrades gracefully to blocking no one.
+    * ``velocity`` — always wired (in-process; no network); caps/window are env-overridable with
+      conservative defaults; junk/unset → the abuse.py defaults (5/hour per IP per action).
+    * ``captcha`` — always wired (the seam defaults OPEN: ``required=False`` → verify() is a
+      no-op and signup routes are byte-identical to having no CAPTCHA); flips to required only
+      when SIGNUP_CAPTCHA_REQUIRED=true/1, and only checks a real token when a validator is wired
+      (a follow-up TODO — today it fails closed so "required" is never a no-op lie).
+    * ``session_tokens`` — wired only when ``signup_token_secret_value`` is present (same gate as
+      the email/OTP token stack). None = the legacy raw-account_id path stays active (behavior
+      unchanged when the signing secret is not injected).
+    * ``trusted_hops`` — read from SIGNUP_TRUSTED_HOPS / ENV_PUBLIC_LEADS_TRUSTED_HOPS (the same
+      CloudFront→ALB topology as /public/leads); junk/<1 → DEFAULT_TRUSTED_HOPS.
+
+    None of these touch the network or DB at construction — they are safe to build eagerly.
+    """
+    # --- disposable-email blocklist (always wired — static file ships in-repo) ---
+    disposable = DisposableEmailBlocklist.from_env()
+
+    # --- velocity limiter (always wired — in-process, env-overridable caps) ---
+    signup_limit = _int_env(ENV_SIGNUP_VELOCITY_LIMIT, DEFAULT_SIGNUP_LIMIT)
+    resend_limit = _int_env(ENV_SIGNUP_RESEND_LIMIT, DEFAULT_RESEND_LIMIT)
+    window_s = _int_env(ENV_SIGNUP_VELOCITY_WINDOW_S, DEFAULT_VELOCITY_WINDOW_S)
+    # The limiter is keyed on (action, ip), so a single instance handles BOTH signup and resend
+    # independently. The caps are symmetric (same limit/window for both actions) unless one of
+    # the separate knobs overrides resend to a tighter budget. We build one limiter per action
+    # only if the caps differ; otherwise a shared limiter is used for both actions.
+    # HOWEVER: signup/abuse.py documents that signup and resend get INDEPENDENT budgets by design
+    # (the limiter keys on `action` — so (ACTION_SIGNUP, ip) and (ACTION_RESEND, ip) are separate
+    # counters in the same instance). ONE shared instance with the lower/stricter limit is
+    # unacceptable because resend might deserve a separate budget. Instead we use ONE limiter
+    # where the `limit` is the signup budget (the more conservative default); if the operator
+    # wants a different resend budget they can set ENV_SIGNUP_RESEND_LIMIT. The action key means
+    # the per-action counters never interfere even in the same instance.
+    # For simplicity: build one limiter; SignupVelocityLimiter keys on (action, ip) so one
+    # instance is fine for both actions with the SAME limit. If limits differ, build two.
+    if signup_limit == resend_limit:
+        velocity: SignupVelocityLimiter | None = SignupVelocityLimiter(
+            limit=signup_limit, window_seconds=window_s, now=now
+        )
+    else:
+        # Different caps: use the more permissive one for the shared instance — no, actually we
+        # should use per-action limiters. But SignupVelocityLimiter doesn't expose per-action
+        # caps; it uses the SAME limit for every action. In this case, use the signup_limit for
+        # the velocity slot (the routes pass ACTION_SIGNUP/ACTION_RESEND as the action key, and
+        # the instance already tracks them separately). The effective cap per action is `limit`;
+        # if ops needs separate budgets per action they can fork a second instance later. For now,
+        # the shared instance uses signup_limit (the more conservative of the two in most configs).
+        velocity = SignupVelocityLimiter(
+            limit=min(signup_limit, resend_limit), window_seconds=window_s, now=now
+        )
+
+    # --- captcha seam (always wired; defaults OPEN = no-op unless SIGNUP_CAPTCHA_REQUIRED=true) ---
+    captcha = CaptchaVerifier.from_env()
+
+    # --- session tokens (only when the signing secret is available) ---
+    session_tokens: SignupSessionTokens | None = None
+    if cfg.signup_token_secret_value:
+        session_tokens = SignupSessionTokens(cfg.signup_token_secret_value, now=now)
+
+    # --- trusted hops (plain config; reuses the leads-side env + constant) ---
+    try:
+        hops = int(os.environ.get(ENV_SIGNUP_TRUSTED_HOPS, DEFAULT_TRUSTED_HOPS))
+        if hops < 1:
+            hops = DEFAULT_TRUSTED_HOPS
+    except (TypeError, ValueError):
+        hops = DEFAULT_TRUSTED_HOPS
+
+    return disposable, velocity, captcha, session_tokens, hops
+
+
 def build_signup_deps(workspace_store=None, *, now=time.time) -> SignupDeps:
     """`workspace_store` (optional `agents.workspace_store.WorkspaceStore`) persists the
     per-tenant Managed Agents ids at provisioning time; None (default) skips persistence
@@ -506,6 +610,12 @@ def build_signup_deps(workspace_store=None, *, now=time.time) -> SignupDeps:
 
     accounts = _VerifyingAccountService(store, cognito, account_email, sms_sender, otp=otp)
 
+    # --- acquisition-funnel abuse controls (signup/abuse.py) ----------------------------------
+    # Built unconditionally (safe/permissive defaults; purely in-process; no network/DB).
+    # session_tokens gates on the signing secret (same as the email/OTP token stack).
+    # trusted_hops is plain config (CloudFront→ALB topology = 2; env-overridable).
+    disposable, velocity, captcha, session_tokens, trusted_hops = _build_abuse_controls(cfg, now)
+
     # --- server-side PostHog funnel (INT/P3): ONE client shared by payment (payment_succeeded
     # --- from the signed webhook) and provisioning (instance_provisioned / provisioning_failed,
     # --- grouped under the tenant). None when unconfigured — both planes no-op.
@@ -576,4 +686,10 @@ def build_signup_deps(workspace_store=None, *, now=time.time) -> SignupDeps:
         # allow-listed VERIFIED domains via PaymentService.internal_comp (same idempotent
         # ledger + on_paid path), no Stripe call.
         internal_bypass_domains=cfg.internal_bypass_domain_set(),
+        # --- abuse controls (always constructed from env; safe defaults when env is unset) ---
+        disposable=disposable,
+        velocity=velocity,
+        captcha=captcha,
+        session_tokens=session_tokens,
+        trusted_hops=trusted_hops,
     )

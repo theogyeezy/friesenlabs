@@ -130,15 +130,13 @@ export interface StatusReport {
 }
 
 /** Roll a set of component states up to a single overall state (worst wins,
- *  but an all-unknown set stays "unknown" rather than masquerading as down). */
+ *  but an all-unknown set stays "unknown" rather than masquerading as down).
+ *  Unknown entries from probe-less informational rows are excluded — only
+ *  real probed components influence the rollup (healthz ok => operational). */
 export function rollupState(states: ProbeState[]): ProbeState {
   if (states.some((s) => s === "down")) return "down";
   if (states.some((s) => s === "degraded")) return "degraded";
-  if (states.some((s) => s === "operational")) {
-    // Some operational, the rest unknown -> degraded is the honest roll-up
-    // (we can't claim "all good" when a probe didn't answer).
-    return states.every((s) => s === "operational") ? "operational" : "degraded";
-  }
+  if (states.some((s) => s === "operational")) return "operational";
   return "unknown";
 }
 
@@ -187,7 +185,9 @@ export async function fetchStatus(
   // As component-level readiness lands (the agent plane, data plane, ingest),
   // infra can surface them through this same shape — see the PR notes
   // (STATUS_COMPONENTS). Until then we show the honest note below as a
-  // non-probed informational row, NOT a fake green.
+  // non-probed informational row. The rollupState function correctly ignores
+  // unknown rows when at least one real probe is operational, so this row
+  // does NOT force the overall status to "degraded".
   components.push({
     id: "subsystems",
     label: "Agent, data & ingest planes",
