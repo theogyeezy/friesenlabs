@@ -33,12 +33,12 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      testIgnore: [/realmode\.spec\.ts/, /integrations\.spec\.ts/, /pipeline\.spec\.ts/, /contacts\.spec\.ts/, /agents\.spec\.ts/, /workflows\.spec\.ts/, /reports\.spec\.ts/, /dashboards\.spec\.ts/, /knowledge\.spec\.ts/, /signup-real\.spec\.ts/, /auth\.spec\.ts/, /conversion\.spec\.ts/],
+      testIgnore: [/realmode\.spec\.ts/, /integrations\.spec\.ts/, /pipeline\.spec\.ts/, /contacts\.spec\.ts/, /agents\.spec\.ts/, /workflows\.spec\.ts/, /reports\.spec\.ts/, /dashboards\.spec\.ts/, /knowledge\.spec\.ts/, /onboarding\.spec\.ts/, /signup-real\.spec\.ts/, /auth\.spec\.ts/, /conversion\.spec\.ts/],
       use: { ...devices["Desktop Chrome"], baseURL: "http://localhost:4173" },
     },
     {
       name: "chromium-real",
-      testMatch: /(realmode|integrations|pipeline|contacts|agents|workflows|reports|dashboards|knowledge|signup-real)\.spec\.ts/,
+      testMatch: /(realmode|integrations|pipeline|contacts|agents|workflows|reports|dashboards|knowledge|onboarding|signup-real)\.spec\.ts/,
       use: { ...devices["Desktop Chrome"], baseURL: "http://localhost:4174" },
     },
     {
