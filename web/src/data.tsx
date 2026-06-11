@@ -139,9 +139,10 @@ const NAV_CONNECT = [
   { id: "integrations", label: "Switchboard", icon: "plug" },
 ];
 const NAV2 = [
-  { id: "reports",  label: "Reports",  icon: "trend" },
-  { id: "security", label: "Security", icon: "shield" },
-  { id: "settings", label: "Settings", icon: "settings" },
+  { id: "reports",    label: "Reports",    icon: "trend" },
+  { id: "dashboards", label: "Dashboards", icon: "gauge" },
+  { id: "security",   label: "Security",   icon: "shield" },
+  { id: "settings",   label: "Settings",   icon: "settings" },
 ];
 
 // chart series, workflow throughput last 14 days (tasks auto-handled vs human)
