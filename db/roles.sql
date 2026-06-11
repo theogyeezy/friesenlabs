@@ -89,6 +89,12 @@ REVOKE DELETE ON tenant_workspaces, tenant_settings FROM crm_app;
 -- DELETE is deliberate: playbooks are tenant-authored definitions (not audit trail) and the
 -- Studio exposes delete; RLS's WITH CHECK/USING scopes every row either way.
 GRANT SELECT, INSERT, UPDATE, DELETE ON playbooks TO crm_app;
+-- playbook_runs (Agent Studio run history — RLS-FORCEd tenant table; see schema.sql): strictly
+-- append-only like traces — the runner INSERTs one digest per run, the Studio SELECTs history.
+-- No UPDATE, no DELETE: run history is the tenant's audit evidence of what the automation did.
+-- EXPLICIT grant for the same fresh-load reason as every tenant table above.
+GRANT SELECT, INSERT ON playbook_runs TO crm_app;
+REVOKE UPDATE, DELETE ON playbook_runs FROM crm_app;
 -- ---------------------------------------------------------------------------
 -- Cortex prediction log (predictions — RLS-FORCEd tenant table; see schema.sql): score-time
 -- INSERTs + the outcome-backfill UPDATE (retrain job) + SELECT for live-AUC drift. EXPLICIT

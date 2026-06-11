@@ -228,6 +228,39 @@ CREATE TABLE IF NOT EXISTS playbooks (
     updated_at  timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS playbooks_tenant_idx ON playbooks (tenant_id, created_at);
+-- MA registration persistence (audit P0-3): the crew ids minted at activation, so a run REUSES
+-- the coordinator instead of re-creating agents on every invocation (the orphan-resource leak).
+-- FULL ids are operator material: stored here, STRIPPED at the API boundary (routes_studio
+-- _serialize drops ma_*; only 6-char display tails ever leave the API — the agents_routes
+-- contract). ma_registered_version pins the registration to the definition version;
+-- update_definition bumps version, so an edit invalidates a registration by construction.
+ALTER TABLE playbooks ADD COLUMN IF NOT EXISTS ma_coordinator_id text;
+ALTER TABLE playbooks ADD COLUMN IF NOT EXISTS ma_agent_ids jsonb;
+ALTER TABLE playbooks ADD COLUMN IF NOT EXISTS ma_registered_version int;
+-- ---------------------------------------------------------------------------
+-- playbook_runs — Agent Studio run history (appended per the Matt-append rule).
+-- One row per playbook run (manual / scheduled / event): the RunRecord digest the runner
+-- persists so a tenant can see "did it run, what did it propose?" (audit P0-2 — previously
+-- the digest was logged once and gone). APPEND-ONLY like traces: crm_app gets SELECT+INSERT
+-- only (db/roles.sql), so history can't be rewritten. playbook_id is a SOFT reference (no FK):
+-- run history must survive its playbook's deletion (the tenant's audit evidence of what the
+-- automation did); both ids are always written from the same verified-claim tenant and reads
+-- are RLS-scoped, so a cross-tenant attach is unreadable by construction. Tenant-scoped +
+-- FORCE'd RLS like every tenant table (in the tenant_tables array below; declared BEFORE the
+-- RLS DO block — the playbooks/predictions ordering rule; explicit RLS statements at EOF).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS playbook_runs (
+    id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id   uuid NOT NULL,
+    playbook_id uuid,                               -- soft ref; survives playbook deletion
+    run_id      text NOT NULL,                      -- RunRecord.run_id (correlates logs)
+    status      text NOT NULL,                      -- ok|pending|not_active|not_found|error
+    trigger     jsonb NOT NULL DEFAULT '{}'::jsonb, -- {kind, name} that fired it
+    record      jsonb NOT NULL,                     -- the full sanitized RunRecord digest
+    created_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS playbook_runs_tenant_idx
+    ON playbook_runs (tenant_id, playbook_id, created_at DESC);
 -- ---------------------------------------------------------------------------
 -- predictions — Cortex score-time prediction log (drift honesty; ml/predictions.py, appended
 -- per the Matt-append rule). One row per champion-model score; `outcome` stays NULL until the
@@ -371,7 +404,7 @@ DECLARE
     tenant_tables text[] := ARRAY[
         'documents', 'companies', 'contacts', 'deals', 'activities',
         'saved_views', 'approvals', 'traces', 'ingest_cursor', 'tenant_workspaces',
-        'tenant_settings', 'playbooks', 'predictions', 'usage_counters', 'cost_events', 'onboarding_state',
+        'tenant_settings', 'playbooks', 'playbook_runs', 'predictions', 'usage_counters', 'cost_events', 'onboarding_state',
         'integration_sync_runs'
     ];
 BEGIN
@@ -578,6 +611,14 @@ END $$;
 ALTER TABLE playbooks ENABLE ROW LEVEL SECURITY; ALTER TABLE playbooks FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON playbooks;
 CREATE POLICY tenant_isolation ON playbooks
+    USING (tenant_id = current_setting('app.current_tenant', true)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.current_tenant', true)::uuid);
+
+-- playbook_runs — explicit ENABLE/FORCE + policy (belt and suspenders with the DO block above,
+-- same convention as playbooks).
+ALTER TABLE playbook_runs ENABLE ROW LEVEL SECURITY; ALTER TABLE playbook_runs FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON playbook_runs;
+CREATE POLICY tenant_isolation ON playbook_runs
     USING (tenant_id = current_setting('app.current_tenant', true)::uuid)
     WITH CHECK (tenant_id = current_setting('app.current_tenant', true)::uuid);
 

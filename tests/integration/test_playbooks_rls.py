@@ -142,5 +142,52 @@ def test_pg_playbook_store_isolation(app_dsn):
         assert updated["version"] == 2 and updated["name"] == "store-a2"
         assert store.set_status(a, row["id"], "active")["status"] == "active"
         assert store.get(a, "not-a-uuid") is None  # malformed id = absent, never an error
+
+        # MA registration persistence (audit P0-3): full ids land on the row, version-pinned;
+        # a cross-tenant set_registration behaves like absence.
+        reg = store.set_registration(a, row["id"], coordinator_id="coord_full_x",
+                                     agent_ids=["ag_1", "ag_2"], version=updated["version"])
+        assert reg["ma_coordinator_id"] == "coord_full_x"
+        assert reg["ma_agent_ids"] == ["ag_1", "ag_2"]
+        assert reg["ma_registered_version"] == updated["version"]
+        assert store.set_registration(b, row["id"], coordinator_id="steal",
+                                      agent_ids=[], version=1) is None
     finally:
         store.delete(a, row["id"])
+
+
+@pytest.mark.integration
+@pytest.mark.isolation
+def test_pg_playbook_run_store_isolation_and_append_only(app_dsn):
+    """playbook_runs (audit P0-2): tenant-scoped history through the store, RLS-invisible
+    cross-tenant, and APPEND-ONLY for crm_app (the roles.sql REVOKE: no UPDATE, no DELETE)."""
+    from agents.playbooks.store import PgPlaybookRunStore
+
+    runs = PgPlaybookRunStore(app_dsn)
+    a, b = str(uuid.uuid4()), str(uuid.uuid4())
+    pid = str(uuid.uuid4())
+
+    row = runs.record(a, {"run_id": "r-1", "playbook_id": pid, "status": "pending",
+                          "trigger": {"kind": "manual", "name": "run-now"}, "answer": "x"})
+    assert row["status"] == "pending" and row["playbook_id"] == pid
+    runs.record(a, {"run_id": "r-2", "playbook_id": pid, "status": "ok", "trigger": {}})
+
+    # Tenant-scoped reads: newest first for A; nothing for B.
+    listed = runs.list(a, pid)
+    assert [r["run_id"] for r in listed] == ["r-2", "r-1"]
+    assert runs.list(b) == [] and runs.list(b, pid) == []
+
+    # Append-only: crm_app physically cannot UPDATE or DELETE history (roles.sql REVOKE).
+    # A privilege failure aborts the transaction (rolling back the SET too), so each probe
+    # gets its own cursor + fresh tenant binding after rollback.
+    conn = _connect(app_dsn)
+    try:
+        for stmt in ("UPDATE playbook_runs SET status = 'rewritten' WHERE run_id = 'r-1'",
+                     "DELETE FROM playbook_runs WHERE run_id = 'r-1'"):
+            with conn.cursor() as cur:
+                _set_tenant(cur, a)
+                with pytest.raises(Exception):
+                    cur.execute(stmt)
+            conn.rollback()
+    finally:
+        conn.close()

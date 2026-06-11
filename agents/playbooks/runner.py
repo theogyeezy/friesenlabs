@@ -147,13 +147,65 @@ class PlaybookRunner:
         *,
         environment_id: str | None = None,
         vault_id: str | None = None,
+        run_store: Any | None = None,
     ) -> None:
         self.runtime = runtime
         self.store = store
         self.environment_id = environment_id
         self.vault_id = vault_id
+        # PlaybookRunStore-shaped (agents/playbooks/store.py). None -> runs aren't persisted
+        # (offline/back-compat); with it, EVERY terminal RunRecord lands as tenant history.
+        self.run_store = run_store
 
     # ------------------------------------------------------------------ internals
+    @staticmethod
+    def _tail(value: Any) -> str | None:
+        """6-char display tail — FULL MA ids are operator material and never reach the trace,
+        the wire, or the persisted digest (the api/agents_routes.py contract). The full id
+        lives only on the playbook row (the runner needs it to reuse the registration)."""
+        if not isinstance(value, str) or not value:
+            return None
+        return value[-6:]
+
+    def _persist(self, tenant_id: str, record: RunRecord) -> None:
+        """Append the terminal digest to the run store — CONTAINED: history is best-effort and
+        a persistence failure must never fail (or mask) the run that already happened."""
+        if self.run_store is None:
+            return
+        try:
+            self.run_store.record(tenant_id, record.as_dict())
+        except Exception:  # noqa: BLE001 — never let history-keeping break the run
+            record.trace.append({"event": "run_persist_failed"})
+
+    def _registration_for(self, tenant_id: str, row: dict, record: RunRecord) -> str:
+        """The coordinator to run against: REUSE the persisted registration when it matches the
+        row's current definition version (the orphan-leak fix — audit P0-3); otherwise register
+        through the EXISTING activation mechanism and persist the minted ids for next time."""
+        stored = row.get("ma_coordinator_id")
+        if stored and row.get("ma_registered_version") == row.get("version"):
+            record.trace.append({"event": "reused_registration",
+                                 "coordinator_id_tail": self._tail(stored)})
+            return stored
+        registration = activate_playbook(self.runtime, tenant_id, row["definition"])
+        if hasattr(self.store, "set_registration"):
+            # Persist the FULL ids on the row (reuse needs them); a store without the seam
+            # (older fakes) just re-registers next run — correct, only less efficient.
+            # CONTAINED for schema skew (api deployed before the ma_* migrate): persistence
+            # failing must never fail the run that is about to happen.
+            try:
+                self.store.set_registration(
+                    tenant_id, row["id"],
+                    coordinator_id=registration["coordinator_id"],
+                    agent_ids=registration["agent_ids"],
+                    version=row.get("version"),
+                )
+            except Exception:  # noqa: BLE001 — degrade to per-run registration
+                record.trace.append({"event": "registration_persist_failed"})
+        record.trace.append({"event": "registered",
+                             "coordinator_id_tail": self._tail(registration["coordinator_id"]),
+                             "agents": registration["agents"]})
+        return registration["coordinator_id"]
+
     @staticmethod
     def _digest(record: RunRecord, resp: dict) -> None:
         """Map ONE ``send_message`` digest onto the run record — OBSERVATION only.
@@ -189,8 +241,14 @@ class PlaybookRunner:
         A failure is CONTAINED: the trigger source (scheduler/worker) calls this and must never
         be crashed by a bad playbook, a down agent plane, or a malformed event — any exception is
         caught and returned as a ``status="error"`` record (the side effects already could not
-        have run; nothing partially-executed leaks).
+        have run; nothing partially-executed leaks). Every terminal record is appended to the
+        run store (when wired) so the tenant has durable run history (audit P0-2).
         """
+        record = self._run(tenant_id, playbook_id, event)
+        self._persist(tenant_id, record)
+        return record
+
+    def _run(self, tenant_id: str, playbook_id: str, event: "TriggerEvent | dict | None") -> RunRecord:
         ev = TriggerEvent.coerce(event)
         trigger = {"kind": ev.kind, "name": ev.name}
         try:
@@ -215,22 +273,19 @@ class PlaybookRunner:
             )
             record.trace.append({"event": "triggered", "kind": ev.kind, "name": ev.name})
 
-            # Register the playbook's narrowed roster + coordinator on the runtime (the EXISTING
-            # activation mechanism — tools come from the trusted registry, so side-effecting
-            # members stay ALWAYS_ASK / Greenlight-drafted regardless of the stored JSON).
-            registration = activate_playbook(self.runtime, tenant_id, definition)
-            record.trace.append({"event": "registered",
-                                 "coordinator_id": registration["coordinator_id"],
-                                 "agents": registration["agents"]})
+            # REUSE the persisted MA registration when fresh; register + persist otherwise
+            # (the EXISTING activation mechanism — tools come from the trusted registry, so
+            # side-effecting members stay ALWAYS_ASK / Greenlight-drafted regardless of the JSON).
+            coordinator_id = self._registration_for(tenant_id, row, record)
 
             # ONE session per run, bound to THIS tenant's persisted environment (per-tenant,
             # never instance-global). The tenant in session metadata is what the worker pushes
             # into app.current_tenant (RLS) when it serves a tool.
             session = self.runtime.create_session(
-                registration["coordinator_id"], tenant_id=tenant_id,
+                coordinator_id, tenant_id=tenant_id,
                 vault_id=self.vault_id, environment_id=self.environment_id,
             )
-            record.trace.append({"event": "session", "session_id": session.id})
+            record.trace.append({"event": "session", "session_id_tail": self._tail(session.id)})
 
             resp = self.runtime.send_message(session, _trigger_prompt(definition, ev))
             self._digest(record, resp)
@@ -247,11 +302,12 @@ class PlaybookRunner:
 
 def run(runtime: Any, store: Any, tenant_id: str, playbook_id: str,
         event: "TriggerEvent | dict | None" = None, *,
-        environment_id: str | None = None, vault_id: str | None = None) -> RunRecord:
+        environment_id: str | None = None, vault_id: str | None = None,
+        run_store: Any | None = None) -> RunRecord:
     """Module-level convenience seam — the single entry a scheduler/worker calls when a trigger
     fires: build a ``PlaybookRunner`` and run one playbook. Stays behind the SAME beta/MA-gated
     seam as activation (the live registrar is owner-gated; offline it runs against FakeRuntime).
     """
     return PlaybookRunner(
-        runtime, store, environment_id=environment_id, vault_id=vault_id,
+        runtime, store, environment_id=environment_id, vault_id=vault_id, run_store=run_store,
     ).run(tenant_id, playbook_id, event)
