@@ -262,3 +262,62 @@ variable "api_integrations_real" {
   default     = false # REQ-008 master switch: flip only after the connector-write IAM is applied
   description = "Set INTEGRATIONS_REAL_SECRETS=1 on the API task."
 }
+
+# --- Signup-plane plain (non-secret) config (api task env; shared/config.py names). ---
+# Stripe Price IDs are public identifiers (price_...), not secret-shaped; URLs/addresses/domain
+# lists likewise. "" = the env entry is omitted and the feature stays unconfigured.
+variable "stripe_price_id_starter" {
+  type        = string
+  default     = "" # set the real price_... id in prod.auto.tfvars
+  description = "Stripe Price ID for the starter plan (STRIPE_PRICE_ID_STARTER on the api task)."
+}
+
+variable "stripe_price_id_team" {
+  type        = string
+  default     = "" # set the real price_... id in prod.auto.tfvars
+  description = "Stripe Price ID for the team plan (STRIPE_PRICE_ID_TEAM on the api task)."
+}
+
+variable "stripe_price_id_scale" {
+  type        = string
+  default     = "" # set the real price_... id in prod.auto.tfvars
+  description = "Stripe Price ID for the scale plan (STRIPE_PRICE_ID_SCALE on the api task)."
+}
+
+variable "stripe_success_url" {
+  type        = string
+  default     = ""
+  description = "Hosted-Checkout success redirect URL (STRIPE_SUCCESS_URL; UX only — provisioning trusts the signed webhook)."
+}
+
+variable "stripe_cancel_url" {
+  type        = string
+  default     = ""
+  description = "Hosted-Checkout cancel redirect URL (STRIPE_CANCEL_URL)."
+}
+
+variable "signup_internal_bypass_domains" {
+  type        = string
+  default     = "" # unset = no bypass (fail closed); code-side read lands in shared/config.py first
+  description = "Comma-separated email domains allowed to bypass external signup gating (SIGNUP_INTERNAL_BYPASS_DOMAINS on the api task)."
+}
+
+# --- Cortex persistent model registry (api + worker task env; ml/registry.py). ---
+variable "cortex_s3_registry" {
+  type        = bool
+  default     = false # flip to point CORTEX_S3_BUCKET at the datalake bucket + grant task-role S3
+  description = "Enable the persistent Cortex model registry on the api+worker tasks (datalake bucket, cortex/* prefix)."
+}
+
+variable "cortex_local_dir" {
+  type        = string
+  default     = "" # dev/tests fallback only (CORTEX_S3_BUCKET wins in code) — never set in prod
+  description = "CORTEX_LOCAL_DIR filesystem registry root for the api/worker tasks."
+}
+
+# --- Provisioning Lambda AI-plane env (secret ARN references, resolved in-handler). ---
+variable "provisioning_anthropic_env" {
+  type        = bool
+  default     = false # flip ONLY after uplift/anthropic-api-key + uplift/env-id hold values
+  description = "Pass the Anthropic org-key + env-id secret ARNs to the provisioning Lambda env (agent_plane step)."
+}
