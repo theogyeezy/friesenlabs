@@ -61,6 +61,7 @@ from ml.predictions import PgPredictionLog
 from ml.registry import registry_from_env
 from api.account_routes import AccountDeps
 from api.status_routes import StatusDeps
+from api.routes_studio import StudioDeps, build_studio_deps
 from shared.config import (
     ENV_ANTHROPIC_API_KEY,
     dsn_from_env,
@@ -337,6 +338,28 @@ def build_app():
     else:
         conversation_factory = lambda tenant_id: None  # noqa: E731 — unconfigured: /chat 503
 
+    # Agent Studio: wire a PER-TENANT registrar so activate/run register + drive a REAL crew
+    # instead of being record-only. The factory resolves the tenant's persisted Managed Agents
+    # environment from the workspace store and binds a runtime to it; a tenant without a provisioned
+    # environment resolves to None -> the honest record-only path. Gated on the agent plane being
+    # configured (api_key + the DSN-backed workspace store); otherwise the store-only/inert default.
+    if dsn and api_key and workspace_store is not None:
+        from agents.playbooks.store import PgPlaybookStore  # noqa: PLC0415 — lazy
+        from agents.runtime import get_runtime  # noqa: PLC0415 — lazy
+
+        def _studio_registrar_factory(tenant_id, _ws=workspace_store, _key=api_key):
+            row = _ws.get(tenant_id) or {}
+            env_id = row.get("environment_id")
+            if not env_id:
+                return None  # tenant not provisioned -> honest record-only
+            runtime = get_runtime({"runtime": "managed", "api_key": _key, "environment_id": env_id})
+            return (runtime, env_id, row.get("vault_id"))
+
+        studio_deps = StudioDeps(store=PgPlaybookStore(dsn),
+                                 registrar_factory=_studio_registrar_factory)
+    else:
+        studio_deps = build_studio_deps()
+
     # Balto view synthesis (conv/views.py): rides the SAME SavedViews facade + Cube client +
     # spec generator the rest of the app uses. Honest degradation per piece: no cube/secret ->
     # 'unavailable' (route 503), no generator -> 'unavailable' — never a hallucinated view.
@@ -442,6 +465,9 @@ def build_app():
         # every other authed route rides. Inert (None stores) only when no DSN; with Aurora wired
         # the export is live. (account_delete is DELIBERATELY left to its inert default — a
         # destructive teardown ships non-functional until an explicit owner wiring step.)
+        # Agent Studio with the per-tenant registrar wired (activate/run drive a real crew when the
+        # tenant is provisioned; honest record-only otherwise) — see _studio_registrar_factory above.
+        studio=studio_deps,
         account=AccountDeps(crm=crm, rag=rag, saved_views=saved_views) if dsn else AccountDeps(),
         # GET /public/status — per-subsystem readiness. The "api" component is always operational
         # (this endpoint answered); these probes report whether each subsystem is WIRED on this

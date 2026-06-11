@@ -315,6 +315,24 @@ variable "cortex_local_dir" {
   description = "CORTEX_LOCAL_DIR filesystem registry root for the api/worker tasks."
 }
 
+variable "cortex_retrain_enabled" {
+  type        = bool
+  default     = false # the EventBridge retrain fan-out fires only when an owner flips this
+  description = "Enable the scheduled Cortex retrain fan-out (scripts/ml/retrain_all.py)."
+}
+
+variable "playbook_dispatch_enabled" {
+  type        = bool
+  default     = false # the EventBridge playbook dispatcher fires only when an owner flips this
+  description = "Enable the scheduled playbook trigger dispatcher (agents.playbooks.dispatch --schedule)."
+}
+
+variable "playbook_dispatch_tenants" {
+  type        = string
+  default     = "" # "" => the dispatcher logs 'nothing to do' and exits 0
+  description = "Comma-separated tenant ids the playbook dispatcher fans out over (PLAYBOOK_DISPATCH_TENANTS)."
+}
+
 # --- Provisioning Lambda AI-plane env (secret ARN references, resolved in-handler). ---
 variable "provisioning_anthropic_env" {
   type        = bool

@@ -73,8 +73,14 @@ class StudioDeps:
     # PlaybookStore-shaped (agents/playbooks/store.py). None -> honest 503.
     store: Any | None = None
     # AgentRuntime-shaped registrar (create_agent/create_coordinator). None -> activation
-    # flips status record-only and reports registered: false honestly.
+    # flips status record-only and reports registered: false honestly. Tests inject a direct
+    # runtime here; api/asgi.py wires the per-tenant `registrar_factory` below instead.
     registrar: Any | None = None
+    # Per-tenant registrar resolver: (tenant_id) -> (runtime, environment_id, vault_id) | None.
+    # This is the LIVE wiring (api/asgi.py): it resolves the tenant's persisted Managed Agents
+    # environment from the workspace store and binds a runtime to it, so activate/run register a
+    # real crew instead of being record-only. None (the default) -> falls back to `registrar`.
+    registrar_factory: Any | None = None
 
 
 def build_studio_deps() -> StudioDeps:
@@ -101,6 +107,18 @@ def _require_store(deps: StudioDeps) -> Any:
     if deps.store is None:
         raise HTTPException(status_code=503, detail=_UNCONFIGURED_DETAIL)
     return deps.store
+
+
+def _resolve_registrar(deps: StudioDeps, tenant_id: str):
+    """Resolve (runtime, environment_id, vault_id) to register/run a playbook against for THIS
+    tenant, or None for the honest record-only path. The per-tenant `registrar_factory` (live
+    wiring) wins; a direct `registrar` runtime (tests) is the back-compat fallback."""
+    factory = getattr(deps, "registrar_factory", None)
+    if factory is not None:
+        return factory(tenant_id)  # (runtime, env_id, vault_id) | None
+    if deps.registrar is None:
+        return None
+    return (deps.registrar, getattr(deps, "environment_id", None), getattr(deps, "vault_id", None))
 
 
 def _validate_or_422(definition: dict) -> None:
@@ -214,13 +232,15 @@ def mount_studio(app: FastAPI, deps: StudioDeps, current_tenant) -> None:
         _validate_or_422(row["definition"])
 
         registration: dict | None = None
-        if deps.registrar is not None:
+        resolved = _resolve_registrar(deps, claims.tenant_id)
+        if resolved is not None:
             from agents.playbooks.activation import activate_playbook  # noqa: PLC0415 — lazy
 
-            # Registers owned AgentSpecs through the EXISTING runtime seam. Tools come from
-            # the trusted registry, so side-effecting members stay ALWAYS_ASK (Greenlight
-            # drafts) regardless of anything in the stored JSON.
-            result = activate_playbook(deps.registrar, claims.tenant_id, row["definition"])
+            runtime = resolved[0]
+            # Registers owned AgentSpecs through the EXISTING runtime seam (bound to THIS tenant's
+            # persisted Managed Agents environment). Tools come from the trusted registry, so
+            # side-effecting members stay ALWAYS_ASK (Greenlight drafts) regardless of the JSON.
+            result = activate_playbook(runtime, claims.tenant_id, row["definition"])
             registration = {
                 "agents": result["agents"],
                 # TRUNCATED for display — full Managed Agents ids never leave the API.
@@ -269,16 +289,17 @@ def mount_studio(app: FastAPI, deps: StudioDeps, current_tenant) -> None:
         # tightening must not run unvalidated).
         _validate_or_422(row["definition"])
 
-        if deps.registrar is not None:
+        resolved = _resolve_registrar(deps, claims.tenant_id)
+        if resolved is not None:
             from agents.playbooks.runner import TriggerEvent, run as _run_playbook  # noqa: PLC0415 — lazy
 
-            # environment_id / vault_id are not on StudioDeps (None is acceptable; the runner
-            # passes them into create_session which accepts None for both).
-            environment_id = getattr(deps, "environment_id", None)
-            vault_id = getattr(deps, "vault_id", None)
+            # The factory resolved the tenant's runtime + its persisted MA environment/vault, so
+            # the run drives the real crew. (For tests' direct registrar these are None, which
+            # create_session accepts.)
+            runtime, environment_id, vault_id = resolved
             event = TriggerEvent(kind="manual", name="run-now")
             record = _run_playbook(
-                deps.registrar, store, claims.tenant_id, playbook_id, event,
+                runtime, store, claims.tenant_id, playbook_id, event,
                 environment_id=environment_id, vault_id=vault_id,
             )
             # Serialize the RunRecord. Use as_dict() if present (the public API); draft actions

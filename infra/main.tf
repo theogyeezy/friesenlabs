@@ -212,6 +212,29 @@ module "cortex" {
   project = var.project
 }
 
+# --- Scheduled jobs: Cortex retrain fan-out + playbook trigger dispatcher ---
+# The two EventBridge → Fargate schedules that fire code which already existed (the retrain
+# fan-out + the playbook dispatcher). Both DISABLED until their flag flips. Also creates the
+# CORTEX_SIGNING_KEY secret (value set out-of-band).
+module "scheduled_jobs" {
+  source                    = "./modules/scheduled_jobs"
+  project                   = var.project
+  region                    = var.aws_region
+  cluster_arn               = module.ecs.cluster_id
+  private_subnet_ids        = module.vpc.private_subnet_ids
+  security_group_id         = module.security.sg_api
+  execution_role_arn        = module.iam.ecs_task_execution_role_arn
+  image                     = var.api_image
+  db_secret_arn             = module.secrets.crm_app_db_secret_arn
+  db_host                   = module.data.cluster_endpoint
+  anthropic_key_secret_arn  = module.secrets.anthropic_api_key_secret_arn
+  cortex_s3_bucket          = var.cortex_s3_registry ? module.s3.bucket_names["datalake"] : ""
+  retrain_enabled           = var.cortex_retrain_enabled
+  dispatch_enabled          = var.playbook_dispatch_enabled
+  playbook_dispatch_tenants = var.playbook_dispatch_tenants
+  log_retention_days        = var.log_retention_days
+}
+
 # --- Phase 10: provisioning orchestration (Step Functions) ---
 # REQ-005: the Lambda the SFN invokes (count-gated on the pushed image).
 module "provisioning_lambda" {
