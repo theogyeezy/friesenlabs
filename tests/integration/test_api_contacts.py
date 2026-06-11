@@ -433,12 +433,34 @@ def test_company_detail_cross_tenant_missing_and_malformed_ids_404():
 
 
 # --------------------------------------------------------------------------- #
-# READ-ONLY guarantee
+# WRITE-SURFACE guarantee — the directory now exposes EXACTLY two contact writes
+# (POST /contacts create, PATCH /contacts/{id} edit); companies stay read-only and
+# no other mutator is mounted. This locks the surface down so a stray route can't
+# appear unnoticed.
 # --------------------------------------------------------------------------- #
 @pytest.mark.integration
-def test_routes_are_read_only_no_write_paths_exist():
-    # The reader exposes no mutator and every call recorded is one of the seven reads —
-    # there is no POST/PUT/PATCH/DELETE mounted under /contacts or /companies at all.
+def test_contacts_write_surface_is_exactly_create_and_edit():
+    reader = FakeDirectoryReader()
+    client = _client(ContactsDeps(crm=reader))
+
+    # The only mounted contact writes EXIST (an empty body fails validation -> 422, not 405):
+    assert client.post("/contacts", headers=H, json={}).status_code == 422
+    assert client.patch(f"/contacts/{CONTACT_A1}", headers=H, json={}).status_code == 422
+
+    # Everything else under /contacts is genuinely unmounted -> 405:
+    assert client.put(f"/contacts/{CONTACT_A1}", headers=H).status_code == 405
+    assert client.delete(f"/contacts/{CONTACT_A1}", headers=H).status_code == 405
+    assert client.post(f"/contacts/{CONTACT_A1}", headers=H).status_code == 405
+
+    # /companies remains fully read-only — no write method is mounted at all:
+    for method in ("post", "put", "patch", "delete"):
+        assert getattr(client, method)("/companies", headers=H).status_code == 405
+        assert getattr(client, method)(f"/companies/{COMPANY_A1}", headers=H).status_code == 405
+
+
+@pytest.mark.integration
+def test_read_paths_use_only_the_seven_readers():
+    # Every recorded read call is one of the seven allow-listed directory reads.
     reader = FakeDirectoryReader()
     client = _client(ContactsDeps(crm=reader))
     client.get("/contacts", headers=H)
@@ -448,6 +470,3 @@ def test_routes_are_read_only_no_write_paths_exist():
     allowed = {"list_contacts", "get_contact", "contact_activities", "company_open_deals",
                "list_companies", "get_company", "company_contacts"}
     assert {c[0] for c in reader.calls} <= allowed
-    for method in ("post", "put", "patch", "delete"):
-        assert getattr(client, method)(f"/contacts/{CONTACT_A1}", headers=H).status_code == 405
-        assert getattr(client, method)(f"/companies/{COMPANY_A1}", headers=H).status_code == 405
