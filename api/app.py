@@ -27,6 +27,7 @@ from api.control.killswitch import KillSwitch
 from api.control.traces import InMemoryTraceStore, TraceStore
 from api.control.types import Action
 from api.contacts_routes import ContactsDeps
+from api.cortex_routes import CortexDeps
 from api.deals_routes import DealsDeps
 from api.integrations_routes import IntegrationsDeps, build_integrations_deps
 from api.knowledge_routes import KnowledgeDeps
@@ -112,6 +113,12 @@ class ApiDeps:
     # pool opens lazily; with no DSN every store-backed route answers an honest 503 (templates
     # still serve — committed JSON). Pass None to skip mounting the routes entirely.
     studio: Any | None = field(default_factory=lambda: _build_studio_deps())
+    # /cortex/health deps (the #194 ml/health.py seam made reachable). Same inert-default
+    # contract: the all-None stub mounts the route answering the honest metadata-only
+    # "no_registry" shape and constructing deps never opens a DB pool / touches AWS;
+    # api/asgi.py is the ONLY real wiring (the SAME env-built registry run_model scores with
+    # + a PgPredictionLog on the shared crm_app DSN). Pass None to skip mounting entirely.
+    cortex: CortexDeps | None = field(default_factory=CortexDeps)
 
 
 # --- request bodies (note: NONE carry tenant_id — the trust rule forbids it) ---
@@ -437,6 +444,14 @@ def create_app(deps: ApiDeps) -> FastAPI:
     if deps.knowledge is not None:
         from api.knowledge_routes import mount_knowledge
         mount_knowledge(app, deps.knowledge, current_tenant)
+
+    # Authed per-tenant Cortex health (the #194 ml/health.py seam). Claims-bound, READ-ONLY,
+    # metadata-only: the payload comes from ml.health.cortex_health over the registry manifest
+    # listing — no artifact is ever deserialized in this path. Unconfigured deps answer the
+    # honest "no_registry" shape, never invented model state.
+    if deps.cortex is not None:
+        from api.cortex_routes import mount_cortex
+        mount_cortex(app, deps.cortex, current_tenant)
 
     # Authed per-tenant control surface (kill switch · autonomy dial · decision traces) —
     # always mounted: the deps defaults are in-memory and api/asgi.py wires the Pg-backed
