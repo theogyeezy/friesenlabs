@@ -132,9 +132,28 @@ class SavedViews:
             return set(self.members_provider(tenant_id))
         return self.allowed_members
 
+    def _validate_dashboard_items(self, tenant_id: str, spec: dict) -> None:
+        """A kind=dashboard spec composes SAVED views. Never persist one whose references are
+        broken: every item must resolve to an existing view of THIS tenant, must not be a
+        dashboard itself (no nesting — keeps render depth and cycle-freedom by construction),
+        and must not be the dashboard's own id (self-reference)."""
+        for item in spec.get("items", []):
+            ref_id = item["view_id"]
+            if ref_id == spec["view_id"]:
+                raise view_spec.ValidationError("dashboard references itself", ref_id)
+            ref = self.store.latest(tenant_id, ref_id)
+            if ref is None:
+                raise view_spec.ValidationError("dashboard references unknown view", ref_id)
+            if view_spec.is_dashboard(ref.get("spec_json") or {}):
+                raise view_spec.ValidationError(
+                    "dashboard cannot embed another dashboard", ref_id
+                )
+
     def _persist(self, tenant_id: str, spec: dict, source_prompt: str, created_by: str, version: int) -> dict:
         # Validate against THIS tenant's real Cube members (never persist an invalid spec).
         view_spec.validate(spec, allowed_members=self._members_for(tenant_id))
+        if view_spec.is_dashboard(spec):
+            self._validate_dashboard_items(tenant_id, spec)
         row = {
             "tenant_id": tenant_id,
             "view_id": spec["view_id"],
@@ -168,3 +187,39 @@ class SavedViews:
 
     def get(self, tenant_id: str, view_id: str) -> dict | None:
         return self.store.latest(tenant_id, view_id)
+
+    # --- kind=dashboard composition (spec_version 2) -------------------------------------
+    # Dashboards REUSE this store: a dashboard is a saved_views row whose spec_json carries
+    # the kind="dashboard" discriminator (no new table). The helpers below split the two
+    # kinds so view consumers (the reports gallery, view pickers) keep seeing only renderable
+    # view specs and dashboard consumers see only dashboards.
+
+    @staticmethod
+    def _row_is_dashboard(row: dict) -> bool:
+        return view_spec.is_dashboard(row.get("spec_json") or {})
+
+    def list_views(self, tenant_id: str) -> list[dict]:
+        """Latest version per view_id, EXCLUDING kind=dashboard rows."""
+        return [r for r in self.store.list(tenant_id) if not self._row_is_dashboard(r)]
+
+    def list_dashboards(self, tenant_id: str) -> list[dict]:
+        """Latest version per view_id, ONLY kind=dashboard rows."""
+        return [r for r in self.store.list(tenant_id) if self._row_is_dashboard(r)]
+
+    def resolve_dashboard(self, tenant_id: str, view_id: str) -> tuple[dict, dict[str, dict]] | None:
+        """The latest dashboard row + the latest row of every view it references, in one shot
+        (what the dashboard screen renders). None when the id is missing or not a dashboard.
+        A referenced view that has since vanished is simply absent from the map — the renderer
+        shows an honest per-panel placeholder rather than the whole dashboard failing."""
+        dash = self.store.latest(tenant_id, view_id)
+        if dash is None or not self._row_is_dashboard(dash):
+            return None
+        resolved: dict[str, dict] = {}
+        for item in (dash.get("spec_json") or {}).get("items", []):
+            ref_id = item.get("view_id")
+            if not ref_id or ref_id in resolved:
+                continue
+            ref = self.store.latest(tenant_id, ref_id)
+            if ref is not None and not self._row_is_dashboard(ref):
+                resolved[ref_id] = ref
+        return dash, resolved
