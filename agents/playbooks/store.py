@@ -130,7 +130,7 @@ class PgPlaybookStore:
             self._cursor_factory = RealDictCursor
             pool_max = int(os.environ.get("UPLIFT_DB_POOL_MAX", "10"))
             # min == max: fixed-size pool retains returned connections (see PgSavedViewStore).
-            self._pool = psycopg2.pool.ThreadedConnectionPool(pool_max, pool_max, self._dsn)
+            self._pool = psycopg2.pool.ThreadedConnectionPool(1, pool_max, self._dsn)
         return self._pool
 
     def _getconn(self):

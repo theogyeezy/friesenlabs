@@ -52,7 +52,7 @@ class PgTenantDefaults:
         pool_max = int(os.environ.get("UPLIFT_DB_POOL_MAX", "10"))
         # min == max: a fixed-size pool RETAINS returned connections (psycopg2 closes any
         # connection beyond minconn on putconn), avoiding TCP/auth churn under concurrent load.
-        self._pool = psycopg2.pool.ThreadedConnectionPool(pool_max, pool_max, dsn)
+        self._pool = psycopg2.pool.ThreadedConnectionPool(1, pool_max, dsn)
 
     def _getconn(self):
         """Check out a pooled connection, waiting briefly if the pool is momentarily exhausted."""

@@ -248,7 +248,7 @@ class _PgPooledStore:
             pool_max = int(os.environ.get("UPLIFT_DB_POOL_MAX", "4"))
             # min == max: a fixed-size pool RETAINS returned connections
             # (psycopg2 closes any conn beyond minconn on putconn).
-            self._pool = psycopg2.pool.ThreadedConnectionPool(pool_max, pool_max, dsn)
+            self._pool = psycopg2.pool.ThreadedConnectionPool(1, pool_max, dsn)
 
     def _getconn(self):
         if self._pool is None:
