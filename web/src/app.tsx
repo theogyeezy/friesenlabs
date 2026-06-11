@@ -21,6 +21,7 @@ import IntegrationsPanel from "./api/IntegrationsPanel";
 import PipelineBoard from "./api/PipelineBoard";
 import ContactsDirectory from "./api/ContactsDirectory";
 import AgentsRoster from "./api/AgentsRoster";
+import StudioView from "./api/StudioView";
 import WorkflowsView from "./api/WorkflowsView";
 import ReportsView from "./api/ReportsView";
 import KnowledgeView from "./api/KnowledgeView";
@@ -185,6 +186,7 @@ function App() {
     workflows: { h1: "Workflows", p: "Automations your agents run" },
     approvals: { h1: "Greenlight", p: "Every agent action waiting on your sign-off" },
     agents:    { h1: "Agents", p: "Your always-on team" },
+    studio:    { h1: "Agent Studio", p: "Compose and run playbooks for your agent crew" },
     marketplace: { h1: "Marketplace", p: "Add agents to your team" },
     knowledge: { h1: "Knowledge", p: "What your agents know" },
     reports:   { h1: "Reports", p: "Performance & outcomes" },
@@ -427,6 +429,11 @@ function App() {
                   (owned roster + trusted tool policies + truncated provisioned
                   ids) — never the FLStore prototype console. */}
               {route === "agents" && <AgentsRoster onOpenGreenlight={() => navTo("approvals")} />}
+              {/* Studio is LIVE in real mode: the playbook composer + starter
+                  library over /studio/* (RLS-scoped CRUD, server-side schema
+                  validation, activation behind the existing Greenlight gates)
+                  — never the FLStore AgentStudio modal prototype. */}
+              {route === "studio" && <StudioView />}
               {/* Workflows is LIVE in real mode: the provisioning machine made
                   visible from GET /workflows (the OWNED 5-step diagram + recent
                   executions, read-only) — never the FLStore drag-and-drop
@@ -452,7 +459,7 @@ function App() {
                   feature-detects a 404 and degrades to a disabled "not yet
                   enabled" state rather than a fake working toggle. */}
               {route === "security" && <SecurityControls />}
-              {route !== "dashboard" && route !== "crm" && route !== "contacts" && route !== "agents" && route !== "workflows" && route !== "reports" && route !== "knowledge" && route !== "approvals" && route !== "integrations" && route !== "security" && (
+              {route !== "dashboard" && route !== "crm" && route !== "contacts" && route !== "agents" && route !== "studio" && route !== "workflows" && route !== "reports" && route !== "knowledge" && route !== "approvals" && route !== "integrations" && route !== "security" && (
                 <ComingSoon title={meta.h1} icon={navIconFor(route)} />
               )}
             </>
@@ -472,6 +479,9 @@ function App() {
               {route === "workflows" && <WorkflowBuilder agents={agents} />}
               {route === "approvals" && <Greenlight agents={agents} />}
               {route === "agents" && <AgentsConsole agents={agents} />}
+              {/* The mock build runs offline: StudioView renders its honest
+                  "connects to your live workspace" card (never a fake library). */}
+              {route === "studio" && <StudioView />}
               {route === "sidecar" && <Sidecar agents={agents} onNavigate={navTo} />}
               {route === "cortex" && <Cortex agents={agents} onNavigate={navTo} />}
               {route === "knowledge" && <Knowledge agents={agents} onNavigate={navTo} />}

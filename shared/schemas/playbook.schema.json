@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://friesenlabs.com/schemas/playbook.schema.json",
+  "title": "Uplift Agent Studio playbook definition",
+  "description": "A playbook is a named, declarative definition: a trigger, a roster of owned agents (each optionally narrowed to a tool subset), an autonomy level, and the Greenlight policy. SPEC, NOT CODE — the definition transmits data only; nothing in it is executable, and side-effecting tools can never be granted autonomy here (greenlight.side_effects is the constant 'always_ask': every send/CRM write routes through Greenlight, draft-only).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "trigger", "roster", "autonomy", "greenlight"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120,
+      "description": "Human-readable playbook name."
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 2000,
+      "description": "What this playbook does, for the Studio library card."
+    },
+    "trigger": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "enum": ["manual", "schedule", "event"],
+          "description": "manual = run on demand; schedule = cron expression; event = a named domain event."
+        },
+        "schedule": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Cron expression (UTC). Required when kind is 'schedule'."
+        },
+        "event": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Domain event name (e.g. lead.created). Required when kind is 'event'."
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"kind": {"const": "schedule"}}, "required": ["kind"]},
+          "then": {"required": ["schedule"]}
+        },
+        {
+          "if": {"properties": {"kind": {"const": "event"}}, "required": ["kind"]},
+          "then": {"required": ["event"]}
+        }
+      ]
+    },
+    "roster": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "description": "The owned specialists this playbook runs. Code-level validation additionally requires each agent to exist in the owned roster and each tool to be a subset of that agent's owned tool grant (no privilege escalation via JSON).",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["agent"],
+        "properties": {
+          "agent": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "description": "An owned roster agent name (agents/roster.py)."
+          },
+          "tools": {
+            "type": "array",
+            "maxItems": 16,
+            "uniqueItems": true,
+            "items": {"type": "string", "minLength": 1, "maxLength": 64},
+            "description": "Optional narrowing: a subset of the agent's owned tools. Omitted = the agent's full owned grant."
+          }
+        }
+      }
+    },
+    "autonomy": {
+      "enum": ["L0", "L1", "L2", "L3"],
+      "description": "Autonomy dial level (api/control/autonomy.py). Read-only tools auto-run at any level; side-effecting tools ALWAYS route through Greenlight regardless (see greenlight.side_effects)."
+    },
+    "greenlight": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["side_effects"],
+      "properties": {
+        "side_effects": {
+          "const": "always_ask",
+          "description": "DRAFT-ONLY, enforced at the schema level: the only legal value is 'always_ask'. A playbook can never grant a send/CRM write autonomy."
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Optional reviewer note shown alongside Greenlight proposals from this playbook."
+        }
+      }
+    }
+  }
+}

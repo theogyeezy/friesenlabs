@@ -42,6 +42,12 @@ def _build_public_deps():
     return build_public_deps()
 
 
+def _build_studio_deps():
+    """Lazy default for ApiDeps.studio (import api.routes_studio only when constructed)."""
+    from api.routes_studio import build_studio_deps  # noqa: PLC0415 — avoid an import cycle
+    return build_studio_deps()
+
+
 @dataclass
 class ApiDeps:
     verifier: JwtVerifier
@@ -59,6 +65,10 @@ class ApiDeps:
     # the dial and the gate read/write ONE persisted per-tenant level.
     autonomy_dial: Any | None = None
     view_patcher: Callable[[dict, str], dict] | None = None  # NL refine: (spec, instruction) -> spec
+    # Balto (conv/views.py ViewSynthesizer): NL view creation from chat — saved-view coverage
+    # check, Cube member-catalog gate, build_view generation, ephemeral drafts. None -> the
+    # /views/synthesize + draft routes answer an honest 503 (never a fake view).
+    view_synthesizer: Any | None = None
     signup: Any = None                                  # optional SignupDeps (mounts public routes)
     # /integrations deps (TODO INT/P2). Env-built by default so api/asgi.py needs no change:
     # with no env set every piece is the honest unconfigured stub (credentials/sync 503,
@@ -97,6 +107,11 @@ class ApiDeps:
     # crm_app DSN (api/public_routes.build_public_deps); otherwise the route answers an honest
     # 503 after validation. Pass None to skip mounting the route entirely.
     public: Any | None = field(default_factory=lambda: _build_public_deps())
+    # /studio deps (Agent Studio — playbook composer + library). Env-built by default so
+    # api/asgi.py needs no change: the PgPlaybookStore rides ONLY the crm_app DSN gate and its
+    # pool opens lazily; with no DSN every store-backed route answers an honest 503 (templates
+    # still serve — committed JSON). Pass None to skip mounting the routes entirely.
+    studio: Any | None = field(default_factory=lambda: _build_studio_deps())
 
 
 # --- request bodies (note: NONE carry tenant_id — the trust rule forbids it) ---
@@ -113,6 +128,11 @@ class SaveViewBody(BaseModel):
 
 class RefineBody(BaseModel):
     instruction: str
+
+
+class SynthesizeViewBody(BaseModel):
+    # The NL ask Balto synthesizes a view for (echoed back by the chat turn's view_request).
+    request: str
 
 
 class ChatBody(BaseModel):
@@ -267,6 +287,42 @@ def create_app(deps: ApiDeps) -> FastAPI:
         except Exception as e:  # validation error on the patched spec -> 422
             raise HTTPException(status_code=422, detail=str(e))
 
+    @app.post("/views/synthesize")
+    def synthesize_view(body: SynthesizeViewBody, claims: TenantClaims = Depends(current_tenant)):
+        """Balto: synthesize a NEW tenant view from an NL ask (conv/views.py ViewSynthesizer).
+
+        Tenant from the VERIFIED claim only. The result is status-keyed and honest:
+        `exists` (a saved view already covers it), `data_not_found` (no Cube member can answer
+        it — never hallucinated), `invalid` (generation failed validation), or `ok` with the
+        validated spec + an ephemeral draft_id. Nothing is persisted here.
+        """
+        if deps.view_synthesizer is None:
+            raise HTTPException(status_code=503, detail="view synthesis not configured")
+        result = deps.view_synthesizer.synthesize(claims.tenant_id, body.request)
+        if result.get("status") == "unavailable":
+            raise HTTPException(status_code=503,
+                                detail=result.get("error") or "view synthesis unavailable")
+        return result
+
+    @app.post("/views/drafts/{draft_id}/save")
+    def save_view_draft(draft_id: str, claims: TenantClaims = Depends(current_tenant)):
+        """Persist a Balto draft via the EXISTING saved-view store (the explicit user save).
+
+        Drafts are tenant-keyed: another tenant's draft id 404s here, never resolves. The spec
+        is re-validated by SavedViews.save; discarding a draft is simply never calling this.
+        """
+        if deps.view_synthesizer is None:
+            raise HTTPException(status_code=503, detail="view synthesis not configured")
+        try:
+            row = deps.view_synthesizer.save_draft(
+                claims.tenant_id, draft_id, created_by=claims.sub,
+            )
+        except Exception as e:  # validation error on the drafted spec -> 422
+            raise HTTPException(status_code=422, detail=str(e))
+        if row is None:
+            raise HTTPException(status_code=404, detail="no such draft")
+        return row
+
     @app.post("/chat")
     def chat(body: ChatBody, claims: TenantClaims = Depends(current_tenant)):
         convo = deps.conversation_factory(claims.tenant_id)
@@ -349,6 +405,13 @@ def create_app(deps: ApiDeps) -> FastAPI:
     # stores in prod. Authorization decisions are documented in api/routes_control.py.
     from api.routes_control import mount_control
     mount_control(app, deps, current_tenant)
+
+    # Authed per-tenant Agent Studio (playbook composer + starter library). Claims-bound like
+    # everything above; definitions are schema-validated SPEC-NOT-CODE and activation registers
+    # through the existing runtime seam with side-effects Greenlight-gated (draft-only).
+    if deps.studio is not None:
+        from api.routes_studio import mount_studio
+        mount_studio(app, deps.studio, current_tenant)
 
     # Public, pre-tenant signup + Stripe webhook routes (optional).
     if deps.signup is not None:

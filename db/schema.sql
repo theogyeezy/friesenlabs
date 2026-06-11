@@ -202,6 +202,33 @@ CREATE TABLE IF NOT EXISTS tenant_settings (
     created_at     timestamptz NOT NULL DEFAULT now()
 );
 
+-- ---------------------------------------------------------------------------
+-- playbooks — Agent Studio playbook definitions (appended per the Matt-append rule).
+-- One row per playbook: a named, versioned, declarative definition (jsonb) validated against
+-- shared/schemas/playbook.schema.json BEFORE any write (api/routes_studio.py + agents/playbooks)
+-- — trigger, roster of owned agents/tools, autonomy level, Greenlight policy. SPEC, NOT CODE:
+-- the definition transmits data only, and its greenlight.side_effects field only admits
+-- 'always_ask' (draft-only at the schema level). template_id records starter-library
+-- provenance; version bumps on every definition update. Tenant-scoped + FORCE'd RLS like
+-- every other tenant table (it is in the tenant_tables array below).
+-- NOTE: declared BEFORE the RLS DO block (the block executes when reached; any table named in
+-- its array must already exist or a fresh load — CI psql ON_ERROR_STOP=1, api/migrate.py's
+-- single batch — aborts). Explicit RLS statements are at EOF, same as tenant_settings.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS playbooks (
+    id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id   uuid NOT NULL,
+    name        text NOT NULL,
+    version     int  NOT NULL DEFAULT 1,
+    status      text NOT NULL DEFAULT 'draft',   -- draft|active (agents/playbooks VALID_STATUSES)
+    definition  jsonb NOT NULL,
+    template_id text,            -- starter-template provenance (NULL = built from scratch)
+    created_by  text,
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    updated_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS playbooks_tenant_idx ON playbooks (tenant_id, created_at);
+
 -- ===========================================================================
 -- ROW LEVEL SECURITY — apply the identical pattern to every tenant-scoped table.
 -- The DO block keeps it DRY and guarantees no table is missed (and never without FORCE).
@@ -212,7 +239,7 @@ DECLARE
     tenant_tables text[] := ARRAY[
         'documents', 'companies', 'contacts', 'deals', 'activities',
         'saved_views', 'approvals', 'traces', 'ingest_cursor', 'tenant_workspaces',
-        'tenant_settings'
+        'tenant_settings', 'playbooks'
     ];
 BEGIN
     FOREACH t IN ARRAY tenant_tables LOOP
@@ -412,3 +439,11 @@ BEGIN
     ALTER TABLE activities DROP CONSTRAINT IF EXISTS activities_contact_id_fkey;
     ALTER TABLE activities DROP CONSTRAINT IF EXISTS activities_deal_id_fkey;
 END $$;
+
+-- playbooks — explicit ENABLE/FORCE + policy (belt and suspenders with the DO block above;
+-- DROP IF EXISTS + CREATE keeps re-runs idempotent, same as the block's own policy refresh).
+ALTER TABLE playbooks ENABLE ROW LEVEL SECURITY; ALTER TABLE playbooks FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON playbooks;
+CREATE POLICY tenant_isolation ON playbooks
+    USING (tenant_id = current_setting('app.current_tenant', true)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.current_tenant', true)::uuid);

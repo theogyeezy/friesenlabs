@@ -1,0 +1,18 @@
+{
+  "template_id": "lead-followup-drafter",
+  "summary": "When a new lead lands, research them against your corpus and draft a personalized follow-up for your approval.",
+  "definition": {
+    "name": "Lead follow-up drafter",
+    "description": "On every new lead: scout enriches the lead from the tenant corpus and CRM, then nadia drafts a personalized outreach email. Drafts only — every send waits in Greenlight for a human.",
+    "trigger": {"kind": "event", "event": "lead.created"},
+    "roster": [
+      {"agent": "scout", "tools": ["search_rag", "read_crm"]},
+      {"agent": "nadia", "tools": ["search_rag", "read_crm", "draft_email"]}
+    ],
+    "autonomy": "L1",
+    "greenlight": {
+      "side_effects": "always_ask",
+      "note": "Outreach drafts from this playbook reference the originating lead."
+    }
+  }
+}

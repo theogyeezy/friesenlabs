@@ -39,6 +39,8 @@ import {
   type SaveViewBody,
   type RefineViewBody,
   type SavedViewRow,
+  type SynthesizeViewBody,
+  type SynthesizeViewResponse,
   type KnowledgeInventoryResponse,
   type KnowledgeSearchResponse,
   type SignupResponse,
@@ -311,6 +313,22 @@ function seedViews(): SavedViewRow[] {
       source_prompt: "Show me total pipeline and value by stage",
       created_by: "demo",
     },
+    {
+      tenant_id: MOCK_TENANT,
+      view_id: "won_deals",
+      version: 1,
+      spec_json: {
+        view_id: "won_deals",
+        title: "Won deals",
+        version: 1,
+        source_prompt: "How many deals have we won?",
+        semantic_refs: ["Deals.count"],
+        layout: [{ type: "kpi", title: "Deals won", metric: "Deals.count" }],
+      },
+      semantic_refs: ["Deals.count"],
+      source_prompt: "How many deals have we won?",
+      created_by: "demo",
+    },
   ];
 }
 
@@ -451,6 +469,60 @@ function seedCompanies(): CompanyRow[] {
   ];
 }
 
+// ---------------------------------------------------------------------------
+// Balto (NL view creation) — mirrors conv/views.py deterministically.
+// ---------------------------------------------------------------------------
+
+// The EXACT status line conv.views.BALTO_STATUS emits — the chat shows it verbatim.
+const BALTO_STATUS = "Our synthesizing agent Balto is mushing away to get this view for you.";
+// The honest copy when no Cube member can answer the ask (conv.views.DATA_NOT_ON_PLATFORM).
+const DATA_NOT_ON_PLATFORM =
+  "Your request cannot be fulfilled because the data does not exist on the platform.";
+
+// Same word-bounded intent shape as conv/views.py (so e.g. "review" never matches "view").
+const VIEW_INTENT_RE =
+  /\b(graphs?|charts?|plots?|dashboards?|visuali[sz]ations?|visuali[sz]e[ds]?|views?)\b/i;
+
+// Tokens of the demo tenant's member catalog (Deals.count / Deals.totalValue / Deals.stage /
+// Deals.createdAt / Contacts.count) — the data-not-found gate checks the ask against these.
+const MOCK_MEMBER_TOKENS = new Set([
+  "deal", "deals", "stage", "stages", "pipeline", "value", "total",
+  "contact", "contacts", "count", "created",
+]);
+
+function requestCoversMockData(request: string): boolean {
+  const words = (request.toLowerCase().match(/[a-z0-9]+/g) ?? []).filter(
+    (w) => !VIEW_INTENT_RE.test(w),
+  );
+  return words.some((w) => MOCK_MEMBER_TOKENS.has(w) || MOCK_MEMBER_TOKENS.has(w.replace(/s$/, "")));
+}
+
+function baltoSpec(request: string): Record<string, unknown> {
+  // Deterministic, schema-valid spec over the demo catalog (chart + KPI on Deals).
+  return {
+    view_id: "balto_deals_by_stage",
+    title: "Deals by stage",
+    source_prompt: request,
+    semantic_refs: ["Deals.count", "Deals.stage"],
+    layout: [
+      { type: "kpi", title: "Open deals", metric: "Deals.count" },
+      {
+        type: "chart",
+        title: "Deals by stage",
+        encoding: "vega-lite",
+        spec: {
+          mark: "bar",
+          encoding: {
+            x: { field: "stage", type: "nominal", title: "Stage" },
+            y: { field: "value", type: "quantitative", title: "Deals" },
+          },
+        },
+        query: { measures: ["Deals.count"], dimensions: ["Deals.stage"] },
+      },
+    ],
+  };
+}
+
 function cannedChat(_message: string): ChatResponse {
   return {
     answer:
@@ -511,6 +583,9 @@ export class MockApi {
   // Control-plane state — stateful within a run so toggles round-trip.
   private killswitch: KillswitchState = { engaged: false, scope: "global" };
   private autonomy: AutonomyState = { level: 1 };
+  // Balto drafts — ephemeral, save-or-discard (mirrors conv.views.ViewSynthesizer drafts).
+  private viewDrafts = new Map<string, { spec: Record<string, unknown>; request: string }>();
+  private draftSeq = 0;
 
   listApprovals(): Approval[] {
     return this.approvals.filter((a) => a.status === "pending").map((a) => ({ ...a }));
@@ -588,7 +663,55 @@ export class MockApi {
   }
 
   chat(message: string): ChatResponse {
+    // Balto: a view-shaped ask answers the EXACT status line and flags the turn so the
+    // client drives synthesizeView — mirrors conv.session.Conversation.send.
+    if (VIEW_INTENT_RE.test(message)) {
+      return {
+        answer: BALTO_STATUS,
+        citations: [],
+        pending_approvals: [],
+        slots: {},
+        needs_disambiguation: [],
+        delegations: [],
+        session_id: "mock-session",
+        tenant_id: MOCK_TENANT,
+        view_intent: true,
+        view_request: message,
+      };
+    }
     return cannedChat(message);
+  }
+
+  // Balto view synthesis — deterministic mirror of POST /views/synthesize.
+  synthesizeView(body: SynthesizeViewBody): SynthesizeViewResponse {
+    const request = (body.request ?? "").trim();
+    if (!request) return { status: "invalid", error: "empty view request" };
+    // (1) An existing saved view that already covers the ask (every content word present).
+    const words = (request.toLowerCase().match(/[a-z0-9]+/g) ?? []).filter(
+      (w) => !VIEW_INTENT_RE.test(w) && !["a", "an", "the", "of", "show", "me", "my"].includes(w),
+    );
+    const covering = this.views.find((v) => {
+      const hay = `${String((v.spec_json as Record<string, unknown>).title ?? "")} ${v.source_prompt} ${v.view_id}`.toLowerCase();
+      return words.length > 0 && words.every((w) => hay.includes(w.replace(/s$/, "")));
+    });
+    if (covering) return { status: "exists", view: { ...covering } };
+    // (2) The member-catalog gate — never hallucinate a view for data that isn't here.
+    if (!requestCoversMockData(request)) {
+      return { status: "data_not_found", message: DATA_NOT_ON_PLATFORM };
+    }
+    // (3-4) A validated draft (ephemeral until saved).
+    const draftId = `draft-${++this.draftSeq}`;
+    const spec = baltoSpec(request);
+    this.viewDrafts.set(draftId, { spec, request });
+    return { status: "ok", draft_id: draftId, spec, attempts: 1 };
+  }
+
+  saveViewDraft(draftId: string): SavedViewRow {
+    const draft = this.viewDrafts.get(draftId);
+    if (!draft) throw new ApiError(404, "no such draft");
+    const row = this.saveView({ spec: draft.spec, source_prompt: draft.request });
+    this.viewDrafts.delete(draftId); // consumed — same discard-after-save as the real route
+    return row;
   }
 
   getWorkflows(): WorkflowsResponse {
