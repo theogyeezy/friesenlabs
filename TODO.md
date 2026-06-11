@@ -1,5 +1,28 @@
 # Uplift — TODO
 
+## FLEETAGENT session follow-ups (2026-06-11) — to finish the live go-live
+
+- [x] Live DB migrate (new schema: workspace_keys/leads/playbooks/predictions + tenant_settings
+      ALTERs) + roles.sql grants via `uplift-migrate-oneoff:2` — exit 0, live isolation test PASS.
+- [ ] **Rebuild + roll the provisioning-Lambda image** (must carry #197 `_resolve_secret_env`
+      ARN-fetch) BEFORE approving the deploy apply — the plan switches its env to ARN-only secrets
+      and `signup_real_deps=true` is already live, so a stale Lambda image would break provisioning.
+- [ ] **Rebuild + roll the cube image** so the #177 RLS GUC fix goes live (deploy pipeline only
+      builds the api image; Cube returns zero rows until its image is rolled).
+- [ ] **Approve the paused Deploy run** (api image `20384e9` roll) once the two images above are
+      handled — plan reviewed: 3 add / 5 change / 2 destroy (the destroys are ECS task-def
+      replacements, benign). Production approval gate is waiting.
+- [ ] **Wire the verified Stripe price IDs** into the prod tfvars secret `PROD_AUTO_TFVARS_B64`
+      (admin-only): starter `price_1Tgnl3RCMItYjxIJE4vlzq5v`, team `price_1Tgnl4RCMItYjxIJY1hYSlPu`,
+      scale `price_1Tgnl5RCMItYjxIJrCTW9KOp` (Stripe TEST mode, $99/$299/$799/mo).
+- [ ] **Seed the workspace-key pool** (Anthropic Console pre-mint → `scripts/ops/load_workspace_keys.py`)
+      — pool is empty; real provisioning parks `pool_empty` until seeded.
+- [ ] Decide on the **@friesenlabs.com Stripe bypass** for prod testing: set
+      `SIGNUP_INTERNAL_BYPASS_DOMAINS=friesenlabs.com` + the prod escape-hatch env (review the
+      boot-refusal guard in `shared/config.py` so the API still boots).
+- [ ] MVP `feat/mvp-*` branches are intentionally PRESERVED on origin (Balto, agent-studio,
+      connectors, dashboards-v2, cortex-depth, demo-knowledge) — do not delete; further dev continues there.
+
 ## Lane Nick — completion status (2026-06-10)
 
 Most of this file's remaining `- [ ]` are **done**, **owner-gated**, **cost-parked**, or **Lane Matt's**.
