@@ -72,9 +72,37 @@ def app_dsn():
     return APP_URL
 
 
+@pytest.fixture
+def make_stores(app_dsn, monkeypatch):
+    """Build stores with TINY pools and CLOSE them at teardown.
+
+    The fixed-size pool (min == max, default 10) opens every connection at construction and the
+    stores never close it — fine for the long-lived asgi singletons, but a test module building
+    several 'instances' would exhaust the CI service's connection slots (the live failure mode
+    this fixture exists for). 2 connections per pool, all released after each test.
+    """
+    monkeypatch.setenv("UPLIFT_DB_POOL_MAX", "2")
+    pools = []
+
+    def settings() -> PgControlSettingsStore:
+        s = PgControlSettingsStore(app_dsn)
+        pools.append(s._pool)
+        return s
+
+    def traces() -> PgTraceStore:
+        t = PgTraceStore(app_dsn)
+        pools.append(t._client._pool)
+        return t
+
+    yield settings, traces
+    for p in pools:
+        p.closeall()
+
+
 @pytest.mark.integration
-def test_traces_rls_isolation_and_pagination(app_dsn):
-    store = PgTraceStore(app_dsn)
+def test_traces_rls_isolation_and_pagination(make_stores):
+    _, make_traces = make_stores
+    store = make_traces()
     a, b = str(uuid.uuid4()), str(uuid.uuid4())
     for i in range(5):
         append_trace(store, tenant_id=a, agent="nadia", tool=f"tool-{i}", kind="executed",
@@ -104,8 +132,9 @@ def test_traces_rls_isolation_and_pagination(app_dsn):
 
 
 @pytest.mark.integration
-def test_control_settings_rls_isolation(app_dsn):
-    store = PgControlSettingsStore(app_dsn)
+def test_control_settings_rls_isolation(make_stores):
+    make_settings, _ = make_stores
+    store = make_settings()
     a, b = str(uuid.uuid4()), str(uuid.uuid4())
     store.set_killswitch(a, True)
     store.set_autonomy(a, "L3")
@@ -117,10 +146,12 @@ def test_control_settings_rls_isolation(app_dsn):
 
 
 @pytest.mark.integration
-def test_killswitch_multi_instance_flip_visible(app_dsn):
+def test_killswitch_multi_instance_flip_visible(make_stores):
     """Two separate store instances + facades == two API tasks sharing only Aurora."""
-    task1 = PersistedKillSwitch(PgControlSettingsStore(app_dsn), ttl_seconds=0.0)
-    task2 = PersistedKillSwitch(PgControlSettingsStore(app_dsn), ttl_seconds=0.0)
+    make_settings, _ = make_stores
+    sentinel_store = make_settings()
+    task1 = PersistedKillSwitch(make_settings(), ttl_seconds=0.0)
+    task2 = PersistedKillSwitch(make_settings(), ttl_seconds=0.0)
     a, b = str(uuid.uuid4()), str(uuid.uuid4())
 
     assert task2.is_paused(a) is False
@@ -141,14 +172,15 @@ def test_killswitch_multi_instance_flip_visible(app_dsn):
         task1.set("operator", False, scope="global")  # never leave a shared DB globally paused
     assert task2.is_paused(a) is False
     # The sentinel row exists and is disengaged (visible only under its own scope).
-    sentinel = PgControlSettingsStore(app_dsn).get(GLOBAL_CONTROL_TENANT)
+    sentinel = sentinel_store.get(GLOBAL_CONTROL_TENANT)
     assert sentinel is not None and sentinel["killswitch_engaged"] is False
 
 
 @pytest.mark.integration
-def test_autonomy_dial_multi_instance(app_dsn):
-    dial1 = PersistedAutonomyDial(PgControlSettingsStore(app_dsn), ttl_seconds=0.0)
-    dial2 = PersistedAutonomyDial(PgControlSettingsStore(app_dsn), ttl_seconds=0.0)
+def test_autonomy_dial_multi_instance(make_stores):
+    make_settings, _ = make_stores
+    dial1 = PersistedAutonomyDial(make_settings(), ttl_seconds=0.0)
+    dial2 = PersistedAutonomyDial(make_settings(), ttl_seconds=0.0)
     t = str(uuid.uuid4())
     assert dial2.get(t) is Level.L1          # unseeded -> the default
     dial1.set(t, Level.L2)
