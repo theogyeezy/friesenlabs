@@ -176,6 +176,49 @@ class PgAccountStore(_PgBase):
                  acct.tenant_id, self._Json(_account_meta(acct)), str(acct.id)),
             )
 
+    def save_checkout_intent(self, account_id: str, intent: dict) -> None:
+        # Persist the SERVER-known facts about a started checkout (session id, customer, price,
+        # plan, livemode) under the meta `checkout_intent` key via the same atomic single-statement
+        # merge the OTP writer uses — no read-modify-write window, and PgAccountStore's other
+        # top-level keys (and 'otp') survive untouched. The signed webhook is verified against this
+        # intent before settlement (a valid signature does not prove the payload's
+        # amount/price/livemode/customer match what we requested).
+        with self._tx() as cur:
+            cur.execute(
+                "UPDATE accounts SET "
+                "meta = meta || jsonb_build_object('checkout_intent', %s::jsonb), "
+                "updated_at = now() WHERE id = %s",
+                (self._Json(dict(intent)), str(account_id)),
+            )
+
+    def get_checkout_intent(self, account_id: str) -> dict | None:
+        with self._tx() as cur:
+            cur.execute("SELECT meta->'checkout_intent' AS ci FROM accounts WHERE id = %s",
+                        (str(account_id),))
+            row = cur.fetchone()
+        rec = row.get("ci") if row else None
+        return dict(rec) if rec else None
+
+    def settle_paid_atomic(self, account_id: str) -> Account | None:
+        """Atomically flip a NOT-yet-settled account to PAID, returning the row iff THIS call won.
+
+        The single-statement CAS — ``UPDATE .. SET status='paid' WHERE id=%s AND status NOT IN
+        ('paid','provisioning','active') RETURNING *`` — is the primary guard against the
+        double-provision race: Stripe sends BOTH checkout.session.completed and invoice.paid for
+        one purchase (DIFFERENT event ids), so the per-event stripe_events claim cannot serialize
+        them. Exactly one of N concurrent settlements flips the row and gets the Account back; every
+        other observes the already-settled state and gets None (a safe idempotent no-op). The
+        stripe_events claim stays as a SECOND layer (cross-task replay of the SAME id)."""
+        with self._tx() as cur:
+            cur.execute(
+                "UPDATE accounts SET status = %s, updated_at = now() "
+                "WHERE id = %s AND status NOT IN (%s, %s, %s) RETURNING *",
+                (State.PAID.value, str(account_id),
+                 State.PAID.value, State.PROVISIONING.value, State.ACTIVE.value),
+            )
+            row = cur.fetchone()
+        return _row_to_account(dict(row)) if row else None
+
 
 class PgStripeEventLedger(_PgBase):
     """Webhook idempotency ledger over `stripe_events` (TODO P1: survive restarts / 2 tasks).
