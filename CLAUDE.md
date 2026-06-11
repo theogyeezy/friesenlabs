@@ -115,16 +115,31 @@ adversarial audit then a 4-wave build. **22 PRs squash-merged to `main` (green),
   + 5 starter playbooks, **connectors** (CSV/GoHighLevel/Stripe-read), **dashboards v2** (funnel/
   leaderboard/sparkline/cohort/grid), **Cortex depth** (training loader, retrain entrypoint, signed
   artifacts, live drift), demo-tenant golden path + knowledge-corpus seeding.
-- **Live applies (this session):** DB migrate ran live against Aurora via `uplift-migrate-oneoff:2`
-  (new schema + roles/grants) — **exit 0**; live isolation test **PASS** (RLS holds). The deploy
-  pipeline built image `uplift-api:20384e9` and **paused at the production approval gate** — the
-  apply was NOT approved: its plan flips the provisioning Lambda to ARN-only secrets while the
-  Lambda *container image* lacks #197's ARN-fetch (and `signup_real_deps=true` is already live), so
-  the api/cube roll is blocked on rebuilding the provisioning-Lambda + cube images (or a targeted
-  api-only apply). The 2 plan "destroys" are benign ECS task-def revision replacements.
-- **Still owner-gated:** seed the workspace-key pool (Anthropic Console → `scripts/ops/load_workspace_keys.py`);
-  wire the verified Stripe price IDs into the prod tfvars secret; rebuild+roll provisioning-Lambda +
-  cube images to make the merged code fully live.
+- **Live applies — DONE + DEPLOYED (2026-06-11):** DB migrate ran live against Aurora via
+  `uplift-migrate-oneoff:2` (new schema + roles/grants) — **exit 0**; live isolation test **PASS**.
+  Then the full Deploy **succeeded** (after two fix-forwards): api `:11→:12`, **cube rolled to the
+  #177 RLS-fix image** (steady state), worker on the data-plane image, provisioning Lambda on the
+  ARN-fetch image; edge `/healthz` 200. Two deploy-time bugs were found + fixed: (1) the non-api
+  images weren't built by `deploy.yml` → added `.github/workflows/build-images.yml` (cube/
+  provisioning/worker); (2) those builds were wrong — **cube needed amd64** (Fargate) not arm64, and
+  the **provisioning Lambda needs a Docker-v2 manifest** (`--provenance=false`), not buildx's OCI
+  index. Stripe TEST price IDs + corrected image tags were written into the `PROD_AUTO_TFVARS_B64`
+  secret. The whole FLEETAGENT backend (revenue/accountability/data-plane/tenancy) is now running live.
+- **Customer-readiness wave (2026-06-11, all merged):** **auth recovery** (Cognito Hosted-UI
+  forgot/change-password, trust-rule upheld), **Stripe billing portal** (change card/cancel/invoices
+  + cancellation webhook), **support surface** (`/public/support` + in-app help + `/status` page),
+  **signup abuse controls** (disposable-email block, per-IP velocity, captcha seam), **per-tenant
+  rate limits + plan-tier usage quotas + Anthropic cost attribution**, **first-run onboarding**
+  (empty states, guided checklist, one-click load-sample), and a **landing "Provision my instance"
+  fix** (was a fake animation that threw — now starts the real signup). Plus a latent-bug fix:
+  **lazy DB connection pools** (`minconn=1`) — the stores were eagerly opening the full 10-conn pool
+  each, hoarding ~180 idle Aurora connections (and exhausting CI Postgres).
+- **Still owner-gated (last mile to real paid customers):** **seed the workspace-key pool**
+  (Anthropic Console pre-mint → `scripts/ops/load_workspace_keys.py`) — until then real provisioning
+  parks `pool_empty` (the @friesenlabs.com test-bypass + demo path work without it). The
+  customer-readiness code is merged but **not yet rolled** — needs the next Deploy (build-images +
+  approve) to go live. Legal/Terms/Privacy pages + the placeholder-501(c)(3) landing copy are still
+  open (deliberately deferred).
 
 ## How we build
 - **Dependency order, not feature order.** Phase 0 → 12. Don't start a phase whose inputs

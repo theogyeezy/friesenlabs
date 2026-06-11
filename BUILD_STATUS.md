@@ -759,3 +759,21 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   connects as crm_app but never sets app.current_tenant, so FORCE'd RLS blanks every query —
   fix design (TenantBoundPostgresDriver via driverFactory) in the issue. Dashboards' /views data
   route + web loader remains the separate product slice.
+
+## 2026-06-11 — FLEETAGENT customer-readiness + live deploy (Lane Nick/boss)
+- **Deployed to prod (success):** api `:11→:12`, **cube rolled to the #177 RLS-fix image** (steady
+  state — Cube now sets `app.current_tenant`, governed queries return tenant rows), worker on the
+  data-plane image, provisioning Lambda on the #197 ARN-fetch image; edge `/healthz` 200; live
+  migrate + isolation gate PASS. Two deploy-time bugs found+fixed: added `build-images.yml`
+  (deploy.yml only built api); cube must be **amd64** (Fargate) and the provisioning Lambda needs a
+  **Docker-v2 manifest** (`--provenance=false`) — buildx's default arm64/OCI-index failed ECS pull
+  (`CannotPull … platform linux/amd64`) and Lambda (`InvalidParameterValue media type`).
+- **Customer-readiness wave merged:** auth recovery (#206), Stripe billing portal (#209), support +
+  status page (#210), signup abuse controls (#207), per-tenant rate limits + usage quotas + cost
+  attribution (#211), first-run onboarding (#212), landing provision-CTA fix (#205).
+- **Bug fix:** lazy DB connection pools (`minconn=1`, #213) — stores were eagerly opening the full
+  10-conn pool (≈180 idle Aurora conns; exhausted CI Postgres → recurring python-CI failures).
+- **Secret:** `PROD_AUTO_TFVARS_B64` now carries the corrected cube/provisioning image tags + the
+  Stripe TEST price IDs ($99/$299/$799).
+- **Not yet rolled:** the customer-readiness + MVP code is on `main` but needs the next Deploy +
+  Amplify web build to go live. **Owner-gated:** seed the workspace-key pool (Console).
