@@ -16,10 +16,13 @@ The ``api`` component is always "operational" — if this endpoint answered, the
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Callable
 
 from fastapi import FastAPI
+
+log = logging.getLogger("api.status")
 
 # ---------------------------------------------------------------------------  types / constants
 
@@ -92,8 +95,13 @@ def _probe_component(key: str, label: str, probe: Callable[[], State] | None) ->
     try:
         state = probe()
         return {"key": key, "label": label, "state": state, "detail": None}
-    except Exception as exc:  # noqa: BLE001 — surface probe errors as "down", not 500
-        return {"key": key, "label": label, "state": _DOWN, "detail": str(exc)}
+    except Exception:  # noqa: BLE001 — surface probe errors as "down", not 500
+        # This endpoint is PUBLIC + unauthenticated: a raw str(exc) here could leak
+        # internal detail (DSN fragments, hostnames, stack text) to anyone. Log the
+        # full exception server-side; return only a generic, sanitised detail.
+        log.exception("status probe %r failed", key)
+        return {"key": key, "label": label, "state": _DOWN,
+                "detail": "probe error — see server logs"}
 
 
 # ---------------------------------------------------------------------------  mount

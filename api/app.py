@@ -19,6 +19,8 @@ from pydantic import BaseModel
 
 from api.account_routes import AccountDeps
 from api.account_delete_routes import AccountDeleteDeps
+from api.status_routes import StatusDeps
+from api.settings_routes import SettingsDeps
 from api.agents_routes import AgentsDeps
 from api.auth import JwtVerifier, TenantClaims, make_current_tenant
 from api.control.autonomy import AutonomyConfig
@@ -150,6 +152,13 @@ class ApiDeps:
     # all-None stub mounts the route answering the honest 503; a destructive live path requires
     # api/asgi.py to deliberately wire a real PgAccountDeleter. None = skip mounting entirely.
     account_delete: AccountDeleteDeps | None = field(default_factory=AccountDeleteDeps)
+    # GET /public/status deps (the public status page's per-subsystem probes). Inert default:
+    # all-None probes → every subsystem "unknown" (honest) + an operational rollup; api/asgi.py
+    # injects the real probes. None = skip mounting the route entirely.
+    status: StatusDeps | None = field(default_factory=StatusDeps)
+    # GET/PUT /account/settings deps (persisted workspace name + notification prefs). Same inert
+    # default contract (store=None → honest 503); api/asgi.py wires the real PgSettingsStore.
+    settings: SettingsDeps | None = field(default_factory=SettingsDeps)
     # Per-tenant rate-limit + quota MIDDLEWARE (a 2-tuple (middleware_class, kwargs) added via
     # app.add_middleware). None -> NOT installed (the default for offline tests, so they aren't
     # throttled). api/asgi.py passes a configured spec when tenant_limits_enabled(); a request with
@@ -561,6 +570,19 @@ def create_app(deps: ApiDeps) -> FastAPI:
     if deps.account_delete is not None:
         from api.account_delete_routes import mount_account_delete
         mount_account_delete(app, deps.account_delete, current_tenant)
+
+    # Public (unauth) status page feed (GET /public/status + /api/status): per-subsystem
+    # readiness from injected probes. No auth — it's the public status page. Inert default
+    # (no probes) → honest "unknown" subsystems + an operational rollup (api answered).
+    if deps.status is not None:
+        from api.status_routes import mount_status
+        mount_status(app, deps.status)
+
+    # Authed persisted workspace settings (GET/PUT /account/settings — workspace name +
+    # notification prefs). Claims-bound, RLS-scoped; honest 503 when the store is unconfigured.
+    if deps.settings is not None:
+        from api.settings_routes import mount_settings
+        mount_settings(app, deps.settings, current_tenant)
 
     # Per-tenant rate-limit + quota middleware. Installed ONLY when api/asgi.py provides a spec
     # (default None = off, so offline tests aren't throttled). The spec is (cls, kwargs); a

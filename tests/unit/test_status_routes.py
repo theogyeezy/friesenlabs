@@ -151,15 +151,23 @@ def test_raising_probe_reports_down_not_500():
 
 
 @pytest.mark.unit
-def test_raising_probe_includes_error_detail():
-    """The error message from the probe exception appears in the component detail."""
+def test_raising_probe_detail_is_sanitised_no_leak():
+    """SECURITY: this endpoint is PUBLIC + unauth — a probe exception must NOT leak its
+    raw message (DSN fragments, hostnames, stack text). The component reports 'down' with
+    a generic, sanitised detail; the raw exception string never reaches the response."""
+    secret = "host=internal-db.prod timed out after 5s"
+
     def _boom():
-        raise ConnectionError("timed out after 5s")
+        raise ConnectionError(secret)
 
     deps = StatusDeps(ingest=_boom)
     body = _client(deps).get("/public/status").json()
     ingest_comp = next(c for c in body["components"] if c["key"] == "ingest")
-    assert "timed out" in (ingest_comp.get("detail") or "")
+    assert ingest_comp["state"] == "down"
+    detail = ingest_comp.get("detail") or ""
+    assert "internal-db.prod" not in detail   # the raw message must not leak
+    assert "timed out" not in detail
+    assert "see server logs" in detail        # the honest, generic placeholder
 
 
 @pytest.mark.unit
