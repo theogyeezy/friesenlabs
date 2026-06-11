@@ -7,9 +7,17 @@ yet — it is minted at provisioning (Step 55).
 """
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from enum import Enum
+
+
+def _require_phone_verification() -> bool:
+    """Feature flag SIGNUP_REQUIRE_PHONE (default true). Set "false" to launch on email-only
+    verification while SMS account-level approval is pending. Mirrors shared.config.Config —
+    read directly here to keep the readiness property cheap + side-effect-free."""
+    return os.environ.get("SIGNUP_REQUIRE_PHONE", "true").strip().lower() != "false"
 
 # Basic RFC-ish email shape (not a full RFC 5322 parser — a cheap server-side guard against
 # typos / obviously-malformed input). One '@', a dotted domain, no whitespace.
@@ -83,6 +91,10 @@ class Account:
 
     @property
     def fully_verified(self) -> bool:
+        # Phone gated behind SIGNUP_REQUIRE_PHONE (default on). When off, email alone is "fully
+        # verified" — the email-only launch path while SMS approval is pending.
+        if not _require_phone_verification():
+            return self.email_verified
         return self.email_verified and self.phone_verified
 
     @property
@@ -138,10 +150,10 @@ class AccountService:
         acct = self.store.get(account_id)
         if token_ok:
             acct.email_verified = True
-            if acct.phone_verified:
-                # L4: phone may have been verified first — both done now, so advance to
-                # PHONE_VERIFIED (the "fully verified, ready to pay" state) instead of getting
-                # stuck. Don't downgrade an account already past verification.
+            if acct.fully_verified:
+                # Ready to pay — both legs done, OR phone isn't required (SIGNUP_REQUIRE_PHONE off).
+                # Advance to the ready-to-pay state (PHONE_VERIFIED) instead of getting stuck; never
+                # downgrade an account already past verification.
                 if acct.state in (State.CREATED, State.EMAIL_VERIFIED):
                     acct.state = State.PHONE_VERIFIED
             elif acct.state is State.CREATED:

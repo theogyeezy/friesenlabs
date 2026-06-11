@@ -157,6 +157,7 @@ module "api_service" {
   api_signup_env                 = var.api_signup_env
   signup_real_deps               = var.signup_real_deps
   allow_real_sends               = var.allow_real_sends
+  signup_require_phone           = var.signup_require_phone
   stripe_key_arn                 = data.aws_secretsmanager_secret.platform_stripe.arn
   resend_key_arn                 = data.aws_secretsmanager_secret.platform_resend.arn
   stripe_webhook_secret_arn      = module.secrets.stripe_webhook_secret_arn
