@@ -131,18 +131,27 @@ class FakeCrm:
 
     # --- deals writes ---------------------------------------------------------
 
-    def insert_deal(self, *, tenant_id, company_id, name, stage, amount):
+    def insert_deal(self, *, tenant_id, company_id, name, stage, amount,
+                    contact_id=None):
         self.calls.append(("insert_deal", dict(
             tenant_id=tenant_id, company_id=company_id, name=name,
-            stage=stage, amount=amount,
+            stage=stage, amount=amount, contact_id=contact_id,
         )))
         row_id = str(uuid.uuid4())
         row = {"id": row_id, "title": name, "name": name, "stage": stage,
                "amount": amount, "tenant_id": str(tenant_id),
-               "company_id": company_id, "contact_id": None, "created_at": None,
+               "company_id": company_id, "contact_id": contact_id, "created_at": None,
                "currency": None, "company_name": None}
         self._deals[row_id] = row
-        return {"id": row_id, "name": name, "stage": stage, "amount": amount}
+        return {"id": row_id, "name": name, "stage": stage, "amount": amount,
+                "contact_id": contact_id}
+
+    def _seed_contact(self, tenant_id, contact_id=None):
+        """Test helper: insert a visible contact for `tenant_id`, returns its id."""
+        cid = str(contact_id or uuid.uuid4())
+        self._contacts[cid] = {"id": cid, "name": "Seeded", "email": None,
+                               "phone": None, "tenant_id": str(tenant_id)}
+        return cid
 
     def update_deal_fields(self, *, tenant_id, deal_id, changes):
         self.calls.append(("update_deal_fields", dict(
@@ -431,6 +440,65 @@ def test_create_deal_default_stage_new():
     assert r.status_code == 201
     _, kwargs = crm.calls[0]
     assert kwargs["stage"] == "new"
+
+
+@pytest.mark.unit
+def test_create_deal_contact_id_is_persisted():
+    """REGRESSION: a valid, visible contact_id must be PASSED THROUGH to insert_deal —
+    the route used to validate it and then silently drop it (data loss)."""
+    crm = FakeCrm()
+    cid = crm._seed_contact("A")
+    tc, _ = _deals_client(crm)
+    r = tc.post("/deals", json={"title": "Linked", "contact_id": cid}, headers=H_A)
+    assert r.status_code == 201, r.text
+    method, kwargs = crm.calls[-1]
+    assert method == "insert_deal"
+    assert kwargs["contact_id"] == cid   # actually persisted, not dropped
+    assert r.json()["deal"]["contact_id"] == cid
+
+
+@pytest.mark.unit
+def test_create_deal_no_contact_id_passes_none():
+    """Omitting contact_id passes None (no spurious link)."""
+    tc, crm = _deals_client()
+    r = tc.post("/deals", json={"title": "Solo"}, headers=H_A)
+    assert r.status_code == 201
+    _, kwargs = crm.calls[-1]
+    assert kwargs["contact_id"] is None
+
+
+@pytest.mark.unit
+def test_create_deal_unknown_contact_id_404_says_contact():
+    """A well-formed but non-existent/cross-tenant contact_id -> 404 'no such contact'
+    (NOT the misleading 'no such deal' the deal-path validator produced before)."""
+    tc, crm = _deals_client()  # empty contacts store
+    r = tc.post("/deals", json={"title": "X", "contact_id": str(uuid.uuid4())},
+                headers=H_A)
+    assert r.status_code == 404
+    assert r.json()["detail"] == "no such contact"
+
+
+@pytest.mark.unit
+def test_create_deal_cross_tenant_contact_id_404():
+    """Tenant A cannot link a deal to tenant B's contact — 404, indistinguishable."""
+    crm = FakeCrm()
+    cid = crm._seed_contact("B")        # belongs to B
+    tc, _ = _deals_client(crm)
+    r = tc.post("/deals", json={"title": "X", "contact_id": cid}, headers=H_A)  # claim A
+    assert r.status_code == 404
+    assert r.json()["detail"] == "no such contact"
+    # nothing was written
+    assert not any(c[0] == "insert_deal" for c in crm.calls)
+
+
+@pytest.mark.unit
+def test_create_deal_malformed_contact_id_422():
+    """A non-uuid contact_id is a client body error -> 422 'invalid contact_id'."""
+    tc, crm = _deals_client()
+    r = tc.post("/deals", json={"title": "X", "contact_id": "not-a-uuid"}, headers=H_A)
+    assert r.status_code == 422
+    assert r.json()["detail"] == "invalid contact_id"
+    assert not any(c[0] == "insert_deal" for c in crm.calls)
 
 
 @pytest.mark.unit
