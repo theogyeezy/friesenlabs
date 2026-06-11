@@ -10,6 +10,7 @@ claim whose custom:tenant_id matches the account (else it stays internal-only; s
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Callable
 from urllib.parse import quote
@@ -37,6 +38,8 @@ from signup.payment import PaymentError, PaymentService
 # divergent duplicate) so the velocity limiter keys on the trust-boundary viewer IP, never the
 # spoofable left of X-Forwarded-For nor the shared ALB socket peer.
 from api.public_routes import DEFAULT_TRUSTED_HOPS, _trusted_client_ip
+
+log = logging.getLogger("api.signup")
 
 
 @dataclass
@@ -265,15 +268,25 @@ def mount_signup(app: FastAPI, deps: SignupDeps) -> None:
             try:
                 res = deps.payment.internal_comp(account_id, body.plan)
             except PaymentError as e:
-                raise HTTPException(status_code=400, detail=str(e))
+                # Server-side log keeps the real reason; the client gets a FIXED message —
+                # str(e) can carry adapter/provider internals (an unauthenticated reconnaissance
+                # surface), and other paths here already echo only type(exc).__name__ at most.
+                log.warning("internal_comp refused for account %s: %s: %s",
+                            account_id, type(e).__name__, e)
+                raise HTTPException(status_code=400, detail="payment could not be completed")
             return {"checkout_url": None, "bypass": "internal_comp", **res}
         # Idempotency key from the client (a double-click reuses it) or derived deterministically.
         idem = request.headers.get("idempotency-key") or f"{account_id}:{body.plan}"
         try:
             res = deps.payment.start_checkout(account_id, body.plan, idem)
         except PaymentError as e:
-            # e.g. not yet verified (verify before pay)
-            raise HTTPException(status_code=400, detail=str(e))
+            # e.g. not yet verified (verify before pay). The real reason goes to the server log
+            # ONLY: str(e) wraps Stripe adapter errors verbatim, and echoing provider internals
+            # on an unauthenticated route is a reconnaissance gift (the repo pattern elsewhere
+            # in this file returns at most type(exc).__name__).
+            log.warning("start_checkout failed for account %s: %s: %s",
+                        account_id, type(e).__name__, e)
+            raise HTTPException(status_code=400, detail="payment could not be started")
         # checkout_url is the Stripe-hosted page the SPA must send the browser to. Returning it
         # (instead of discarding it) is what makes the revenue path real — the client no longer
         # fakes payment success; the signed webhook remains the only provisioning trigger.

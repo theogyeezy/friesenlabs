@@ -12,10 +12,11 @@ output "private_subnet_ids" {
 }
 
 output "security_group_ids" {
-  description = "alb / api / db / redis security groups."
+  description = "alb / api / cube / db / redis security groups (REQ-012 item 7: cube has its own SG)."
   value = {
     alb   = module.security.sg_alb
     api   = module.security.sg_api
+    cube  = module.security.sg_cube
     db    = module.security.sg_db
     redis = module.security.sg_redis
   }

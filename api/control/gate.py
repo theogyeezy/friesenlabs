@@ -40,7 +40,12 @@ class ActionGate:
             tid = self._trace(ctx, action, "blocked", reasoning="kill switch engaged")
             return GateResult("blocked", Decision.BLOCK, "kill switch engaged", trace_id=tid)
 
-        # 2. Compliance — a hard fail never reaches Greenlight.
+        # 2. Compliance — a hard fail never reaches Greenlight. This is the gate's OWN validate
+        #    (deterministic checks + the injected LLM critic for regulated verticals); a block here
+        #    means propose() is never called, so no denied row is double-stored. Greenlight.propose
+        #    re-runs the deterministic floor internally (belt-and-suspenders — it covers the worker/
+        #    sidecar/playbook paths that propose without a gate); for an action that passes here it
+        #    passes there too, so gate behavior is identical for compliant actions.
         c = compliance.validate(action, critic=ctx.compliance_critic)
         if not c.ok:
             tid = self._trace(ctx, action, "blocked", reasoning=c.reason)

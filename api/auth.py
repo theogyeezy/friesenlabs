@@ -6,10 +6,28 @@ pushed into Postgres `app.current_tenant`, Cube's securityContext, and the agent
 
 The verifier is injected so the app is testable offline; the real `CognitoJwtVerifier` checks the
 signature against the pool JWKS (authored + flagged verify, never called in tests).
+
+RBAC (the security-audit fix — "no route checks a role"):
+  Roles ride the VERIFIED `cognito:groups` claim (Cognito stamps group memberships into both ID
+  and access tokens; absent = no groups). `TenantClaims.groups` carries them, and
+  :func:`is_tenant_admin` is the ONE place the admin policy lives — every privileged route gates
+  through it (directly via :func:`require_tenant_admin`, or as the FastAPI dependency built by
+  :func:`make_current_admin`). Do NOT re-derive "is this user an admin?" anywhere else.
+
+  THE BACK-COMPAT RULE (deliberate, loud): a user with NO groups at all is treated as a tenant
+  admin. Every user minted before RBAC landed has no group memberships — Lane Nick has not yet
+  created the Cognito groups, and provisioning only started assigning "admin" with this change.
+  Without this allowance, every existing (and every solo-tenant) user would be instantly locked
+  out of their own kill switch, billing, and settings. MIGRATION STORY: once Lane Nick applies
+  the Cognito group terraform and existing users are backfilled into groups, flip
+  ``RBAC_STRICT=1`` on the API task — that removes the empty-groups allowance and the ONLY way
+  to be admin is membership in the "admin" group. The flag is read per request, so the flip
+  needs no deploy.
 """
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -17,12 +35,32 @@ from fastapi import Depends, HTTPException, Request
 
 logger = logging.getLogger("api.auth")
 
+# The Cognito group that grants tenant-admin rights (provisioning adds the tenant's FIRST user
+# to it — signup/provisioning.py; the group itself is Lane Nick terraform).
+ADMIN_GROUP = "admin"
+
+# Strict-RBAC flag (read per request — flipping it needs no restart). Default OFF: the
+# empty-groups back-compat allowance applies (see the module docstring's migration story).
+# Set RBAC_STRICT=1 once the Cognito groups exist and every user has been assigned one.
+ENV_RBAC_STRICT = "RBAC_STRICT"
+
+# The honest, fixed 403 copy for a non-admin hitting an admin-gated route. Deliberately names
+# the group so a locked-out user knows exactly what membership to ask their admin for.
+ADMIN_REQUIRED_DETAIL = (
+    "this action requires a workspace admin — ask a member of your workspace's "
+    "'admin' group to perform it"
+)
+
 
 @dataclass(frozen=True)
 class TenantClaims:
     tenant_id: str
     sub: str
     email: str | None = None
+    # Verified Cognito group memberships (`cognito:groups`). Absent claim -> empty tuple.
+    # Roles are derived ONLY from this — never from a header, query, or the request body
+    # (the same trust posture as tenant_id).
+    groups: tuple[str, ...] = ()
 
 
 class JwtVerifier(Protocol):
@@ -65,7 +103,10 @@ class CognitoJwtVerifier:
             issuer=self.issuer,
             options={"require": ["exp", "iss", "aud"]},
         )
-        if claims.get("token_use") not in (None, "id"):
+        # Require token_use to be EXACTLY "id" (security-audit tightening): a real Cognito ID
+        # token always carries token_use=id, so a token without the claim is malformed or
+        # non-Cognito and must be rejected — the earlier None allowance would have admitted it.
+        if claims.get("token_use") != "id":
             raise ValueError("expected a Cognito ID token (carries custom:tenant_id)")
         return claims
 
@@ -75,6 +116,72 @@ def _bearer(request: Request) -> str:
     if not auth.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="missing bearer token")
     return auth[7:].strip()
+
+
+def _parse_groups(claims: dict) -> tuple[str, ...]:
+    """The verified `cognito:groups` claim as a tuple of group names; absent/empty -> ().
+
+    Cognito always emits a JSON list. Defensive shapes (a verifier or test fake handing back a
+    single comma-joined string) are tolerated; anything unrecognizable parses to () — i.e. the
+    user simply has no groups, never a 500.
+    """
+    raw = claims.get("cognito:groups")
+    if raw is None:
+        return ()
+    if isinstance(raw, str):
+        # Defensive: a stringified list ("a,b") from a non-Cognito serializer.
+        return tuple(g.strip() for g in raw.split(",") if g.strip())
+    if isinstance(raw, (list, tuple)):
+        return tuple(str(g) for g in raw if g)
+    return ()
+
+
+def is_tenant_admin(claims: TenantClaims) -> bool:
+    """THE admin policy — defined once, used by every privileged route.
+
+    A user is a tenant admin iff:
+      * "admin" is among their verified Cognito groups; OR
+      * they have NO groups at all AND ``RBAC_STRICT`` is not enabled (the deliberate
+        back-compat allowance for users minted before RBAC existed — see the module
+        docstring's migration story; flip ``RBAC_STRICT=1`` to retire it).
+
+    A user with groups that do NOT include "admin" (e.g. ["member"]) is never admin,
+    regardless of the strict flag — assigning any group is an explicit role statement.
+    """
+    if ADMIN_GROUP in claims.groups:
+        return True
+    if claims.groups:
+        return False  # explicit non-admin role(s) assigned
+    # No groups at all: back-compat admin unless the operator has flipped strict mode.
+    strict = os.environ.get(ENV_RBAC_STRICT, "").strip().lower() in ("1", "true", "yes", "on")
+    return not strict
+
+
+def require_tenant_admin(claims: TenantClaims) -> TenantClaims:
+    """Raise the honest 403 unless the verified claims grant tenant-admin; else pass through.
+
+    Usable both inside a handler body (the billing_routes plain-function style) and via the
+    FastAPI dependency built by :func:`make_current_admin`.
+    """
+    if not is_tenant_admin(claims):
+        raise HTTPException(status_code=403, detail=ADMIN_REQUIRED_DETAIL)
+    return claims
+
+
+def make_current_admin(current_tenant):
+    """Build the admin-gated FastAPI dependency from the app's `current_tenant` dependency.
+
+    Mirrors how mount_* functions receive `current_tenant`: each builds its own
+    `current_admin = make_current_admin(current_tenant)` and puts it on WRITE routes only —
+    reads stay on `current_tenant` so every tenant user can still see state (e.g. WHY their
+    agents are paused). Resolution order: 401 (no/invalid token) before 403 (not admin),
+    because the inner dependency runs first.
+    """
+
+    def current_admin(claims: TenantClaims = Depends(current_tenant)) -> TenantClaims:
+        return require_tenant_admin(claims)
+
+    return current_admin
 
 
 def make_current_tenant(verifier: JwtVerifier, member_store=None):
@@ -114,7 +221,12 @@ def make_current_tenant(verifier: JwtVerifier, member_store=None):
                 )
             except Exception:  # noqa: BLE001 — roster bookkeeping must never break auth
                 logger.exception("member upsert on auth failed (tenant scoped); continuing")
-        return TenantClaims(tenant_id=tenant_id, sub=sub, email=email)
+        return TenantClaims(
+            tenant_id=tenant_id,
+            sub=sub,
+            email=email,
+            groups=_parse_groups(claims),
+        )
 
     return current_tenant
 

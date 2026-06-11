@@ -10,17 +10,22 @@ module "baseline" {
 }
 
 module "vpc" {
-  source   = "./modules/vpc"
-  project  = var.project
-  vpc_cidr = var.vpc_cidr
-  azs      = var.azs
-  region   = var.aws_region
+  source             = "./modules/vpc"
+  project            = var.project
+  vpc_cidr           = var.vpc_cidr
+  azs                = var.azs
+  region             = var.aws_region
+  log_retention_days = var.log_retention_days
 }
 
 module "security" {
   source  = "./modules/security"
   project = var.project
   vpc_id  = module.vpc.vpc_id
+  # REQ-012 item 7 flips (default false = live wiring): dedicated SGs that sever the worker's
+  # and the provisioning Lambda's for-free cube reach.
+  create_worker_sg = var.worker_dedicated_sg
+  create_lambda_sg = var.provisioning_lambda_dedicated_sg
 }
 
 module "iam" {
@@ -41,6 +46,11 @@ module "iam" {
     data.aws_secretsmanager_secret.platform_posthog.arn, # REQ-006
   ]
   cognito_user_pool_arn = local.cognito_pool_arn
+  # REQ-012 item 1: the scoped deploy policy is attached unconditionally; admin stays only
+  # while this is true (current live state). Item 8c: ECS Exec audit grants for the api task.
+  deploy_role_admin_fallback = var.deploy_role_admin_fallback
+  ecs_exec_kms_key_arn       = module.ecs.ecs_exec_kms_key_arn
+  ecs_exec_log_group_arn     = module.ecs.ecs_exec_log_group_arn
 }
 
 # REQ-003: org-shared platform secrets created out-of-band (Lane Nick console/CLI) — referenced,
@@ -76,6 +86,10 @@ module "data" {
   project              = var.project
   private_subnet_ids   = module.vpc.private_subnet_ids
   db_security_group_id = module.security.sg_db
+  # REQ-012 item 9 — ⚠️ BOTH default to the live state (default AWS keys). Setting either
+  # REPLACES the live cluster: follow the snapshot-restore runbook in REQUESTS.md first.
+  aurora_kms_key_arn = var.aurora_kms_key_arn
+  create_aurora_cmk  = var.create_aurora_cmk
 }
 
 module "redis" {
@@ -92,26 +106,31 @@ module "s3" {
 
 # --- Phase 3: semantic layer (Cube on Fargate) ---
 module "ecs" {
-  source  = "./modules/ecs"
-  project = var.project
+  source             = "./modules/ecs"
+  project            = var.project
+  log_retention_days = var.log_retention_days
 }
 
 module "cube" {
-  source              = "./modules/cube"
-  project             = var.project
-  region              = var.aws_region
-  cluster_id          = module.ecs.cluster_id
-  private_subnet_ids  = module.vpc.private_subnet_ids
-  security_group_id   = module.security.sg_api
-  execution_role_arn  = module.iam.ecs_task_execution_role_arn
-  task_role_arn       = module.iam.task_role_arns["cube"]
-  aurora_endpoint     = module.data.cluster_endpoint
-  redis_endpoint      = module.redis.primary_endpoint
-  db_secret_arn       = module.secrets.crm_app_db_secret_arn
-  cube_api_secret_arn = module.secrets.cube_api_secret_arn
-  log_retention_days  = var.log_retention_days
-  image               = var.cube_image
-  namespace_id        = module.vpc.service_discovery_namespace_id
+  source             = "./modules/cube"
+  project            = var.project
+  region             = var.aws_region
+  cluster_id         = module.ecs.cluster_id
+  private_subnet_ids = module.vpc.private_subnet_ids
+  # REQ-012 item 7: cube's OWN SG (ingress :4000 from the app tier only) — no longer sg_api.
+  # NOTE: this rolls cube tasks on apply (network_configuration update).
+  security_group_id        = module.security.sg_cube
+  execution_role_arn       = module.iam.ecs_task_execution_role_arn
+  task_role_arn            = module.iam.task_role_arns["cube"]
+  aurora_endpoint          = module.data.cluster_endpoint
+  redis_endpoint           = module.redis.primary_endpoint
+  db_secret_arn            = module.secrets.crm_app_db_secret_arn
+  cube_api_secret_arn      = module.secrets.cube_api_secret_arn
+  log_retention_days       = var.log_retention_days
+  image                    = var.cube_image
+  namespace_id             = module.vpc.service_discovery_namespace_id
+  adot_image               = var.adot_image
+  readonly_root_filesystem = var.readonly_root_filesystem
 }
 
 # --- Phase 9: auth + ALB + api service ---
@@ -120,6 +139,11 @@ module "auth" {
   project       = var.project
   callback_urls = var.web_callback_urls
   logout_urls   = var.web_logout_urls
+  # REQ-012 items 2 + 4: threat protection (ENFORCED default; AUDIT = observe-only rollback;
+  # needs the PLUS tier) and the optional non-public smoke-test client (default: none).
+  cognito_threat_protection_mode = var.cognito_threat_protection_mode
+  cognito_user_pool_tier         = var.cognito_user_pool_tier
+  create_smoke_test_client       = var.create_smoke_test_client
 }
 
 locals {
@@ -189,6 +213,12 @@ module "api_service" {
   aurora_master_secret_arn = module.data.master_user_secret_arn
   desired_count            = var.api_desired_count
   log_retention_days       = var.log_retention_days
+  # REQ-012: item 3 (is_prod() arming), 8a (pinnable ADOT image), 8b (immutable root FS,
+  # default-off), 8c (exec stays on, now audit-logged at the cluster).
+  uplift_environment       = var.uplift_environment
+  adot_image               = var.adot_image
+  readonly_root_filesystem = var.readonly_root_filesystem
+  enable_ecs_exec          = var.enable_ecs_exec
 }
 
 # REQ-004: ingestion scheduler — one-off Fargate task on an EventBridge rule (DISABLED by
@@ -241,11 +271,14 @@ module "scheduled_jobs" {
 # --- Phase 10: provisioning orchestration (Step Functions) ---
 # REQ-005: the Lambda the SFN invokes (count-gated on the pushed image).
 module "provisioning_lambda" {
-  source                = "./modules/provisioning_lambda"
-  project               = var.project
-  image_uri             = var.provisioning_lambda_image
-  private_subnet_ids    = module.vpc.private_subnet_ids
-  security_group_id     = module.security.sg_api
+  source             = "./modules/provisioning_lambda"
+  project            = var.project
+  image_uri          = var.provisioning_lambda_image
+  private_subnet_ids = module.vpc.private_subnet_ids
+  # REQ-012 item 7 (gated; default = live sg_api wiring): the dedicated Lambda SG severs the
+  # handler's for-free cube reach (db :5432 pairing only).
+  security_group_id     = var.provisioning_lambda_dedicated_sg ? module.security.sg_lambda : module.security.sg_api
+  uplift_environment    = var.uplift_environment
   db_secret_arn         = module.secrets.crm_app_db_secret_arn
   db_host               = module.data.cluster_endpoint
   cognito_user_pool_id  = module.auth.user_pool_id
@@ -280,6 +313,7 @@ module "api_cdn" {
   project              = var.project
   alb_dns              = module.alb.alb_dns_name
   origin_verify_secret = module.secrets.origin_verify_value
+  log_retention_days   = var.log_retention_days
 }
 
 module "web_hosting" {
@@ -333,16 +367,20 @@ module "worker" {
   region             = var.aws_region
   cluster_id         = module.ecs.cluster_id
   private_subnet_ids = module.vpc.private_subnet_ids
-  security_group_id  = module.security.sg_api
-  execution_role_arn = module.iam.ecs_task_execution_role_arn
-  task_role_arn      = module.iam.task_role_arns["worker"]
-  env_key_secret_arn = module.secrets.env_key_secret_arn
-  env_id_secret_arn  = module.secrets.env_id_secret_arn
-  db_secret_arn      = module.secrets.crm_app_db_secret_arn
-  db_host            = module.data.cluster_endpoint
-  cube_endpoint      = var.cube_endpoint
-  log_retention_days = var.log_retention_days
-  image              = var.worker_image
+  # REQ-012 item 7 (gated; default = live sg_api wiring): the dedicated worker SG carries
+  # EXPLICIT worker->cube + worker->db rules. Flipping rolls worker tasks.
+  security_group_id        = var.worker_dedicated_sg ? module.security.sg_worker : module.security.sg_api
+  adot_image               = var.adot_image
+  readonly_root_filesystem = var.readonly_root_filesystem
+  execution_role_arn       = module.iam.ecs_task_execution_role_arn
+  task_role_arn            = module.iam.task_role_arns["worker"]
+  env_key_secret_arn       = module.secrets.env_key_secret_arn
+  env_id_secret_arn        = module.secrets.env_id_secret_arn
+  db_secret_arn            = module.secrets.crm_app_db_secret_arn
+  db_host                  = module.data.cluster_endpoint
+  cube_endpoint            = var.cube_endpoint
+  log_retention_days       = var.log_retention_days
+  image                    = var.worker_image
   # Cortex persistent registry (worker reads it via build_clients_from_env -> registry_from_env).
   cortex_s3_bucket = var.cortex_s3_registry ? module.s3.bucket_names["datalake"] : ""
   cortex_local_dir = var.cortex_local_dir

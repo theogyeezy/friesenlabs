@@ -21,10 +21,11 @@ happen to be present. The individual guards below sit UNDERNEATH the master swit
   (always)                    signup.sms_sender.SnsSmsOtpSender — self-gating: it never builds a
                               boto3 client (logs + drops) until ALLOW_REAL_SENDS=true
   ANTHROPIC_ADMIN_KEY         signup.anthropic_admin.AnthropicAdminClient (else _Noop)
-  UPLIFT_DB_URL / DB_*        signup.store_pg.{PgAccountStore, PgStripeEventLedger, PgOtpStore}
+  UPLIFT_DB_URL / DB_*        signup.store_pg.{PgAccountStore, PgStripeEventLedger, PgOtpStore,
+                              PgUsedTokenStore}
                               + signup.tenant_defaults.PgTenantDefaults (the step-5 seeder)
                               (else the per-task in-memory _AccountStore / no ledger / in-proc
-                              OTP / no tenant_settings seed)
+                              OTP + used-token state / no tenant_settings seed)
   SIGNUP_TOKEN_SECRET_VALUE   signup.tokens.{EmailTokenService, OtpService} wired into
                               email_token_ok / sms_code_ok + issued at create
                               (else verification stays hardcoded OFF — may_pay never flips)
@@ -95,7 +96,7 @@ from signup.provisioning import Provisioner
 from signup.resend_sender import ResendEmailSender
 from signup.secrets import Boto3ProvisioningSecrets
 from signup.sms_sender import SnsSmsOtpSender
-from signup.store_pg import PgAccountStore, PgOtpStore, PgStripeEventLedger
+from signup.store_pg import PgAccountStore, PgOtpStore, PgStripeEventLedger, PgUsedTokenStore
 from signup.stripe_adapter import StripeAdapter
 from signup.tenant_defaults import PgTenantDefaults
 from signup.tokens import EmailTokenService, OtpRateLimitError, OtpService
@@ -561,10 +562,15 @@ def build_signup_deps(workspace_store=None, *, now=time.time) -> SignupDeps:
         store = PgAccountStore(dsn)
         event_ledger = PgStripeEventLedger(dsn)
         otp_store = PgOtpStore(dsn)
+        # Single-use email-token nonces SHARED across the 2 Fargate tasks (same accounts.meta
+        # approach as PgOtpStore): without this, EmailTokenService's in-memory default lets a
+        # consumed token REPLAY on the other task for its whole 15-min TTL.
+        used_token_store = PgUsedTokenStore(dsn, now=now)
     else:
         store = _AccountStore()
-        event_ledger = None  # per-task account-state idempotency only
-        otp_store = None     # OtpService falls back to its in-process store
+        event_ledger = None      # per-task account-state idempotency only
+        otp_store = None         # OtpService falls back to its in-process store
+        used_token_store = None  # EmailTokenService falls back to its in-process store
 
     # --- identity plane ---
     cognito = (
@@ -589,6 +595,7 @@ def build_signup_deps(workspace_store=None, *, now=time.time) -> SignupDeps:
         email_tokens = EmailTokenService(
             cfg.signup_token_secret_value,
             ttl_seconds=cfg.signup_email_token_ttl_s,
+            used_store=used_token_store,  # Pg-backed when DSN'd (cross-task single-use)
             now=now,
         )
         otp = OtpService(

@@ -159,10 +159,14 @@ def test_worker_unconfigured_boot_is_byte_identical(monkeypatch):
 @pytest.mark.integration
 def test_worker_spec_generator_is_env_guarded(monkeypatch, tmp_path):
     # Dev parity only — the org key must never be on the worker in prod (shared/config.py).
+    # Since the org-key startup guard landed (worker/worker.py), this dev-parity wiring demands
+    # the explicit WORKER_ALLOW_ORG_KEY=1 override; without it the worker FAILS LOUD (see
+    # tests/unit/test_worker_clients.py for the refusal tests).
     for var in ("UPLIFT_DB_URL", "DB_USER", "DB_PASS", "DB_HOST", "CUBE_ENDPOINT",
                 "CORTEX_S3_BUCKET", "CORTEX_LOCAL_DIR"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-real")
+    monkeypatch.setenv("WORKER_ALLOW_ORG_KEY", "1")
     clients = worker.build_clients_from_env()
     assert isinstance(clients["spec_generator"], AnthropicSpecGenerator)
     ctx = worker.build_context({"tenant_id": "tenant-A"}, clients)

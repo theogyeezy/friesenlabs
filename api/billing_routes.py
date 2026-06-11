@@ -8,10 +8,14 @@ the client sends names the customer or the tenant — THE TRUST RULE holds.
 
 Routes (mounted on the control-plane API, behind the same verified-claims dependency as every other
 authed route):
-  * POST /billing/portal-session -> {"url": ...}. 403 (honest copy) when the tenant has no Stripe
-    customer mapping yet (e.g. an internal-comp / not-yet-paid tenant): there is nothing to manage.
+  * POST /billing/portal-session -> {"url": ...}. ADMIN-ONLY (api.auth.require_tenant_admin over
+    the verified `cognito:groups` claim): the portal can change the card or CANCEL the
+    subscription, so a non-admin member gets the honest fixed 403. Also 403 (honest copy) when
+    the tenant has no Stripe customer mapping yet (e.g. an internal-comp / not-yet-paid tenant):
+    there is nothing to manage.
   * GET  /billing -> {"customer": bool, "plan": str|None, "status": str}. A small read the settings
     screen uses to show the current plan + whether the "Manage billing" button can do anything.
+    Reads (this and /billing/invoices) stay open to every authed tenant user.
 
 Why this is a separate, optional dep (not folded into the signup deps): billing portal is an AUTHED
 post-provisioning surface (it needs the JWT verifier), whereas signup is pre-tenant + unauthenticated.
@@ -62,8 +66,11 @@ def mount_billing(app: FastAPI, deps: BillingDeps, current_tenant: Callable) -> 
         # Tenant identity from the VERIFIED claim only (THE TRUST RULE) — current_tenant raises
         # 401 on a missing/invalid token. Called as a plain function (not a FastAPI Depends) so
         # the route stays a single mount-time closure over the injected verifier.
-        from api.auth import TenantClaims  # noqa: PLC0415 — typing only; avoids an import cycle
+        from api.auth import TenantClaims, require_tenant_admin  # noqa: PLC0415 — avoids an import cycle
         claims: TenantClaims = current_tenant(request)
+        # ADMIN-GATED billing mutation: the Stripe portal can change the card or cancel the
+        # whole subscription — tenant-admin only (the one api.auth policy; honest fixed 403).
+        require_tenant_admin(claims)
 
         acct = _resolve_account(claims.tenant_id)
         customer_id = getattr(acct, "stripe_customer_id", None) if acct else None

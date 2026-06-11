@@ -14,20 +14,23 @@ query, or the request body). Backing state is the persisted control plane wired 
 (PersistedKillSwitch / PersistedAutonomyDial / PgTraceStore over Aurora); the in-memory deps
 defaults serve offline/tests with identical shapes.
 
-AUTHORIZATION DECISION (documented per the lane brief):
-  * TENANT-scope kill switch + the autonomy dial: ANY authed principal of the tenant may flip
-    their own tenant's controls. The Cognito ID token carries no role claim today
-    (custom:tenant_id + sub + email only), so v1 treats every authed tenant user as a tenant
-    admin; tighten to a role claim check HERE when one lands in the pool.
-  * GLOBAL-scope kill switch: OPERATOR-ONLY. The caller's VERIFIED tenant_id must appear in the
-    CONTROL_GLOBAL_OPERATOR_TENANTS env allowlist (comma-separated tenant uuids, set on the API
-    task by Lane Nick). Unset/empty = NOBODY may flip global (fail closed); everyone else gets
-    403. Identity still comes only from the verified claim — the env var is read at request
-    time so a rotation needs no restart. (Name to be folded into shared/config.py by its
-    owning lane — recorded in the PR description.)
-
-Reading the kill switch is allowed for any authed tenant user, including a globally-engaged
-state — a paused tenant deserves to see WHY its agents stopped.
+AUTHORIZATION DECISION (v2 — RBAC over the verified `cognito:groups` claim; supersedes the v1
+"every authed tenant user is an admin" posture that the security audit flagged):
+  * WRITES (PUT killswitch tenant scope, PUT autonomy) are TENANT-ADMIN ONLY: gated by
+    api.auth.is_tenant_admin over the verified `cognito:groups` claim (the ONE admin policy —
+    "admin" group membership, with the documented empty-groups back-compat allowance until
+    RBAC_STRICT=1 retires it). READS stay open to every authed tenant user — a paused tenant
+    deserves to see WHY its agents stopped.
+  * GLOBAL-scope kill switch: OPERATOR-USER-ONLY (user-granular — the v1 tenant-granular
+    allowlist meant EVERY user of an operator tenant could pause the whole platform). The
+    caller's VERIFIED `sub` or `email` must appear in the CONTROL_GLOBAL_OPERATOR_USERS env
+    allowlist (comma-separated Cognito subs and/or emails; emails compared case-insensitively,
+    subs byte-for-byte; set on the API task by Lane Nick). Unset/empty = NOBODY may flip global
+    (fail closed); everyone else gets 403. Identity still comes only from the verified claim —
+    the env var is read at request time so a rotation needs no restart. The route-level admin
+    gate applies too: a global operator flips through the same admin-gated PUT. (New env name
+    to be folded into shared/config.py by its owning lane — recorded in the PR description;
+    the legacy CONTROL_GLOBAL_OPERATOR_TENANTS no longer grants anything.)
 """
 from __future__ import annotations
 
@@ -37,15 +40,18 @@ import os
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
 
-from api.auth import TenantClaims
+from api.auth import TenantClaims, make_current_admin
 from api.control.settings import AutonomyDial
 from api.control.traces import DEFAULT_TRACE_LIMIT, MAX_TRACE_LIMIT, _minimize
 from api.control.types import Level
 
 log = logging.getLogger("api.control")
 
-# Comma-separated tenant uuids allowed to flip the GLOBAL kill-switch scope (operator-only).
-ENV_CONTROL_GLOBAL_OPERATORS = "CONTROL_GLOBAL_OPERATOR_TENANTS"
+# Comma-separated Cognito user identifiers (subs and/or emails) allowed to flip the GLOBAL
+# kill-switch scope. USER-granular by design (security audit): the previous
+# CONTROL_GLOBAL_OPERATOR_TENANTS allowlist let every user of an operator tenant pause the
+# entire platform. The python constant keeps its historical name so existing imports hold.
+ENV_CONTROL_GLOBAL_OPERATORS = "CONTROL_GLOBAL_OPERATOR_USERS"
 
 # int wire level <-> Level enum (index == wire value).
 _LEVELS = (Level.L0, Level.L1, Level.L2, Level.L3)
@@ -63,10 +69,30 @@ class AutonomyBody(BaseModel):
     level: int
 
 
-def _global_operators() -> set[str]:
-    """The env-allowlisted operator tenants (read per request — rotation needs no restart)."""
+def _global_operator_entries() -> set[str]:
+    """The env-allowlisted operator USERS (read per request — rotation needs no restart).
+
+    Entries are Cognito subs and/or emails, comma-separated; strip + drop empties.
+    Unset/empty = empty set = nobody may flip global (fail closed).
+    """
     raw = os.environ.get(ENV_CONTROL_GLOBAL_OPERATORS, "")
     return {t.strip() for t in raw.split(",") if t.strip()}
+
+
+def _is_global_operator(claims: TenantClaims) -> bool:
+    """USER-granular operator check for the global kill-switch scope.
+
+    Allowed iff the caller's VERIFIED `sub` (byte-for-byte) or `email` (case-insensitive —
+    email local/domain case is not identity-significant) appears in the allowlist. Both come
+    only from the verified JWT claims, never a header or body.
+    """
+    entries = _global_operator_entries()
+    if not entries:
+        return False  # unset/empty = NOBODY (fail closed)
+    if claims.sub and claims.sub in entries:
+        return True
+    email = (claims.email or "").strip().lower()
+    return bool(email) and email in {e.lower() for e in entries}
 
 
 def _trace_wire(row: dict) -> dict:
@@ -88,7 +114,11 @@ def mount_control(app: FastAPI, deps, current_tenant) -> None:
     dependency every other authed route uses). `deps` is the ApiDeps bag (duck-typed to avoid an
     api.app import cycle): killswitch + trace_store are the SAME objects the gate consults, and
     the dial is the SAME persisted level the gate's autonomy_config resolves — flip it here,
-    the very next gate run obeys it."""
+    the very next gate run obeys it.
+
+    Writes are tenant-admin-gated (`current_admin` — the api.auth admin policy over the
+    verified `cognito:groups` claim); reads stay on `current_tenant` for every tenant user."""
+    current_admin = make_current_admin(current_tenant)
 
     def _dial():
         # The Pg-backed dial when api/asgi.py wired one; else the in-memory dial over the gate's
@@ -100,13 +130,15 @@ def mount_control(app: FastAPI, deps, current_tenant) -> None:
         return deps.killswitch.status(claims.tenant_id)
 
     @app.put("/control/killswitch")
-    def put_killswitch(body: KillSwitchBody, claims: TenantClaims = Depends(current_tenant)):
+    def put_killswitch(body: KillSwitchBody, claims: TenantClaims = Depends(current_admin)):
+        # ADMIN-GATED write (current_admin): a non-admin tenant member can read the switch but
+        # never flip it. The global scope layers the user-granular operator check on top.
         if body.scope not in ("tenant", "global"):
             raise HTTPException(status_code=422,
                                 detail="scope must be 'tenant' or 'global'")
-        if body.scope == "global" and claims.tenant_id not in _global_operators():
-            # Operator-only (see the module-docstring authorization decision). 403, never 404 —
-            # the scope exists; this caller may not flip it.
+        if body.scope == "global" and not _is_global_operator(claims):
+            # Operator-USER-only (see the module-docstring authorization decision). 403, never
+            # 404 — the scope exists; this caller may not flip it.
             raise HTTPException(status_code=403,
                                 detail="global kill switch is operator-only")
         deps.killswitch.set(claims.tenant_id, body.engaged, scope=body.scope)
@@ -120,8 +152,11 @@ def mount_control(app: FastAPI, deps, current_tenant) -> None:
         return {"level": _LEVELS.index(_dial().get(claims.tenant_id))}
 
     @app.put("/control/autonomy")
-    def put_autonomy(body: AutonomyBody, claims: TenantClaims = Depends(current_tenant)):
+    def put_autonomy(body: AutonomyBody, claims: TenantClaims = Depends(current_admin)):
         """Set the tenant's persisted autonomy level — the dial the gate reads on every run.
+
+        ADMIN-GATED write (current_admin): raising autonomy widens what auto-executes, so only
+        a tenant admin may turn the dial; any tenant user may still read it.
 
         Level semantics (api/control/autonomy.py `decide`; read-only actions ALWAYS auto-run,
         validated + traced — the level governs side-effecting actions only):

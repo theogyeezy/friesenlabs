@@ -57,7 +57,7 @@ def test_side_effecting_call_lands_exactly_one_greenlight_proposal():
     convo = _convo(
         [
             _resp(_tool_use("send_email",
-                            {"to": "lead@acme.com", "subject": "Hi", "body": "following up"},
+                            {"to": "lead@acme.com", "subject": "Hi", "body": "following up - unsubscribe anytime"},
                             id="tu_1")),
             _resp(_text("Drafted the email; it is waiting for your approval.")),
         ],

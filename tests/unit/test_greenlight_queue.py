@@ -5,9 +5,13 @@ from api.control.greenlight import EditNotAllowed, Greenlight, InMemoryApprovalS
 
 
 def _propose(gl, tenant="t1"):
+    # The draft body carries an unsubscribe mechanism: propose() now enforces the deterministic
+    # compliance floor (CAN-SPAM/TCPA) on EVERY path, so only a compliant draft lands pending —
+    # the denial behavior has its own coverage in test_greenlight_compliance.py.
     return gl.propose(tenant_id=tenant, action="send_email", agent="nadia",
                       reasoning="follow up on hot lead", value_at_stake=2500.0,
-                      payload={"to": "x@y.com", "subject": "Hi", "body": "draft"})
+                      payload={"to": "x@y.com", "subject": "Hi",
+                               "body": "draft — reply unsubscribe to opt out"})
 
 
 @pytest.mark.unit
@@ -33,9 +37,11 @@ def test_approve():
 def test_edit_changes_what_would_execute():
     gl = Greenlight()
     rec = _propose(gl)
-    out = gl.decide("t1", rec["id"], "edit", edits={"body": "edited by human"})
+    # The edited body stays compliant (keeps the unsubscribe mechanism) — an edit that strips it
+    # is rejected by decide()'s post-edit re-validation (covered in test_greenlight_compliance.py).
+    out = gl.decide("t1", rec["id"], "edit", edits={"body": "edited by human (unsubscribe below)"})
     assert out["status"] == "approved"
-    assert out["proposed_action"]["body"] == "edited by human"
+    assert out["proposed_action"]["body"] == "edited by human (unsubscribe below)"
 
 
 @pytest.mark.unit
@@ -152,6 +158,9 @@ def test_payload_action_key_cannot_override_the_registry_name():
         value_at_stake=None,
         payload={"action": "update_deal",          # the smuggle attempt
                  "deal_id": "d1", "changes": {"stage": "closed_won"},
-                 "to": "x@example.com", "body": "hi"},
+                 "to": "x@example.com", "body": "hi — unsubscribe link below"},
     )
     assert rec["proposed_action"]["action"] == "send_email"
+    # ...and compliance classified it as the TRUSTED name too (email rules applied, row pending
+    # because the body is compliant — never the smuggled update_deal's channel-free pass).
+    assert rec["status"] == "pending"

@@ -4,9 +4,10 @@ CONTRIBUTING.md §Env-var contract: shared/config.py is the single source of tru
 env var the app reads — Lane Nick mirrors names FROM it into task defs. This file pins the
 three names the cross-lane PRs introduced:
 
-  * CONTROL_GLOBAL_OPERATOR_TENANTS (#186) — NEW reader here; must parse exactly like the
-    in-route `_global_operators` in api/routes_control.py (one semantic, two readers would
-    drift into an authz bug);
+  * CONTROL_GLOBAL_OPERATOR_TENANTS (#186) — reader here. NOTE (RBAC hardening): the route
+    no longer reads this env — the global kill-switch allowlist is now the USER-granular
+    CONTROL_GLOBAL_OPERATOR_USERS (api/routes_control.py; see the route-constant pin below).
+    The legacy reader's parse stays pinned so the registered name never silently changes;
   * SIGNUP_INTERNAL_BYPASS_DOMAINS (#181 flagged it missing; #188 landed the Config field) —
     asserted present so the name can never silently vanish;
   * CORTEX_SIGNING_KEY (#194) — likewise asserted present.
@@ -56,20 +57,28 @@ def test_read_at_call_time_rotation_needs_no_restart(monkeypatch):
 
 
 @pytest.mark.unit
-def test_name_matches_the_route_constant_one_env_var_two_readers_zero_drift():
+def test_route_operator_env_is_user_granular_not_the_legacy_tenant_name():
+    """RBAC hardening: the global kill-switch allowlist moved to CONTROL_GLOBAL_OPERATOR_USERS
+    (user-granular subs/emails — api/routes_control.py) and the legacy tenant-granular env must
+    NEVER grant it again. The new name's shared/config.py registration stays with that module's
+    owning lane (the same note routes_control carried for the original name); this pin makes the
+    split loud until then."""
     from api.routes_control import ENV_CONTROL_GLOBAL_OPERATORS
-    assert ENV_CONTROL_GLOBAL_OPERATOR_TENANTS == ENV_CONTROL_GLOBAL_OPERATORS
+    assert ENV_CONTROL_GLOBAL_OPERATORS == "CONTROL_GLOBAL_OPERATOR_USERS"
+    assert ENV_CONTROL_GLOBAL_OPERATORS != ENV_CONTROL_GLOBAL_OPERATOR_TENANTS
 
 
 @pytest.mark.unit
-def test_parse_semantics_match_the_route_parser(monkeypatch):
-    """The route's per-request `_global_operators` and the config reader must agree on every
-    edge (strip, drop-empties, no folding) — a divergence is an authz bug, not a style nit."""
-    from api.routes_control import _global_operators
+def test_route_operator_parse_keeps_strip_and_drop_empty_semantics(monkeypatch):
+    """The route's per-request entry parser keeps the same strip/drop-empties/no-folding parse
+    the legacy reader had (subs match byte-for-byte; the route does case-insensitive matching
+    for EMAIL entries at compare time, not at parse time — covered in tests/unit/test_rbac.py)."""
+    from api.routes_control import ENV_CONTROL_GLOBAL_OPERATORS, _global_operator_entries
 
-    for raw in ("", " ", "a,b", " a , ,B,", "A-1,a-1"):
-        monkeypatch.setenv(ENV_CONTROL_GLOBAL_OPERATOR_TENANTS, raw)
-        assert control_global_operator_tenants() == frozenset(_global_operators()), raw
+    for raw, want in (("", set()), (" ", set()), ("a,b", {"a", "b"}),
+                      (" a , ,B,", {"a", "B"}), ("A-1,a-1", {"A-1", "a-1"})):
+        monkeypatch.setenv(ENV_CONTROL_GLOBAL_OPERATORS, raw)
+        assert _global_operator_entries() == want, raw
 
 
 # ---------------- readers the cross-lane PRs require must exist ----------------

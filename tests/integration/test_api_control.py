@@ -115,8 +115,9 @@ def test_global_scope_is_operator_only(monkeypatch):
     assert r.status_code == 403
     assert client.get("/control/killswitch", headers=H).json()["engaged"] is False
 
-    # Allowlist tenant A (the verified claim) -> the flip lands, and pauses OTHER tenants too.
-    monkeypatch.setenv(ENV_CONTROL_GLOBAL_OPERATORS, "A, other-op")
+    # Allowlist the caller's USER (sub "uA" from the verified claim — the allowlist is
+    # user-granular now, never tenant-granular) -> the flip lands, and pauses OTHER tenants too.
+    monkeypatch.setenv(ENV_CONTROL_GLOBAL_OPERATORS, "uA, other-op")
     store = InMemoryControlSettings()
     op_client, _, _ = _client(store=store)
     r = op_client.put("/control/killswitch", json={"engaged": True, "scope": "global"}, headers=H)

@@ -16,6 +16,35 @@ variable "logout_urls" {
   default     = []
 }
 
+# Sec (REQ-012 item 4): Cognito threat protection (the feature AWS formerly called "advanced
+# security"). ENFORCED = adaptive auth + compromised-credentials blocking on the pool that holds
+# every tenant identity. "AUDIT" is the observe-only rollback (events logged, nothing blocked);
+# "OFF" disables. NOTE: AUDIT/ENFORCED require the pool's Plus feature plan — see
+# var.cognito_user_pool_tier and REQUESTS.md (REQ-012) for the apply-order note.
+variable "cognito_threat_protection_mode" {
+  type        = string
+  default     = "ENFORCED"
+  description = "Cognito threat protection (user_pool_add_ons.advanced_security_mode): OFF | AUDIT | ENFORCED. AUDIT is the observe-only rollback."
+  validation {
+    condition     = contains(["OFF", "AUDIT", "ENFORCED"], var.cognito_threat_protection_mode)
+    error_message = "cognito_threat_protection_mode must be OFF, AUDIT, or ENFORCED."
+  }
+}
+
+# "" = the user_pool_tier attribute is omitted entirely (terraform leaves the live pool's
+# feature plan untouched — today's state). Threat protection AUDIT/ENFORCED requires PLUS;
+# setting this to "PLUS" is a billing change (~per-MAU pricing) and must ride the same
+# reviewed apply as the threat-protection flip.
+variable "cognito_user_pool_tier" {
+  type        = string
+  default     = ""
+  description = "Cognito feature plan: \"\" (leave unmanaged), LITE, ESSENTIALS, or PLUS. PLUS is required for threat protection AUDIT/ENFORCED."
+  validation {
+    condition     = contains(["", "LITE", "ESSENTIALS", "PLUS"], var.cognito_user_pool_tier)
+    error_message = "cognito_user_pool_tier must be \"\", LITE, ESSENTIALS, or PLUS."
+  }
+}
+
 resource "aws_cognito_user_pool" "this" {
   name                     = "${var.project}-users"
   auto_verified_attributes = ["email"]
@@ -45,6 +74,17 @@ resource "aws_cognito_user_pool" "this" {
     enabled = true
   }
 
+  # Threat protection (REQ-012 item 4). Provider ~>6.49 still models this as
+  # user_pool_add_ons.advanced_security_mode (verified against the provider schema at
+  # validate time) — the console-side rename to "threat protection" did not rename the API
+  # field. ENFORCED requires the Plus feature plan (var.cognito_user_pool_tier).
+  user_pool_add_ons {
+    advanced_security_mode = var.cognito_threat_protection_mode
+  }
+
+  # "" = omit (null): the live pool's feature plan stays unmanaged/untouched by terraform.
+  user_pool_tier = var.cognito_user_pool_tier != "" ? var.cognito_user_pool_tier : null
+
   schema {
     name                     = "tenant_id"
     attribute_data_type      = "String"
@@ -69,9 +109,12 @@ resource "aws_cognito_user_pool_client" "web" {
   user_pool_id    = aws_cognito_user_pool.this.id
   generate_secret = false
 
-  # ADMIN_USER_PASSWORD_AUTH is for server-side smoke tests only (requires AWS IAM creds to call
-  # admin-initiate-auth); the browser uses the Hosted UI code+PKCE flow, never password auth.
-  explicit_auth_flows = ["ALLOW_USER_SRP_AUTH", "ALLOW_REFRESH_TOKEN_AUTH", "ALLOW_ADMIN_USER_PASSWORD_AUTH"]
+  # Sec/P0 (REQ-012 item 2): ALLOW_ADMIN_USER_PASSWORD_AUTH REMOVED from the PUBLIC SPA client —
+  # a public (no-secret) client with the admin password flow lets anyone holding IAM
+  # admin-initiate-auth perms mint tokens by raw password against the prod pool, and widens the
+  # credential-stuffing surface. The browser uses Hosted UI code+PKCE only. Smoke tests that
+  # need the password flow get their own NON-public client (var.create_smoke_test_client below).
+  explicit_auth_flows = ["ALLOW_USER_SRP_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"]
 
   # Hosted UI OAuth: authorization-code flow with PKCE (public client). No implicit flow.
   allowed_oauth_flows_user_pool_client = true
@@ -94,6 +137,59 @@ resource "aws_cognito_user_pool_client" "web" {
   # custom:tenant_id is READ-only to the client (not in write_attributes) so it can never be self-set.
   read_attributes  = ["email", "custom:tenant_id"]
   write_attributes = ["email"]
+}
+
+# Sec (REQ-012 item 2): a SEPARATE, NON-public (secret-bearing, no Hosted UI/OAuth) client for
+# server-side smoke tests that genuinely need ADMIN_USER_PASSWORD_AUTH (admin-initiate-auth
+# already requires IAM creds; the client secret adds the second factor). Default OFF — create
+# it only if/when a smoke flow actually needs the password grant.
+variable "create_smoke_test_client" {
+  type        = bool
+  default     = false
+  description = "Create a non-public (confidential) app client allowing ADMIN_USER_PASSWORD_AUTH for server-side smoke tests. Default false: no such client exists; the public SPA client never carries the admin password flow."
+}
+
+resource "aws_cognito_user_pool_client" "smoke_test" {
+  count           = var.create_smoke_test_client ? 1 : 0
+  name            = "${var.project}-smoke-test"
+  user_pool_id    = aws_cognito_user_pool.this.id
+  generate_secret = true # confidential client — never shipped to a browser
+
+  explicit_auth_flows = ["ALLOW_ADMIN_USER_PASSWORD_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"]
+
+  # No Hosted UI / OAuth surface at all on this client.
+  token_validity_units {
+    id_token      = "minutes"
+    access_token  = "minutes"
+    refresh_token = "days"
+  }
+  id_token_validity      = 60
+  access_token_validity  = 60
+  refresh_token_validity = 1 # smoke sessions are throwaway
+
+  read_attributes  = ["email", "custom:tenant_id"]
+  write_attributes = ["email"]
+}
+
+output "smoke_test_client_id" {
+  value = var.create_smoke_test_client ? aws_cognito_user_pool_client.smoke_test[0].id : ""
+}
+
+# RBAC groups (REQ-012 item 10): coarse in-pool roles the app reads from the JWT's
+# cognito:groups claim. Additive — no user is auto-assigned here; provisioning app code
+# (in flight) puts the first provisioned user of a tenant into "admin" best-effort.
+resource "aws_cognito_user_group" "admin" {
+  name         = "admin"
+  user_pool_id = aws_cognito_user_pool.this.id
+  description  = "Tenant administrators (full in-app control surface)."
+  precedence   = 1
+}
+
+resource "aws_cognito_user_group" "member" {
+  name         = "member"
+  user_pool_id = aws_cognito_user_pool.this.id
+  description  = "Standard tenant members."
+  precedence   = 10
 }
 
 output "user_pool_id" { value = aws_cognito_user_pool.this.id }

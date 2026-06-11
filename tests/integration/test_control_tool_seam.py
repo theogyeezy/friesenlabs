@@ -15,7 +15,7 @@ def test_send_email_tool_routes_to_control_plane_greenlight():
     gl = Greenlight()
     ctx = ToolContext(tenant_id="tenant-A", agent="nadia", greenlight=gl)
 
-    out = SendEmail().invoke(ctx, to="lead@acme.com", subject="Following up", body="hi there")
+    out = SendEmail().invoke(ctx, to="lead@acme.com", subject="Following up", body="hi there - reply unsubscribe to opt out")
 
     # The tool never sent; it queued a pending approval in the control-plane queue.
     assert out["status"] == "pending_approval"

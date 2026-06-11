@@ -21,6 +21,8 @@ import logging
 import urllib.request
 from html import escape
 
+from . import mask_email  # PII-safe logging (signup/__init__.py): never log a raw address
+
 log = logging.getLogger(__name__)
 
 # VERIFY: Resend send endpoint — POST https://api.resend.com/emails with
@@ -123,14 +125,17 @@ class ResendEmailSender:
         return value  # no base configured — surfaces the raw token (still draft-gated)
 
     def _send(self, to_email: str, subject: str, html: str) -> bool:
+        # PII: every log line below masks the recipient (signup.mask_email) — CloudWatch must
+        # never accumulate the raw address of every signup. The payload keeps the real address.
         if not self.allow_real_sends:
             # DRAFT-GATE: refuse real delivery unless explicitly enabled.
-            log.info("DRAFT-GATE: real sends disabled; dropping %r to %s", subject, to_email)
+            log.info("DRAFT-GATE: real sends disabled; dropping %r to %s",
+                     subject, mask_email(to_email))
             return False
         if not self.api_key or not self.from_email:
             log.warning(
                 "Resend unconfigured (missing api key / from address); dropping %r to %s",
-                subject, to_email,
+                subject, mask_email(to_email),
             )
             return False
         payload = {"from": self.from_email, "to": [to_email], "subject": subject, "html": html}
@@ -146,8 +151,9 @@ class ResendEmailSender:
         try:
             response = self._opener(request, _TIMEOUT_S)
             body = response.read()
-            log.info("Resend accepted %r to %s: %s", subject, to_email, body[:200])
+            log.info("Resend accepted %r to %s: %s", subject, mask_email(to_email), body[:200])
             return True
         except Exception as e:  # noqa: BLE001 — logs-not-raises by contract
-            log.warning("Resend send failed for %s: %s: %s", to_email, type(e).__name__, e)
+            log.warning("Resend send failed for %s: %s: %s",
+                        mask_email(to_email), type(e).__name__, e)
             return False

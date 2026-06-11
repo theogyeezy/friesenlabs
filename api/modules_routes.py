@@ -28,7 +28,7 @@ from typing import Any
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
 
-from api.auth import TenantClaims
+from api.auth import TenantClaims, make_current_admin
 from shared.modules import MODULE_IDS, catalog_payload, default_enabled, normalize_enabled
 
 _UNCONFIGURED_DETAIL = (
@@ -69,7 +69,12 @@ def _enabled_for(store: Any, tenant_id: str) -> set[str]:
 
 
 def mount_modules(app: FastAPI, deps: ModulesDeps, current_tenant) -> None:
-    """Mount GET/PUT /account/modules, authed via the verified-claims dependency."""
+    """Mount GET/PUT /account/modules, authed via the verified-claims dependency.
+
+    The PUT is tenant-admin-gated (api.auth admin policy over `cognito:groups`): toggling
+    modules changes what the tenant PAYS (Phase-2 billing sync) — not a member-level action.
+    The GET stays open: every tenant user's nav needs the entitlement set."""
+    current_admin = make_current_admin(current_tenant)
 
     @app.get("/account/modules")
     def get_modules(claims: TenantClaims = Depends(current_tenant)):
@@ -86,7 +91,8 @@ def mount_modules(app: FastAPI, deps: ModulesDeps, current_tenant) -> None:
             return catalog_payload(default_enabled())
 
     @app.put("/account/modules")
-    def put_modules(body: ModulesBody, claims: TenantClaims = Depends(current_tenant)):
+    def put_modules(body: ModulesBody, claims: TenantClaims = Depends(current_admin)):
+        # ADMIN-GATED write (current_admin) — entitlements drive billing (see mount docstring).
         store = _require_store(deps)
         # Reject only when the client sends ids that are ALL unknown (likely a client bug); a mix
         # silently drops the unknowns. Always force the required spine on.

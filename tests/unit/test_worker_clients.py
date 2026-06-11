@@ -158,6 +158,69 @@ def test_cube_endpoint_without_secret_degrades_visibly_not_silently(monkeypatch)
     assert "CUBEJS_API_SECRET_VALUE" in result["detail"]
 
 
+# --------------------------------------------------------------------------- org-key refusal
+# The prod security boundary: the worker authenticates with the ENVIRONMENT key only — the org
+# API key must NEVER exist on the creds-laden worker host. build_clients_from_env (the startup
+# choke point run() calls before anything serves) fails LOUD when it finds the key, unless the
+# explicit WORKER_ALLOW_ORG_KEY=1 dev-parity override is set (never in prod).
+
+def _clear_worker_env(monkeypatch):
+    for var in ("UPLIFT_DB_URL", "DB_USER", "DB_PASS", "DB_HOST",
+                "CUBE_ENDPOINT", "CUBEJS_API_SECRET_VALUE",
+                "ANTHROPIC_API_KEY", "WORKER_ALLOW_ORG_KEY"):
+        monkeypatch.delenv(var, raising=False)
+
+
+@pytest.mark.unit
+def test_org_key_on_worker_host_fails_loud_at_startup(monkeypatch):
+    _clear_worker_env(monkeypatch)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-org-key")
+    with pytest.raises(RuntimeError) as e:
+        worker.build_clients_from_env()
+    msg = str(e.value)
+    # The message must name the offending var, the boundary, and the (dev-only) override.
+    assert "ANTHROPIC_API_KEY" in msg
+    assert "ENVIRONMENT key" in msg
+    assert "WORKER_ALLOW_ORG_KEY" in msg
+    assert "never in prod" in msg
+
+
+@pytest.mark.unit
+def test_org_key_guard_is_fail_closed_on_near_miss_override(monkeypatch):
+    """Only exactly '1' opens the dev override — junk values stay refused (fail-closed)."""
+    _clear_worker_env(monkeypatch)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-org-key")
+    for junk in ("true", "yes", "0", " 1", ""):
+        monkeypatch.setenv("WORKER_ALLOW_ORG_KEY", junk)
+        with pytest.raises(RuntimeError):
+            worker.build_clients_from_env()
+
+
+@pytest.mark.unit
+def test_dev_override_restores_spec_generator_wiring(monkeypatch):
+    """WORKER_ALLOW_ORG_KEY=1 (dev parity ONLY) keeps the old behavior: the key wires the
+    default build_view spec generator."""
+    import agents.tools.spec_generator as sg_mod
+
+    class FakeGen:
+        pass
+
+    monkeypatch.setattr(sg_mod, "AnthropicSpecGenerator", FakeGen)
+    _clear_worker_env(monkeypatch)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dev-key")
+    monkeypatch.setenv("WORKER_ALLOW_ORG_KEY", "1")
+    clients = worker.build_clients_from_env()
+    assert isinstance(clients["spec_generator"], FakeGen)
+
+
+@pytest.mark.unit
+def test_no_org_key_boots_normally_without_spec_generator(monkeypatch):
+    _clear_worker_env(monkeypatch)
+    clients = worker.build_clients_from_env()
+    assert clients == {"db": None, "rag": None, "cube": None, "greenlight": None}
+    assert "spec_generator" not in clients
+
+
 @pytest.mark.unit
 def test_worker_query_cube_errors_loudly_when_cube_unreachable():
     """An unreachable Cube is an ERROR the agent can see (cube_status/detail) — never a silent

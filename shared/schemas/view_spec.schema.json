@@ -134,10 +134,38 @@
         "type": { "const": "chart" },
         "title": { "type": "string" },
         "encoding": { "const": "vega-lite" },
-        "spec": { "type": "object" },
+        "spec": { "$ref": "#/$defs/chartSpecFragment" },
         "query": { "$ref": "#/$defs/cubeQuery" },
         "span": { "$ref": "#/$defs/span" }
       }
+    },
+    "chartSpecFragment": {
+      "description": "Whitelisted Vega-Lite fragment: mark + encoding + transform ONLY. Everything else (params, signals, data, datasets, usermeta, projection, config, width, ...) is rejected — the renderer owns data/size, and a fragment must stay declarative data, never code or a loader. No key named href/url may appear anywhere inside (kills link channels and URL-referencing lookup transforms).",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mark": { "type": "string", "minLength": 1 },
+        "encoding": {
+          "type": "object",
+          "$ref": "#/$defs/noLinkValue"
+        },
+        "transform": {
+          "type": "array",
+          "items": { "type": "object", "$ref": "#/$defs/noLinkValue" }
+        }
+      }
+    },
+    "noLinkValue": {
+      "description": "Recursively forbids any object key named href or url (no links, no external loads).",
+      "anyOf": [
+        { "not": { "type": ["object", "array"] } },
+        { "type": "array", "items": { "$ref": "#/$defs/noLinkValue" } },
+        {
+          "type": "object",
+          "propertyNames": { "not": { "enum": ["href", "url"] } },
+          "additionalProperties": { "$ref": "#/$defs/noLinkValue" }
+        }
+      ]
     },
     "table": {
       "type": "object",

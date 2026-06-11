@@ -44,6 +44,18 @@ V2_COMPONENT_TYPES = frozenset(
 
 DASHBOARD_KIND = "dashboard"
 
+# Whitelist for a chart block's Vega-Lite `spec` fragment (mirrored in the JSON schema's
+# chartSpecFragment and in web/src/dashboard/viewSpec.ts — keep all three in lockstep).
+# Everything else — params, signals, data, datasets, usermeta, projection, config, width,
+# height, ... — is REJECTED: the renderer owns data/sizing, and a fragment must stay
+# declarative data, never code, signals, or a loader.
+CHART_FRAGMENT_ALLOWED_KEYS = frozenset({"mark", "encoding", "transform"})
+
+# No key named href/url may appear anywhere inside encoding/transform: kills the `href`
+# encoding channel (clickable marks), the `url` channel (external images), and any lookup
+# transform that references a URL (`from: {data: {url: ...}}`).
+_LINK_KEYS = frozenset({"href", "url"})
+
 
 @dataclass
 class ValidationError(Exception):
@@ -110,9 +122,75 @@ def _yield_query_members(query, out: list):
             out.append(f["member"])
 
 
+def _check_no_link_keys(value, where: str) -> None:
+    """Recursively reject any object key named href/url (mirrors $defs/noLinkValue)."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in _LINK_KEYS:
+                raise ValidationError(
+                    "chart spec fragment invalid",
+                    f"{where}: key {key!r} is not allowed (no links or URL loads in a fragment)",
+                )
+            _check_no_link_keys(item, f"{where}.{key}")
+    elif isinstance(value, list):
+        for i, item in enumerate(value):
+            _check_no_link_keys(item, f"{where}[{i}]")
+
+
+def _validate_chart_fragments(spec: dict) -> None:
+    """Explicit allow-list check on every chart block's Vega-Lite `spec` fragment.
+
+    The JSON schema ($defs/chartSpecFragment) enforces the same rules; this walk runs first so
+    rejections carry precise, generator-friendly reasons, and stays as defense in depth.
+    """
+    layout = spec.get("layout")
+    if not isinstance(layout, list):
+        return
+    for i, block in enumerate(layout):
+        if not isinstance(block, dict) or block.get("type") != "chart":
+            continue
+        frag = block.get("spec")
+        if frag is None:
+            continue
+        where = f"layout[{i}].spec"
+        if not isinstance(frag, dict):
+            raise ValidationError("chart spec fragment invalid", f"{where}: must be an object")
+        unknown = set(frag) - CHART_FRAGMENT_ALLOWED_KEYS
+        if unknown:
+            raise ValidationError(
+                "chart spec fragment invalid",
+                f"{where}: unknown keys {sorted(unknown)} (allowed: "
+                f"{', '.join(sorted(CHART_FRAGMENT_ALLOWED_KEYS))})",
+            )
+        if "mark" in frag and not isinstance(frag["mark"], str):
+            raise ValidationError(
+                "chart spec fragment invalid", f"{where}.mark: must be a string mark name"
+            )
+        if "encoding" in frag:
+            if not isinstance(frag["encoding"], dict):
+                raise ValidationError(
+                    "chart spec fragment invalid", f"{where}.encoding: must be an object"
+                )
+            _check_no_link_keys(frag["encoding"], f"{where}.encoding")
+        if "transform" in frag:
+            if not isinstance(frag["transform"], list):
+                raise ValidationError(
+                    "chart spec fragment invalid", f"{where}.transform: must be an array"
+                )
+            for j, entry in enumerate(frag["transform"]):
+                if not isinstance(entry, dict):
+                    raise ValidationError(
+                        "chart spec fragment invalid",
+                        f"{where}.transform[{j}]: must be an object",
+                    )
+                _check_no_link_keys(entry, f"{where}.transform[{j}]")
+
+
 def validate_schema(spec: dict) -> None:
     """Raise ValidationError if the spec violates the JSON schema (shape / no code / catalog types)
     or declares a spec_version lower than the features it uses."""
+    if isinstance(spec, dict) and not is_dashboard(spec):
+        _validate_chart_fragments(spec)
     validator = _DASHBOARD_VALIDATOR if is_dashboard(spec) else _VIEW_VALIDATOR
     errors = sorted(validator.iter_errors(spec), key=lambda e: [str(p) for p in e.path])
     if errors:

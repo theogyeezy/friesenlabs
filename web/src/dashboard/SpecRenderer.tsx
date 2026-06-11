@@ -270,6 +270,40 @@ function KpiCard({ block, loadData }: { block: KpiBlock; loadData: LoadData }) {
 // Catalog component: Vega-Lite chart
 // ---------------------------------------------------------------------------
 
+// Defense in depth for the (already validated) chart fragment: rebuild it onto a
+// clean object keeping ONLY the whitelisted keys (mark / encoding / transform),
+// dropping any key named href/url anywhere inside. Validation already hard-rejects
+// these; the renderer additionally strips them so an unexpected shape is render-inert
+// rather than reaching vega-embed. Mirrors shared/view_spec.py CHART_FRAGMENT_ALLOWED_KEYS.
+function stripLinkKeysDeep(v: unknown): unknown {
+  if (Array.isArray(v)) return v.map(stripLinkKeysDeep);
+  if (v !== null && typeof v === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(v as Record<string, unknown>)) {
+      if (key === "href" || key === "url") continue;
+      out[key] = stripLinkKeysDeep(val);
+    }
+    return out;
+  }
+  return v;
+}
+
+function sanitizeChartFragment(fragment: unknown): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (fragment === null || typeof fragment !== "object" || Array.isArray(fragment)) return out;
+  const f = fragment as Record<string, unknown>;
+  if (typeof f.mark === "string") out.mark = f.mark;
+  if (f.encoding !== null && typeof f.encoding === "object" && !Array.isArray(f.encoding)) {
+    out.encoding = stripLinkKeysDeep(f.encoding);
+  }
+  if (Array.isArray(f.transform)) {
+    out.transform = f.transform
+      .filter((t) => t !== null && typeof t === "object" && !Array.isArray(t))
+      .map(stripLinkKeysDeep);
+  }
+  return out;
+}
+
 function ChartCard({ block, loadData }: { block: ChartBlock; loadData: LoadData }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [failed, setFailed] = useState(false);
@@ -292,9 +326,11 @@ function ChartCard({ block, loadData }: { block: ChartBlock; loadData: LoadData 
 
         // Compose the final Vega-Lite spec from the (untrusted) spec fragment
         // plus the loaded data. We override `data` with inline values so a spec
-        // can never point the chart at a URL or loader. The fragment supplies
-        // mark + encoding only; vega-embed parses it as data, not code.
-        const fragment = (block.spec ?? {}) as Record<string, unknown>;
+        // can never point the chart at a URL or loader. The fragment is rebuilt
+        // through the whitelist (mark / encoding / transform, no href/url keys)
+        // even though validation already enforced it — defense in depth;
+        // vega-embed parses it as data, not code.
+        const fragment = sanitizeChartFragment(block.spec);
         const vlSpec = {
           $schema: "https://vega.github.io/schema/vega-lite/v6.json",
           ...fragment,

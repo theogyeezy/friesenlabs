@@ -16,6 +16,11 @@ variable "origin_verify_secret" {
   sensitive = true
 }
 
+variable "log_retention_days" {
+  type    = number
+  default = 30 # one knob for every uplift log group (TODO Sec/P3 213)
+}
+
 # Don't cache the API; forward method/query/headers/body through to the origin.
 data "aws_cloudfront_cache_policy" "disabled" { name = "Managed-CachingDisabled" }
 data "aws_cloudfront_origin_request_policy" "all_viewer" { name = "Managed-AllViewerExceptHostHeader" }
@@ -94,6 +99,20 @@ resource "aws_wafv2_web_acl" "api" {
     metric_name                = "${var.project}-api-edge"
     sampled_requests_enabled   = true
   }
+}
+
+# WAF request logging (Sec, REQ-012 item 6): without it the managed-rule/rate-limit BLOCKS are
+# invisible (metrics only, no records to investigate an attack with). CloudWatch destination;
+# the group name MUST start with aws-waf-logs- (hard AWS requirement) and, for a CLOUDFRONT-scope
+# ACL, must live in us-east-1 — which is this stack's provider region. Unconditional + additive.
+resource "aws_cloudwatch_log_group" "waf" {
+  name              = "aws-waf-logs-${var.project}-api-edge"
+  retention_in_days = var.log_retention_days
+}
+
+resource "aws_wafv2_web_acl_logging_configuration" "api" {
+  resource_arn            = aws_wafv2_web_acl.api.arn
+  log_destination_configs = [aws_cloudwatch_log_group.waf.arn]
 }
 
 # Standard access logs → an encrypted, ACL-enabled bucket (CloudFront logging requires bucket ACLs).

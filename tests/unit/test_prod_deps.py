@@ -27,7 +27,7 @@ from signup.anthropic_admin import AnthropicAdminClient
 from signup.cognito_admin import CognitoAdminClient
 from signup.resend_sender import ResendEmailSender
 from signup.sms_sender import SnsSmsOtpSender
-from signup.store_pg import PgAccountStore, PgOtpStore, PgStripeEventLedger
+from signup.store_pg import PgAccountStore, PgOtpStore, PgStripeEventLedger, PgUsedTokenStore
 from signup.stripe_adapter import StripeAdapter
 from signup.tokens import OTP_DIGITS
 
@@ -170,6 +170,8 @@ def test_dsn_guard_selects_aurora_backed_stores(monkeypatch):
     assert isinstance(deps.accounts.store, PgAccountStore)
     assert isinstance(deps.payment.event_ledger, PgStripeEventLedger)
     assert isinstance(deps.accounts.otp._store, PgOtpStore)  # OTP state shared across tasks
+    # Email-token single-use state shared across tasks too (no per-task replay window).
+    assert isinstance(deps.email_token_ok.__self__._used, PgUsedTokenStore)
     # The pre-minted workspace-key pool (issue #152) rides the same dsn guard: provisioning
     # consumes Console-pre-minted keys, never the dead Admin-API key-create endpoint.
     from signup.key_pool import PgWorkspaceKeyPool

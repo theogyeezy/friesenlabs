@@ -385,3 +385,102 @@ variable "provisioning_anthropic_env" {
   default     = false # flip ONLY after uplift/anthropic-api-key + uplift/env-id hold values
   description = "Pass the Anthropic org-key + env-id secret ARNs to the provisioning Lambda env (agent_plane step)."
 }
+
+# --- Security-hardening batch (REQ-012). P0 fixes are unconditional in the modules; every
+# availability-affecting change below is gated on a default that preserves the LIVE state. ---
+
+variable "deploy_role_admin_fallback" {
+  type        = bool
+  default     = true # CURRENT LIVE STATE (AdministratorAccess attached). Goal state: false.
+  description = <<-EOT
+    Keep AdministratorAccess on the uplift-deploy GitHub OIDC role alongside the new scoped
+    uplift-deploy-scoped policy (REQ-012 item 1). SECURITY: admin on an internet-assumable role
+    is the account's largest blast radius. Flip procedure: run ONE full successful deploy.yml
+    cycle (plan + apply + service roll) with both policies attached, then set false + targeted
+    apply to detach admin — the scoped policy alone then bounds CI/CD. Rollback: set true.
+  EOT
+}
+
+variable "create_smoke_test_client" {
+  type        = bool
+  default     = false # no such client exists today; the public SPA client no longer carries the admin flow
+  description = "Create a separate NON-public (confidential) Cognito app client allowing ADMIN_USER_PASSWORD_AUTH for server-side smoke tests (REQ-012 item 2). The public SPA client never carries that flow again."
+}
+
+variable "uplift_environment" {
+  type        = string
+  default     = "prod" # arms shared/config.is_prod() — the bypass-in-prod refuse-to-boot guard
+  description = "UPLIFT_ENVIRONMENT on the API task + provisioning Lambda (REQ-012 item 3). 'prod' makes shared/config.is_prod() true so the SIGNUP_INTERNAL_BYPASS_DOMAINS-in-prod guard can actually refuse to boot."
+}
+
+variable "cognito_threat_protection_mode" {
+  type        = string
+  default     = "ENFORCED" # adaptive auth + compromised-credential blocking on the tenant pool
+  description = "Cognito threat protection (user_pool_add_ons.advanced_security_mode): OFF | AUDIT | ENFORCED (REQ-012 item 4). AUDIT is the observe-only rollback. AUDIT/ENFORCED require the Plus feature plan — see cognito_user_pool_tier."
+  validation {
+    condition     = contains(["OFF", "AUDIT", "ENFORCED"], var.cognito_threat_protection_mode)
+    error_message = "cognito_threat_protection_mode must be OFF, AUDIT, or ENFORCED."
+  }
+}
+
+variable "cognito_user_pool_tier" {
+  type        = string
+  default     = "" # "" = leave the live pool's feature plan unmanaged (today's state)
+  description = "Cognito feature plan: \"\" (unmanaged), LITE, ESSENTIALS, or PLUS. Threat protection AUDIT/ENFORCED requires PLUS (a billing change — flip with the same reviewed apply, REQ-012 item 4)."
+  validation {
+    condition     = contains(["", "LITE", "ESSENTIALS", "PLUS"], var.cognito_user_pool_tier)
+    error_message = "cognito_user_pool_tier must be \"\", LITE, ESSENTIALS, or PLUS."
+  }
+}
+
+variable "worker_dedicated_sg" {
+  type        = bool
+  default     = false # CURRENT LIVE STATE: the worker rides sg_api (and reaches cube through it)
+  description = <<-EOT
+    Move the worker service onto its own SG with EXPLICIT worker->cube :4000 and worker->db
+    :5432 rules (REQ-012 item 7) — the worker legitimately queries cube (query_cube tool via
+    CUBE_ENDPOINT + CubeClient), so the reach stays, but it stops being a side effect of
+    sharing sg_api. AVAILABILITY: flipping rolls worker tasks (network_configuration update).
+  EOT
+}
+
+variable "provisioning_lambda_dedicated_sg" {
+  type        = bool
+  default     = false # CURRENT LIVE STATE: the Lambda rides sg_api (and gets cube reach for free)
+  description = <<-EOT
+    Move the provisioning Lambda onto its own SG with ONLY a db :5432 pairing — the handler
+    touches Aurora/Cognito/Resend/Anthropic and has NO legitimate cube use, so the flip severs
+    its for-free cube reach (REQ-012 item 7). AVAILABILITY: flipping updates the function's
+    VPC config (brief function update; in-flight invocations finish on the old ENIs).
+  EOT
+}
+
+variable "adot_image" {
+  type        = string
+  default     = "public.ecr.aws/aws-observability/aws-otel-collector:latest" # EXACT live string — zero diff
+  description = "ADOT collector sidecar image for the api/cube/worker tasks (REQ-012 item 8a). SECURITY: pin a digest (…@sha256:…) in tfvars — a mutable :latest pulled at every task start is a supply-chain hole. Changing it rolls all three services."
+}
+
+variable "readonly_root_filesystem" {
+  type        = bool
+  default     = false # CURRENT LIVE STATE (writable root FS)
+  description = "Set readonlyRootFilesystem on the api/cube/worker app containers with /tmp as a Fargate ephemeral volume (REQ-012 item 8b). Flipping creates new task-def revisions and rolls all three services — flip in a verify window (circuit breakers auto-roll-back)."
+}
+
+variable "enable_ecs_exec" {
+  type        = bool
+  default     = true # CURRENT LIVE STATE (break-glass shells enabled) — now audit-logged
+  description = "enable_execute_command on the api service (REQ-012 item 8c). Sessions are now KMS-encrypted and transcript-logged to /ecs/uplift-exec via the cluster execute_command_configuration. Set false to close the interactive-shell surface."
+}
+
+variable "aurora_kms_key_arn" {
+  type        = string
+  default     = "" # LIVE STATE: default aws/rds + aws/pi keys. See the module description — REPLACEMENT hazard.
+  description = "⚠️ Setting this on the existing cluster FORCES CLUSTER REPLACEMENT (data loss without the REQ-012 item 9 snapshot-restore runbook). CMK ARN for Aurora storage + Performance Insights encryption."
+}
+
+variable "create_aurora_cmk" {
+  type        = bool
+  default     = false # additive key creation is safe; WIRING it replaces the cluster — see REQ-012 item 9
+  description = "⚠️ Create a rotating CMK (alias/uplift-aurora) AND wire it as the Aurora + PI key — wiring REPLACES the live cluster; follow the REQ-012 item 9 snapshot-restore runbook."
+}

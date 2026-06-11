@@ -77,6 +77,14 @@ variable "anthropic_env_available" {
   default = false
 }
 
+# Sec/P0 (REQ-012 item 3): arms shared/config.is_prod() in the provisioning handler — same
+# rationale as the API task (the Stripe-internal-bypass refuse-to-boot guard reads it).
+variable "uplift_environment" {
+  type        = string
+  default     = "prod"
+  description = "Value for the UPLIFT_ENVIRONMENT Lambda env var; shared/config.is_prod() gates prod-only safety refusals on it."
+}
+
 data "aws_iam_policy_document" "lambda_assume" {
   statement {
     actions = ["sts:AssumeRole"]
@@ -113,6 +121,9 @@ resource "aws_iam_role_policy" "cognito_signup" {
         "cognito-idp:AdminConfirmSignUp",
         "cognito-idp:AdminUpdateUserAttributes",
         "cognito-idp:AdminSetUserPassword",
+        # RBAC (REQ-012 item 10): the SFN provisioning path assigns the first user of a
+        # tenant to the "admin" group (best-effort) — parity with the api task role.
+        "cognito-idp:AdminAddUserToGroup",
       ]
       Resource = var.cognito_user_pool_arn
     }]
@@ -179,6 +190,8 @@ resource "aws_lambda_function" "provisioning" {
         RESEND_FROM_EMAIL         = var.resend_from_email
         SIGNUP_VERIFY_URL_BASE    = var.verify_url_base
       },
+      # Sec/P0 (REQ-012 item 3): same is_prod() arming as the API task.
+      var.uplift_environment != "" ? { UPLIFT_ENVIRONMENT = var.uplift_environment } : {},
       # The deliberate signup go-live act (same flag as the API task — REQ-003 step 0).
       var.signup_real_deps ? { SIGNUP_REAL_DEPS = "1" } : {},
       # DRAFT-GATE (CLAUDE.md #2): the provisioning-completion email only sends when true. Same

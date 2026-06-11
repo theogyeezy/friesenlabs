@@ -1,7 +1,12 @@
 """Self-hosted tool-execution worker (Build Guide Phase 4, Step 27).
 
 Polls the Managed Agents environment queue, claims work, and executes the custom tools IN YOUR VPC.
-Authenticated by the *environment key* (never the org API key — that key must not exist on this host).
+Authenticated by the *environment key* (never the org API key — that key must not exist on this
+host). That boundary is ENFORCED at startup: `build_clients_from_env` (called from `run()` before
+anything serves) raises if `ANTHROPIC_API_KEY` is present, unless the explicit
+`WORKER_ALLOW_ORG_KEY=1` dev-parity override is set — NEVER set that in prod. The worker task is
+the creds-laden box (DB, Cube, Cortex); the org key landing on it would turn any worker compromise
+into org-wide Anthropic API capability.
 Inside each tool, `app.current_tenant` is set from the session metadata before any DB/Cube call so
 Postgres RLS applies during tool execution too.
 
@@ -76,6 +81,12 @@ TOOLS = build_tools([*ROSTER, COORDINATOR])
 # Brief Option A: a fixed 30s emit interval — two emits per alarm period (60s), so a single
 # dropped PutMetricData can never trip the worker_absent alarm on its own.
 DEFAULT_HEARTBEAT_INTERVAL_S = 30.0
+
+# Dev-parity escape hatch for the org-key startup guard (module docstring). Worker-local on
+# purpose (not shared/config.py): no other plane may ever read it. NEVER set in prod — the org
+# key must not exist on the creds-laden worker host; this exists only so a local dev box that
+# already carries ANTHROPIC_API_KEY can still run the worker with the spec-generator wired.
+ENV_WORKER_ALLOW_ORG_KEY = "WORKER_ALLOW_ORG_KEY"
 
 
 def _heartbeat_interval_s() -> float:
@@ -175,9 +186,14 @@ def build_clients_from_env() -> dict:
       (`ml.registry.registry_from_env`) -> ToolContext.cortex, so `run_model` scores with the
       tenant's durable champion. All-unset keeps the key ABSENT (unconfigured boots stay
       byte-identical; run_model degrades to "no model registry configured").
-    - ANTHROPIC_API_KEY: default build_view spec generator. In the prod posture this key is
-      NEVER on the worker (org key is API-task-only — shared/config.py), so this stays absent
-      and build_view keeps its explicit raise; the guard exists for dev parity only.
+    - ANTHROPIC_API_KEY: REFUSED. The prod security boundary is that the org key is NEVER on
+      the worker (org key is API-task-only — shared/config.py): the worker authenticates with
+      the environment key alone, and a worker compromise must not yield org-wide API capability.
+      Finding it set FAILS LOUD here (RuntimeError at startup — the choke point run() calls
+      before anything serves), so a mis-built task definition crash-loops visibly instead of
+      silently carrying the key. The explicit `WORKER_ALLOW_ORG_KEY=1` override (NEVER set in
+      prod) restores the old dev-parity behavior: the key wires the default build_view spec
+      generator; without the key, build_view keeps its explicit raise.
     THE TRUST RULE: these clients take tenant_id per call from the session metadata the API stamped
     from the verified JWT claim — never from this host's env.
     """
@@ -222,8 +238,18 @@ def build_clients_from_env() -> dict:
     cortex = registry_from_env()
     if cortex is not None:
         clients["cortex"] = cortex
-    # Default view-spec generator (env-guarded; see the docstring — absent in the prod posture).
+    # Org-key startup guard (the security boundary in the module docstring): the org API key on
+    # this host is a misconfiguration we refuse to run with — fail LOUD, not quietly capable.
     if os.environ.get(ENV_ANTHROPIC_API_KEY):
+        if os.environ.get(ENV_WORKER_ALLOW_ORG_KEY) != "1":
+            raise RuntimeError(
+                f"{ENV_ANTHROPIC_API_KEY} is set on this worker host — the worker must "
+                "authenticate with the ENVIRONMENT key only; the org API key must never exist "
+                "on the creds-laden worker task (prod security boundary). Remove the key from "
+                f"the task definition, or set {ENV_WORKER_ALLOW_ORG_KEY}=1 for local dev parity "
+                "ONLY (never in prod)."
+            )
+        # Dev override: the old behavior — the key wires the default build_view spec generator.
         from agents.tools.spec_generator import AnthropicSpecGenerator  # noqa: PLC0415 — lazy
 
         clients["spec_generator"] = AnthropicSpecGenerator()

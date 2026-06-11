@@ -31,7 +31,7 @@ from typing import Any
 
 from fastapi import Body, Depends, FastAPI, HTTPException
 
-from api.auth import TenantClaims
+from api.auth import TenantClaims, make_current_admin
 
 log = logging.getLogger("api.account_delete")
 
@@ -67,16 +67,18 @@ class AccountDeleteDeps:
 
 
 def mount_account_delete(app: FastAPI, deps: AccountDeleteDeps, current_tenant) -> None:
-    """Mount POST /account/delete on `app`, authed via `current_tenant` (the same verified-claims
-    dependency every other authed route uses).
+    """Mount POST /account/delete on `app`, ADMIN-gated via the api.auth admin policy
+    (the most destructive call in the product — tenant-admin only, never a member action;
+    the 403 resolves in the dependency, BEFORE the 503-unconfigured / 422-confirm checks).
 
     Destructive, but draft-/audit-safe: it deletes only the tenant's own mutable data and leaves the
     append-only audit trail intact (the deleter enforces that, not this route).
     """
+    current_admin = make_current_admin(current_tenant)
 
     @app.post("/account/delete")
     def account_delete(
-        claims: TenantClaims = Depends(current_tenant),
+        claims: TenantClaims = Depends(current_admin),
         payload: dict = Body(default=None),
     ):
         """Tear down the calling tenant's mutable data and return a structured report.

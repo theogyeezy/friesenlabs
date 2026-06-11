@@ -80,8 +80,8 @@ def test_tenant_comes_from_claim_not_body():
 def test_two_tenant_approval_isolation():
     client, gl = _client()
     # Seed a pending approval for each tenant directly via the queue.
-    gl.propose(tenant_id="A", action="send_email", agent="nadia", reasoning="r", value_at_stake=1, payload={})
-    gl.propose(tenant_id="B", action="send_email", agent="nadia", reasoning="r", value_at_stake=1, payload={})
+    gl.propose(tenant_id="A", action="send_email", agent="nadia", reasoning="r", value_at_stake=1, payload={"has_unsubscribe": True})
+    gl.propose(tenant_id="B", action="send_email", agent="nadia", reasoning="r", value_at_stake=1, payload={"has_unsubscribe": True})
     a = client.get("/approvals", headers=_auth("tokA")).json()["approvals"]
     b = client.get("/approvals", headers=_auth("tokB")).json()["approvals"]
     assert len(a) == 1 and a[0]["tenant_id"] == "A"
