@@ -125,19 +125,19 @@ What remains is **owner-gated** (infra flips/seeding — see P0/P1 below), **web
   - Verify featurize() handles partial/missing record fields the agent might pass (edge cases)
 
 ### Agent Studio & workflows
-- [ ] **Agent Studio — activate / deactivate (live roster registration)** — `partial`
+- [x] **Agent Studio — activate / deactivate (live roster registration)** — `partial` **STALE→DONE 2026-06-11 (Matt audit): the registrar IS wired in prod since #236 (`api/asgi.py:344-364` StudioDeps registrar_factory → per-tenant MA env); the live-smoke clause is folded into the Agents & Studio audit section below.**
   - (gap) StudioDeps.registrar is hardcoded None everywhere in prod: build_studio_deps() (routes_studio.py:80-92) deliberately never wires a registrar, and api/asgi.py never passes one (grep for 'registrar' in asgi/agents returns nothing). So on the LIVE deployment activate ALWAYS returns registered:false with registration_reason='agent plane not configured...' — it only flips the DB status, never actually registers agents with Managed Agents. This is honest (UI says 'Active (record-only)') but means live activation is record-only, not a live crew.
   - (gap) Activation has no live-mode integration test against ManagedAgentsRuntime (activation.py docstring admits it 'only runs where the agent plane is deliberately configured'); only FakeRuntime coverage exists.
-- [ ] **Agent Studio — playbook trigger execution (the playbook actually RUNNING)** — `stub`
+- [ ] **Agent Studio — playbook trigger execution (the playbook actually RUNNING)** — `stub` **PARTIAL 2026-06-11 (Matt audit): manual Run-now endpoint built (#226) + live registrar (#236); the scheduled leg is authored-but-DISABLED (owner-gated) and the event leg is unbuilt — remaining work tracked in the Agents & Studio audit section below.**
   - Build a playbook runner: a manual 'Run now' endpoint that opens an MA session against the playbook's coordinator (behind agents/runtime.py), plus an EventBridge/scheduler leg for kind=schedule and an event-dispatch hook for kind=event.
   - Wire the activated coordinator into the live agent plane so its draft outputs land in Greenlight (the draft-only path already exists for /chat — reuse it).
-- [ ] **Agent Studio — registrar wiring to live Managed Agents** — `not-wired`
+- [x] **Agent Studio — registrar wiring to live Managed Agents** — `not-wired` **STALE→DONE 2026-06-11 (Matt audit): wired by #236 (`api/asgi.py:344-364`); the live activation smoke remains — folded into the Agents & Studio audit section below.**
   - In asgi.py, when the agent plane is configured (MA env id + org key present, the same gate signup uses), build a ManagedAgentsRuntime and pass it as StudioDeps.registrar so activate registers a real crew.
   - Add a live/integration smoke that activates a playbook against the real runtime seam and asserts registered:true + draft-only on a side-effecting tool.
 - [ ] **Workflows screen (GET /workflows — provisioning machine view)** — `partial`
   - Inject PROVISIONING_SFN_ARN on the API task and grant states:ListExecutions scoped to the machine ARN (REQ-009) to light up the live run feed.
   - If a real per-tenant workflow/automation builder is intended, it does not exist — only the provisioning-machine viewer does; that is a separate feature to build.
-- [ ] **Agent marketplace (agent-market) in real mode** — `stub`
+- [x] **Agent marketplace (agent-market) in real mode** — `stub` **STALE→DONE 2026-06-11 (Matt audit): built by #233 — `MarketplaceView` real-mode browse+hire over `/studio/templates` with honest 503 degrade. (404 parity nit tracked in the audit section below.)**
   - Either remove the Marketplace nav entry in real mode or build a real backend (a curated/template-backed agent catalog over the owned roster + a real create path) and a real-mode render branch.
   - If kept, at minimum render an honest 'rolling out' card in real mode rather than the generic ComingSoon, matching the Studio/Workflows rollout pattern.
 - [ ] **Mock-mode studio/workflow screens (screens/studio.tsx, screens/workflow.tsx)** — `not-wired`
@@ -187,6 +187,87 @@ What remains is **owner-gated** (infra flips/seeding — see P0/P1 below), **web
   - Verify Book/Email modal confirm()/send() actually await the POST /public/leads (or mailto fallback) and only show success on a real response, not optimistically.
 
 
+
+## Agents & Studio customer-readiness audit — TODOs (2026-06-11, Lane Matt)
+
+From a 4-pass audit (backend agent plane · web UI · tests/CI · data-layer+infra wiring), claims
+spot-checked against source; 252 tests green locally (202 unit + 50 integration; the 2 skips are
+the real-Postgres RLS proof, which runs in CI). Full report:
+`docs/audits/agents-studio-audit-2026-06-11.md`.
+**Verdict: safety is sound, automation is not yet honest** — draft-only is structural
+(`Tool.invoke`), trust rule + FORCE'd RLS + fresh-load grants all correct on `playbooks`, the
+real-mode web views (AgentsRoster/StudioView/MarketplaceView) are genuinely API-wired with no
+mock leakage, and as of #236 activate/run drive a real MA crew. But every email draft a customer
+sees is a placeholder string, no playbook ever fires without a human, the UI has no Run button or
+run history, and each run leaks MA resources. Already tracked elsewhere (not repeated): the
+owner-gated `playbook_dispatch_enabled` flip + FailedInvocations alarm (GO_LIVE_CHECKLIST.md);
+workspace-key-pool seeding.
+
+### P0 — before paying customers
+- [ ] **Real email drafts** — `DraftEmail._execute` returns the literal placeholder
+  `(draft) Re: <goal>` (`agents/tools/sideeffecting.py:24`); it's `Policy.AUTO`, so nadia/echo
+  and the `lead_followup_drafter` template surface that canned string as the customer's actual
+  draft. Generate the body with a real model call (or route through the synthesizer); add a
+  regression test asserting the body isn't the placeholder.
+- [ ] **"Run now" + run history in Studio** — the backend route exists
+  (`POST /studio/playbooks/{id}/run`, #226) but `StudioView.tsx` has no Run button and no runs
+  surface, so Activate is a dead end. Wire the button; persist `RunRecord` (today
+  `dispatch.main()` only logs it — no `playbook_runs` table exists) + a `GET .../runs` route +
+  a runs list in the UI. Migration authored Lane Matt; live apply `BLOCKED: Lane Nick`.
+- [ ] **Stop re-creating the MA crew on every run** — `PlaybookRunner.run()` calls
+  `activate_playbook` unconditionally (`agents/playbooks/runner.py:221`), creating fresh MA
+  agents + a coordinator per invocation (manual click AND each future scheduler tick —
+  O(runs × roster) orphaned MA resources); the ids returned at activation are never persisted.
+  Add `ma_coordinator_id`/`ma_agent_ids` to `playbooks`, persist at activation, reuse in the
+  runner, clean up on deactivate.
+- [ ] **Make the starter playbooks fireable** — none of the 5 shipped templates ever runs
+  automatically: 4 are schedule-triggered (EventBridge leg applied-DISABLED + empty static
+  tenant list — the flip itself is owner-gated, tracked), 1 is event-triggered and the event
+  leg is UNBUILT, not gated — `dispatch_event` has zero production callers
+  (`agents/playbooks/dispatch.py:14`); `POST /public/leads` never emits `lead.created`. Wire
+  the producer; until the legs are live, show a "scheduling not yet enabled" banner in Studio
+  instead of presenting inert playbooks as Active.
+
+### P1 — soon after
+- [ ] **Tenant discovery for scheduled dispatch** — `PLAYBOOK_DISPATCH_TENANTS` is a
+  hand-maintained static tfvar (`infra/variables.tf:370-374`); every new signup needs a
+  terraform edit or their schedules silently never fire (exit 0). Discover tenants with
+  active schedule-playbooks from the DB instead.
+- [ ] **Server-side module gating for /studio + /agents** — gated by the $39/mo agents module
+  in the UI only (`shared/modules.py:40`); `api/routes_studio.py` never checks entitlements,
+  so a tenant with the module off can drive the API directly — billing leakage once Phase-2
+  module billing activates.
+- [ ] **vault_id is plumbed nowhere** — `PgWorkspaceStore.upsert` accepts it but
+  `tenant_workspaces` has no column and `AgentPlaneEnsure.ensure()` never returns one; every
+  session runs `vault_id=None`, so the workspace-vault isolation boundary from the tenancy
+  model is inactive. Wire it or document the deferral.
+- [ ] **Worker TOOLS / registry drift** — `UpdateContact`/`CreateActivity`/`CreateDeal` are
+  registered with live appliers but granted nowhere and unserved by `worker.TOOLS`
+  (`worker/worker.py:56-60`); a Studio-granted call would wedge the session. Grant+serve or
+  remove; consider deriving TOOLS from the registry. _(Also flagged by the Greenlight audit,
+  whose TODO backlog hasn't landed on main — filed here so it can't fall through.)_
+- [ ] **Approved sends read as real sends** — `send_email`/`issue_quote` appliers permanently
+  return `performed:false` "draft-only until provider go-live"
+  (`api/control/appliers.py:82-92`) while the UI toast implies delivery. Surface the
+  `performed` flag; don't offer Approve as if it delivers. _(Greenlight-audit provenance,
+  same as above.)_
+- [ ] **StudioView Playwright spec** — zero browser coverage for the flagship builder screen
+  (Marketplace + Agents both have specs); cover create→422→save→activate→deactivate.
+- [ ] **Schedule-dispatch integration test** — `python -m agents.playbooks.dispatch --schedule`
+  has never executed against a real `PgPlaybookStore` + runtime anywhere (unit fakes only;
+  the prod rule is DISABLED). Add a real-PG integration test of the schedule leg.
+- [ ] **MarketplaceView 404 parity** — only 503 is special-cased
+  (`web/src/api/MarketplaceView.tsx:74`); a 404 shows a generic error instead of StudioView's
+  "rolling out" copy.
+
+### P2 — hygiene
+- [ ] Probe `playbooks` in the live isolation gate (`scripts/isolation_test.py` covers
+  documents+FK only; playbooks RLS is proven statically and in CI Postgres, never live).
+- [ ] A studio/agents smoke script under `scripts/smoke/`.
+- [ ] Mock-mode demo honesty (demo-only, fold into the deferred demo-honesty work):
+  `screens/agents.tsx` "Add tool"/"Get more skills…" are toast-only dead ends; paid skills'
+  "Get · $X" installs free with no payment path (`screens/studio.tsx:88`); unguarded
+  `await askClaude` (`screens/studio.tsx:218`); autonomy/status toggles are local-state-only.
 
 ## FLEETAGENT session follow-ups (2026-06-11)
 

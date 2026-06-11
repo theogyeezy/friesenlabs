@@ -549,6 +549,19 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   usable + safe; RAG-embed IAM gap closed live.
 
 ## Lane Matt (app code) — log
+- 2026-06-11 — **Agents & Studio customer-readiness audit (`feat/matt-agents-studio-audit`):**
+  4-pass read-audit (backend agent plane · web UI · tests/CI · data-layer+infra wiring), claims
+  cross-checked between passes; 252 tests green locally (202 unit + 50 integration, RLS-proof
+  skips run in CI). Verdict: safety sound (draft-only structural in `Tool.invoke`, trust rule
+  uniform, `playbooks` RLS/grants per house convention, real-mode web views genuinely API-wired,
+  live registrar real since #236) — automation NOT honest yet: `DraftEmail` returns a literal
+  `(draft) Re: <goal>` placeholder (Policy.AUTO → customer-visible), Studio has no Run-now
+  button or run history (`RunRecord` persisted nowhere), `PlaybookRunner.run()` re-creates the
+  MA crew every invocation (O(runs × roster) orphan leak, ids never persisted), and none of the
+  5 starter templates can ever fire (schedule leg owner-gated OFF, event leg unbuilt — zero
+  `dispatch_event` callers). 4 P0 / 8 P1 / 3 P2 filed in `TODO.md`; 4 stale Agent-Studio
+  site-audit bullets corrected (registrar/marketplace done by #236/#233). Full report:
+  `docs/audits/agents-studio-audit-2026-06-11.md`.
 - 2026-06-11 — **Neural constellation hero (landing):** the hero is now a live, dependency-free
   canvas render of the real 11-product suite — Command Center at the heart, any-to-any transient
   signal routes, product-true activity cards, and a ~9s Security guardrail interception (shield +
