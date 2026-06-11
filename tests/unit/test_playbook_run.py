@@ -283,3 +283,66 @@ def test_run_tenant_from_claim_not_path_or_body():
     assert r.status_code == 404
     # The runtime was never touched on behalf of B.
     assert rt.sent == [], "no agent work done for a cross-tenant attempt"
+
+
+# --------------------------------------------------------------------------- #
+# registrar_factory (the LIVE per-tenant wiring api/asgi.py uses): resolve a
+# (runtime, environment_id, vault_id) for the claim tenant, or None -> record-only.
+# --------------------------------------------------------------------------- #
+def _wired_factory(resolver):
+    store = InMemoryPlaybookStore()
+    deps = StudioDeps(store=store, registrar_factory=resolver)
+    return _client(deps), store
+
+
+@pytest.mark.unit
+def test_run_via_registrar_factory_resolves_per_tenant_runtime():
+    rt = StubRuntime({"answer": "done via factory", "delegations": []})
+    seen = {}
+
+    def resolver(tenant_id):
+        seen["tenant"] = tenant_id
+        return (rt, "env-A", "vault-A")
+
+    client, store = _wired_factory(resolver)
+    pid = _active_pid(client, store)
+    r = client.post(f"/studio/playbooks/{pid}/run", headers=H_A)
+    assert r.status_code == 200
+    assert r.json()["ran"] is True
+    # The factory was resolved with the VERIFIED claim tenant (THE TRUST RULE).
+    assert seen["tenant"] == "A"
+
+
+@pytest.mark.unit
+def test_run_factory_returning_none_is_record_only():
+    """An unprovisioned tenant (factory -> None) gets the honest record-only path, not a crash."""
+    client, store = _wired_factory(lambda tenant_id: None)
+    pid = _active_pid(client, store)
+    r = client.post(f"/studio/playbooks/{pid}/run", headers=H_A)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ran"] is False
+    assert "run_reason" in body
+
+
+@pytest.mark.unit
+def test_activate_via_registrar_factory_registers():
+    rt = StubRuntime({"answer": "x"})
+    client, store = _wired_factory(lambda tenant_id: (rt, "env-A", None))
+    r = client.post("/studio/playbooks", headers=H_A, json={"definition": _good_definition()})
+    pid = r.json()["id"]
+    r = client.post(f"/studio/playbooks/{pid}/activate", headers=H_A)
+    assert r.status_code == 200
+    assert r.json()["registered"] is True
+
+
+@pytest.mark.unit
+def test_activate_factory_none_is_record_only():
+    client, store = _wired_factory(lambda tenant_id: None)
+    r = client.post("/studio/playbooks", headers=H_A, json={"definition": _good_definition()})
+    pid = r.json()["id"]
+    r = client.post(f"/studio/playbooks/{pid}/activate", headers=H_A)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["registered"] is False
+    assert "registration_reason" in body
