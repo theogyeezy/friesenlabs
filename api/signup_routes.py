@@ -19,8 +19,24 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 from shared.signup_session import SignupSessionTokens, resolve_account_id
+from signup.abuse import (
+    ACTION_RESEND,
+    ACTION_SIGNUP,
+    CaptchaRequiredError,
+    CaptchaVerifier,
+    DisposableEmailBlocklist,
+    DisposableEmailError,
+    SignupVelocityLimiter,
+    VelocityLimitError,
+)
 from signup.accounts import AccountService
 from signup.payment import PaymentError, PaymentService
+
+# The acquisition funnel (signup + verification-resends) sits behind CloudFront -> ALB -> Fargate,
+# exactly like /public/leads. The trusted-IP parse is reused from there (one definition, no
+# divergent duplicate) so the velocity limiter keys on the trust-boundary viewer IP, never the
+# spoofable left of X-Forwarded-For nor the shared ALB socket peer.
+from api.public_routes import DEFAULT_TRUSTED_HOPS, _trusted_client_ip
 
 
 @dataclass
@@ -64,6 +80,19 @@ class SignupDeps:
     # wired, else it falls back to the legacy raw-account_id query (no behavior change when None).
     # None (the default) = the feature is OFF — byte-identical to the pre-token behavior.
     session_tokens: SignupSessionTokens | None = None
+    # --- Acquisition-funnel abuse controls (signup/abuse.py) ---------------------------------
+    # All three default to their inert posture so an unwired deploy is byte-identical to before:
+    #   * disposable: None  -> no disposable-domain check at signup-start
+    #   * velocity:   None  -> no per-IP signup/resend velocity cap
+    #   * captcha:    None  -> the seam is absent (no token ever required)
+    # api/prod_deps.py builds the real ones from env (always-safe defaults — the static blocklist
+    # ships in-repo; the velocity limiter is in-process; the captcha seam defaults OPEN).
+    disposable: DisposableEmailBlocklist | None = None
+    velocity: SignupVelocityLimiter | None = None
+    captcha: CaptchaVerifier | None = None
+    # Trusted proxy hops in front of the API for the X-Forwarded-For parse (CloudFront -> ALB = 2).
+    # Reused from api/public_routes — never key the limiter on the shared ALB socket peer.
+    trusted_hops: int = DEFAULT_TRUSTED_HOPS
 
 
 class SignupBody(BaseModel):
@@ -101,8 +130,38 @@ def mount_signup(app: FastAPI, deps: SignupDeps) -> None:
     # broad pre-auth reads accept any of the issued scopes; checkout/bypass demand `checkout`.
     _ANY_SESSION = ("checkout", "state", "bypass")
 
+    def _viewer_ip(request: Request) -> str:
+        # The trust-boundary viewer IP (reused parse) the abuse limiter keys on — same value the
+        # leads endpoint uses, so signup + leads share one consistent notion of "the requester".
+        return _trusted_client_ip(request, deps.trusted_hops)
+
+    def _velocity(action: str, request: Request) -> None:
+        if deps.velocity is None:
+            return
+        try:
+            deps.velocity.check(action, _viewer_ip(request))
+        except VelocityLimitError as e:
+            raise HTTPException(status_code=429, detail=str(e))
+
     @app.post("/signup")
-    def signup(body: SignupBody):
+    def signup(body: SignupBody, request: Request):
+        # --- abuse gates, BEFORE any account/Cognito/email work (so a bad actor can't run up the
+        # --- Anthropic-adjacent signup path or spam verification emails) ---
+        # 1) per-IP signup velocity (429). Re-POSTing /signup re-sends the verification email
+        #    (create is idempotent), so this also bounds email-resend spam from one address.
+        _velocity(ACTION_SIGNUP, request)
+        # 2) CAPTCHA seam — no-op (OPEN) by default; only enforces once a real verifier is wired.
+        if deps.captcha is not None:
+            try:
+                deps.captcha.verify(request.headers.get("x-captcha-token"), _viewer_ip(request))
+            except CaptchaRequiredError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+        # 3) disposable / throwaway email domains — honest copy (422), never a silent drop.
+        if deps.disposable is not None:
+            try:
+                deps.disposable.check(body.email)
+            except DisposableEmailError as e:
+                raise HTTPException(status_code=422, detail=str(e))
         account_id = deps.new_account_id()
         acct = deps.accounts.create(account_id, body.email, body.phone)
         out = {"account_id": acct.id, "state": acct.state.value}
@@ -127,7 +186,10 @@ def mount_signup(app: FastAPI, deps: SignupDeps) -> None:
         return {"account_id": acct.id, "state": acct.state.value}
 
     @app.post("/signup/{account_id}/verify-email")
-    def verify_email(account_id: str, body: VerifyEmailBody):
+    def verify_email(account_id: str, body: VerifyEmailBody, request: Request):
+        # Per-IP velocity on verification attempts (resend/retry surface): bounds token-guessing +
+        # resend spam from one address (429). The token itself is still constant-time verified.
+        _velocity(ACTION_RESEND, request)
         if deps.accounts.store.get(account_id) is None:
             raise HTTPException(status_code=404, detail="no such account")
         acct = deps.accounts.verify_email(account_id, deps.email_token_ok(account_id, body.token))
@@ -161,7 +223,10 @@ def mount_signup(app: FastAPI, deps: SignupDeps) -> None:
         return {"state": acct.state.value, "email_verified": acct.email_verified}
 
     @app.post("/signup/{account_id}/verify-phone")
-    def verify_phone(account_id: str, body: VerifyPhoneBody):
+    def verify_phone(account_id: str, body: VerifyPhoneBody, request: Request):
+        # Same per-IP velocity guard as verify-email — bounds OTP-guessing/resend spam per IP. The
+        # per-ACCOUNT OTP send/attempt budget (signup.tokens.OtpService) is the complementary layer.
+        _velocity(ACTION_RESEND, request)
         if deps.accounts.store.get(account_id) is None:
             raise HTTPException(status_code=404, detail="no such account")
         acct = deps.accounts.verify_phone(account_id, deps.sms_code_ok(account_id, body.code))
