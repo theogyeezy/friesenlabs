@@ -105,8 +105,6 @@ def _cognito_client(fake=None):
 def _route_client(password_arg: str | None = None):
     """Build a TestClient for the signup route; Cognito is the real CognitoAdminClient
     wired to a FakeCidp so we can inspect admin_set_user_password calls."""
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
 
     from api.signup_routes import SignupDeps, mount_signup
     from signup.accounts import AccountService

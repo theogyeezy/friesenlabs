@@ -134,3 +134,60 @@ def test_sync_runner_rides_the_ingest_master_switch(monkeypatch):
     monkeypatch.setenv("INGEST_REAL_STORES", "1")
     runner = build_integrations_deps().sync_runner
     assert callable(runner)  # built lazily — nothing real constructed until called
+
+
+# --------------------------------------------------------------------------- delete_secret (disconnect)
+
+class FakeSmWithDelete(FakeSm):
+    """FakeSm + the delete/DeletedDate surface the disconnect path exercises."""
+
+    def __init__(self, existing=(), deleted_pending=()):
+        super().__init__(existing)
+        # Refs scheduled for deletion: DescribeSecret still answers, WITH DeletedDate.
+        self.deleted_pending = set(deleted_pending)
+        self.delete_calls = []
+
+    def describe_secret(self, SecretId):
+        if SecretId in self.deleted_pending:
+            return {"Name": SecretId, "DeletedDate": "2026-06-11T00:00:00Z"}
+        return super().describe_secret(SecretId)
+
+    def delete_secret(self, SecretId, ForceDeleteWithoutRecovery=False):
+        self.delete_calls.append((SecretId, ForceDeleteWithoutRecovery))
+        if SecretId not in self.existing:
+            raise ResourceNotFoundException(SecretId)
+        self.existing.discard(SecretId)
+
+
+def test_delete_secret_forces_immediate_deletion():
+    """delete_secret must pass ForceDeleteWithoutRecovery=True: a window-scheduled
+    deletion would block a reconnect (put on a deletion-scheduled secret fails)."""
+    sm = FakeSmWithDelete(existing={"uplift/A/hubspot"})
+    w = Boto3SecretWriter(client=sm)
+    assert w.delete_secret("uplift/A/hubspot") is True
+    assert sm.delete_calls == [("uplift/A/hubspot", True)]
+    assert "uplift/A/hubspot" not in sm.existing
+
+
+def test_delete_secret_absent_returns_false_idempotent():
+    sm = FakeSmWithDelete()
+    w = Boto3SecretWriter(client=sm)
+    assert w.delete_secret("uplift/A/hubspot") is False  # nothing existed — no error
+
+
+def test_delete_secret_non_notfound_errors_propagate():
+    class _Sm(FakeSmWithDelete):
+        def delete_secret(self, SecretId, ForceDeleteWithoutRecovery=False):
+            raise AccessDeniedException("simulated IAM gap")
+
+    w = Boto3SecretWriter(client=_Sm())
+    with pytest.raises(AccessDeniedException):
+        w.delete_secret("uplift/A/hubspot")
+
+
+def test_secret_exists_false_when_deletion_scheduled():
+    """A secret mid-deletion (DeletedDate set) is NOT connected — without this the
+    status would read 'connected' for up to 30 days after a (non-forced) delete."""
+    sm = FakeSmWithDelete(deleted_pending={"uplift/A/hubspot"})
+    w = Boto3SecretWriter(client=sm)
+    assert w.secret_exists("uplift/A/hubspot") is False

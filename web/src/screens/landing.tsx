@@ -64,8 +64,8 @@ const LP_PRODUCTS = [
     long: "Your whole business in one calm morning view, what your agents did overnight, what needs your eyes, and how the numbers are trending.",
     features: [["Daily briefing", "A plain-English recap of overnight agent work"], ["Live activity feed", "Watch every agent action as it happens"], ["Approvals inline", "Greenlight items surface right on the dashboard"], ["Pipeline & workload", "Animated charts for pipeline and agent load"]] },
   { id: "uplift", name: "Uplift", cat: "CRM", icon: "users", tone: "rose", blurb: "The complete agentic CRM: contacts, pipeline, getting paid, scheduling, reputation and outreach.",
-    long: "An agentic CRM where every deal has an agent working it, end to end: contacts and companies, a pipeline that moves itself, quotes through to payment, scheduling, reviews and outreach. Or keep your current CRM and the agents work inside it just the same.",
-    features: [["Contacts and companies", "Every contact, company, deal, and interaction together"], ["Self-moving pipeline", "Move a deal and the agent picks up the next step"], ["Quote to paid", "Send quotes, e-sign, invoice, and collect while agents chase the overdue ones"], ["Scheduling & booking", "A link customers self-book, with auto reminders"], ["Reputation", "Agents ask happy customers for reviews; track referrals"], ["Templates & sequences", "Email/SMS outreach your agents personalize and run"], ["Gamified selling", "Streaks, quests, leaderboards & rewards reps love"], ["Bring your own CRM", "Works with HubSpot, Salesforce & more"]] },
+    long: "An agentic CRM where every deal has an agent working it, end to end: contacts and companies, a pipeline that moves itself, quotes through to payment, scheduling, reviews and outreach. Or keep your current CRM and the agents work from its data just the same.",
+    features: [["Contacts and companies", "Every contact, company, deal, and interaction together"], ["Self-moving pipeline", "Move a deal and the agent picks up the next step"], ["Quote to paid", "Send quotes, e-sign, invoice, and collect while agents chase the overdue ones"], ["Scheduling & booking", "A link customers self-book, with auto reminders"], ["Reputation", "Agents ask happy customers for reviews; track referrals"], ["Templates & sequences", "Email/SMS outreach your agents personalize and run"], ["Gamified selling", "Streaks, quests, leaderboards & rewards reps love"], ["Bring your own CRM", "Works with HubSpot today, CSV import from anything else"]] },
   { id: "frontline", name: "Frontline", cat: "Support", icon: "inbox", tone: "green", blurb: "An autonomous support desk that deflects the routine and routes the rest to you.",
     long: "A shared inbox where a support agent answers the routine questions automatically, and only hands you the tickets that truly need a human.",
     features: [["AI deflection", "Routine tickets resolved with no human touch"], ["One shared inbox", "Email, chat, web form & social in one queue"], ["Drafts you approve", "Sensitive replies route through Greenlight"], ["Knowledge gaps", "Pip flags questions to add to your help center"]] },
@@ -78,9 +78,9 @@ const LP_PRODUCTS = [
   { id: "agents", name: "Agents", cat: "Workforce", icon: "spark", tone: "indigo", blurb: "Build agents in a visual Studio, give them skills, set their autonomy.",
     long: "Hire ready-made agents or build your own in a visual Studio: name them, give them composable skills, ground them on your knowledge, and set exactly how much they can do.",
     features: [["Agent Studio", "Build an agent and watch it work in a live preview before you ship it"], ["Skill marketplace", "Composable capabilities you mix, build & share"], ["Autonomy & guardrails", "Suggest-only to fully autonomous, with limits"], ["Managed runtime", "Optimized, hosted, nothing to set up"]] },
-  { id: "integration", name: "Switchboard", cat: "Connect", icon: "plug", tone: "green", blurb: "Plug into HubSpot, Stripe, Gmail and 18+ tools you already use.",
-    long: "Keep every tool you already pay for. Your CRM stays the source of truth, and your agents work right inside it, reading and writing as they go. No migration, no rip and replace.",
-    features: [["18+ connectors", "CRM, email, calendar, payments, support"], ["System of record", "Your CRM stays the source of truth"], ["Two-way sync", "Nothing lives in two places"], ["Write-back", "Approved actions push back to your tools"]] },
+  { id: "integration", name: "Switchboard", cat: "Connect", icon: "plug", tone: "green", blurb: "Connect HubSpot, Stripe revenue data and GoHighLevel today, or bring anything in by CSV.",
+    long: "Keep every tool you already pay for. Switchboard pulls from HubSpot, your own Stripe account and GoHighLevel, and CSV import covers everything else. It is read-only by design, Uplift never writes back, so your system of record stays exactly as you left it. No migration, no rip and replace.",
+    features: [["Real connectors today", "HubSpot, Stripe revenue data, GoHighLevel and CSV import, with more on the way"], ["System of record", "Your CRM stays the source of truth"], ["Read-only by design", "Uplift pulls from your tools and never writes back"], ["CSV from anything", "Export from any tool you use and bring the data in, files up to 5MB"]] },
   { id: "sidecar", name: "Sidecar", cat: "Agentic layer", icon: "layers", tone: "indigo", blurb: "Put your agents to work on the tools you already use, keep your whole stack.",
     long: "The agentic layer of your suite. Powered by your Switchboard connections, Sidecar's agents work on top of the tools you already use, enriching, drafting and advancing work, with no migration and your tools staying the system of record.",
     features: [["Part of your suite", "Software in your Friesen workspace, no install, no plugin"], ["Powered by Switchboard", "Works over your connected tools & system of record"], ["Agents do the work", "Enrich, draft, follow up and advance deals automatically"], ["Same guardrails", "Approvals, policy & kill switch apply everywhere"]] },
@@ -157,11 +157,11 @@ const LP_RESEARCH = [
 const LP_DEMOS = [
   { id: "command", tab: "Command Center", cat: "Command Center", title: "See your whole business in one morning view", desc: "Watch your agents work in real time, see what needs you, and track the numbers that matter, all in one calm morning view.", bullets: ["Live agent activity feed", "Animated metrics & pipeline", "Approvals surface right here"], Demo: () => <CommandDemo /> },
   { id: "agents", tab: "Agents", cat: "Agents", title: "Agents that actually do the work", desc: "Give each agent a name, a face and a job. They research, write, send and book, around the clock, and hand the judgment calls to you.", bullets: ["Name & re-skin any agent", "Set autonomy from suggest-only to fully autonomous", "Guardrails keep them on-policy"], Demo: () => <FoxDemo /> },
-  { id: "uplift", tab: "Uplift CRM", cat: "Uplift", title: "A pipeline that moves itself", desc: "Drag a deal and the assigned agent picks up the next step. Or keep your current CRM, the agents work inside it just the same.", bullets: ["Drag-and-drop kanban", "An agent on every deal", "Bring your own CRM"], Demo: () => <KanbanDemo /> },
+  { id: "uplift", tab: "Uplift CRM", cat: "Uplift", title: "A pipeline that moves itself", desc: "Drag a deal and the assigned agent picks up the next step. Or keep your current CRM, the agents work from its data just the same.", bullets: ["Drag-and-drop kanban", "An agent on every deal", "Bring your own CRM"], Demo: () => <KanbanDemo /> },
   { id: "frontline", tab: "Frontline", cat: "Frontline", title: "Support that handles itself", desc: "Pip answers the routine questions the moment they land, order status, hours, bookings, and only routes the tricky, sensitive ones to you.", bullets: ["Watch tickets auto-deflect live", "One inbox for every channel", "Refunds & returns route to a human"], Demo: () => <SupportDemo /> },
   { id: "workflows", tab: "Workflows", cat: "Workflows", title: "Automate anything, no code", desc: "Drag blocks to compose a workflow, or describe it in plain English and the AI builds it for you. Run it and watch the agents go.", bullets: ["Drag-and-drop or prompt-to-build", "Drop in your own agents", "Pause for approval anywhere"], Demo: () => <WorkflowDemo /> },
   { id: "greenlight", tab: "Greenlight", cat: "Greenlight", title: "You stay in control", desc: "Nothing risky happens without you. Review the agent's draft, edit it, and approve with one tap, or let the routine stuff run itself.", bullets: ["One-tap approve or decline", "Edit the draft inline", "Set spend & policy limits"], Demo: () => <GreenlightDemo /> },
-  { id: "integration", tab: "Switchboard", cat: "Switchboard", title: "Plug into your whole stack", desc: "Connect the tools you already run on. Your agents read and write to each, and your CRM can stay the system of record.", bullets: ["18+ connectors", "Two-way sync & write-back", "Bring your own CRM"], Demo: () => <IntegrationDemo /> },
+  { id: "integration", tab: "Switchboard", cat: "Switchboard", title: "Plug into your whole stack", desc: "Connect the tools you already run on. Your agents read from each and never write back, so your CRM stays the system of record.", bullets: ["HubSpot, Stripe, GoHighLevel & CSV import", "Read-only by design, no write-back", "Bring your own CRM"], Demo: () => <IntegrationDemo /> },
   { id: "sidecar", tab: "Sidecar", cat: "Sidecar", title: "Keep your stack. Add the agents.", desc: "Connect your tools in Switchboard and Sidecar's agents go to work on top of them, enriching, drafting and advancing deals, surfacing everything they do inside Friesen.", bullets: ["Works on your connected tools", "Powered by Switchboard", "Same guardrails everywhere"], Demo: () => <SidecarDemo /> },
   { id: "security", tab: "Security", cat: "Security & Control", title: "You're always in control", desc: "Flip every agent between Live, Analyze-only and a full Kill switch in one tap, and toggle the guardrails that keep them on-policy. Stop everything the moment you need to.", bullets: ["One-tap kill switch", "Granular guardrails", "Included free in every plan"], Demo: () => <SecurityDemo /> },
   { id: "cortex", tab: "Cortex", cat: "Cortex", title: "Intelligence that compounds.", desc: "Cortex grounds your agents on your data, trains private models, and gets sharper with every decision they make. Run a cycle and watch the accuracy climb.", bullets: ["Private models on your data", "Grounded on your knowledge", "Compounds into a moat"], Demo: () => <CortexDemo /> },
@@ -175,7 +175,7 @@ const LP_MODULES = [
   { id: "uplift", name: "Uplift CRM", icon: "users", tone: "rose", price: 49, blurb: "Agentic CRM (optional)" },
   { id: "knowledge", name: "Knowledge", icon: "doc", tone: "amber", price: 25, blurb: "Hosted knowledge bases (RAG) for your whole suite" },
   { id: "cortex", name: "Cortex", icon: "network", tone: "amber", price: 45, blurb: "Knowledge grounding + Flywheel & Fine-tuning plugins" },
-  { id: "integration", name: "Switchboard", icon: "plug", tone: "green", price: 29, blurb: "Connect 18+ tools incl. your CRM" },
+  { id: "integration", name: "Switchboard", icon: "plug", tone: "green", price: 29, blurb: "Connect HubSpot, Stripe, GoHighLevel & CSV import" },
   { id: "sidecar", name: "Sidecar", icon: "layers", tone: "indigo", price: 35, blurb: "Agents on top of your existing tools" },
 ];
 const LP_PLANS = {
@@ -220,7 +220,7 @@ const VS_ROWS = [
   { id: "agents", f: "Autonomous AI agents that research, draft, send, and book around the clock", g: "Drip templates and workflows you build and run yourself", fHas: true, gHas: "partial" },
   { id: "approvals", f: "Greenlight: every risky action waits for your one-tap approval", g: "No approval step. Automations just fire on their own", fHas: true, gHas: false },
   { id: "kill", f: "A one tap kill switch, and autonomy you dial from suggest to ask first to fully on its own", g: "Pause individual campaigns by hand", fHas: true, gHas: "partial" },
-  { id: "byocrm", f: "Keep HubSpot, Salesforce, or Pipedrive. Agents work inside your own system of record", g: "Built around moving onto their CRM", fHas: true, gHas: false },
+  { id: "byocrm", f: "Keep HubSpot, or bring your data in by CSV from anything else. Your CRM stays the system of record", g: "Built around moving onto their CRM", fHas: true, gHas: false },
   { id: "models", f: "Private models that learn from your own outcomes, a moat nobody else can copy", g: "The same generic AI that every customer gets", fHas: true, gHas: false },
   { id: "knowledge", f: "Hosted knowledge bases ground every agent answer on YOUR docs", g: "Basic bot training on FAQs", fHas: true, gHas: "partial" },
   { id: "support", f: "Frontline: support desk that deflects routine tickets itself", g: "A shared inbox and a chatbot you script", fHas: true, gHas: "partial" },
@@ -707,10 +707,11 @@ function ProductPage({ id, onClose, onAdd, onBook }) {
     if (demo) return demo.Demo();
     if (id === "integration") return (
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 11, width: "100%" }}>
-        {[["HubSpot", "#ff7a59", "H"], ["Salesforce", "#00a1e0", "S"], ["Stripe", "#635bff", "S"], ["Gmail", "#ea4335", "G"], ["QuickBooks", "#2ca01c", "Q"], ["Slack", "#4a154b", "S"]].map(([n, c, l]) => (
-          <div key={n} style={{ background: "var(--surface)", border: "1px solid var(--line)", borderRadius: "var(--r-md)", padding: 14, display: "flex", alignItems: "center", gap: 10, boxShadow: "var(--shadow-sm)" }}>
+        {[["HubSpot", "#ff7a59", "H"], ["Stripe", "#635bff", "S"], ["GoHighLevel", "#188bf6", "G"], ["CSV Import", "#5f6b7a", "C"], ["Salesforce", "#00a1e0", "S", true], ["Gmail", "#ea4335", "G", true]].map(([n, c, l, planned]) => (
+          <div key={n} style={{ background: "var(--surface)", border: "1px solid var(--line)", borderRadius: "var(--r-md)", padding: 14, display: "flex", alignItems: "center", gap: 10, boxShadow: "var(--shadow-sm)", opacity: planned ? 0.55 : 1 }}>
             <div style={{ width: 34, height: 34, borderRadius: 9, background: c, color: "#fff", display: "grid", placeItems: "center", fontWeight: 800, fontFamily: "var(--mono)" }}>{l}</div>
-            <b style={{ fontSize: 13 }}>{n}</b>
+            <b style={{ fontSize: 13, flex: 1 }}>{n}</b>
+            {planned && <span style={{ fontSize: 10.5, fontWeight: 700, color: "var(--ink-4)", border: "1px solid var(--line)", borderRadius: 99, padding: "2px 8px", flexShrink: 0 }}>Planned</span>}
           </div>
         ))}
       </div>
@@ -1196,7 +1197,7 @@ function Landing({ onSignIn = () => {}, onForgotPassword = () => {} } = {}) {
               <span><LpIcon name="check" size={14} sw={2.6} />Live in a day</span>
               <span><LpIcon name="check" size={14} sw={2.6} />Keep your CRM</span>
             </div>
-            <div className="lp-hero-note"><LpIcon name="link" size={15} /><span>Already have a CRM? <b style={{ color: "var(--ink)" }}>Keep it</b>, we plug right into HubSpot, Salesforce &amp; more.</span></div>
+            <div className="lp-hero-note"><LpIcon name="link" size={15} /><span>Already have a CRM? <b style={{ color: "var(--ink)" }}>Keep it</b>, we plug right into HubSpot, and CSV import covers the rest.</span></div>
             <HeroRoster />
           </div>
           <div className="lp-hero-3d">
@@ -1282,18 +1283,18 @@ function Landing({ onSignIn = () => {}, onForgotPassword = () => {} } = {}) {
           <div>
             <span className="lp-pill"><LpIcon name="link" size={14} />Bring your own CRM</span>
             <h2 style={{ fontSize: 32, fontWeight: 760, letterSpacing: "-.03em", margin: "16px 0 0", textAlign: "left" }}>Love your CRM? Keep it.</h2>
-            <p style={{ fontSize: 16, color: "var(--ink-2)", lineHeight: 1.6, marginTop: 14 }}>You don't have to rip anything out. Connect HubSpot, Salesforce or Pipedrive in Switchboard and your agents work right inside it, enriching contacts, sending outreach, and pushing approved actions back to your system of record.</p>
+            <p style={{ fontSize: 16, color: "var(--ink-2)", lineHeight: 1.6, marginTop: 14 }}>You don't have to rip anything out. Connect HubSpot in Switchboard, or bring your data in by CSV from any other CRM, and your agents read from it to research, draft and follow up. Switchboard never writes back, so your system of record stays exactly as you keep it.</p>
             <ul style={{ listStyle: "none", marginTop: 20, display: "flex", flexDirection: "column", gap: 11 }}>
-              {["Command Center, Workflows, Agents & Greenlight work on your CRM's data", "Two-way sync, nothing lives in two places", "No migration, no data export, live in a day"].map((b) => (
+              {["Command Center, Workflows, Agents & Greenlight work on your CRM's data", "Read-only by design, we pull from your CRM and never write back", "No migration, no rip and replace, live in a day"].map((b) => (
                 <li key={b} style={{ display: "flex", gap: 10, fontSize: 14.5 }}><LpIcon name="checkCircle" size={18} style={{ color: "var(--green)", flexShrink: 0 }} />{b}</li>
               ))}
             </ul>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            {[["HubSpot", "#ff7a59", "H"], ["Salesforce", "#00a1e0", "S"], ["Pipedrive", "#1a1a1a", "P"], ["Your CRM", "var(--accent)", "+"]].map(([n, c, l]) => (
+            {[["HubSpot", "#ff7a59", "H", "Connects"], ["GoHighLevel", "#188bf6", "G", "Early access"], ["Stripe", "#635bff", "S", "Connects"], ["Your CRM", "var(--accent)", "+", "Via CSV"]].map(([n, c, l, s]) => (
               <div key={n} style={{ background: "var(--surface)", border: "1px solid var(--line)", borderRadius: "var(--r-md)", padding: 18, display: "flex", alignItems: "center", gap: 12, boxShadow: "var(--shadow-sm)" }}>
                 <div style={{ width: 40, height: 40, borderRadius: 11, background: c, color: "#fff", display: "grid", placeItems: "center", fontWeight: 800, fontFamily: "var(--mono)", fontSize: 17 }}>{l}</div>
-                <div><b style={{ fontSize: 14, fontWeight: 680 }}>{n}</b><div style={{ fontSize: 11.5, color: "var(--green)", fontWeight: 600, display: "flex", alignItems: "center", gap: 4 }}><span className="cdot" style={{ width: 6, height: 6, borderRadius: 99, background: "var(--green)" }} />Connects</div></div>
+                <div><b style={{ fontSize: 14, fontWeight: 680 }}>{n}</b><div style={{ fontSize: 11.5, color: "var(--green)", fontWeight: 600, display: "flex", alignItems: "center", gap: 4 }}><span className="cdot" style={{ width: 6, height: 6, borderRadius: 99, background: "var(--green)" }} />{s}</div></div>
               </div>
             ))}
           </div>
@@ -1399,7 +1400,7 @@ function Landing({ onSignIn = () => {}, onForgotPassword = () => {} } = {}) {
 
               <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px", borderRadius: "var(--r-md)", border: "1.5px solid " + (byo ? "var(--accent)" : "var(--line)"), background: byo ? "var(--accent-softer)" : "var(--surface)", marginBottom: 16, cursor: "pointer" }} role="switch" tabIndex={0} aria-checked={byo} aria-label="Bring your own CRM" onClick={() => setByoCrm(!byo)} onKeyDown={onActivate(() => setByoCrm(!byo))}>
                 <div className="lp-mod-ico" style={{ background: "var(--surface)", color: "var(--accent-ink)" }}><LpIcon name="link" size={18} /></div>
-                <div style={{ flex: 1 }}><b style={{ fontSize: 14.5, fontWeight: 680, display: "block" }}>Bring your own CRM</b><span style={{ fontSize: 12.5, color: "var(--ink-3)" }}>Keep HubSpot / Salesforce, skip Uplift, we connect to yours</span></div>
+                <div style={{ flex: 1 }}><b style={{ fontSize: 14.5, fontWeight: 680, display: "block" }}>Bring your own CRM</b><span style={{ fontSize: 12.5, color: "var(--ink-3)" }}>Keep HubSpot, skip Uplift, any other CRM comes in by CSV</span></div>
                 <div className={"tog" + (byo ? " on" : "")} />
               </div>
 
@@ -1426,7 +1427,7 @@ function Landing({ onSignIn = () => {}, onForgotPassword = () => {} } = {}) {
               </div>
               <div className="lp-summary-list">
                 {selectedMods.map((m) => <div className="sl" key={m.id}><LpIcon name="check" size={15} sw={2.4} style={{ color: "var(--green)" }} />{m.name}</div>)}
-                {byo && <div className="sl" style={{ color: "var(--accent-ink)" }}><LpIcon name="link" size={15} style={{ color: "var(--accent-ink)" }} />Your CRM (HubSpot / Salesforce…)</div>}
+                {byo && <div className="sl" style={{ color: "var(--accent-ink)" }}><LpIcon name="link" size={15} style={{ color: "var(--accent-ink)" }} />Your CRM (HubSpot, or by CSV)</div>}
                 <div className="sl" style={{ color: "var(--ink-3)" }}><LpIcon name="shield" size={15} style={{ color: "var(--ink-3)" }} />Security &amp; Control <span style={{ marginLeft: "auto", fontSize: 11, fontWeight: 700, color: "var(--green)" }}>FREE</span></div>
               </div>
               <button className="btn btn-primary btn-lg" style={{ width: "100%" }} onClick={() => {

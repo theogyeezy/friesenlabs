@@ -129,8 +129,10 @@ def test_credentials_stored_under_claims_tenant_ref():
     assert r.status_code == 200
     ref = tenant_secret_ref("A", "hubspot")
     assert writer.put == {ref: SECRET}
+    # verified is null here: no token_prober is wired, so the token is stored
+    # unverified — the response never invents a verification.
     assert r.json() == {"name": "hubspot", "secret_ref": ref, "stored": True,
-                        "status": "connected"}
+                        "status": "connected", "verified": None}
 
 
 @pytest.mark.integration

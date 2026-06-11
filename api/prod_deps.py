@@ -76,8 +76,6 @@ from shared.config import (
 )
 from shared.signup_session import SignupSessionTokens
 from signup.abuse import (
-    ACTION_RESEND,
-    ACTION_SIGNUP,
     CaptchaVerifier,
     DEFAULT_RESEND_LIMIT,
     DEFAULT_SIGNUP_LIMIT,

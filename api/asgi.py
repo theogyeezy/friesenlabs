@@ -483,7 +483,10 @@ def build_app():
         # GET /account/export (GDPR/portability egress) — the SAME crm/rag/saved_views instances
         # every other authed route rides. Inert (None stores) only when no DSN; with Aurora wired
         # the export is live. (account_delete is DELIBERATELY left to its inert default — a
-        # destructive teardown ships non-functional until an explicit owner wiring step.)
+        # destructive teardown ships non-functional until an explicit owner wiring step. At that
+        # step pass BOTH deleter=PgAccountDeleter(dsn) AND, when INTEGRATIONS_REAL_SECRETS is on,
+        # secret_writer=Boto3SecretWriter() — the erasure response then includes the connector-
+        # vault purge (uplift/{tenant}/{source} tokens must not outlive the account).)
         # Agent Studio with the per-tenant registrar wired (activate/run drive a real crew when the
         # tenant is provisioned; honest record-only otherwise) — see _studio_registrar_factory above.
         studio=studio_deps,

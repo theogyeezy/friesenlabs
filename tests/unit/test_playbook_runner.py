@@ -10,7 +10,7 @@ import pytest
 from agents.playbooks import PlaybookRunner, RunRecord, TriggerEvent, run
 from agents.playbooks.runner import _trigger_prompt
 from agents.playbooks.store import InMemoryPlaybookStore
-from agents.runtime import FakeRuntime, Session
+from agents.runtime import FakeRuntime
 
 
 def _defn(autonomy="L1"):

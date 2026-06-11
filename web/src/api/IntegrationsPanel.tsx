@@ -19,10 +19,19 @@
 // contract: 503 storage not configured on this deployment, 422 empty token, 502
 // vault write failed.
 //
-// Sync-now: POSTs /integrations/{name}/sync per connected integration and
-// reports the SyncResult counts the server actually returned. 503 (ingestion
-// plane not wired), 409 (connect first — no vaulted credential) and 502 are
-// surfaced with honest copy; raw "API <code>" strings never reach the user.
+// Sync-now: POSTs /integrations/{name}/sync. A run-store deployment answers
+// 202 {run} — the panel then POLLS GET /integrations/{name}/syncs until that
+// run leaves "running" and reports the counts the server recorded (capped;
+// past the cap it says, honestly, that the sync is still running). A storeless
+// deployment answers 200 {result} inline, reported as before. 503 (ingestion
+// plane not wired), 409 (connect first / a sync is already running) and 502
+// are surfaced with honest copy; raw "API <code>" strings never reach the user.
+//
+// Disconnect: DELETE /integrations/{name}/credentials behind an INLINE confirm
+// step (never a silent destructive click). The server is idempotent; the panel
+// reports the vault deletion exactly as answered. Each sync card also shows the
+// last recorded sync run (last_sync from GET /integrations) — absent history
+// renders nothing, never an invented "last synced".
 //
 // CSV import (file-kind connectors): an entity picker (contacts|companies|deals)
 // + a file input post multipart to /integrations/csv/import via api.csvImport().
@@ -41,10 +50,17 @@ import {
   type Integration,
   type IntegrationStatus,
   type ListIntegrationsResponse,
+  type SyncRun,
 } from "./client";
 import { Spinner } from "./Spinner";
 
-const { useState, useEffect, useCallback } = React;
+const { useState, useEffect, useCallback, useRef } = React;
+
+// Background-sync polling: every POLL_MS until the run leaves "running", at
+// most MAX_POLLS times (then an honest "still running" note — never a spinner
+// that outlives the user's patience).
+const POLL_MS = 5000;
+const MAX_POLLS = 60;
 
 // ---------------------------------------------------------------------------
 // Honest per-status copy. The API authors machine-facing detail strings (env
@@ -73,6 +89,11 @@ function syncErrorMessage(e: unknown): string {
       return "Sync isn't configured on this deployment yet, so nothing was synced.";
     }
     if (e.status === 409) {
+      // Two honest 409s share the code: "connect first" and "already running".
+      // The server's detail says which — sniff it rather than guess wrong.
+      if ((e.detail ?? "").includes("already running")) {
+        return "A sync is already running for this integration — it will show up in the history when it finishes.";
+      }
       return "Connect this integration first — no credential is stored for your workspace, so the sync didn't run.";
     }
     if (e.status === 502) {
@@ -80,6 +101,18 @@ function syncErrorMessage(e: unknown): string {
     }
   }
   return friendlyErrorMessage(e, "Couldn't start the sync. Please try again.");
+}
+
+function disconnectErrorMessage(e: unknown): string {
+  if (e instanceof ApiError) {
+    if (e.status === 503) {
+      return "Credential storage isn't configured on this deployment, so there is no vault to disconnect from.";
+    }
+    if (e.status === 502) {
+      return "The credential vault didn't accept the delete. The token may still be stored — please try again.";
+    }
+  }
+  return friendlyErrorMessage(e, "Couldn't disconnect. Please try again.");
 }
 
 function csvImportErrorMessage(e: unknown): string {
@@ -119,6 +152,39 @@ function syncSummary(result: Record<string, unknown>): string {
     if (typeof v === "number") parts.push(`${v} ${label}`);
   }
   return parts.length > 0 ? `Sync finished: ${parts.join(", ")}.` : "Sync finished.";
+}
+
+// Compact local timestamp for run rows; an absent timestamp renders nothing.
+function fmtWhen(iso: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleString(undefined, {
+    month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+  });
+}
+
+// One honest line for the latest recorded run (the card's "last synced" note).
+function lastSyncLine(run: SyncRun): string {
+  switch (run.status) {
+    case "running": {
+      const when = fmtWhen(run.started_at);
+      return when ? `Sync in progress (started ${when}).` : "Sync in progress.";
+    }
+    case "succeeded": {
+      const when = fmtWhen(run.finished_at);
+      const landed = typeof run.landed_rows === "number" ? `, ${run.landed_rows} landed` : "";
+      return `Last synced${when ? ` ${when}` : ""}${landed}.`;
+    }
+    case "failed": {
+      const when = fmtWhen(run.finished_at);
+      return `Last sync${when ? ` (${when})` : ""} failed — nothing new was stored.`;
+    }
+    default: {
+      const when = fmtWhen(run.finished_at);
+      return `Last sync${when ? ` (${when})` : ""} was interrupted before finishing.`;
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -199,6 +265,20 @@ export function IntegrationsPanel({ client }: IntegrationsPanelProps) {
   const [tokens, setTokens] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [msgs, setMsgs] = useState<Record<string, CardMsg>>({});
+  // Per-card inline disconnect confirmation (a destructive click is never silent).
+  const [confirmDisc, setConfirmDisc] = useState<Record<string, boolean>>({});
+  // Per-card background-run watch (202 path): true while this panel is polling
+  // the run to completion — renders the Sync button as "Syncing...".
+  const [watching, setWatching] = useState<Record<string, boolean>>({});
+  const watchTimers = useRef<Record<string, number>>({});
+  useEffect(() => {
+    const timers = watchTimers.current;
+    return () => {
+      // Unmount: stop every poll loop (the background sync itself continues
+      // server-side; the history shows its outcome on the next visit).
+      Object.values(timers).forEach((t) => window.clearTimeout(t));
+    };
+  }, []);
   // CSV import state (one per file-kind card; keyed for symmetry with other per-card state).
   const [csvEntity, setCsvEntity] = useState<CsvEntity>("contacts");
   const [csvFile, setCsvFile] = useState<File | null>(null);
@@ -227,6 +307,16 @@ export function IntegrationsPanel({ client }: IntegrationsPanelProps) {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Silent re-fetch (keeps the current view on a transient failure) — used after
+  // a background run settles so last_sync/status update without a loading flash.
+  const refresh = useCallback(async () => {
+    try {
+      setData(await api.listIntegrations());
+    } catch {
+      // Transient: the visible state stays; the next explicit load surfaces errors.
+    }
+  }, [api]);
 
   const setMsg = (name: string, msg: CardMsg | null) =>
     setMsgs((m) => {
@@ -264,9 +354,15 @@ export function IntegrationsPanel({ client }: IntegrationsPanelProps) {
           return next;
         });
         setConnectOpen((o) => ({ ...o, [item.name]: false }));
+        // Verification is reported exactly as the server answered it: true =
+        // the provider accepted the token; null = stored unverified (a
+        // definitive rejection never reaches here — the POST 422s instead).
         setMsg(item.name, {
           kind: "ok",
-          text: `${item.label} is connected. The token was stored in your workspace vault and is never shown again.`,
+          text:
+            res.verified === true
+              ? `${item.label} is connected and the token was verified with the provider. It was stored in your workspace vault and is never shown again.`
+              : `${item.label} is connected. The token was stored in your workspace vault and is never shown again.`,
         });
       } catch (e) {
         // The token is deliberately NOT part of any message; the input keeps
@@ -279,15 +375,104 @@ export function IntegrationsPanel({ client }: IntegrationsPanelProps) {
     [api, tokens],
   );
 
+  // Poll the run (202 path) until it leaves "running" — then report the
+  // recorded counts and silently refresh the list (last_sync/status). Past
+  // MAX_POLLS the panel says, honestly, that the sync is still running.
+  const watchRun = useCallback(
+    (item: Integration, runId: string) => {
+      setWatching((w) => ({ ...w, [item.name]: true }));
+      const settle = (msg: CardMsg) => {
+        setWatching((w) => ({ ...w, [item.name]: false }));
+        delete watchTimers.current[item.name];
+        setMsg(item.name, msg);
+        void refresh();
+      };
+      const tick = async (attempt: number) => {
+        if (attempt >= MAX_POLLS) {
+          settle({
+            kind: "ok",
+            text: "The sync is still running in the background. Its result will appear in the last-synced line here when it finishes.",
+          });
+          return;
+        }
+        try {
+          const hist = await api.listIntegrationSyncs(item.name);
+          const run = hist.runs.find((r) => r.id === runId);
+          if (run && run.status !== "running") {
+            if (run.status === "succeeded") {
+              settle({ kind: "ok", text: syncSummary(run as unknown as Record<string, unknown>) });
+            } else {
+              settle({
+                kind: "error",
+                text: "The sync didn't complete — nothing new was stored. Please try again shortly.",
+              });
+            }
+            return;
+          }
+        } catch {
+          // Transient read failure — keep polling until the cap.
+        }
+        watchTimers.current[item.name] = window.setTimeout(() => void tick(attempt + 1), POLL_MS);
+      };
+      void tick(0);
+    },
+    [api, refresh],
+  );
+
   const syncNow = useCallback(
     async (item: Integration) => {
       setBusy((b) => ({ ...b, [item.name]: true }));
       setMsg(item.name, null);
       try {
         const res = await api.kickIntegrationSync(item.name);
-        setMsg(item.name, { kind: "ok", text: syncSummary(res.result ?? {}) });
+        if (res.run) {
+          // 202: the sync runs server-side; watch it to completion.
+          setMsg(item.name, {
+            kind: "ok",
+            text: "Sync started — it's running in the background. Results will appear here.",
+          });
+          watchRun(item, res.run.id);
+        } else {
+          // 200 (storeless deployment): the inline result, reported as before.
+          setMsg(item.name, { kind: "ok", text: syncSummary(res.result ?? {}) });
+        }
       } catch (e) {
         setMsg(item.name, { kind: "error", text: syncErrorMessage(e) });
+      } finally {
+        setBusy((b) => ({ ...b, [item.name]: false }));
+      }
+    },
+    [api, watchRun],
+  );
+
+  const disconnect = useCallback(
+    async (item: Integration) => {
+      setBusy((b) => ({ ...b, [item.name]: true }));
+      setMsg(item.name, null);
+      try {
+        const res = await api.deleteIntegrationCredentials(item.name);
+        setConfirmDisc((c) => ({ ...c, [item.name]: false }));
+        // Status straight from the API response — never assumed.
+        setData((cur) =>
+          cur === null
+            ? cur
+            : {
+                ...cur,
+                integrations: cur.integrations.map((i) =>
+                  i.name === item.name
+                    ? { ...i, status: res.status, connected: false }
+                    : i,
+                ),
+              },
+        );
+        setMsg(item.name, {
+          kind: "ok",
+          text: res.deleted
+            ? `${item.label} is disconnected. The stored token was deleted from your workspace vault.`
+            : `${item.label} had no stored token — nothing needed deleting.`,
+        });
+      } catch (e) {
+        setMsg(item.name, { kind: "error", text: disconnectErrorMessage(e) });
       } finally {
         setBusy((b) => ({ ...b, [item.name]: false }));
       }
@@ -579,6 +764,17 @@ export function IntegrationsPanel({ client }: IntegrationsPanelProps) {
                 {item.description}
               </p>
 
+              {/* Last recorded sync run, straight from the API. No history = no line. */}
+              {item.last_sync && (
+                <div
+                  data-testid="int-last-sync"
+                  data-run-status={item.last_sync.status}
+                  style={{ fontSize: 12.5, color: "var(--ink-3, #8a8278)", marginTop: 8 }}
+                >
+                  {lastSyncLine(item.last_sync)}
+                </div>
+              )}
+
               {msg && (
                 <div
                   data-testid="int-card-msg"
@@ -653,8 +849,34 @@ export function IntegrationsPanel({ client }: IntegrationsPanelProps) {
                     </button>
                   </div>
                 </div>
+              ) : confirmDisc[item.name] ? (
+                // Inline disconnect confirmation — a destructive click is never silent.
+                <div style={{ marginTop: 14 }}>
+                  <div style={{ fontSize: 13, color: "var(--ink, #2a2622)", marginBottom: 10, lineHeight: 1.5 }}>
+                    Disconnect {item.label}? The stored token is deleted from your vault and
+                    scheduled syncs for it stop. Your already-synced data stays.
+                  </div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button
+                      data-testid="int-disconnect-confirm"
+                      disabled={isBusy}
+                      onClick={() => void disconnect(item)}
+                      style={ghostBtn}
+                    >
+                      {isBusy ? "Disconnecting..." : "Disconnect"}
+                    </button>
+                    <button
+                      data-testid="int-disconnect-cancel"
+                      disabled={isBusy}
+                      onClick={() => setConfirmDisc((c) => ({ ...c, [item.name]: false }))}
+                      style={ghostNeutralBtn}
+                    >
+                      Keep it connected
+                    </button>
+                  </div>
+                </div>
               ) : (
-                <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+                <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
                   <button
                     data-testid="int-connect-btn"
                     disabled={isBusy}
@@ -669,11 +891,24 @@ export function IntegrationsPanel({ client }: IntegrationsPanelProps) {
                   {item.status === "connected" && (
                     <button
                       data-testid="int-sync-btn"
-                      disabled={isBusy}
+                      disabled={isBusy || !!watching[item.name]}
                       onClick={() => void syncNow(item)}
                       style={primaryBtn}
                     >
-                      {isBusy ? "Syncing..." : "Sync now"}
+                      {isBusy || watching[item.name] ? "Syncing..." : "Sync now"}
+                    </button>
+                  )}
+                  {item.status === "connected" && (
+                    <button
+                      data-testid="int-disconnect-btn"
+                      disabled={isBusy || !!watching[item.name]}
+                      onClick={() => {
+                        setMsg(item.name, null);
+                        setConfirmDisc((c) => ({ ...c, [item.name]: true }));
+                      }}
+                      style={ghostBtn}
+                    >
+                      Disconnect
                     </button>
                   )}
                 </div>

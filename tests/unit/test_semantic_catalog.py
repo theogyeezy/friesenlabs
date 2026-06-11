@@ -4,7 +4,6 @@ The catalog is the machine-readable member list view-spec validation consumes
 (shared/semantic_catalog.py). This test regex-parses every cube under semantic/model/cubes/*.js
 and asserts exact parity: every visible measure/dimension is in the JSON, every JSON entry exists
 in the model, and hidden members (shown: false) are excluded."""
-import json
 import os
 import re
 

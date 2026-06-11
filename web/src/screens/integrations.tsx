@@ -69,7 +69,7 @@ function IntegrationHub({ agents, onNavigate }) {
         <div style={{ display: "flex", alignItems: "center", gap: 13, padding: "14px 18px", borderRadius: "var(--r-md)", border: "1px dashed var(--accent-soft)", background: "var(--accent-softer)", marginBottom: "var(--gap)" }}>
           <div style={{ width: 34, height: 34, borderRadius: 9, background: "var(--surface)", color: "var(--accent-ink)", display: "grid", placeItems: "center", flexShrink: 0 }}><Icon name="link" size={17} /></div>
           <p style={{ fontSize: 13, color: "var(--accent-ink)", lineHeight: 1.5, flex: 1 }}>
-            <b style={{ fontWeight: 700 }}>Keeping your current CRM?</b> Connect HubSpot, Salesforce or Pipedrive as your system of record, your agents, workflows and Greenlight approvals all read and write to it directly. No need for Uplift.
+            <b style={{ fontWeight: 700 }}>Keeping your current CRM?</b> Connect HubSpot as your system of record, or bring any other CRM in by CSV. Your agents, workflows and Greenlight approvals read from it, and Switchboard never writes back. No need for Uplift.
           </p>
         </div>
       )}

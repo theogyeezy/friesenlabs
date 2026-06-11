@@ -79,24 +79,24 @@ What remains is **owner-gated** (infra flips/seeding — see P0/P1 below), **web
   - Optionally expose a POST/PATCH on contacts_routes.py that proposes update_contact through the gate (parity with deals_routes move-stage) so the UI write path doesn't have to go through chat
 
 ### Connectors & ingest
-- [ ] **Integrations API (GET /integrations, POST credentials, POST sync) + IntegrationsPanel UI** — `partial`
-  - Flip api_integrations_real=1 (REQ-008) after a live # VERIFY of put/create/describe_secret shapes.
-  - Broaden the connector-write IAM resource (and the ingest read role) from uplift/*/hubspot* to uplift/*/{hubspot,gohighlevel,stripe}* so non-HubSpot connectors are actually connectable/syncable.
-  - Decide the API-kicked-sync story: either wire INGEST_REAL_STORES + DB_* onto the API task or make the panel's 'Sync now' point users at the scheduler; today it's a guaranteed 503.
-  - Special-case the csv card in IntegrationsPanel (or filter kind=file out) so it doesn't present a credential form that always 409s.
-- [ ] **CSV import backend (POST /integrations/csv/import + ingest/connectors/csv_import.py)** — `stub`
-  - Add a real csvImport(name,entity,file,mapping) method to ApiClient and a file-upload UI (drop zone + entity picker + mapping override) wired to POST /integrations/csv/import in real mode.
-  - Wire the importer dep on the API task (INGEST_REAL_STORES + DB_* + raw bucket) so the endpoint isn't a permanent 503, or document that CSV import only runs on the ingest task.
+- [ ] **Integrations API (GET /integrations, POST credentials, POST sync) + IntegrationsPanel UI** — `code-DONE; flips = REQ-012`
+  - Flip api_integrations_real=1 (REQ-008/REQ-012) after a live # VERIFY of put/create/describe/delete_secret shapes.
+  - ~~Broaden the connector-write IAM resource~~ DONE @#235 (`infra/modules/iam/main.tf:253`, all three sources; Lane Nick: verify APPLIED — REQ-012 step 4).
+  - ~~Decide the API-kicked-sync story~~ DECIDED + BUILT @feat/matt-switchboard-audit: syncs are async (202 + `integration_sync_runs` guard/history); wiring INGEST_REAL_STORES onto the api task is REQ-012 step 6 (recommended now that in-request syncs are gone).
+  - ~~Special-case the csv card in IntegrationsPanel~~ DONE @#228/#229 (file-kind renders the upload UI, no credential form).
+- [ ] **CSV import backend (POST /integrations/csv/import + ingest/connectors/csv_import.py)** — `code-DONE; flip = REQ-012 step 6`
+  - ~~Add a real csvImport method + file-upload UI~~ DONE @#228/#229 (entity picker + file input in IntegrationsPanel, e2e-covered).
+  - Wire the importer dep on the API task (INGEST_REAL_STORES + DB_* + raw bucket) so the endpoint isn't a permanent 503 — REQ-012 step 6.
   - Replace import-data.tsx's hardcoded FLStore.addDeal demo import with the real upload, or clearly scope it as mock-only.
 - [ ] **Knowledge corpus seed (scripts/demo/seed_knowledge.py + agents/knowledge_seed)** — `partial` _(verified real, sev medium)_
   - Run seed_knowledge.py as a one-off ECS task against the live demo tenant with INGEST_REAL_STORES=1 (Titan embedder) so /knowledge/search returns real hits and chat grounding has a positive citation.
-- [ ] **Sync connectors (HubSpot / GoHighLevel / Stripe) + run_sync pipeline** — `partial`
-  - Build a PgStructuredSink with ref->uuid resolution so synced + CSV rows land in the CRM tables, not only documents.
-  - Run a live VERIFY pass per connector (HubSpot CRM v3 datetime filter format, notes searchability, GHL v2 Version header + cursor params, Stripe param shapes) before any prod sync.
-  - Extend the connector secret IAM + ingest read role to gohighlevel/stripe slots.
-- [ ] **Ingest scheduler (nightly EventBridge -> Fargate run_sync --all)** — `not-wired` _(verified real, sev medium)_
-  - Populate ingest_tenants with the demo/first-customer tenant id(s), ensure their per-tenant HubSpot secret is vaulted, flip ingest_schedule_enabled=true, targeted apply, and verify a run lands documents (and ~0 on the next incremental run).
-  - Land the PgStructuredSink first if synced data is expected to show up in Pipeline/Contacts.
+- [ ] **Sync connectors (HubSpot / GoHighLevel / Stripe) + run_sync pipeline** — `code-DONE; live VERIFY open`
+  - ~~Build a PgStructuredSink~~ DONE @#222 (CRM structured sink; CSV + sync rows land in Pipeline/Contacts).
+  - Run a live VERIFY pass per connector (HubSpot CRM v3 datetime filter format, notes searchability, GHL v2 Version header + cursor params, Stripe param shapes) before any prod sync — rides REQ-012 step 5's first live connect.
+  - ~~Extend the connector secret IAM + ingest read role to gohighlevel/stripe slots~~ DONE @#235 (verify applied — REQ-012 step 4).
+- [ ] **Ingest scheduler (nightly EventBridge -> Fargate run_sync --all)** — `not-wired` _(flip = REQ-012 step 7)_
+  - Set `ingest_tenants = "auto"` (vault-slot discovery @feat/matt-switchboard-audit — no hand-list needed), flip ingest_schedule_enabled=true, targeted apply, and verify a run lands documents (and ~0 on the next incremental run). NOTE: the rule's command syncs `--source hubspot` only — add per-source runs when stripe/gohighlevel tenants connect.
+  - ~~Land the PgStructuredSink first~~ DONE @#222.
 
 ### Cortex / ML
 - [ ] **Cortex web UI (web/src/screens/cortex.tsx)** — `stub` _(verified real, sev medium)_
@@ -268,6 +268,81 @@ workspace-key-pool seeding.
   `screens/agents.tsx` "Add tool"/"Get more skills…" are toast-only dead ends; paid skills'
   "Get · $X" installs free with no payment path (`screens/studio.tsx:88`); unguarded
   `await askClaude` (`screens/studio.tsx:218`); autonomy/status toggles are local-state-only.
+## Switchboard customer-readiness audit — TODOs (2026-06-11, Lane Matt)
+
+From a release-readiness audit of the `integration` module ($29/mo, gates `integrations`;
+`api/integrations_routes.py` + `ingest/connectors/*` + `IntegrationsPanel.tsx`). All claims
+spot-checked against source; 135 Switchboard tests green locally (3 RLS-proof skips need
+`UPLIFT_TEST_DB_URL`). Full report: `docs/audits/switchboard-audit-2026-06-11.md`.
+**Verdict: real, well-built code (NOT a Sidecar-style empty SKU) — but not customer-ready.**
+The trust rule, secrets hygiene, honest-503 posture, registry parity, and the real-mode panel
+are all verified correct. The blockers are go-live wiring, marketing honesty, and the
+connect→sync product loop. Items already tracked under "Connectors & ingest" (live VERIFY
+pass, scheduler enablement) are cross-referenced, not duplicated.
+
+**Release build SHIPPED (2026-06-11, this branch):** every code-side item below is done —
+disconnect (DELETE + panel confirm), async 202 syncs over a new RLS-FORCEd
+`integration_sync_runs` table (partial-unique single-runner guard, 30-min stale-reap, history
+endpoint, last-synced line), `INGEST_TENANTS=auto` vault-slot discovery (connect→sync loop),
+verify-on-connect probes, account-delete connector-vault purge, honest landing copy. Backend
+1994 pass / web typecheck+build green / 16 integrations e2e pass (3 new). **What remains is
+exactly REQ-012** (`infra/REQUESTS.md`): migrate + two IAM deltas + the flips + the module
+Price — Lane Nick / owner.
+
+### P0 — before paying customers
+- [ ] **Prod is 100% dark while the SKU is sellable** — `infra/prod.auto.tfvars` carries none
+  of: `api_integrations_real` (credentials POST → 503, all statuses "unknown"), `INGEST_*` on
+  the API task (sync + CSV import → 503), `ingest_schedule_enabled`/`ingest_tenants` (nightly
+  rule DISABLED), `module_prices` → `STRIPE_PRICE_ID_MODULE_INTEGRATION` (the $29 is never
+  billed). A tenant can enable Switchboard in Settings today and every button 503s.
+  _(BLOCKED: Lane Nick — the full ordered go-live is REQ-012 incl. the live
+  put/create/describe/delete_secret + probe-endpoint # VERIFYs on first connect.)_
+- [x] **Fix the Switchboard marketing overclaims** — DONE @this branch: "18+ tools" → the real
+  four named outright; carousel = the real four + two explicitly "Planned" pills; "Keep
+  HubSpot, Salesforce, or Pipedrive" → "Keep HubSpot, or bring your data in by CSV"; "Two-way
+  sync & write-back" reframed as the read-only trust feature across landing/landing-demos/
+  landing-constellation/tour/onboarding (+ the mock screen's same overclaim). _(The
+  demo-prototype `data.tsx` catalog still lists Salesforce/Slack/QuickBooks — mock-mode-only,
+  part of the deferred demo-honesty work.)_
+- [x] **Close the connect→sync loop** — DONE @this branch: `INGEST_TENANTS=auto` makes
+  `run_sync --all` DISCOVER the tenant set from the vaulted `uplift/{tenant}/{source}` slots
+  (ListSecrets names-only, paginated, deletion-scheduled skipped; `ingest/run_sync.py
+  discover_tenants`). Connecting via the API now auto-enrolls the tenant in the nightly sync.
+  _(Needs REQ-012 step 3 IAM + step 7 flips to act live.)_
+- [x] **Make API-kicked sync asynchronous + race-safe** — DONE @this branch: with the new
+  `integration_sync_runs` store wired, `POST .../sync` opens a `running` row and answers 202;
+  a FastAPI background task finishes it (metrics on success, exception CLASS name on failure);
+  the partial-unique index is the single-runner guard (concurrent kick → 409) with a 30-min
+  stale-runner reap; the panel polls `GET /integrations/{name}/syncs` to settle. Storeless
+  deployments keep the legacy inline 200 (tests unchanged).
+
+### P1 — product completeness
+- [x] **Disconnect/revoke** — DONE @this branch: `DELETE /integrations/{name}/credentials`
+  (idempotent; ForceDeleteWithoutRecovery so a reconnect is never blocked by a deletion
+  window; `secret_exists` now treats DeletedDate as not-connected) + panel inline-confirm
+  Disconnect. _(IAM: REQ-012 step 2.)_
+- [x] **Account-delete must purge connector secrets** — DONE @this branch: the route purges
+  every `uplift/{tenant}/{source}` slot after the PG teardown and reports
+  `connector_secrets: {purged, failed, status}` honestly (`skipped_unconfigured` without the
+  writer). Wired at the same deliberate asgi step as the deleter (see the asgi comment).
+- [x] **Sync history / "last synced"** — DONE @this branch: `integration_sync_runs` +
+  `PgSyncRunStore` (latest per source in GET /integrations → the panel's last-synced line;
+  `GET /integrations/{name}/syncs` history). Scheduled runs don't write history yet — the
+  table carries `triggered_by='schedule'` for that follow-up.
+- [x] **Verify-on-connect** — DONE @this branch: best-effort probe before vaulting (HubSpot/
+  GHL/Stripe one-item list calls; definitive 401/403 → 422 + nothing stored; inconclusive →
+  stored with `verified:null`, never a fake true). OAuth stays the longer-term replacement
+  for paste-a-token.
+
+### P2 — hygiene / staleness (small, code-only)
+- [x] Stale HOTFIX comment in `api/integrations_routes.py` — DONE @this branch (reframed as
+  the deliberate BOOT INVARIANT; the image-fileset regression test stays).
+- [x] `shared/modules.py` docstring — DONE @this branch (no `web/src/modules.ts` mirror is
+  promised anymore; the web gate is documented as runtime-driven via GET /account/modules).
+- [x] Sweep the stale "Connectors & ingest" sub-bullets above — annotated in place: IAM
+  broadening shipped (#235), csv-card special-casing + `csvImport` client method + upload UI
+  shipped (#228/#229), PgStructuredSink shipped (#222). _(Lane Nick: REQ-012 step 4 covers
+  refreshing the stale REQ-008 status note + confirming the widened policy is APPLIED live.)_
 
 ## FLEETAGENT session follow-ups (2026-06-11)
 
