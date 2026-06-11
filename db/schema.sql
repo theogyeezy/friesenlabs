@@ -269,3 +269,52 @@ CREATE POLICY tenant_isolation ON tenant_settings
 -- whether the approved proposal was applied to the CRM or deliberately left record-only.
 ALTER TABLE approvals ADD COLUMN IF NOT EXISTS applied_at timestamptz;
 ALTER TABLE approvals ADD COLUMN IF NOT EXISTS apply_result jsonb;
+
+-- ---------------------------------------------------------------------------
+-- workspace_keys — pre-minted Anthropic workspace-key POOL (appended per the Matt-append rule;
+-- issue #152: the Admin API's key-create endpoint 405s — keys are Console-only — so provisioning
+-- CONSUMES a pre-minted key from this pool instead of minting one; ratified workspace-ceiling
+-- direction on #123. Loader: scripts/ops/load_workspace_keys.py — an owner Console act feeds it).
+-- RLS-EXEMPT (pre-tenant infrastructure): pool rows exist BEFORE any tenant_id (consumed_by_tenant
+-- is NULL until provisioning claims the row), so the tenant_isolation policy cannot apply — this
+-- table is deliberately NOT in the tenant_tables array above. Access is restricted to crm_app DML
+-- via GRANTs (SELECT/INSERT/UPDATE, no DELETE — rows are audit trail), not RLS.
+-- Consume is ONE atomic claim (UPDATE .. WHERE id = (SELECT .. FOR UPDATE SKIP LOCKED) RETURNING)
+-- and is idempotent per tenant via the partial-unique consumed_by_tenant index: a retried
+-- provisioning step re-reads the SAME row instead of burning a second key.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS workspace_keys (
+    id                 bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    key_material       text NOT NULL,         -- the pre-minted workspace-scoped API key (Console)
+    key_hash           text NOT NULL UNIQUE,  -- sha256 hex of key_material (loader dedupe/idempotency)
+    key_hint           text,                  -- non-secret hint (e.g. last 4 chars) for ops logs
+    workspace_id       text,                  -- the Console workspace the key is scoped to (if known)
+    status             text NOT NULL DEFAULT 'available',   -- available|consumed
+    consumed_by_tenant uuid,                  -- set atomically at claim time by provisioning
+    consumed_at        timestamptz,
+    created_at         timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS workspace_keys_available_idx
+    ON workspace_keys (id) WHERE status = 'available';
+CREATE UNIQUE INDEX IF NOT EXISTS workspace_keys_consumed_tenant_idx
+    ON workspace_keys (consumed_by_tenant) WHERE consumed_by_tenant IS NOT NULL;
+
+-- ---------------------------------------------------------------------------
+-- leads — public marketing-site lead capture (POST /public/leads, api/public_routes.py;
+-- appended per the Matt-append rule).
+-- RLS-EXEMPT (pre-tenant): a lead precedes any account or tenant — there is no tenant_id to key
+-- a policy on, so this table is deliberately NOT in the tenant_tables array above. Access is
+-- restricted to crm_app DML via GRANTs (INSERT + SELECT), not RLS. The route validates + caps
+-- the payload (1KB) and rate-limits per IP before any row is written.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS leads (
+    id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    kind       text NOT NULL,    -- book_call|email (validated by the route)
+    name       text NOT NULL,
+    email      text NOT NULL,
+    message    text,
+    company    text,
+    source_ip  text,             -- the requester IP the in-process rate limit keyed on
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS leads_created_idx ON leads (created_at);

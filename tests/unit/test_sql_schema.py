@@ -17,6 +17,18 @@ ROLES = os.path.join(DB_DIR, "roles.sql")
 TENANT_TABLES = [
     "documents", "companies", "contacts", "deals",
     "activities", "saved_views", "approvals", "traces", "ingest_cursor",
+    "tenant_workspaces", "tenant_settings",
+]
+
+# THE static-gate exemption list: tables deliberately OUTSIDE the RLS contract. Every entry is
+# PRE-TENANT infrastructure (rows exist before any tenant_id is minted, so a tenant_isolation
+# policy cannot apply) and MUST carry an `RLS-EXEMPT` comment in db/schema.sql; access control
+# is the crm_app GRANT surface, not RLS. Adding a table here is a deliberate reviewed act.
+RLS_EXEMPT_TABLES = [
+    "accounts",        # signup rows precede tenant minting (Phase 10)
+    "stripe_events",   # webhook idempotency ledger (pre-tenant)
+    "workspace_keys",  # pre-minted Anthropic key pool (issue #152 — pre-tenant infrastructure)
+    "leads",           # public marketing leads (precede any account or tenant)
 ]
 
 
@@ -42,11 +54,50 @@ def test_roles_parses():
 def test_every_tenant_table_has_tenant_id():
     sql = _read(SCHEMA)
     for t in TENANT_TABLES:
-        # crude but effective: the CREATE TABLE block for t must declare tenant_id uuid NOT NULL
+        # crude but effective: the CREATE TABLE block for t must declare a non-nullable
+        # tenant_id uuid (NOT NULL, or PRIMARY KEY which implies it).
         m = re.search(rf"CREATE TABLE IF NOT EXISTS {t} \((.*?)\n\);", sql, re.S)
         assert m, f"no CREATE TABLE found for {t}"
-        assert re.search(r"tenant_id\s+uuid\s+NOT NULL", m.group(1)), \
-            f"{t} missing 'tenant_id uuid NOT NULL'"
+        assert re.search(r"tenant_id\s+uuid\s+(NOT NULL|PRIMARY KEY)", m.group(1)), \
+            f"{t} missing a non-nullable 'tenant_id uuid'"
+
+
+@pytest.mark.unit
+def test_every_created_table_is_tenant_scoped_or_explicitly_rls_exempt():
+    """The exemption gate: NO table may silently sit outside the RLS contract.
+
+    Every CREATE TABLE in schema.sql must be either in TENANT_TABLES (FORCE'd RLS, asserted
+    below) or in the deliberate RLS_EXEMPT_TABLES list above — a new table that is neither
+    fails here and forces the author to choose (and document) a side.
+    """
+    sql = _read(SCHEMA)
+    created = re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)", sql)
+    assert created, "no CREATE TABLE statements found"
+    unaccounted = [t for t in created if t not in TENANT_TABLES and t not in RLS_EXEMPT_TABLES]
+    assert unaccounted == [], (
+        f"tables outside both the RLS contract and the exemption list: {unaccounted} — "
+        "add FORCE'd RLS (tenant_tables array + EOF statements) or, for pre-tenant "
+        "infrastructure, an RLS-EXEMPT comment + the RLS_EXEMPT_TABLES list here"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("table", RLS_EXEMPT_TABLES)
+def test_exempt_table_carries_rls_exempt_comment_and_no_policy(table):
+    """Every exempt table documents WHY (the RLS-EXEMPT comment convention) — and none of them
+    accidentally grows a tenant_isolation policy (which would break pre-tenant writes)."""
+    sql = _read(SCHEMA)
+    create = sql.find(f"CREATE TABLE IF NOT EXISTS {table} ")
+    assert create != -1, f"no CREATE TABLE found for {table}"
+    # The RLS-EXEMPT comment sits in the block ABOVE the CREATE (schema convention).
+    preceding = sql[max(0, create - 1500):create]
+    assert "RLS-EXEMPT" in preceding, \
+        f"{table} is exempt but carries no 'RLS-EXEMPT: <reason>' comment block"
+    assert not re.search(rf"CREATE POLICY \w+ ON {table}\b", sql), \
+        f"{table} is RLS-EXEMPT but has a policy"
+    # And it must NOT be in the DO-block tenant_tables array.
+    do_block = re.search(r"tenant_tables text\[\] := ARRAY\[(.*?)\];", sql, re.S).group(1)
+    assert f"'{table}'" not in do_block, f"{table} is exempt but listed in tenant_tables"
 
 
 @pytest.mark.unit
