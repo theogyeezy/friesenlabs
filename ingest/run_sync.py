@@ -50,7 +50,7 @@ from shared.config import (
 )
 
 from . import EMBEDDING_DIM
-from .connectors.hubspot import HubSpotConnector
+from .connectors.registry import SYNC_SOURCES, build_sync_connector
 from .pipeline import (
     InMemoryCursorStore,
     InMemoryDocumentStore,
@@ -83,7 +83,10 @@ class _StubSecrets:
 
 class _StubHubSpotClient:
     """Offline source client — pulls nothing (the dry run exercises the full
-    sync path: auth -> pull -> land -> cursor, with zero records)."""
+    sync path: auth -> pull -> land -> cursor, with zero records).
+
+    Kept for back-compat with existing tests; the registry's _EmptyListClient
+    is the generic equivalent used for every other source."""
 
     def list_companies(self, since):
         return []
@@ -156,13 +159,14 @@ def build_raw_sink():
     return InMemoryRawSink()
 
 
-def build_connector(tenant_id: str, *, raw_sink=None):
-    """A HubSpot connector for `tenant_id`.
+def build_connector(tenant_id: str, *, source: str = "hubspot", raw_sink=None):
+    """A sync connector for `tenant_id` over `source` (registry name; default
+    hubspot — the original single-source signature stays valid).
 
-    Real mode: Boto3SecretProvider (per-tenant uplift/{tenant_id}/hubspot ONLY —
+    Real mode: Boto3SecretProvider (per-tenant uplift/{tenant_id}/{source} ONLY —
     a missing per-tenant secret is a hard MissingTenantCredentialError, there is
-    no shared-token fallback) + HubSpotRestClient (token injected by
-    authenticate()). Offline: stubs that pull nothing.
+    no shared-token fallback) + the source's real REST client (credential
+    injected by authenticate()). Offline: stubs that pull nothing.
 
     The structured sink stays IN-MEMORY in both modes for now — the normalized
     rows still carry source-ref columns the CRM tables don't have (see
@@ -171,19 +175,19 @@ def build_connector(tenant_id: str, *, raw_sink=None):
     if real_mode():
         from .connectors.base import Boto3SecretProvider  # noqa: PLC0415 — lazy
 
-        from .connectors.hubspot import HubSpotRestClient  # noqa: PLC0415
-
         secrets = Boto3SecretProvider()
-        client = HubSpotRestClient()
+        client = None  # the registry constructs the source's real REST client
     else:
         secrets = _StubSecrets()
-        client = _StubHubSpotClient()
-    return HubSpotConnector(
+        client = _StubHubSpotClient() if source == "hubspot" else None
+    return build_sync_connector(
+        source,
         tenant_id,
-        client=client,
         secrets=secrets,
         raw_sink=raw_sink if raw_sink is not None else InMemoryRawSink(),
         structured_sink=InMemoryStructuredSink(),
+        client=client,
+        real_client=real_mode(),
     )
 
 
@@ -195,9 +199,10 @@ def resolve_tenants(args: argparse.Namespace) -> list[str]:
     return list(dict.fromkeys(t.strip() for t in raw.split(",") if t.strip()))
 
 
-def run_one(tenant_id: str, *, store, cursors, embedder, raw_sink) -> SyncResult:
-    """One incremental sync for one tenant (fresh connector per tenant)."""
-    connector = build_connector(tenant_id, raw_sink=raw_sink)
+def run_one(tenant_id: str, *, store, cursors, embedder, raw_sink,
+            source: str = "hubspot") -> SyncResult:
+    """One incremental sync for one tenant over one source (fresh connector)."""
+    connector = build_connector(tenant_id, source=source, raw_sink=raw_sink)
     return sync_tenant(tenant_id, connector, embedder, store, cursors)
 
 
@@ -211,6 +216,8 @@ def _parser() -> argparse.ArgumentParser:
                      help="tenant id to sync (repeatable)")
     who.add_argument("--all", action="store_true",
                      help=f"sync every tenant listed in ${ENV_INGEST_TENANTS} (comma-separated)")
+    p.add_argument("--source", default="hubspot", choices=sorted(SYNC_SOURCES),
+                   help="which connector to sync (registry name; default: hubspot)")
     return p
 
 
@@ -230,7 +237,8 @@ def main(argv: list[str] | None = None) -> int:
     mode = "REAL" if real_mode() else "offline-stub (set %s=1 for real adapters)" % (
         ENV_INGEST_REAL_STORES,
     )
-    log.info("ingest sync starting: %d tenant(s), mode=%s", len(tenants), mode)
+    log.info("ingest sync starting: %d tenant(s), source=%s, mode=%s",
+             len(tenants), args.source, mode)
 
     try:
         store, cursors = build_stores()
@@ -244,7 +252,7 @@ def main(argv: list[str] | None = None) -> int:
     for tenant_id in tenants:
         try:
             res = run_one(tenant_id, store=store, cursors=cursors,
-                          embedder=embedder, raw_sink=raw_sink)
+                          embedder=embedder, raw_sink=raw_sink, source=args.source)
         except Exception:  # noqa: BLE001 — one bad tenant must not stop the rest
             failures += 1
             log.exception("tenant %s: sync FAILED", tenant_id)
