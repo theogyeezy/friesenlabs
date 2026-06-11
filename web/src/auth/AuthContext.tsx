@@ -16,6 +16,8 @@
 import React from "react";
 import {
   AUTH_CHANGED_EVENT,
+  changePassword as cognitoChangePassword,
+  forgotPassword as cognitoForgotPassword,
   getIdToken,
   getValidIdToken,
   isAuthEnabled,
@@ -41,6 +43,16 @@ export interface AuthValue {
   tenantId: string | null;
   signIn: () => void;
   signOut: () => void;
+  /**
+   * Begin account recovery via the Hosted UI managed /forgotPassword page.
+   * Available signed-out (it's the entry from the sign-in path).
+   */
+  forgotPassword: () => void;
+  /**
+   * Change the signed-in user's password via the Hosted UI managed
+   * /changePassword page. The raw password never reaches our app or DB.
+   */
+  changePassword: () => void;
 }
 
 const signedOut: AuthValue = {
@@ -54,6 +66,12 @@ const signedOut: AuthValue = {
   },
   signOut: () => {
     cognitoSignOut();
+  },
+  forgotPassword: () => {
+    void cognitoForgotPassword();
+  },
+  changePassword: () => {
+    void cognitoChangePassword();
   },
 };
 
@@ -103,6 +121,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           : null,
       signIn: signedOut.signIn,
       signOut: signedOut.signOut,
+      forgotPassword: signedOut.forgotPassword,
+      changePassword: signedOut.changePassword,
     };
   }, [idToken]);
 

@@ -13,6 +13,7 @@ import {
   PKCE_STORAGE_KEY,
   base64UrlEncode,
   buildAuthorizeUrl,
+  buildHostedUiPasswordUrl,
   buildLogoutUrl,
   clearTokens,
   createPkcePair,
@@ -95,6 +96,49 @@ test("buildAuthorizeUrl carries code + S256 + scope + state", () => {
   assert.equal(url.searchParams.get("state"), "st_1");
   assert.equal(url.searchParams.get("code_challenge"), "ch_1");
   assert.equal(url.searchParams.get("code_challenge_method"), "S256");
+});
+
+test("buildHostedUiPasswordUrl(forgotPassword) carries the same code + S256 + PKCE grant", () => {
+  const url = new URL(
+    buildHostedUiPasswordUrl({
+      action: "forgotPassword",
+      domain: "uplift-x.auth.us-east-1.amazoncognito.com",
+      clientId: "client123",
+      redirectUri: "http://localhost:5173/auth/callback",
+      scope: "openid email profile",
+      state: "st_fp",
+      codeChallenge: "ch_fp",
+    }),
+  );
+  assert.equal(url.origin, "https://uplift-x.auth.us-east-1.amazoncognito.com");
+  // The managed page — NOT /oauth2/authorize — but the same code+PKCE grant so
+  // the existing /auth/callback exchange finishes it.
+  assert.equal(url.pathname, "/forgotPassword");
+  assert.equal(url.searchParams.get("response_type"), "code");
+  assert.equal(url.searchParams.get("client_id"), "client123");
+  assert.equal(url.searchParams.get("redirect_uri"), "http://localhost:5173/auth/callback");
+  assert.equal(url.searchParams.get("scope"), "openid email profile");
+  assert.equal(url.searchParams.get("state"), "st_fp");
+  assert.equal(url.searchParams.get("code_challenge"), "ch_fp");
+  assert.equal(url.searchParams.get("code_challenge_method"), "S256");
+});
+
+test("buildHostedUiPasswordUrl(changePassword) targets the /changePassword managed page", () => {
+  const url = new URL(
+    buildHostedUiPasswordUrl({
+      action: "changePassword",
+      domain: "d.example.com",
+      clientId: "c1",
+      redirectUri: "http://localhost:5173/auth/callback",
+      scope: "openid email profile",
+      state: "st_cp",
+      codeChallenge: "ch_cp",
+    }),
+  );
+  assert.equal(url.pathname, "/changePassword");
+  assert.equal(url.searchParams.get("client_id"), "c1");
+  assert.equal(url.searchParams.get("code_challenge_method"), "S256");
+  assert.equal(url.searchParams.get("state"), "st_cp");
 });
 
 test("buildLogoutUrl points at /logout with client_id + logout_uri", () => {
