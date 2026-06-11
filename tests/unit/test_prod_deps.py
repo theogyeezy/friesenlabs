@@ -17,6 +17,12 @@ import pytest
 
 import api.prod_deps as prod_deps
 from shared.config import Config
+from shared.signup_session import SignupSessionTokens
+from signup.abuse import (
+    CaptchaVerifier,
+    DisposableEmailBlocklist,
+    SignupVelocityLimiter,
+)
 from signup.anthropic_admin import AnthropicAdminClient
 from signup.cognito_admin import CognitoAdminClient
 from signup.resend_sender import ResendEmailSender
@@ -385,3 +391,168 @@ def test_resignup_reissues_otp_within_budget_and_never_raises(monkeypatch):
         deps.accounts.create("acct-1", "u@x.com", "+15555550100")
     assert len(rec.otps) == 5          # rate limit capped delivery
     assert len(rec.verification) == 1  # email leg ran once (create is idempotent by id)
+
+
+# ---------------------------------------------------------------- abuse-control wiring
+@pytest.mark.unit
+def test_abuse_controls_wired_always_not_behind_master_switch(monkeypatch):
+    """The three in-process abuse controls (disposable / velocity / captcha) are always
+    constructed regardless of SIGNUP_REAL_DEPS — they carry safe/permissive defaults and
+    touch no network or DB, so there is no deploy-invariance risk in building them eagerly."""
+    _cfg(monkeypatch)   # master switch OFF
+    deps = prod_deps.build_signup_deps()
+    # Disposable: always a DisposableEmailBlocklist (backed by the shipped file, or at least empty)
+    assert isinstance(deps.disposable, DisposableEmailBlocklist)
+    # Velocity: always a SignupVelocityLimiter
+    assert isinstance(deps.velocity, SignupVelocityLimiter)
+    # Captcha: always a CaptchaVerifier (defaults OPEN = not required)
+    assert isinstance(deps.captcha, CaptchaVerifier)
+    assert deps.captcha.required is False
+
+
+@pytest.mark.unit
+def test_disposable_blocklist_loaded_from_shipped_file(monkeypatch):
+    """The shipped signup/disposable_email_domains.txt is non-empty, so the wired blocklist
+    actually blocks known disposable domains (e.g. mailinator.com ships in the file)."""
+    _cfg(monkeypatch)
+    deps = prod_deps.build_signup_deps()
+    assert len(deps.disposable) > 0, "shipped blocklist must not be empty"
+    assert deps.disposable.is_disposable("user@mailinator.com"), \
+        "mailinator.com must be in the shipped blocklist"
+    assert not deps.disposable.is_disposable("user@gmail.com"), \
+        "gmail.com must NOT be flagged as disposable"
+
+
+@pytest.mark.unit
+def test_disposable_blocklist_extra_domains_via_env(monkeypatch):
+    """SIGNUP_DISPOSABLE_DOMAINS_EXTRA adds domains on top of the shipped file."""
+    _cfg(monkeypatch)
+    monkeypatch.setenv("SIGNUP_DISPOSABLE_DOMAINS_EXTRA", "example-throwaway.test,spam.invalid")
+    deps = prod_deps.build_signup_deps()
+    assert deps.disposable.is_disposable("x@example-throwaway.test")
+    assert deps.disposable.is_disposable("x@spam.invalid")
+
+
+@pytest.mark.unit
+def test_velocity_limiter_default_caps(monkeypatch):
+    """Without env overrides the velocity limiter uses the abuse.py defaults."""
+    from signup.abuse import DEFAULT_SIGNUP_LIMIT, DEFAULT_VELOCITY_WINDOW_S
+
+    _cfg(monkeypatch)
+    deps = prod_deps.build_signup_deps()
+    assert isinstance(deps.velocity, SignupVelocityLimiter)
+    assert deps.velocity.limit <= DEFAULT_SIGNUP_LIMIT       # limit is at most the default
+    assert deps.velocity.window_seconds == DEFAULT_VELOCITY_WINDOW_S
+
+
+@pytest.mark.unit
+def test_velocity_limiter_env_caps(monkeypatch):
+    """SIGNUP_VELOCITY_LIMIT / SIGNUP_VELOCITY_WINDOW_S override the velocity caps."""
+    _cfg(monkeypatch)
+    monkeypatch.setenv("SIGNUP_VELOCITY_LIMIT", "3")
+    monkeypatch.setenv("SIGNUP_VELOCITY_WINDOW_S", "120")
+    deps = prod_deps.build_signup_deps()
+    assert deps.velocity.limit == 3
+    assert deps.velocity.window_seconds == 120
+
+
+@pytest.mark.unit
+def test_velocity_limiter_blocks_after_cap(monkeypatch):
+    """The wired limiter actually enforces its cap (functional, not just constructed)."""
+    from signup.abuse import VelocityLimitError
+
+    _cfg(monkeypatch)
+    monkeypatch.setenv("SIGNUP_VELOCITY_LIMIT", "2")
+    monkeypatch.setenv("SIGNUP_VELOCITY_WINDOW_S", "60")
+    deps = prod_deps.build_signup_deps()
+    deps.velocity.allow("signup", "1.2.3.4")
+    deps.velocity.allow("signup", "1.2.3.4")
+    with pytest.raises(VelocityLimitError):
+        deps.velocity.check("signup", "1.2.3.4")
+
+
+@pytest.mark.unit
+def test_captcha_seam_defaults_open(monkeypatch):
+    """The captcha seam defaults OPEN (not required) — verify() is a no-op until the real
+    provider is wired."""
+    _cfg(monkeypatch)
+    deps = prod_deps.build_signup_deps()
+    assert deps.captcha.required is False
+    # No-op: verify passes with no token and no validator.
+    deps.captcha.verify(None, "1.2.3.4")   # must not raise
+
+
+@pytest.mark.unit
+def test_captcha_seam_required_via_env(monkeypatch):
+    """SIGNUP_CAPTCHA_REQUIRED=true flips the captcha seam to required (fail-closed: no validator
+    wired means a token attempt still fails — the seam never silently passes when 'required')."""
+    from signup.abuse import CaptchaRequiredError
+
+    _cfg(monkeypatch)
+    monkeypatch.setenv("SIGNUP_CAPTCHA_REQUIRED", "true")
+    deps = prod_deps.build_signup_deps()
+    assert deps.captcha.required is True
+    # Fail closed: no validator wired, required=True, token present -> CaptchaRequiredError.
+    with pytest.raises(CaptchaRequiredError):
+        deps.captcha.verify("some-token", "1.2.3.4")
+
+
+@pytest.mark.unit
+def test_session_tokens_absent_without_signing_secret(monkeypatch):
+    """session_tokens is None when the signing secret is not configured — the routes fall back
+    to the legacy raw-account_id path (byte-identical to the pre-token behavior)."""
+    _cfg(monkeypatch)   # no signup_token_secret_value
+    deps = prod_deps.build_signup_deps()
+    assert deps.session_tokens is None
+
+
+@pytest.mark.unit
+def test_session_tokens_wired_with_signing_secret(monkeypatch):
+    """session_tokens is a live SignupSessionTokens when the signing secret is present."""
+    _cfg(monkeypatch, signup_token_secret_value="test-signing-secret")
+    deps = prod_deps.build_signup_deps()
+    assert isinstance(deps.session_tokens, SignupSessionTokens)
+    # Functional: mint a checkout-scoped token and verify it round-trips.
+    token = deps.session_tokens.mint("acct-123", "checkout")
+    assert "." in token
+    assert deps.session_tokens.verify(token, "checkout") == "acct-123"
+    assert deps.session_tokens.verify(token, "state") is None  # wrong scope
+
+
+@pytest.mark.unit
+def test_session_tokens_wired_under_master_switch(monkeypatch):
+    """session_tokens is also wired when SIGNUP_REAL_DEPS is on (same signing secret)."""
+    _cfg(monkeypatch, signup_real_deps=True,
+         signup_token_secret_value="test-signing-secret")
+    deps = prod_deps.build_signup_deps()
+    assert isinstance(deps.session_tokens, SignupSessionTokens)
+
+
+@pytest.mark.unit
+def test_trusted_hops_default_is_two(monkeypatch):
+    """trusted_hops defaults to DEFAULT_TRUSTED_HOPS (2) when no env is set."""
+    from api.public_routes import DEFAULT_TRUSTED_HOPS as expected
+    _cfg(monkeypatch)
+    deps = prod_deps.build_signup_deps()
+    assert deps.trusted_hops == expected
+
+
+@pytest.mark.unit
+def test_trusted_hops_env_override(monkeypatch):
+    """SIGNUP_TRUSTED_HOPS (ENV_PUBLIC_LEADS_TRUSTED_HOPS) overrides trusted_hops."""
+    _cfg(monkeypatch)
+    monkeypatch.setenv("PUBLIC_LEADS_TRUSTED_HOPS", "1")
+    deps = prod_deps.build_signup_deps()
+    assert deps.trusted_hops == 1
+
+
+@pytest.mark.unit
+def test_trusted_hops_junk_env_falls_back_to_default(monkeypatch):
+    """Junk / <1 values for SIGNUP_TRUSTED_HOPS fall back to DEFAULT_TRUSTED_HOPS (safe default:
+    never key the velocity limiter on the shared ALB socket peer)."""
+    from api.public_routes import DEFAULT_TRUSTED_HOPS as expected
+    _cfg(monkeypatch)
+    for bad_val in ("not-a-number", "0", "-5", ""):
+        monkeypatch.setenv("PUBLIC_LEADS_TRUSTED_HOPS", bad_val)
+        deps = prod_deps.build_signup_deps()
+        assert deps.trusted_hops == expected, f"bad value {bad_val!r} should fall back"
