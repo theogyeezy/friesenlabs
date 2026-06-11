@@ -256,8 +256,15 @@ class StripeRestClient:
     Incremental: `created[gt]=<epoch>` server-side filter; paged via
     `starting_after=<last id>`. `status=all` on subscriptions so canceled subs
     still land (their stage column reflects it).
-    # VERIFY against live Stripe before first prod run: param shapes above and
-    # that the tenant's RESTRICTED key scopes cover the three list endpoints.
+
+    API contract (Stripe, confirmed from docs):
+      * `created[gt]` accepts an integer epoch-seconds value — matches the
+        zero-padded cursor that `_epoch_cursor` produces (int conversion in
+        `_list` is correct).
+      * `starting_after` cursor pagination uses the last item's `id` string.
+      * `status=all` on /v1/subscriptions includes all lifecycle statuses.
+    Tenant's RESTRICTED key must have read scopes for Customers/Subscriptions/
+    Invoices — those scopes are documented for Stripe restricted keys.
     """
 
     def __init__(self, *, base_url: str = STRIPE_API_BASE, page_size: int = 100,

@@ -15,13 +15,17 @@
 //     honestly renders "No data yet"; mock builds use the offline fixture.
 //   * "Ask for a chart" is the NL refine flow over the open view, wired to the
 //     EXISTING POST /views/{id}/refine route ("make it a line chart, last 90
-//     days"). The agent patches the spec server-side, the new version is
-//     persisted, and we re-render it. When the agent runtime (view_patcher)
-//     isn't wired on this deployment the route answers 501 — we render that as
-//     an honest "AI chart authoring isn't live yet" state, exactly like chat's
-//     503, NEVER a hard error. (Generating a brand-new chart from scratch is the
-//     same agent capability; today it rides the per-view refine — there is no
-//     generate-from-nothing route, and we don't invent one.)
+//     days"). The agent (AnthropicViewPatcher) patches the spec server-side, the
+//     new version is persisted, and we re-render it. The composer is enabled
+//     optimistically — the route is the feature-detect signal: when the agent
+//     runtime (view_patcher) IS wired (the org Anthropic key is present) refine
+//     succeeds and we re-render the new version; when it ISN'T the route answers
+//     501 and we degrade to the calm "AI chart authoring isn't live yet" state,
+//     exactly like chat's 503 — NEVER a hard error, and ONLY on 501 (a 422 stays
+//     an inline "try rephrasing", any other failure a friendly retry). (Generating
+//     a brand-new chart from scratch is the same agent capability; today it rides
+//     the per-view refine — there is no generate-from-nothing route, and we don't
+//     invent one.)
 //   * Every transport failure routes through friendlyErrorMessage: raw
 //     "API <code>" strings and server detail dumps never reach the DOM.
 

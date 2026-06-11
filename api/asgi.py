@@ -55,6 +55,7 @@ from api.workflows_routes import WorkflowsDeps
 from conv.cache import TenantConversationCache
 from conv.session import Conversation
 from conv.synthesizer import AnthropicSynthesizer
+from conv.view_patcher import AnthropicViewPatcher
 from conv.views import ViewSynthesizer
 from ml.predictions import PgPredictionLog
 from ml.registry import registry_from_env
@@ -338,6 +339,15 @@ def build_app():
         saved_views=saved_views, cube=cube, generator=spec_generator,
     )
 
+    # NL refine (POST /views/{id}/refine): the EDIT sibling of the Balto CREATE generator. Built
+    # from the SAME org Anthropic key seam — None when unconfigured, so the route keeps its honest
+    # 501 (view_patcher missing). The patched spec is checked against the governed catalog here AND
+    # re-validated against the tenant's live members by SavedViews.refine_nl before persisting.
+    view_patcher = (
+        AnthropicViewPatcher(api_key=api_key, allowed_members=allowed_members)
+        if api_key else None
+    )
+
     from api.prod_deps import build_signup_deps
 
     # ONE verifier instance: the routes' auth dependency AND the rate-limit middleware below both
@@ -379,6 +389,9 @@ def build_app():
         autonomy_dial=autonomy_dial,
         # Balto: POST /views/synthesize + /views/drafts/{id}/save (NL view creation from chat).
         view_synthesizer=view_synthesizer,
+        # NL refine: POST /views/{id}/refine (the EDIT path). None when the org key is unconfigured
+        # -> the route answers its honest 501. Built from the same ENV_ANTHROPIC_API_KEY seam.
+        view_patcher=view_patcher,
         # mounts /signup, /verify-*, /checkout, /webhooks/stripe; provisioning persists the
         # tenant's Managed Agents ids into tenant_workspaces when the DB is configured.
         signup=signup_deps,
