@@ -90,10 +90,29 @@ Until this is done, a real paid signup gets charged then parks `provisioning_fai
 
 - [ ] The fake 501(c)(3)/EIN/donation, "Real owners" testimonials, fabricated research, "LIVE" demo claims, App Store badge, and missing Terms/Privacy — see `TODO.md` § Landing-legal. Excluded from the build by request; needs counsel + real content.
 
+## 12. Stripe webhook endpoint (the silent paid-signup blocker)
+
+Provisioning fires **only** on the signed Stripe webhook (hard constraint #8) — if the endpoint isn't registered, a paid signup charges the card and then **never provisions**. (`infra/RUNBOOK.md` §"Signup go-live sequence" step 1. Per `CLAUDE.md` this may already be done during signup go-live — verify before launch.)
+
+- [ ] Stripe dashboard → **register the `/webhooks/stripe` endpoint** at the live API URL (`https://api.friesenlabs.com/webhooks/stripe`), subscribed to `checkout.session.completed` + `invoice.paid` (+ `customer.subscription.deleted` for cancellation).
+- [ ] Put the endpoint's signing secret (`whsec_…`) into the webhook-secret in Secrets Manager (the `construct_event` verify refuses all webhooks against an empty secret).
+- [ ] Verify: a real test-mode checkout → the webhook arrives, signature verifies, the account provisions (not `provisioning_failed`).
+
+## 13. Hard cost cap — AWS Budgets Deny-at-90% (owner)
+
+The budget **alarm** is live, but the **auto-Deny action** (an IAM Deny policy AWS Budgets applies at 90% of budget) is **not created** — `budget_action_role_arn` is empty by default (`infra/variables.tf:38`, `infra/modules/guardrails`). Without it, a runaway spend only emails; it isn't *capped*.
+
+- [ ] Create/choose the IAM role AWS Budgets assumes to apply the Deny policy, set `budget_action_role_arn` in `prod.auto.tfvars`, deploy. (Leave empty to keep alarm-only — a deliberate choice, not an oversight.)
+
+## 14. Post-apply verifies (owner, after the next deploy)
+
+- [ ] **End-to-end X-Ray trace** across api → cube → worker (the ADOT sidecars are wired but full trace verification needs a live apply — `infra/modules/{api_service,cube,worker}/main.tf`).
+- [ ] **Scheduled-job alarms** (from the audit): a CloudWatch `FailedInvocations` alarm per EventBridge rule (Cortex retrain + playbook dispatch), wired to the alarms SNS topic.
+
 ---
 
 **Quick reference — every tfvars flag added for go-live (all default to the safe/off value):**
-`allow_real_sends` · `signup_require_phone` · `api_cube_env` · `cortex_s3_registry` · `cortex_retrain_enabled` · `cortex_signing_key_available` · `cortex_drift_alert_email` · `playbook_dispatch_enabled` · `playbook_dispatch_tenants` · `ingest_schedule_enabled` · `ingest_tenants` · `signup_real_deps` · `api_signup_env`. Each flips via the deploy pipeline (Section 0).
+`allow_real_sends` · `signup_require_phone` · `api_cube_env` · `cortex_s3_registry` · `cortex_retrain_enabled` · `cortex_signing_key_available` · `cortex_drift_alert_email` · `stripe_module_price_ids` (Phase-2 module billing, §"Module entitlements") · `budget_action_role_arn` (§13 hard cost cap) · `playbook_dispatch_enabled` · `playbook_dispatch_tenants` · `ingest_schedule_enabled` · `ingest_tenants` · `signup_real_deps` · `api_signup_env`. Each flips via the deploy pipeline (Section 0).
 
 ---
 
