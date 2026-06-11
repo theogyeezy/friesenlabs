@@ -47,6 +47,9 @@ from api.cortex_routes import CortexDeps
 from api.deals_routes import DealsDeps
 from api.knowledge_routes import KnowledgeDeps
 from api.pg_clients import PgControlSettingsStore, PgCrmClient, PgRagClient
+from api.limits import PlanResolver, TenantLimitsMiddleware
+from api.usage import PgCostRecorder, PgPlanLookup, PgUsageStore
+from api.usage_routes import UsageDeps
 from api.views import PgSavedViewStore, SavedViews
 from api.workflows_routes import WorkflowsDeps
 from conv.cache import TenantConversationCache
@@ -55,7 +58,12 @@ from conv.synthesizer import AnthropicSynthesizer
 from conv.views import ViewSynthesizer
 from ml.predictions import PgPredictionLog
 from ml.registry import registry_from_env
-from shared.config import ENV_ANTHROPIC_API_KEY, dsn_from_env, load
+from shared.config import (
+    ENV_ANTHROPIC_API_KEY,
+    dsn_from_env,
+    load,
+    tenant_limits_enabled,
+)
 from shared.semantic_catalog import CATALOG_PATH, catalog_members_or_none
 
 log = logging.getLogger("api.asgi")
@@ -107,6 +115,7 @@ def make_conversation_factory(
     cortex: Any = None,
     synthesizer: Any = None,
     spec_generator: Any = None,
+    cost_recorder: Any = None,
     today: Callable[[], date] | None = None,
 ) -> Callable[[str], Any]:
     """Build the `/chat` conversation factory: tenant_id -> Conversation | None.
@@ -163,6 +172,7 @@ def make_conversation_factory(
             synthesizer=synthesizer,
             spec_generator=spec_generator,  # default ctx.extra['generate_spec'] for build_view
             greenlight=greenlight,
+            cost_recorder=cost_recorder,    # per-turn Anthropic token usage -> cost_events
         )
 
     return factory
@@ -265,6 +275,14 @@ def build_app():
         autonomy_dial = PersistedAutonomyDial(control_settings)
         autonomy_config = AutonomyConfig(level_provider=autonomy_dial.provider)
         trace_store: TraceStore = PgTraceStore(dsn)  # the gate's per-run writes land in Pg
+        # Per-tenant usage counter (monthly quota) + Anthropic cost attribution — same per-op
+        # SET LOCAL RLS plumbing as the trace store. The cost recorder is observational
+        # (never blocks a turn); the usage store backs the quota gate + GET /usage. REUSE the
+        # PgCrmClient's pool (it IS a _PgTenantClient) so these open NO extra connection pools —
+        # the Aurora connection budget is finite and the api task already builds several Pg stores.
+        usage_store: Any = PgUsageStore(client=crm)
+        cost_recorder: Any = PgCostRecorder(client=crm)
+        plan_lookup: Any = PgPlanLookup(client=crm)
         # Governed metrics: live only when CUBE_ENDPOINT + CUBEJS_API_SECRET_VALUE are BOTH
         # injected (api_cube_env flag). None only when both are unset; endpoint-without-secret
         # (cube_endpoint wired, flag not yet flipped — the live state at this commit) yields the
@@ -285,6 +303,9 @@ def build_app():
         autonomy_dial = None
         autonomy_config = AutonomyConfig()
         trace_store = InMemoryTraceStore()
+        usage_store = None      # no DSN -> /usage answers a zeroed shape; quota gate is inert
+        cost_recorder = None
+        plan_lookup = None
         executor = lambda action: {"status": "noop"}  # noqa: E731 — unconfigured: today's stub
 
     # /chat factory needs BOTH the DB (workspace rows + tool clients) and the org Anthropic key
@@ -305,6 +326,7 @@ def build_app():
             cortex=cortex,
             synthesizer=AnthropicSynthesizer(api_key=api_key),
             spec_generator=spec_generator,
+            cost_recorder=cost_recorder,
         ))
     else:
         conversation_factory = lambda tenant_id: None  # noqa: E731 — unconfigured: /chat 503
@@ -318,8 +340,30 @@ def build_app():
 
     from api.prod_deps import build_signup_deps
 
+    # ONE verifier instance: the routes' auth dependency AND the rate-limit middleware below both
+    # read the tenant from the SAME verification (THE TRUST RULE — no header/body tenant anywhere).
+    verifier = _verifier()
+
+    signup_deps = build_signup_deps(workspace_store=workspace_store)
+    # Authed self-service billing (Stripe Customer Portal): reuse the SAME Stripe adapter the
+    # payment plane uses + the SAME account store (so the stripe_customer_id mapping is the one
+    # checkout wrote). The portal session is claims-bound in api/billing_routes.py. The return URL
+    # is operator-configured (STRIPE_PORTAL_RETURN_URL — Lane Nick injects it; empty = Stripe
+    # default). Built only when the signup deps carry a payment adapter + an account store.
+    from api.billing_routes import BillingDeps
+
+    billing_deps = None
+    _pay = getattr(signup_deps, "payment", None)
+    _accounts = getattr(signup_deps, "accounts", None)
+    if _pay is not None and _accounts is not None:
+        billing_deps = BillingDeps(
+            stripe=getattr(_pay, "stripe", None),
+            accounts_store=getattr(_accounts, "store", None),
+            return_url=os.environ.get("STRIPE_PORTAL_RETURN_URL", ""),
+        )
+
     deps = ApiDeps(
-        verifier=_verifier(),
+        verifier=verifier,
         greenlight=greenlight,
         saved_views=saved_views,
         conversation_factory=conversation_factory,
@@ -336,7 +380,9 @@ def build_app():
         view_synthesizer=view_synthesizer,
         # mounts /signup, /verify-*, /checkout, /webhooks/stripe; provisioning persists the
         # tenant's Managed Agents ids into tenant_workspaces when the DB is configured.
-        signup=build_signup_deps(workspace_store=workspace_store),
+        signup=signup_deps,
+        # mounts POST /billing/portal-session + GET /billing (authed, Stripe Customer Portal).
+        billing=billing_deps,
         # /deals (the real Pipeline board) rides the SAME PgCrmClient instance the executor +
         # /chat tool clients use — one pool, one SET LOCAL discipline. crm is None when the
         # DSN is unconfigured, so the routes answer their honest 503s.
@@ -365,6 +411,26 @@ def build_app():
         # inside ml.health.cortex_health ("no_registry" / insufficient-evidence drift).
         cortex=CortexDeps(registry=cortex,
                           prediction_log=PgPredictionLog(dsn) if dsn else None),
+        # GET /usage: the tenant's monthly usage counter + plan cap + Anthropic cost summary.
+        # The plan resolver is SHARED with the rate-limit middleware below so the cap reported
+        # equals the cap enforced. With no DSN the stores are None -> a stable zeroed shape.
+        usage=UsageDeps(
+            usage_store=usage_store,
+            cost_recorder=cost_recorder,
+            plan_resolver=PlanResolver(fetch=plan_lookup.plan if plan_lookup else None),
+        ),
+        # Per-tenant rate-limit + quota middleware spec (cls, kwargs). Installed only when
+        # tenant_limits_enabled() (default ON) — a request with no/invalid tenant claim passes
+        # through (the route auth 401s); health + public/signup are prefix-exempt. The middleware
+        # verifies the SAME bearer the routes do to read the tenant claim (THE TRUST RULE).
+        limits_middleware=(
+            (TenantLimitsMiddleware, {
+                "verifier": verifier,
+                "usage_store": usage_store,
+                "plan_resolver": PlanResolver(fetch=plan_lookup.plan if plan_lookup else None),
+            })
+            if tenant_limits_enabled() else None
+        ),
     )
     app = create_app(deps)
     # /onboarding (first-run experience: per-tenant checklist state + one-click load-sample) —

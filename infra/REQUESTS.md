@@ -376,7 +376,7 @@ Rules:
 
 ---
 
-### REQ-010: GRANT crm_app DML on the per-tenant `onboarding_state` table (first-run / onboarding)
+### REQ-011: GRANT crm_app DML on the per-tenant `onboarding_state` table (first-run / onboarding)
 - **Status:** OPEN — already mirrored into `db/roles.sql` (the GRANT/REVOKE pair) so the static grant gate (`tests/unit/test_sql_schema.py`) and the integration DB harness (which loads `db/schema.sql` + `db/roles.sql`) stay green; this entry documents the same SQL for Lane Nick to confirm on the live Aurora migration. Per `CONTRIBUTING.md`, `db/roles.sql` is Nick-only; the edit here is the necessary cross-lane GRANT for a new tenant table — please review on the live `api.migrate` run.
 - **Requested by:** Lane Onboarding @feat/cust-onboarding (PR "feat(onboarding): first-run experience — empty states, guided checklist, load-sample data")
 - **Needed for:** the onboarding routes (`api/onboarding_routes.py`): `GET/PUT /onboarding` (per-tenant first-run checklist state) + `POST /onboarding/load-sample` (one-click demo-fixture load into the calling tenant). All RLS-scoped via `SET LOCAL app.current_tenant`; the route upserts the tenant's `onboarding_state` row.
@@ -393,3 +393,23 @@ Rules:
   REVOKE DELETE ON onboarding_state FROM crm_app;
   ```
 - **Done when:** the live `api.migrate` one-off runs `db/roles.sql` clean; a crm_app probe can SELECT/INSERT/UPDATE its own `onboarding_state` row under `SET LOCAL app.current_tenant` and is denied DELETE; `GET /onboarding` returns the tenant's row (or the honest default) on the live API.
+
+---
+
+### REQ-010: GRANT crm_app DML on the pre-tenant `support_requests` table (public contact/help intake)
+- **Status:** OPEN
+- **Requested by:** Lane Matt @feat/cust-support-surface (PR "feat(support): public contact/help surface + status page")
+- **Needed for:** `POST /public/support` (`api/support_routes.py` → `PgSupportStore`). RLS-EXEMPT pre-tenant table appended to `db/schema.sql` (see its comment). Because `schema.sql` creates the table BEFORE `roles.sql`'s `ALTER DEFAULT PRIVILEGES` runs, crm_app has ZERO privileges on it until an EXPLICIT grant lands — exactly like `accounts`/`leads` (REQ-002 / the leads grant).
+- **Env/secret names** (must already exist in shared/config.py): n/a — the route reads only `SIGNUP_REAL_DEPS` + the existing `DB_*` env (no new names). Optional tunables `SUPPORT_RATE_PER_MINUTE` / `SUPPORT_TRUSTED_HOPS` have safe in-code defaults (5/min, 2 hops) and need NO task-def env to function.
+- **Spec:**
+  ```sql
+  -- support_requests: public contact/help intake. crm_app INSERTs a validated row per submission
+  -- (api/support_routes.py) and SELECTs for ops read-back. NO DELETE/UPDATE: a captured request is
+  -- an immutable record (the rate-limit source_ip + the user's words). Mirrors the leads grant.
+  GRANT SELECT, INSERT ON support_requests TO crm_app;
+  -- The ALTER DEFAULT PRIVILEGES block in roles.sql hands DELETE/UPDATE to crm_app on any table it
+  -- covers; this pre-existing table is NOT covered (created first), but REVOKE to be belt-and-suspenders
+  -- consistent with leads/predictions in case of a re-run that re-grants broadly.
+  REVOKE UPDATE, DELETE ON support_requests FROM crm_app;
+  ```
+- **Done when:** connected as crm_app, `INSERT`/`SELECT` on `support_requests` succeed and `UPDATE`/`DELETE` are denied (and the CI schema+roles load + isolation gate stay green). Until then `POST /public/support` answers an honest 503 (store None) and the integration tests use `MemorySupportStore` — no live DB needed.

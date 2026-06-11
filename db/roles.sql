@@ -130,3 +130,24 @@ GRANT SELECT, INSERT ON leads TO crm_app;
 -- (api.migrate runs it on every migration) converge a grant-history live DB to this design.
 REVOKE DELETE ON workspace_keys FROM crm_app;
 REVOKE UPDATE, DELETE ON leads FROM crm_app;
+
+-- ---------------------------------------------------------------------------
+-- Tenant limits + cost attribution (usage_counters + cost_events — RLS-FORCEd tenant tables;
+-- see schema.sql). EXPLICIT grants for the same fresh-load reason as tenant_workspaces/
+-- tenant_settings/predictions: schema.sql creates them BEFORE roles.sql, so the ALTER DEFAULT
+-- PRIVILEGES block above never reaches them — without these lines crm_app has ZERO privileges and
+-- a fresh deploy permission-denies quota bumping + cost logging.
+--   usage_counters: the plan-quota gate reads the current month's count and atomically bumps it
+--     (INSERT .. ON CONFLICT DO UPDATE SET count = count + …), so crm_app needs SELECT/INSERT/UPDATE.
+--     NO DELETE: a usage counter is a billing-period record, rolled by the period bucket, never
+--     erased by the app.
+--   cost_events: strictly append-only token-usage measurement (INSERT + SELECT for GET /usage).
+--     NO UPDATE, NO DELETE: a recorded cost event is immutable audit, exactly like traces.
+GRANT SELECT, INSERT, UPDATE ON usage_counters TO crm_app;
+GRANT SELECT, INSERT ON cost_events TO crm_app;
+-- The ALTER DEFAULT PRIVILEGES block above hands DELETE (and, for cost_events, UPDATE) to crm_app
+-- on tables created later by the migration role. Revoke the unintended privileges explicitly so
+-- the no-DELETE / append-only intent is not silently superseded, and a roles.sql re-run converges
+-- a grant-history live DB to this design.
+REVOKE DELETE ON usage_counters FROM crm_app;
+REVOKE UPDATE, DELETE ON cost_events FROM crm_app;

@@ -130,6 +130,7 @@ class Conversation:
         disambiguator: Any = None,
         greenlight: Any = None,
         analytics: Analytics | None = None,
+        cost_recorder: Any = None,
         agent: str | None = "uplift-orchestrator",
     ) -> None:
         self.tenant_id = tenant_id
@@ -151,6 +152,10 @@ class Conversation:
         self.disambiguator = disambiguator
         self.greenlight = greenlight
         self.analytics = analytics
+        # Optional cost recorder (api.usage.CostRecorder): per-turn Anthropic token usage is
+        # attributed to THIS tenant from the runtime digest's `usage` block. None = no recording
+        # (offline/tests). Recording is best-effort and NEVER affects the turn (measurement only).
+        self.cost_recorder = cost_recorder
         self.agent = agent
 
         # TEST/DEV FALLBACK ONLY (clearly gated): with no persisted coordinator id, register the
@@ -188,6 +193,32 @@ class Conversation:
             self.runtime.tool_context_factory = self._session_tool_ctx
 
     # ------------------------------------------------------------------ helpers
+    def _send_to_runtime(self, message: str) -> dict:
+        """Forward a turn to the runtime, then attribute its observed token usage to this tenant
+        (cost recording). The recording is best-effort MEASUREMENT: a recorder error never breaks
+        the turn, and a digest with no/zero usage (FakeRuntime, a beta stream that emitted none)
+        records nothing."""
+        resp = self.runtime.send_message(self.session, message)
+        self._record_cost(resp)
+        return resp
+
+    def _record_cost(self, resp: Any) -> None:
+        if self.cost_recorder is None or not isinstance(resp, dict):
+            return
+        usage = resp.get("usage")
+        if not isinstance(usage, dict):
+            return
+        in_tok = int(usage.get("input_tokens") or 0)
+        out_tok = int(usage.get("output_tokens") or 0)
+        if in_tok <= 0 and out_tok <= 0:
+            return  # nothing to attribute (no usage observed this turn)
+        try:
+            self.cost_recorder.record(
+                self.tenant_id, model=usage.get("model"), in_tok=in_tok, out_tok=out_tok,
+            )
+        except Exception:  # noqa: BLE001 — cost attribution must never break a chat turn
+            pass
+
     @property
     def today(self) -> date:
         """The CURRENT date for this turn: a callable provider is resolved fresh per access
@@ -333,7 +364,7 @@ class Conversation:
         """
         del action_kwargs  # facade-only (see docstring) — nothing is invoked in this layer
 
-        resp = self.runtime.send_message(self.session, message)
+        resp = self._send_to_runtime(message)
 
         # Executor-served calls this turn (worker / self-hosted loop) — recorded for the trace;
         # the results were fed back into the session by the executor, nothing re-runs.
@@ -395,7 +426,7 @@ class Conversation:
                 pending.append({"status": "pending", "proposal": out.get("proposal")})
 
         # Let the (fake) coordinator also see the message so delegations are recorded for the trace.
-        resp = self.runtime.send_message(self.session, message)
+        resp = self._send_to_runtime(message)
         return Turn(
             answer=out.get("proposal", {}).get("reasoning", "Prepared an action for your approval."),
             pending_approvals=pending,
@@ -413,7 +444,7 @@ class Conversation:
         else:
             ans = Answer(answer="I don't have grounded sources to answer that.", citations=[])
 
-        resp = self.runtime.send_message(self.session, message)
+        resp = self._send_to_runtime(message)
         return Turn(
             answer=ans.answer,
             citations=[c.as_dict() for c in ans.citations],

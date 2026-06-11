@@ -163,9 +163,27 @@ class PaymentService:
             return getter(account_id)
         return None
 
+    # Subscription-lifecycle events that flip the tenant's BILLING status (not a provisioning
+    # trigger): a deletion cancels; an `updated` carrying a non-active status marks past_due /
+    # unpaid so the app can show a grace/cancelled banner. The mapping is status-driven, never an
+    # assumption from the event type alone.
+    _CANCEL_EVENT_TYPES = frozenset({
+        "customer.subscription.deleted",
+        "customer.subscription.updated",
+    })
+    # Subscription statuses we surface as a degraded billing state (Stripe Subscription.status).
+    # 'active'/'trialing' clear back to active; everything else here is a dunning/cancelled signal.
+    _DEGRADED_SUB_STATUSES = frozenset({"past_due", "unpaid", "canceled", "incomplete_expired"})
+
     def handle_webhook(self, payload: bytes, sig_header: str, secret: str) -> dict:
-        """The ONLY thing that triggers provisioning. Signature-verified + idempotent."""
+        """The ONLY thing that triggers provisioning. Signature-verified + idempotent.
+
+        Also handles subscription-lifecycle events (cancellation / dunning) — these NEVER
+        provision; they flip the persisted billing status so the app reflects cancelled/grace.
+        """
         event = self.stripe.construct_event(payload, sig_header, secret)  # raises on bad signature
+        if event["type"] in self._CANCEL_EVENT_TYPES:
+            return self._handle_subscription_lifecycle(event)
         if event["type"] not in ("checkout.session.completed", "invoice.paid"):
             return {"handled": False, "reason": f"ignored {event['type']}"}
 
@@ -186,6 +204,46 @@ class PaymentService:
         # attack.
         self._verify_webhook_fields(event["type"], acct, obj)
         return self._settle_paid(event_id, acct, obj)
+
+    # ------------------------------------------------- subscription lifecycle (cancel / dunning)
+    def _handle_subscription_lifecycle(self, event) -> dict:
+        """Flip the tenant's persisted BILLING status from a subscription cancel/dunning event.
+
+        NOT a provisioning trigger and NOT money-moving — it only records the post-checkout
+        subscription state so the app can show a cancelled/grace banner. Idempotent: writing the
+        same status twice is a harmless overwrite (no ledger claim needed). The account is resolved
+        by the SUBSCRIPTION's customer (mirrored the same way invoice.paid resolves), never client
+        input; an unknown customer is a handled no-op."""
+        event_type = str(_field(event, "type") or "")
+        obj = event["data"]["object"]
+        customer = _field(obj, "customer")
+        acct = self._account_by_customer(str(customer)) if customer else None
+        if acct is None:
+            return {"handled": False, "reason": "unknown account"}
+
+        # Map the event to a billing status. A deletion is an unambiguous cancel; an `updated`
+        # carries the live Subscription.status which decides past_due/unpaid/canceled (or clears
+        # back to active when it recovers to active/trialing).
+        if event_type == "customer.subscription.deleted":
+            status = "canceled"
+        else:  # customer.subscription.updated
+            sub_status = str(_field(obj, "status") or "").lower()
+            if sub_status in self._DEGRADED_SUB_STATUSES:
+                status = sub_status
+            elif sub_status in ("active", "trialing"):
+                status = "active"
+            else:
+                # A benign update (e.g. metadata change) with a healthy/unknown status — nothing
+                # to flip. Don't invent a degraded state.
+                return {"handled": False, "reason": f"no billing change ({sub_status or 'unknown'})"}
+
+        setter = getattr(self.accounts.store, "set_billing_status", None)
+        if not callable(setter):
+            # The in-memory test fake without the method: honest no-op (persistence unavailable).
+            return {"handled": False, "reason": "billing status not persisted"}
+        setter(acct.id, status, reason=event_type)
+        log.info("billing status set: account=%s status=%s event=%s", acct.id, status, event_type)
+        return {"handled": True, "account_id": acct.id, "billing_status": status}
 
     # --------------------------------------------------------- field verification
     def _verify_webhook_fields(self, event_type: str, acct, obj) -> None:

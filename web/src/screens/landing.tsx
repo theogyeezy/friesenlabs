@@ -6,6 +6,7 @@ import mattPhoto from "../assets/matt-yee.jpg";
 import nickPhoto from "../assets/nick-friesen.jpg";
 import { submitLeadWithFallback } from "../api/leads";
 import { defaultAnalytics } from "../analytics/posthog";
+import { HelpDialog } from "../support/HelpForm";
 const { useState, useEffect, useRef, useMemo, useCallback, useLayoutEffect, useReducer, useContext, useImperativeHandle, useId } = React;
 const { Icon, Logo, FL_DATA, FLStore, useStore, askClaude, bizContext, confettiBurst, XPBadge, useCountUp, CountUp, AreaChart, Sparkline, LoadBars, Donut, SlideOver, CommandPalette, HEAT, fmtMoney, StatCard, ToneIco, FLflag, useTweaks, TweaksPanel, TweakSection, TweakRow, TweakSlider, TweakToggle, TweakRadio, TweakSelect, TweakText, TweakNumber, TweakColor, TweakButton, FoxDemo, KanbanDemo, WorkflowDemo, GreenlightDemo, CommandDemo, IntegrationDemo, SupportDemo, SecurityDemo, SidecarDemo, CortexDemo } = window as any;
 
@@ -695,34 +696,6 @@ function DonateModal({ onClose }) {
   );
 }
 
-function ProvisionModal({ selected, byo, onClose }) {
-  const steps = ["Creating your workspace", "Securing your private instance", ...selected.filter((m) => !m.req).map((m) => `Activating ${m.name}`), byo ? "Connecting your CRM" : null, "Hiring your agent team", "Loading starter credits", "Workspace ready"].filter(Boolean);
-  const [done, setDone] = useState(0);
-  const finished = done >= steps.length;
-  useEffect(() => {
-    if (finished) return;
-    const t = setTimeout(() => setDone((d) => d + 1), done === 0 ? 500 : 720);
-    return () => clearTimeout(t);
-  }, [done, finished]);
-  return (
-    <div className="lp-modal-scrim">
-      <div className="lp-prov">
-        {finished ? <div className="lp-prov-check"><LpIcon name="check" size={38} sw={2.6} style={{ color: "#fff" }} /></div> : <div className="lp-prov-ring" />}
-        <div className="lp-eyebrow" style={{ textAlign: "center" }}>{finished ? "All set" : "Provisioning"}</div>
-        <h2 style={{ fontSize: 26, fontWeight: 760, letterSpacing: "-.03em", marginTop: 8 }}>{finished ? "Your instance is ready" : "Spinning up your instance"}</h2>
-        <div className="lp-prov-steps">
-          {steps.map((s, i) => (
-            <div key={s} className={"lp-prov-step" + (i < done ? " done" : "")}>
-              <div className="ps-box">{i < done && <LpIcon name="check" size={13} sw={3} />}</div>{s}
-            </div>
-          ))}
-        </div>
-        {finished && <a className="btn btn-primary btn-lg" href="index.html?onboard=1" style={{ marginTop: 24, width: "100%" }}><LpIcon name="bolt" size={16} />Enter Friesen Labs</a>}
-      </div>
-    </div>
-  );
-}
-
 function ProductPage({ id, onClose, onAdd, onBook }) {
   const p = LP_PRODUCTS.find((x) => x.id === id);
   const demo = LP_DEMOS.find((d) => d.id === id);
@@ -807,8 +780,9 @@ function ProductPage({ id, onClose, onAdd, onBook }) {
 }
 
 // onSignIn: wired by main.tsx to the Cognito Hosted UI signIn() when the
-// sign-in gate is active. Defaults to a no-op so the screen is render-safe
-// standalone.
+// sign-in gate is active. onForgotPassword: same wiring to the Hosted UI
+// managed /forgotPassword flow (account recovery). Both default to no-ops so
+// the screen is render-safe standalone.
 // Magnetic pull for primary CTAs — the button leans toward the cursor.
 function useMagnetic() {
   useEffect(() => {
@@ -1063,7 +1037,7 @@ function RoiCalculator() {
   );
 }
 
-function Landing({ onSignIn = () => {} } = {}) {
+function Landing({ onSignIn = () => {}, onForgotPassword = () => {} } = {}) {
   // The global app shell sets `body { overflow: hidden }` (it scrolls inside its
   // own panes). The marketing landing is a full-page document, so it must opt the
   // body back into scrolling via `body.lp-body` while mounted — without this the
@@ -1108,6 +1082,7 @@ function Landing({ onSignIn = () => {} } = {}) {
   // Anchors that act as buttons (sign-in, in-page modals): carry an href so
   // they're focusable + probe-visible, but the action runs in the SPA.
   const signInClick = (e) => { e.preventDefault(); setNavOpen(false); onSignIn(); };
+  const forgotClick = (e) => { e.preventDefault(); setNavOpen(false); onForgotPassword(); };
   const actionLink = (fn) => ({ href: "#", role: "button", onClick: (e) => { e.preventDefault(); fn(); } });
   // Lock body scroll while the mobile menu is open.
   useEffect(() => {
@@ -1178,6 +1153,7 @@ function Landing({ onSignIn = () => {} } = {}) {
             <a className="btn btn-primary btn-lg" href={SIGNUP_HREF}><LpIcon name="bolt" size={16} />Build your suite</a>
             <button className="btn btn-ghost btn-lg" onClick={() => { setNavOpen(false); setModal("book"); }}><LpIcon name="calendar" size={15} />Book a call</button>
             <a className="lp-mnav-signin" href={SIGNIN_HREF} onClick={signInClick}>Sign in</a>
+            <a className="lp-mnav-forgot lp-forgot" href={SIGNIN_HREF} onClick={forgotClick}>Forgot password?</a>
           </div>
         </div>
       </div>,
@@ -1439,7 +1415,14 @@ function Landing({ onSignIn = () => {} } = {}) {
                 {byo && <div className="sl" style={{ color: "var(--accent-ink)" }}><LpIcon name="link" size={15} style={{ color: "var(--accent-ink)" }} />Your CRM (HubSpot / Salesforce…)</div>}
                 <div className="sl" style={{ color: "var(--ink-3)" }}><LpIcon name="shield" size={15} style={{ color: "var(--ink-3)" }} />Security &amp; Control <span style={{ marginLeft: "auto", fontSize: 11, fontWeight: 700, color: "var(--green)" }}>FREE</span></div>
               </div>
-              <button className="btn btn-primary btn-lg" style={{ width: "100%" }} onClick={() => { defaultAnalytics().capture("checkout_started", { surface: "landing_builder", modules: selectedMods.length, monthly: total }); setModal("provision"); }}><LpIcon name="bolt" size={16} />Provision my instance</button>
+              <button className="btn btn-primary btn-lg" style={{ width: "100%" }} onClick={() => {
+                try { defaultAnalytics().capture("checkout_started", { surface: "landing_builder", modules: selectedMods.length, monthly: total }); } catch { /* analytics must never block the conversion */ }
+                const params = new URLSearchParams({ view: "signup" });
+                const mods = selectedMods.filter((m) => !m.req).map((m) => m.id).join(",");
+                if (mods) params.set("modules", mods);
+                if (byo) params.set("byo", "1");
+                window.location.assign("/?" + params.toString());
+              }}><LpIcon name="bolt" size={16} />Provision my instance</button>
               <button className="btn btn-ghost" style={{ width: "100%", marginTop: 10 }} onClick={() => setModal("book")}><LpIcon name="calendar" size={15} />Talk to us first</button>
               <p style={{ fontSize: 11.5, color: "var(--ink-4)", textAlign: "center", marginTop: 12 }}>Free to start · starter credits · no card required</p>
             </div>
@@ -1645,6 +1628,7 @@ function Landing({ onSignIn = () => {} } = {}) {
               <div style={{ display: "flex", gap: 9, marginTop: 14 }}>
                 <a className="btn btn-soft btn-sm" href="Foundation.html"><LpIcon name="spark" size={13} />The Foundation</a>
                 <button className="btn btn-ghost btn-sm" onClick={() => setModal("email")}><LpIcon name="mail" size={13} />Contact</button>
+                <button className="btn btn-ghost btn-sm" data-testid="footer-help-btn" onClick={() => setModal("help")}><LpIcon name="checkCircle" size={13} />Help</button>
               </div>
             </div>
             <div className="lp-foot-cols">
@@ -1669,6 +1653,11 @@ function Landing({ onSignIn = () => {} } = {}) {
                 <a {...actionLink(() => setDoc("Donor Privacy Policy"))}>Donor privacy</a>
                 <a {...actionLink(() => setDoc("Accessibility Statement"))}>Accessibility</a>
               </div>
+              <div className="lp-foot-col">
+                <h3>Support</h3>
+                <a {...actionLink(() => setModal("help"))} data-testid="footer-help">Help &amp; contact</a>
+                <a href="/?view=status" data-testid="footer-status">Status</a>
+              </div>
             </div>
           </div>
           <div className="lp-foot-legal">
@@ -1680,8 +1669,8 @@ function Landing({ onSignIn = () => {} } = {}) {
 
       {modal === "book" && <BookModal onClose={() => setModal(null)} />}
       {modal === "email" && <EmailModal onClose={() => setModal(null)} />}
+      {modal === "help" && <HelpDialog onClose={() => setModal(null)} />}
       {modal === "donate" && <DonateModal onClose={() => setModal(null)} />}
-      {modal === "provision" && <ProvisionModal selected={selectedMods} byo={byo} onClose={() => setModal(null)} />}
       {modal === "statement" && (
         <div className="lp-modal-scrim" onClick={() => setModal(null)} style={{ alignItems: "flex-start", overflowY: "auto", padding: "5vh 16px" }}>
           <div className="lp-paper" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>

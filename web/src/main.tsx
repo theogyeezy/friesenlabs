@@ -56,6 +56,12 @@ const ReportsView = React.lazy(() => import("./api/ReportsView"));
 const DashboardsView = React.lazy(() => import("./api/DashboardsView"));
 const KnowledgeView = React.lazy(() => import("./api/KnowledgeView"));
 const SignupFlow = React.lazy(() => import("./signup/SignupFlow"));
+// Public support surface — the contact/help page (?view=help) and the public
+// status page (?view=status). Both are pre-auth by design (a confused trial
+// user or a prospect must reach them without a session) and code-split off the
+// landing chunk.
+const HelpPage = React.lazy(() => import("./support/HelpForm"));
+const StatusPage = React.lazy(() => import("./support/StatusPage"));
 
 // Demo/wiring seams reachable via ?view=. The normal SPA shell renders otherwise.
 const search = window.location.search;
@@ -104,7 +110,23 @@ function SignInGate() {
         >
           Sign in
         </a>
+        {/* Account recovery: drives the Hosted UI managed /forgotPassword flow
+            (code entry + new password), then lands back signed in via the
+            normal /auth/callback exchange. Cognito owns the credential. */}
         <p style={{ marginTop: 14 }}>
+          <a
+            className="lp-forgot"
+            href="/"
+            onClick={(e) => {
+              e.preventDefault();
+              auth.forgotPassword();
+            }}
+            style={{ fontSize: 13, color: "#8a8278", cursor: "pointer" }}
+          >
+            Forgot password?
+          </a>
+        </p>
+        <p style={{ marginTop: 6 }}>
           <a href="/" style={{ fontSize: 13, color: "#8a8278" }}>
             Back to home
           </a>
@@ -123,7 +145,11 @@ function SignInGate() {
 function Gated({ children, seam = false }: { children: React.ReactElement; seam?: boolean }) {
   const auth = useAuth();
   if (!isAuthEnabled() || auth.isAuthenticated) return children;
-  return seam ? <SignInGate /> : <Landing onSignIn={auth.signIn} />;
+  return seam ? (
+    <SignInGate />
+  ) : (
+    <Landing onSignIn={auth.signIn} onForgotPassword={auth.forgotPassword} />
+  );
 }
 
 function Root() {
@@ -152,6 +178,13 @@ function Root() {
     // Pre-auth by design: the signup funnel runs before any tenant or token exists.
     case "signup":
       return <React.Suspense fallback={null}><SignupFlow /></React.Suspense>;
+    // Public, ungated by design: a confused trial user or a prospect must reach
+    // help/status without a session. No API client beyond the public
+    // /public/support + /healthz contracts; never mounts a gated surface.
+    case "help":
+      return <React.Suspense fallback={null}><HelpPage /></React.Suspense>;
+    case "status":
+      return <React.Suspense fallback={null}><StatusPage /></React.Suspense>;
     // API-wired surfaces — gated like the default shell, or a real build would
     // mount them signed-out and 401 on every call. seam: a deep link gets the
     // focused SignInGate when signed out, never the marketing page.
