@@ -45,6 +45,10 @@ import {
   type SignupState,
   type StoreCredentialsResponse,
   type WorkflowsResponse,
+  type AutonomyLevel,
+  type AutonomyState,
+  type DecisionTrace,
+  type KillswitchState,
 } from "./client";
 
 const MOCK_TENANT = "tenant-demo";
@@ -504,6 +508,9 @@ export class MockApi {
   // Names with a "vaulted" credential. The token VALUE is never retained —
   // the mock honors the write-only contract (no echo, no storage, no logging).
   private integrationVault = new Set<string>();
+  // Control-plane state — stateful within a run so toggles round-trip.
+  private killswitch: KillswitchState = { engaged: false, scope: "global" };
+  private autonomy: AutonomyState = { level: 1 };
 
   listApprovals(): Approval[] {
     return this.approvals.filter((a) => a.status === "pending").map((a) => ({ ...a }));
@@ -942,5 +949,35 @@ export class MockApi {
       throw new ApiError(404, "no such signup");
     }
     return this.signupState;
+  }
+
+  // --- control plane: kill switch / autonomy / traces ------------------------
+
+  getKillswitch(): KillswitchState {
+    return { ...this.killswitch };
+  }
+
+  setKillswitch(engaged: boolean): KillswitchState {
+    this.killswitch = { engaged, scope: "global" };
+    return { ...this.killswitch };
+  }
+
+  getAutonomy(): AutonomyState {
+    return { ...this.autonomy };
+  }
+
+  setAutonomy(level: AutonomyLevel): AutonomyState {
+    this.autonomy = { level };
+    return { ...this.autonomy };
+  }
+
+  getControlTraces(limit = 50): DecisionTrace[] {
+    const seed: DecisionTrace[] = [
+      { id: "trace_001", ts: "2026-06-10T14:22:00Z", tool: "send_email", decision: "approved", status: "executed" },
+      { id: "trace_002", ts: "2026-06-10T14:18:00Z", tool: "update_deal", decision: "auto", status: "executed" },
+      { id: "trace_003", ts: "2026-06-10T13:55:00Z", tool: "issue_quote", decision: "denied", status: "blocked" },
+      { id: "trace_004", ts: "2026-06-10T13:40:00Z", tool: "search_knowledge", decision: "auto", status: "executed" },
+    ];
+    return seed.slice(0, Math.max(0, limit));
   }
 }
