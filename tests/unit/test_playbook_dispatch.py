@@ -132,3 +132,89 @@ def test_build_runner_realmode_imports_resolve(monkeypatch):
     store, run_playbook = _build_runner("postgresql://crm_app@h/db")
     assert store == ("store", "postgresql://crm_app@h/db")
     assert callable(run_playbook)
+
+
+# --------------------------------------------------------------------------- producer
+# The event producer: POST /deals must call dispatch_event('deal.created', ...) with the
+# VERIFIED tenant + the new record, and be fully INERT when no dispatcher is wired.
+class _CreateOnlyCrm:
+    """Minimal CRM stub for the create path — records the inserted deal and returns it."""
+
+    def insert_deal(self, *, tenant_id, company_id, name, stage, amount, contact_id=None):
+        return {"id": "D1", "title": name, "stage": stage, "amount": amount,
+                "tenant_id": str(tenant_id), "company_id": company_id,
+                "contact_id": contact_id, "created_at": None}
+
+
+class _RecordingDispatcher:
+    """Records dispatch_event calls so the producer wiring can be asserted."""
+
+    def __init__(self):
+        self.events: list[tuple] = []
+
+    def dispatch_event(self, tenant_id, event_name, payload=None):
+        self.events.append((tenant_id, event_name, payload))
+        return []
+
+
+class _BoomDispatcher:
+    def dispatch_event(self, tenant_id, event_name, payload=None):
+        raise RuntimeError("playbook blew up")
+
+
+def _deals_app(dispatcher):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from api.auth import make_current_tenant
+    from api.deals_routes import DealsDeps, mount_deals
+
+    class _FakeVerifier:
+        def verify(self, token):
+            tenant = token.split("-")[1] if token.startswith("t-") else "A"
+            return {"sub": f"sub-{tenant}", "custom:tenant_id": tenant,
+                    "email": f"{tenant}@x.com"}
+
+    class _FakeGateDeps:
+        autonomy_config = executor = greenlight = killswitch = trace_store = None
+
+    app = FastAPI()
+    deps = DealsDeps(crm=_CreateOnlyCrm(), dispatcher=dispatcher)
+    mount_deals(app, deps, make_current_tenant(_FakeVerifier()), gate_deps=_FakeGateDeps())
+    return TestClient(app, raise_server_exceptions=False)
+
+
+@pytest.mark.unit
+def test_create_deal_emits_deal_created_to_dispatcher():
+    disp = _RecordingDispatcher()
+    client = _deals_app(disp)
+    r = client.post("/deals", json={"title": "Acme expansion", "amount": 1000},
+                    headers={"Authorization": "Bearer t-A"})
+    assert r.status_code == 201
+    # Exactly one event, the verified tenant ('A' from the claim, NOT the body), the new record.
+    assert len(disp.events) == 1
+    tenant_id, event_name, payload = disp.events[0]
+    assert tenant_id == "A"
+    assert event_name == "deal.created"
+    assert payload["deal"]["title"] == "Acme expansion"
+
+
+@pytest.mark.unit
+def test_create_deal_is_inert_without_a_dispatcher():
+    # No dispatcher wired (the default for every test / non-asgi deps): create still
+    # succeeds and nothing is fired — the producer never raises on a missing dispatcher.
+    client = _deals_app(None)
+    r = client.post("/deals", json={"title": "No-dispatcher deal"},
+                    headers={"Authorization": "Bearer t-A"})
+    assert r.status_code == 201
+    assert r.json()["deal"]["title"] == "No-dispatcher deal"
+
+
+@pytest.mark.unit
+def test_create_deal_survives_a_dispatcher_failure():
+    # A failing event playbook must NEVER fail the user-initiated create that already wrote.
+    client = _deals_app(_BoomDispatcher())
+    r = client.post("/deals", json={"title": "Resilient deal"},
+                    headers={"Authorization": "Bearer t-A"})
+    assert r.status_code == 201
+    assert r.json()["deal"]["title"] == "Resilient deal"
