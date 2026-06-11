@@ -5,6 +5,7 @@ boto3>=1.34
 anthropic>=0.40
 psycopg2-binary>=2.9
 jsonschema>=4.20
+joblib>=1.3           # signed Cortex model artifacts (ml/artifacts.py)
 pyjwt[crypto]>=2.8    # Cognito JWKS verification (RS256)
 stripe>=7             # payment adapter (signup/stripe_adapter.py) — imported lazily
 python-multipart>=0.0.9  # FastAPI multipart forms (POST /integrations/csv/import)

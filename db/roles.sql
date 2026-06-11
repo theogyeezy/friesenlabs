@@ -89,3 +89,11 @@ REVOKE DELETE ON tenant_workspaces, tenant_settings FROM crm_app;
 -- DELETE is deliberate: playbooks are tenant-authored definitions (not audit trail) and the
 -- Studio exposes delete; RLS's WITH CHECK/USING scopes every row either way.
 GRANT SELECT, INSERT, UPDATE, DELETE ON playbooks TO crm_app;
+-- ---------------------------------------------------------------------------
+-- Cortex prediction log (predictions — RLS-FORCEd tenant table; see schema.sql): score-time
+-- INSERTs + the outcome-backfill UPDATE (retrain job) + SELECT for live-AUC drift. EXPLICIT
+-- grant for the same fresh-load reason as tenant_workspaces/tenant_settings (schema.sql runs
+-- first, so ALTER DEFAULT PRIVILEGES never covers it). No DELETE: the prediction log is the
+-- drift evidence trail — rows resolve, they are never erased by the app.
+GRANT SELECT, INSERT, UPDATE ON predictions TO crm_app;
+REVOKE DELETE ON predictions FROM crm_app;

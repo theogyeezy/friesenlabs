@@ -15,12 +15,16 @@ set_champion / promote), so `evaluate_and_gate` + `ml.retrain.retrain_tenant` ac
 
 Storage layout (identical for S3 and local fs, rooted at the configured prefix/dir):
     <root>/<tenant_id>/registry.json        — manifest: format_version, champion_version, models[]
-    <root>/<tenant_id>/models/<version>.bin — version-headered pickle of the fitted estimator
+    <root>/<tenant_id>/models/<version>.bin — SIGNED joblib blob of the fitted estimator
 
-Serialization safety: every model blob starts with the `uplift-cortex-model/v<N>` header and is
-REJECTED (`RegistryFormatError`) when the header is missing, malformed, from an unknown format
-version, or the payload fails to unpickle. Pickle is only ever applied to blobs the retrain job
-itself wrote into the registry's own bucket/dir — never to tenant-supplied bytes.
+Serialization safety (ml/artifacts.py): every model blob is an HMAC-SHA256-signed joblib payload
+(key = the CORTEX_SIGNING_KEY env secret) behind the `uplift-cortex-model/v<N>` header, and is
+REJECTED (`RegistryFormatError`) when the header is missing/malformed, the format version is
+unknown or pre-signing (legacy v1 — migrate via scripts/ml/resign_artifacts.py), the signature is
+missing or wrong, or the payload fails to load. Verification happens BEFORE any deserialization,
+so a writer who can plant a blob in the registry bucket cannot make this process execute it
+(the RCE-via-bucket-write fix). No signing key configured = loads AND writes fail closed
+(SigningKeyError) — never a silent unsigned fallback.
 
 Concurrency: single-writer per tenant (the scheduled retrain job); `run_model` only reads.
 Manifest writes are last-writer-wins, which is safe under that assumption.
@@ -29,28 +33,32 @@ from __future__ import annotations
 
 import json
 import os
-import pickle
 import re
 from dataclasses import dataclass, field
 from typing import Any
 
 from shared.config import ENV_CORTEX_LOCAL_DIR, ENV_CORTEX_S3_BUCKET, ENV_CORTEX_S3_PREFIX
 
+# RegistryFormatError/SigningKeyError are defined in ml.artifacts and re-exported here — this
+# module stays the stable import site (agents/tools/run_model.py, tests).
+from .artifacts import (  # noqa: F401
+    SIGNED_FORMAT_VERSION,
+    RegistryFormatError,
+    SigningKeyError,
+    deserialize_model,
+    serialize_model,
+)
+
 # A challenger must beat the champion's AUC by at least this margin to promote (avoid churn on noise).
 PROMOTION_MARGIN = 0.01
 
 # Bumped on any breaking change to the manifest/blob shape; readers reject other versions loudly
-# (a silent mis-parse of a model artifact is far worse than a failed load).
-FORMAT_VERSION = 1
-_BLOB_HEADER_PREFIX = b"uplift-cortex-model/v"
+# (a silent mis-parse of a model artifact is far worse than a failed load). v2 = signed artifacts.
+FORMAT_VERSION = SIGNED_FORMAT_VERSION
 DEFAULT_S3_PREFIX = "cortex/registry"
 # Defense in depth on storage key paths. Tenant identity already comes only from the verified
 # claim (THE TRUST RULE) — this just guarantees a tenant id can never traverse the key space.
 _TENANT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
-
-
-class RegistryFormatError(ValueError):
-    """A stored blob/manifest is corrupt, truncated, or from an unknown format version."""
 
 
 @dataclass
@@ -109,28 +117,9 @@ class InMemoryRegistry:
 
 # --------------------------------------------------------------------------- persistent registry
 
-def _serialize_model(model: Any) -> bytes:
-    """Version-headered pickle: `uplift-cortex-model/v<N>\\n` + pickle bytes."""
-    return _BLOB_HEADER_PREFIX + str(FORMAT_VERSION).encode("ascii") + b"\n" + pickle.dumps(model)
-
-
-def _deserialize_model(blob: bytes) -> Any:
-    """Reject anything that is not a well-formed, current-version blob before unpickling."""
-    head, sep, payload = blob.partition(b"\n")
-    if not sep or not head.startswith(_BLOB_HEADER_PREFIX):
-        raise RegistryFormatError("model blob is missing the uplift-cortex-model header")
-    try:
-        version = int(head[len(_BLOB_HEADER_PREFIX):])
-    except ValueError as exc:
-        raise RegistryFormatError("model blob has a malformed format-version header") from exc
-    if version != FORMAT_VERSION:
-        raise RegistryFormatError(
-            f"unsupported model blob format version {version} (this build reads v{FORMAT_VERSION})"
-        )
-    try:
-        return pickle.loads(payload)
-    except Exception as exc:  # truncated/corrupt payload — surface as a format error
-        raise RegistryFormatError("model blob payload is corrupt (unpickle failed)") from exc
+# Signed (de)serialization lives in ml/artifacts.py; thin aliases keep this module's seam names.
+_serialize_model = serialize_model
+_deserialize_model = deserialize_model
 
 
 def _safe_tenant(tenant_id: str) -> str:
@@ -146,12 +135,21 @@ class PersistentRegistry:
     never pull artifacts; `champion()` loads + deserializes the live artifact for scoring.
     """
 
-    # ---- backend seam (LocalFsRegistry / S3Registry implement these two) ----
+    # ---- backend seam (LocalFsRegistry / S3Registry implement these) ----
     def _get(self, key: str) -> bytes | None:
         raise NotImplementedError
 
     def _put(self, key: str, data: bytes) -> None:
         raise NotImplementedError
+
+    def _list_tenant_ids(self) -> list[str]:
+        raise NotImplementedError
+
+    def tenant_ids(self) -> list[str]:
+        """All tenant ids with a registry under this root (ops/migration surface — e.g.
+        scripts/ml/resign_artifacts.py). Filtered through the same safe-tenant pattern as
+        every key builder, so a stray object can never smuggle a traversal segment back in."""
+        return sorted(t for t in self._list_tenant_ids() if t and _TENANT_ID_RE.match(t))
 
     # ---- keys + manifest ----
     @staticmethod
@@ -282,6 +280,13 @@ class LocalFsRegistry(PersistentRegistry):
             f.write(data)
         os.replace(tmp, path)  # atomic publish — a reader never sees a torn file
 
+    def _list_tenant_ids(self) -> list[str]:
+        try:
+            entries = os.listdir(self.root)
+        except FileNotFoundError:
+            return []
+        return [e for e in entries if os.path.isdir(os.path.join(self.root, e))]
+
 
 class S3Registry(PersistentRegistry):
     """S3-backed registry (prod). boto3 is imported LAZILY on first blob access — importing this
@@ -316,6 +321,25 @@ class S3Registry(PersistentRegistry):
 
     def _put(self, key: str, data: bytes) -> None:
         self._s3().put_object(Bucket=self.bucket, Key=self._key(key), Body=data)
+
+    def _list_tenant_ids(self) -> list[str]:
+        """Tenant ids = the first key segment under the prefix (delimiter listing, paginated)."""
+        s3 = self._s3()
+        root = f"{self.prefix}/"
+        tenants: list[str] = []
+        token: str | None = None
+        while True:
+            kwargs = {"Bucket": self.bucket, "Prefix": root, "Delimiter": "/"}
+            if token:
+                kwargs["ContinuationToken"] = token
+            resp = s3.list_objects_v2(**kwargs)
+            for cp in resp.get("CommonPrefixes", []) or []:
+                seg = cp.get("Prefix", "")[len(root):].strip("/")
+                if seg:
+                    tenants.append(seg)
+            if not resp.get("IsTruncated"):
+                return tenants
+            token = resp.get("NextContinuationToken")
 
 
 # Anything implementing the shared protocol; both families work in evaluate_and_gate / retrain.

@@ -25,6 +25,14 @@ from ml.registry import (
 from ml.retrain import retrain_tenant
 
 
+@pytest.fixture(autouse=True)
+def _signing_key(monkeypatch):
+    """Persistent registries now write/read HMAC-SIGNED artifacts (ml/artifacts.py) — give every
+    test in this file a key, exactly like the deployed task env. The unsigned/invalid/missing-key
+    refusal behavior itself is covered in test_ml_artifacts.py."""
+    monkeypatch.setenv("CORTEX_SIGNING_KEY", "test-signing-key")
+
+
 class StepModel:
     """Deterministic picklable estimator stand-in (module-level so pickle round-trips)."""
 
