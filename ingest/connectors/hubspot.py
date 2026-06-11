@@ -5,10 +5,12 @@ contacts/companies/deals/notes. :class:`HubSpotRestClient` (below) is the real
 impl over the HubSpot CRM v3 Search API — constructed by the caller
 (`ingest/run_sync.py`), never here, and importing this module needs no network.
 
-Credentials (TODO INT/P1): `authenticate()` resolves the PER-TENANT vaulted
-token `uplift/{tenant_id}/hubspot` via the injected SecretProvider first; the
-single shared `HUBSPOT_TOKEN_SECRET_REF` remains only as a DEPRECATED fallback
-(warns) until every tenant has a per-tenant secret provisioned.
+Credentials: `authenticate()` resolves the PER-TENANT vaulted token
+`uplift/{tenant_id}/hubspot` via the injected SecretProvider — and ONLY that.
+A missing or empty per-tenant secret is a HARD MissingTenantCredentialError
+(the historical shared-token fallback was removed: one shared HubSpot token
+could land another customer's portal under this tenant's rows). Any other
+provider failure (access denied, throttle, network) propagates untouched.
 
 Normalizes HubSpot objects to the db/schema.sql shapes
 (companies / contacts / deals / activities), carrying tenant_id, source='hubspot',
@@ -16,10 +18,18 @@ and ref_id (the HubSpot object id) on every row.
 """
 from __future__ import annotations
 
-import warnings
+import logging
 from typing import Any, Iterable, Iterator, Protocol, runtime_checkable
 
-from .base import Connector, NormalizedRecord, tenant_secret_ref
+from .base import (
+    Connector,
+    MissingTenantCredentialError,
+    NormalizedRecord,
+    SecretNotFoundError,
+    tenant_secret_ref,
+)
+
+log = logging.getLogger("ingest.connectors.hubspot")
 
 
 @runtime_checkable
@@ -37,12 +47,6 @@ class HubSpotClient(Protocol):
     def list_notes(self, since: str | None) -> Iterable[dict]: ...
 
 
-# DEPRECATED — the single SHARED token reference (one token for ALL tenants).
-# Kept only as a fallback while per-tenant secrets (uplift/{tenant_id}/hubspot,
-# see base.tenant_secret_ref) are being provisioned; resolution warns when used.
-HUBSPOT_TOKEN_SECRET_REF = "uplift/hubspot-private-app-token"
-
-
 class HubSpotConnector(Connector):
     source = "hubspot"
 
@@ -53,27 +57,34 @@ class HubSpotConnector(Connector):
 
     # -- auth ------------------------------------------------------------ #
     def authenticate(self) -> None:
-        # Resolve the PER-TENANT vaulted token first (uplift/{tenant_id}/hubspot);
-        # never log/return the raw value. Any failure on the per-tenant lookup
-        # (not provisioned yet / provider that only knows the shared ref) falls
-        # back to the DEPRECATED shared token, with a warning.
+        # Resolve the PER-TENANT vaulted token (uplift/{tenant_id}/hubspot) and
+        # ONLY that; never log/return the raw value. There is deliberately NO
+        # shared-token fallback: a shared token belongs to ONE HubSpot portal,
+        # so "falling back" would sync that portal's data under THIS tenant.
+        # Only "the secret does not exist" maps to the hard credential error —
+        # any other provider failure (access denied / throttle / network) is a
+        # different operational problem and propagates untouched.
         per_tenant_ref = tenant_secret_ref(self.tenant_id, self.source)
-        token: str | None = None
         try:
             token = self._secrets.get_secret(per_tenant_ref)
-        except Exception:  # noqa: BLE001 — absence/legacy-provider both mean "fall back"
-            token = None
-        if not token:
-            warnings.warn(
-                f"HubSpot: per-tenant secret {per_tenant_ref!r} not resolved — "
-                f"falling back to the SHARED token ({HUBSPOT_TOKEN_SECRET_REF!r}). "
-                "The shared token is DEPRECATED; provision the per-tenant secret.",
-                DeprecationWarning,
-                stacklevel=2,
+        except SecretNotFoundError as exc:
+            log.error(
+                "ingest auth failed: event=missing_tenant_credential tenant_id=%s "
+                "source=%s ref=%s reason=secret_not_provisioned",
+                self.tenant_id, self.source, per_tenant_ref,
             )
-            token = self._secrets.get_secret(HUBSPOT_TOKEN_SECRET_REF)
+            raise MissingTenantCredentialError(
+                self.tenant_id, self.source, per_tenant_ref, "not provisioned"
+            ) from exc
         if not token:
-            raise RuntimeError("HubSpot: empty token from secret provider")
+            log.error(
+                "ingest auth failed: event=missing_tenant_credential tenant_id=%s "
+                "source=%s ref=%s reason=empty_secret_value",
+                self.tenant_id, self.source, per_tenant_ref,
+            )
+            raise MissingTenantCredentialError(
+                self.tenant_id, self.source, per_tenant_ref, "empty value"
+            )
         self._token = token
         # Hand the resolved token to the injected source client when it accepts
         # one (HubSpotRestClient does; test fakes need not implement set_token).

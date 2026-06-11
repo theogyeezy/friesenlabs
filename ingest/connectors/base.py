@@ -36,8 +36,10 @@ class SecretProvider(Protocol):
 # capture + storage in Secrets Manager").
 # --------------------------------------------------------------------------- #
 # The per-tenant secret naming convention: one Secrets Manager secret per
-# (tenant, source) pair. Connectors resolve THIS name first; the shared
-# single-token fallback is deprecated (see ingest/connectors/hubspot.py).
+# (tenant, source) pair. Connectors resolve THIS name and ONLY this name —
+# there is no shared-token fallback: a shared credential would let one
+# customer's source portal land under another tenant's rows. Missing
+# credential = hard error (MissingTenantCredentialError), never a fallback.
 PER_TENANT_SECRET_TEMPLATE = "uplift/{tenant_id}/{source}"
 
 
@@ -55,8 +57,32 @@ class SecretNotFoundError(KeyError):
     """The named secret does not exist in the vault (distinct from access errors).
 
     Connectors use this to distinguish "no per-tenant secret provisioned yet"
-    (fall back to the deprecated shared ref) from a real provider failure.
+    (a hard MissingTenantCredentialError — the tenant's sync must not run)
+    from a real provider failure (access/throttle errors propagate untouched).
     """
+
+
+class MissingTenantCredentialError(RuntimeError):
+    """No usable per-tenant credential for a (tenant, source) pair.
+
+    Raised by `Connector.authenticate()` when the per-tenant vaulted secret is
+    absent or empty. This is a HARD error by design: ingesting with anything
+    other than the tenant's own credential (e.g. a shared token) could land
+    another customer's source data under this tenant's rows. The fix is to
+    provision the per-tenant secret (PER_TENANT_SECRET_TEMPLATE), never to
+    fall back.
+    """
+
+    def __init__(self, tenant_id: str, source: str, ref: str, reason: str) -> None:
+        self.tenant_id = tenant_id
+        self.source = source
+        self.ref = ref
+        self.reason = reason
+        super().__init__(
+            f"{source}: no per-tenant credential for tenant {tenant_id} "
+            f"(ref {ref!r}: {reason}) — provision the per-tenant secret; "
+            "there is no shared-token fallback"
+        )
 
 
 class Boto3SecretProvider:
