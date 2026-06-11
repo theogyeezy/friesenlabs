@@ -892,3 +892,40 @@ textarea.lp-input { height: 92px; padding: 11px 13px; resize: none; }
 /* roadmap demos use the same window chrome but an honest "Preview" badge (clay, no live pulse) */
 .lp-demo-live.preview { color: var(--accent-ink); }
 .lp-demo-live.preview .dot { background: var(--accent); box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent) 22%, transparent); animation: none; }
+
+/* ============================================================
+   NEURAL CONSTELLATION HERO — the live product network plate.
+   Spec: docs/superpowers/specs/2026-06-11-constellation-hero-design.md
+   The canvas/cards layer is decorative (aria-hidden); the real
+   hero copy renders in .lp-constellation-overlay on top.
+   ============================================================ */
+.lp-constellation { position: relative; height: 86vh; min-height: 560px; overflow: hidden; background: var(--surface); }
+.lp-constellation-fx { position: absolute; inset: 0; }
+.lp-constellation-fx canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.lp-cstl-live { position: absolute; top: 18px; left: 20px; font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 11px; letter-spacing: 0.14em; color: var(--green); font-weight: 600; }
+.lp-cstl-live i { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--green); margin-right: 7px; animation: lpDemoPulse 1.6s ease-in-out infinite; }
+/* activity cards: solid paper + cream halo so they separate from the mesh */
+.lp-acard { position: absolute; left: 0; top: 0; width: max-content; max-width: 260px; background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 10px; padding: 8px 13px 9px; pointer-events: none; box-shadow: 0 0 0 4px color-mix(in oklch, var(--surface) 85%, transparent), 0 12px 30px oklch(0.3 0.04 48 / .18); opacity: 0; will-change: transform, opacity; }
+.lp-acard .ahead { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 9.5px; letter-spacing: 0.12em; color: var(--accent-ink); font-weight: 700; margin-bottom: 3px; display: flex; gap: 8px; align-items: baseline; }
+.lp-acard .ahead .atime { color: var(--ink-3); font-weight: 400; letter-spacing: 0.06em; }
+.lp-acard .abody { font-size: 12.5px; color: var(--ink); line-height: 1.35; }
+.lp-acard .abody .num { color: var(--accent-ink); font-weight: 650; }
+.lp-acard.sec { border-left-color: var(--green); }
+.lp-acard.sec .ahead { color: var(--green); }
+/* hero copy overlays the lower third of the plate */
+.lp-constellation-overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; padding: 0 24px 6vh; text-align: center; pointer-events: none; }
+.lp-constellation-overlay > * { pointer-events: auto; }
+.lp-constellation-overlay .lp-h1 { font-size: clamp(34px, 4.8vw, 64px); line-height: 1.06; }
+.lp-constellation-overlay .lp-lead { text-align: center; margin: 12px auto 0; max-width: 640px; font-size: clamp(15px, 1.35vw, 18px); }
+.lp-constellation-overlay .lp-hero-cta { justify-content: center; }
+/* the relocated product-window section keeps the old hero layout */
+.lp-window-cta { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 26px; }
+@media (max-width: 640px) {
+  .lp-constellation { height: 78vh; min-height: 480px; }
+  .lp-acard { max-width: 210px; }
+  .lp-constellation-overlay { padding-bottom: 4vh; }
+}
+@media (prefers-reduced-motion: reduce) { .lp-cstl-live i { animation: none; } }
+/* constellation hero is a full-bleed plate: no top/bottom padding on the section itself */
+.lp .lp-hero-cstl { padding: 0; }
+.lp .lp-hero-cstl .lp-proof-marquee { margin-top: 0; border-top: 1px solid var(--line); }

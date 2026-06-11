@@ -7,6 +7,7 @@ import nickPhoto from "../assets/nick-friesen.jpg";
 import { submitLeadWithFallback } from "../api/leads";
 import { defaultAnalytics } from "../analytics/posthog";
 import { HelpDialog } from "../support/HelpForm";
+import { ConstellationHero } from "./landing-constellation";
 const { useState, useEffect, useRef, useMemo, useCallback, useLayoutEffect, useReducer, useContext, useImperativeHandle, useId } = React;
 const { Icon, Logo, FL_DATA, FLStore, useStore, askClaude, bizContext, confettiBurst, XPBadge, useCountUp, CountUp, AreaChart, Sparkline, LoadBars, Donut, SlideOver, CommandPalette, HEAT, fmtMoney, StatCard, ToneIco, FLflag, useTweaks, TweaksPanel, TweakSection, TweakRow, TweakSlider, TweakToggle, TweakRadio, TweakSelect, TweakText, TweakNumber, TweakColor, TweakButton, FoxDemo, KanbanDemo, WorkflowDemo, GreenlightDemo, CommandDemo, IntegrationDemo, SupportDemo, SecurityDemo, SidecarDemo, CortexDemo } = window as any;
 
@@ -1159,14 +1160,34 @@ function Landing({ onSignIn = () => {}, onForgotPassword = () => {} } = {}) {
       </div>,
       document.body)}
 
-      {/* hero */}
-      <section className="lp-hero" id="main" role="main">
+      {/* hero — the live neural constellation of the product suite */}
+      <section className="lp-hero lp-hero-cstl" id="main" role="main">
+        <ConstellationHero>
+          <span className="lp-eyebrow">Meet your AI back office</span>
+          <h1 className="lp-h1">Your AI workforce, <span className="accentword">working</span>.<br />Watched by you.</h1>
+          <p className="lp-lead">Eleven products, one network. Agents research leads, write quotes, chase follow-ups and book meetings around the clock. You approve anything important.</p>
+          <div className="lp-hero-cta">
+            <a className="btn btn-primary btn-lg" href={SIGNUP_HREF}><LpIcon name="bolt" size={17} />Build your suite</a>
+            <button className="btn btn-ghost btn-lg" onClick={() => go("demos")}><LpIcon name="play" size={16} />See it in action</button>
+          </div>
+        </ConstellationHero>
+        <div className="lp-proof-marquee" aria-hidden="true">
+          <div className="lp-marquee-track">
+            {[...LP_TESTIMONIALS, ...LP_TESTIMONIALS].map((t, i) => (
+              <span className="lp-proof-chip" key={i}><b>{t.metric}</b> · {t.role}</span>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* the product window, formerly the hero — now the first proof section */}
+      <section className="lp-section" id="window">
         <div className="lp-wrap lp-hero-grid">
           <div>
-            <span className="lp-pill"><span className="live-dot" style={{ width: 6, height: 6 }} />Meet your AI back office</span>
-            <h1 className="lp-h1">Your business, run by <span className="accentword">agents</span>. Watched by you.</h1>
+            <span className="lp-pill"><span className="live-dot" style={{ width: 6, height: 6 }} />The agents at work</span>
+            <h2 className="lp-h2">Your business, run by <span className="accentword">agents</span>.</h2>
             <p className="lp-lead">Get a crew of AI agents that does the busywork for you. They research leads, send outreach, write quotes, chase follow ups, and book the meeting around the clock. You stay in control and approve anything important.</p>
-            <div className="lp-hero-cta">
+            <div className="lp-window-cta">
               <a className="btn btn-primary btn-lg" href={SIGNUP_HREF}><LpIcon name="bolt" size={17} />Build your suite</a>
               <button className="btn btn-ghost btn-lg" onClick={() => go("demos")}><LpIcon name="play" size={16} />See it in action</button>
             </div>
@@ -1190,13 +1211,6 @@ function Landing({ onSignIn = () => {}, onForgotPassword = () => {} } = {}) {
                 <div className="lp-demo-canvas" style={{ borderRight: "none" }}><FoxDemo /></div>
               </div>
             </div>
-          </div>
-        </div>
-        <div className="lp-proof-marquee" aria-hidden="true">
-          <div className="lp-marquee-track">
-            {[...LP_TESTIMONIALS, ...LP_TESTIMONIALS].map((t, i) => (
-              <span className="lp-proof-chip" key={i}><b>{t.metric}</b> · {t.role}</span>
-            ))}
           </div>
         </div>
       </section>
