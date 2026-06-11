@@ -176,6 +176,13 @@ def build_clients_from_env() -> dict:
         clients["db"] = PgCrmClient(dsn)            # build_context derives a fresh per-call binding
         clients["rag"] = PgRagClient(dsn)
         clients["greenlight"] = Greenlight(store=PgApprovalStore(dsn))
+        # Cortex flywheel close-loop: run_model logs each score to the RLS-scoped predictions
+        # table so live-AUC drift has real evidence. The worker is the LIVE serving path (under
+        # Managed Agents), so without this the predictions table stays empty and drift can only
+        # ever report "insufficient evidence". PgPredictionLog rides the same per-op SET LOCAL.
+        from ml.predictions import PgPredictionLog  # noqa: PLC0415 — lazy (psycopg2)
+
+        clients["prediction_log"] = PgPredictionLog(dsn)
     # Governed-metrics client over CUBE_ENDPOINT (+ CUBEJS_API_SECRET_VALUE) — the SAME
     # tenant-JWT-minting CubeClient the API wires (#175); the worker just reuses the factory.
     # THE TRUST RULE: the client takes tenant_id per call (from the session metadata the API
@@ -215,6 +222,8 @@ def build_context(session_metadata: dict, clients: dict) -> ToolContext:
     extra: dict = {}
     if clients.get("spec_generator") is not None:
         extra["generate_spec"] = clients["spec_generator"]
+    if clients.get("prediction_log") is not None:
+        extra["prediction_log"] = clients["prediction_log"]  # run_model close-loop (Cortex flywheel)
     return ToolContext(
         tenant_id=session_metadata["tenant_id"],
         agent=session_metadata.get("agent"),

@@ -125,6 +125,7 @@ class Conversation:
         rag_crm: Any = None,
         cube: Any = None,
         cortex: Any = None,
+        prediction_log: Any = None,
         synthesizer: Any = None,
         spec_generator: Any = None,
         disambiguator: Any = None,
@@ -145,6 +146,9 @@ class Conversation:
         self.rag_crm = rag_crm    # RAG-side CRM client: .read(tenant_id=, query=)
         self.cube = cube
         self.cortex = cortex      # persistent per-tenant model registry (ml.registry) -> run_model
+        # Cortex flywheel close-loop for the IN-PROCESS tool path: run_model logs each score to the
+        # RLS-scoped predictions table (the worker covers the live MA path; this covers in-process).
+        self.prediction_log = prediction_log
         self.synthesizer = synthesizer
         # Default view-spec generator for build_view (ctx.extra['generate_spec']); None preserves
         # build_view's explicit raise — a missing generator is a programming error, not a mode.
@@ -235,6 +239,8 @@ class Conversation:
         extra: dict = {}
         if self.spec_generator is not None:
             extra["generate_spec"] = self.spec_generator
+        if self.prediction_log is not None:
+            extra["prediction_log"] = self.prediction_log
         return ToolContext(
             tenant_id=session.metadata["tenant_id"],
             agent=self.agent,
@@ -251,6 +257,8 @@ class Conversation:
         extra: dict = {}
         if self.spec_generator is not None:
             extra["generate_spec"] = self.spec_generator
+        if self.prediction_log is not None:
+            extra["prediction_log"] = self.prediction_log
         return ToolContext(
             tenant_id=self.tenant_id,
             agent=self.agent,

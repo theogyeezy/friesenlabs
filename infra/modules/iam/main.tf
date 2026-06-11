@@ -249,7 +249,12 @@ resource "aws_iam_role_policy" "api_task_connector_write" {
         "secretsmanager:CreateSecret",
         "secretsmanager:DescribeSecret",
       ]
-      Resource = "arn:aws:secretsmanager:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:secret:uplift/*/hubspot*"
+      # The connector vault slot is uplift/{tenant_id}/{source}; cover ALL supported sync
+      # connectors, not just hubspot (Stripe + GoHighLevel were AccessDenied before this).
+      Resource = [
+        for src in ["hubspot", "stripe", "gohighlevel"] :
+        "arn:aws:secretsmanager:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:secret:uplift/*/${src}*"
+      ]
     }]
   })
 }

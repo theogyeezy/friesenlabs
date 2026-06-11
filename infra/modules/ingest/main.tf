@@ -66,12 +66,19 @@ resource "aws_iam_role_policy" "ingest_task" {
         {
           Effect = "Allow"
           Action = ["secretsmanager:GetSecretValue"]
-          Resource = [
-            # per-tenant pattern (ingest/connectors/base.py tenant_secret_ref)
-            "arn:aws:secretsmanager:${var.region}:${data.aws_caller_identity.current.account_id}:secret:${var.project}/*/hubspot-*",
-            # DEPRECATED shared token — until every tenant is migrated
-            "arn:aws:secretsmanager:${var.region}:${data.aws_caller_identity.current.account_id}:secret:${var.project}/hubspot-private-app-token*",
-          ]
+          Resource = concat(
+            # per-tenant vault slot uplift/{tenant_id}/{source} for EVERY supported sync
+            # connector (ingest/connectors/base.py tenant_secret_ref). `{src}*` matches the
+            # bare slot; Stripe + GoHighLevel were unreadable before this (HubSpot-only).
+            [
+              for src in ["hubspot", "stripe", "gohighlevel"] :
+              "arn:aws:secretsmanager:${var.region}:${data.aws_caller_identity.current.account_id}:secret:${var.project}/*/${src}*"
+            ],
+            [
+              # DEPRECATED shared token — until every tenant is migrated
+              "arn:aws:secretsmanager:${var.region}:${data.aws_caller_identity.current.account_id}:secret:${var.project}/hubspot-private-app-token*",
+            ]
+          )
         },
         {
           Effect   = "Allow"
