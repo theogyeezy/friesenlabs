@@ -39,7 +39,9 @@ shared/     # view-spec JSON schema, config, cost model
 db/         # schema.sql (FORCE'd RLS) + roles.sql (crm_app non-owner)
 tests/      # unit + integration (pytest)
 scripts/    # smoke_all.sh, isolation_test.py, demo.sh, per-feature smokes, briefs/
+  fleet/      #   fleet dispatch kit (boss-on-Studio → Codex/MBP/mini workers) — see docs/fleet/
 docs/       # spec PDFs (gitignored — confidential, kept local only)
+  fleet/      #   fleet design: README + system diagram (committed)
 ```
 
 ## Build status
