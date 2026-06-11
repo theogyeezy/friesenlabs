@@ -53,6 +53,11 @@ class ApiDeps:
     crm: Any | None = None                              # post-approval CRM appliers
     killswitch: KillSwitch = field(default_factory=KillSwitch)
     trace_store: TraceStore = field(default_factory=InMemoryTraceStore)
+    # /control autonomy dial (api/routes_control.py). None -> the routes fall back to an
+    # AutonomyDial over `autonomy_config` (in-memory; flips are instance-local). api/asgi.py
+    # wires the Pg-backed PersistedAutonomyDial whose provider `autonomy_config` resolves, so
+    # the dial and the gate read/write ONE persisted per-tenant level.
+    autonomy_dial: Any | None = None
     view_patcher: Callable[[dict, str], dict] | None = None  # NL refine: (spec, instruction) -> spec
     signup: Any = None                                  # optional SignupDeps (mounts public routes)
     # /integrations deps (TODO INT/P2). Env-built by default so api/asgi.py needs no change:
@@ -338,6 +343,12 @@ def create_app(deps: ApiDeps) -> FastAPI:
     if deps.knowledge is not None:
         from api.knowledge_routes import mount_knowledge
         mount_knowledge(app, deps.knowledge, current_tenant)
+
+    # Authed per-tenant control surface (kill switch · autonomy dial · decision traces) —
+    # always mounted: the deps defaults are in-memory and api/asgi.py wires the Pg-backed
+    # stores in prod. Authorization decisions are documented in api/routes_control.py.
+    from api.routes_control import mount_control
+    mount_control(app, deps, current_tenant)
 
     # Public, pre-tenant signup + Stripe webhook routes (optional).
     if deps.signup is not None:
