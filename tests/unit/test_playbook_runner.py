@@ -223,3 +223,112 @@ def test_runner_class_entry_matches_module_run():
     rec = PlaybookRunner(rt, store).run("tenant-a", pid, TriggerEvent(name="lead.created"))
     assert rec.status == "ok"
     assert rec.playbook_id == pid
+
+
+# --------------------------------------------------------------------- audit P0-2/P0-3
+@pytest.mark.unit
+def test_run_persists_the_record_to_the_run_store():
+    """A tenant must be able to see 'did it run, what did it propose?' afterwards — the runner
+    persists every terminal RunRecord digest to the injected run store (audit P0-2)."""
+    from agents.playbooks.store import InMemoryPlaybookRunStore
+
+    store, runs = InMemoryPlaybookStore(), InMemoryPlaybookRunStore()
+    pid = _active_playbook(store)
+    rt = StubRuntime({"answer": "drafted", "pending_approvals": [dict(_ROUTED_SEND)]})
+
+    rec = run(rt, store, "tenant-a", pid, TriggerEvent(name="lead.created"), run_store=runs)
+
+    rows = runs.list("tenant-a", pid)
+    assert len(rows) == 1
+    assert rows[0]["status"] == "pending" == rec.status
+    assert rows[0]["run_id"] == rec.run_id
+    assert rows[0]["record"]["answer"] == "drafted"
+    assert rows[0]["record"]["actions_proposed"] == [dict(_ROUTED_SEND)]
+
+
+@pytest.mark.unit
+def test_error_runs_are_persisted_and_run_store_failure_is_contained():
+    from agents.playbooks.store import InMemoryPlaybookRunStore
+
+    store, runs = InMemoryPlaybookStore(), InMemoryPlaybookRunStore()
+    pid = _active_playbook(store)
+
+    class BoomRuntime(FakeRuntime):
+        def send_message(self, session, message):
+            raise RuntimeError("agent plane unreachable")
+
+    rec = run(BoomRuntime(), store, "tenant-a", pid, {}, run_store=runs)
+    assert rec.status == "error"
+    assert runs.list("tenant-a", pid)[0]["status"] == "error"  # failures are visible history too
+
+    class BoomRunStore:
+        def record(self, tenant_id, run_dict):
+            raise RuntimeError("runs table unavailable")
+
+    rec2 = run(StubRuntime({"answer": "ok"}), store, "tenant-a", pid, {}, run_store=BoomRunStore())
+    assert rec2.status == "ok", "a persistence failure must never fail the run itself"
+
+
+@pytest.mark.unit
+def test_run_registers_once_then_reuses_the_persisted_registration():
+    """The orphan-leak fix (audit P0-3): the first run registers the crew and PERSISTS the MA ids
+    on the playbook row; every subsequent run REUSES the stored coordinator — no new agents."""
+    store = InMemoryPlaybookStore()
+    pid = _active_playbook(store)
+    rt = StubRuntime({"answer": "ok"})
+
+    run(rt, store, "tenant-a", pid, {})
+    row = store.get("tenant-a", pid)
+    assert row["ma_coordinator_id"] in rt.coordinators        # persisted at first run
+    assert row["ma_registered_version"] == row["version"]
+    agents_after_first = len(rt.agents)
+
+    rec2 = run(rt, store, "tenant-a", pid, {})
+    assert len(rt.agents) == agents_after_first, "a reused registration creates NO new MA agents"
+    assert len(rt.coordinators) == 1
+    assert rec2.trace[1]["event"] == "reused_registration"
+    # The reused session is bound to the SAME stored coordinator.
+    assert list(rt.sessions.values())[-1].coordinator_id == row["ma_coordinator_id"]
+
+
+@pytest.mark.unit
+def test_stale_registration_reregisters_after_definition_edit():
+    """update_definition bumps version, so a stored registration goes stale by construction —
+    the next run must register the NEW definition's crew, never reuse the old coordinator."""
+    store = InMemoryPlaybookStore()
+    pid = _active_playbook(store)
+    rt = StubRuntime({"answer": "ok"})
+
+    run(rt, store, "tenant-a", pid, {})
+    old = store.get("tenant-a", pid)["ma_coordinator_id"]
+    store.update_definition("tenant-a", pid, _defn(autonomy="L0"))  # version bump -> stale
+    run(rt, store, "tenant-a", pid, {})
+
+    row = store.get("tenant-a", pid)
+    assert row["ma_coordinator_id"] != old, "an edited playbook must re-register"
+    assert row["ma_registered_version"] == row["version"]
+    assert len(rt.coordinators) == 2
+
+
+@pytest.mark.unit
+def test_trace_and_persisted_record_carry_only_ma_id_tails():
+    """FULL MA ids are operator material (the agents_routes contract) — the run trace and the
+    persisted digest carry 6-char display tails only."""
+    from agents.playbooks.store import InMemoryPlaybookRunStore
+
+    store, runs = InMemoryPlaybookStore(), InMemoryPlaybookRunStore()
+    pid = _active_playbook(store)
+
+    class LongIdRuntime(StubRuntime):
+        def _id(self, prefix):
+            self._n += 1
+            return f"{prefix}_{'x' * 24}{self._n}"
+
+    rt = LongIdRuntime({"answer": "ok"})
+    rec = run(rt, store, "tenant-a", pid, {}, run_store=runs)
+
+    full_coordinator = store.get("tenant-a", pid)["ma_coordinator_id"]
+    assert len(full_coordinator) > 6  # the store keeps the FULL id (it must — reuse needs it)
+    blob = str(rec.trace) + str(runs.list("tenant-a", pid)[0]["record"])
+    assert full_coordinator not in blob, "full MA ids must never reach the trace/digest"
+    assert full_coordinator[-6:] in str(rec.trace)  # the display tail is what surfaces

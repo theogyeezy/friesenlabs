@@ -218,3 +218,116 @@ def test_create_deal_survives_a_dispatcher_failure():
                     headers={"Authorization": "Bearer t-A"})
     assert r.status_code == 201
     assert r.json()["deal"]["title"] == "Resilient deal"
+
+
+# --------------------------------------------------------------------------- #
+# The lead.created producer (audit P0-4): a new contact IS a new lead landing in
+# the CRM — POST /contacts fires lead.created with the VERIFIED tenant + the new
+# row, so the shipped lead_followup_drafter template (trigger event=lead.created)
+# is actually fireable. Same guarded-inert/contained contract as deal.created.
+# --------------------------------------------------------------------------- #
+class _CreateOnlyContactsCrm:
+    def insert_contact(self, *, tenant_id, name, email=None, phone=None, company_id=None):
+        return {"id": "C1", "name": name, "email": email, "phone": phone,
+                "company_id": company_id, "tenant_id": str(tenant_id), "created_at": None}
+
+
+def _contacts_app(dispatcher):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from api.auth import make_current_tenant
+    from api.contacts_routes import ContactsDeps, mount_contacts
+
+    class _FakeVerifier:
+        def verify(self, token):
+            tenant = token.split("-")[1] if token.startswith("t-") else "A"
+            return {"sub": f"sub-{tenant}", "custom:tenant_id": tenant,
+                    "email": f"{tenant}@x.com"}
+
+    app = FastAPI()
+    deps = ContactsDeps(crm=_CreateOnlyContactsCrm(), dispatcher=dispatcher)
+    mount_contacts(app, deps, make_current_tenant(_FakeVerifier()))
+    return TestClient(app, raise_server_exceptions=False)
+
+
+@pytest.mark.unit
+def test_create_contact_emits_lead_created_to_dispatcher():
+    disp = _RecordingDispatcher()
+    client = _contacts_app(disp)
+    r = client.post("/contacts", json={"name": "Maria Lopez", "email": "maria@acme.com"},
+                    headers={"Authorization": "Bearer t-A"})
+    assert r.status_code == 201
+    assert len(disp.events) == 1
+    tenant_id, event_name, payload = disp.events[0]
+    assert tenant_id == "A"            # the VERIFIED claim tenant, never the body
+    assert event_name == "lead.created"
+    assert payload["contact"]["name"] == "Maria Lopez"
+
+
+@pytest.mark.unit
+def test_create_contact_is_inert_without_a_dispatcher():
+    client = _contacts_app(None)
+    r = client.post("/contacts", json={"name": "No-dispatcher lead"},
+                    headers={"Authorization": "Bearer t-A"})
+    assert r.status_code == 201
+    assert r.json()["contact"]["name"] == "No-dispatcher lead"
+
+
+@pytest.mark.unit
+def test_create_contact_survives_a_dispatcher_failure():
+    client = _contacts_app(_BoomDispatcher())
+    r = client.post("/contacts", json={"name": "Resilient lead"},
+                    headers={"Authorization": "Bearer t-A"})
+    assert r.status_code == 201
+    assert r.json()["contact"]["name"] == "Resilient lead"
+
+
+# --------------------------------------------------------------------------- #
+# BackgroundDispatcher: producers (POST /contacts, POST /deals) must never block
+# a user request on an agent run — an MA coordinator turn can take tens of
+# seconds. dispatch_event returns immediately; the run happens on a contained
+# daemon thread and its result lands in the persisted run history (audit P0-2).
+# --------------------------------------------------------------------------- #
+def test_background_dispatcher_returns_immediately_and_still_dispatches():
+    import threading
+    import time
+
+    from agents.playbooks.dispatch import BackgroundDispatcher
+
+    started = threading.Event()
+    release = threading.Event()
+    calls: list[tuple] = []
+
+    class _SlowInner:
+        def dispatch_event(self, tenant_id, event_name, payload=None):
+            started.set()
+            release.wait(timeout=5)          # simulate a slow agent run
+            calls.append((tenant_id, event_name, payload))
+            return ["record"]
+
+    bg = BackgroundDispatcher(_SlowInner())
+    t0 = time.monotonic()
+    out = bg.dispatch_event("t-A", "lead.created", {"contact": {"id": "C1"}})
+    assert time.monotonic() - t0 < 0.5, "the producer call must not block on the run"
+    assert out == []                          # fire-and-forget: nothing to report yet
+    assert started.wait(timeout=2), "the background run never started"
+    release.set()
+    deadline = time.monotonic() + 2
+    while not calls and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert calls == [("t-A", "lead.created", {"contact": {"id": "C1"}})]
+
+
+def test_background_dispatcher_contains_inner_failures():
+    import time
+
+    from agents.playbooks.dispatch import BackgroundDispatcher
+
+    class _BoomInner:
+        def dispatch_event(self, tenant_id, event_name, payload=None):
+            raise RuntimeError("agent plane down")
+
+    bg = BackgroundDispatcher(_BoomInner())
+    assert bg.dispatch_event("t-A", "lead.created") == []  # never raises into the request
+    time.sleep(0.05)  # let the thread die — nothing to assert beyond "no crash"

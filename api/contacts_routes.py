@@ -31,6 +31,7 @@ image-fileset regression test imports api.app, which mounts this module).
 """
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -39,6 +40,8 @@ from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
 
 from api.auth import TenantClaims
+
+log = logging.getLogger("api.contacts_routes")
 
 _UNCONFIGURED_DETAIL = (
     "contacts data plane not configured — no crm_app DSN on this task "
@@ -71,6 +74,28 @@ class ContactsDeps:
     # get_company_directory / list_company_contacts). None = data plane unconfigured ->
     # every endpoint answers the honest 503, never invented rows.
     crm: Any | None = None
+    # A PlaybookDispatcher-shaped producer (dispatch_event(tenant_id, event_name, payload)) —
+    # the deal.created seam (api/deals_routes.py), adopted here for lead.created: a new contact
+    # IS a new lead landing in the CRM, so the shipped lead_followup_drafter template fires.
+    # None = no dispatcher wired -> the create route is INERT (it never tries to fire event
+    # playbooks). api/asgi.py wires the live instance; every test / non-asgi constructor
+    # leaves it None so constructing deps opens nothing.
+    dispatcher: Any | None = None
+
+
+def _emit_created(deps: ContactsDeps, event_name: str, tenant_id: str, row: dict) -> None:
+    """Producer seam (mirrors api/deals_routes.py): fire ACTIVE event-playbooks bound to
+    `event_name` for the VERIFIED tenant, carrying the freshly-created record as the trigger
+    payload. INERT without a dispatcher and CONTAINED: a dispatch failure is logged and
+    swallowed so an event playbook can never fail the user-initiated create that already
+    succeeded. The dispatcher runs each playbook draft-only through Greenlight (runner.run)."""
+    dispatcher = getattr(deps, "dispatcher", None)
+    if dispatcher is None:
+        return
+    try:
+        dispatcher.dispatch_event(tenant_id, event_name, {"contact": row})
+    except Exception:  # noqa: BLE001 — a playbook must never break contact creation
+        log.exception("event dispatch failed for %s (tenant scoped)", event_name)
 
 
 def _require_reader(deps: ContactsDeps) -> Any:
@@ -197,6 +222,9 @@ def mount_contacts(app: FastAPI, deps: ContactsDeps, current_tenant) -> None:
             phone=body.phone or None,
             company_id=company_id,
         )
+        # A new contact is a new LEAD landing in the CRM — fire the event playbooks
+        # (guarded + inert without a dispatcher; contained; draft-only downstream).
+        _emit_created(deps, "lead.created", claims.tenant_id, row)
         return {"contact": row}
 
     @app.patch("/contacts/{contact_id}")

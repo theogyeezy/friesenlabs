@@ -346,8 +346,10 @@ def build_app():
     # environment from the workspace store and binds a runtime to it; a tenant without a provisioned
     # environment resolves to None -> the honest record-only path. Gated on the agent plane being
     # configured (api_key + the DSN-backed workspace store); otherwise the store-only/inert default.
+    playbook_dispatcher = None  # in-process event producer (deals/contacts); None = inert
     if dsn and api_key and workspace_store is not None:
-        from agents.playbooks.store import PgPlaybookStore  # noqa: PLC0415 — lazy
+        from agents.playbooks.dispatch import BackgroundDispatcher, PlaybookDispatcher  # noqa: PLC0415 — lazy
+        from agents.playbooks.store import PgPlaybookRunStore, PgPlaybookStore  # noqa: PLC0415
         from agents.runtime import get_runtime  # noqa: PLC0415 — lazy
 
         def _studio_registrar_factory(tenant_id, _ws=workspace_store, _key=api_key):
@@ -358,8 +360,50 @@ def build_app():
             runtime = get_runtime({"runtime": "managed", "api_key": _key, "environment_id": env_id})
             return (runtime, env_id, row.get("vault_id"))
 
-        studio_deps = StudioDeps(store=PgPlaybookStore(dsn),
-                                 registrar_factory=_studio_registrar_factory)
+        playbook_store = PgPlaybookStore(dsn)
+        playbook_run_store = PgPlaybookRunStore(dsn)  # run history (audit P0-2; lazy pool)
+
+        # The in-process EVENT leg (audit P0-4): domain events (lead.created from POST /contacts,
+        # deal.created from POST /deals) fire the tenant's ACTIVE event-playbooks through the
+        # SAME runner seam the manual run route uses — per-tenant runtime resolution, persisted
+        # run history, draft-only through Greenlight. Unprovisioned tenants land an honest
+        # error record (never a crash — runner.run contains everything).
+        def _dispatch_run_playbook(tenant_id, playbook_id, event,
+                                   _factory=_studio_registrar_factory,
+                                   _store=playbook_store, _runs=playbook_run_store):
+            from agents.playbooks import runner as runner_mod  # noqa: PLC0415 — lazy
+
+            resolved = _factory(tenant_id)
+            if resolved is None:
+                record = runner_mod.RunRecord(
+                    playbook_id=str(playbook_id), tenant_id=str(tenant_id), status="error",
+                    trigger={"kind": event.kind, "name": event.name},
+                    error="tenant not provisioned (no environment_id)")
+                try:
+                    _runs.record(tenant_id, record.as_dict())
+                except Exception:  # noqa: BLE001 — history is best-effort
+                    pass
+                return record
+            runtime, env_id, vault_id = resolved
+            return runner_mod.run(runtime, _store, tenant_id, playbook_id, event,
+                                  environment_id=env_id, vault_id=vault_id,
+                                  run_store=_runs)
+
+        # Fire-and-forget: a user-facing create must never block on an agent run (an MA
+        # coordinator turn can take tens of seconds). The run's outcome lands in the
+        # persisted run history + Greenlight queue, never in the producer's request.
+        playbook_dispatcher = BackgroundDispatcher(
+            PlaybookDispatcher(playbook_store, _dispatch_run_playbook))
+        studio_deps = StudioDeps(
+            store=playbook_store,
+            run_store=playbook_run_store,
+            registrar_factory=_studio_registrar_factory,
+            # Dispatch honesty (audit P0-4): the schedule leg is live only when the owner flips
+            # the EventBridge rule AND stamps PLAYBOOK_DISPATCH_ENABLED=1 on the api task (the
+            # same go-live act — GO_LIVE_CHECKLIST); the event leg is live right here.
+            scheduling_enabled=os.environ.get("PLAYBOOK_DISPATCH_ENABLED") == "1",
+            events_enabled=True,
+        )
     else:
         studio_deps = build_studio_deps()
 
@@ -443,10 +487,13 @@ def build_app():
         billing=billing_deps,
         # /deals (the real Pipeline board) rides the SAME PgCrmClient instance the executor +
         # /chat tool clients use — one pool, one SET LOCAL discipline. crm is None when the
-        # DSN is unconfigured, so the routes answer their honest 503s.
-        deals=DealsDeps(crm=crm),
+        # DSN is unconfigured, so the routes answer their honest 503s. The dispatcher makes
+        # POST /deals fire deal.created event-playbooks (inert when None — guarded producer).
+        deals=DealsDeps(crm=crm, dispatcher=playbook_dispatcher),
         # /contacts + /companies (the real Contacts directory) — the same single PgCrmClient.
-        contacts=ContactsDeps(crm=crm),
+        # The dispatcher makes POST /contacts fire lead.created (the shipped
+        # lead_followup_drafter template's trigger — audit P0-4).
+        contacts=ContactsDeps(crm=crm, dispatcher=playbook_dispatcher),
         # /sidecar (the real agentic layer) — reads the SAME PgCrmClient and proposes Greenlight
         # drafts. crm is None when the DSN is unconfigured -> honest 503.
         sidecar=SidecarDeps(crm=crm),

@@ -153,6 +153,36 @@ class PlaybookDispatcher:
         return records
 
 
+class BackgroundDispatcher:
+    """Fire-and-forget wrapper for the in-process EVENT producers (POST /contacts,
+    POST /deals): a user-facing create must never block on an agent run — one MA
+    coordinator turn can take tens of seconds, far past request-timeout territory.
+
+    ``dispatch_event`` spawns a contained daemon thread and returns ``[]`` immediately;
+    the run's outcome is observable through the persisted run history (``playbook_runs``)
+    and the Greenlight queue, never through the producer's request. Failures are logged
+    and swallowed on the thread (the inner dispatcher already contains per-playbook
+    failures; this contains dispatcher-level ones)."""
+
+    def __init__(self, dispatcher: Any) -> None:
+        self._dispatcher = dispatcher
+
+    def dispatch_event(self, tenant_id: str, event_name: str,
+                       payload: dict | None = None) -> list:
+        import threading  # noqa: PLC0415 — stdlib, but keep module import surface minimal
+
+        def _run() -> None:
+            try:
+                self._dispatcher.dispatch_event(tenant_id, event_name, payload)
+            except Exception:  # noqa: BLE001 — a background run must die quietly, logged
+                log.exception("background event dispatch failed for %s (tenant scoped)",
+                              event_name)
+
+        threading.Thread(target=_run, daemon=True,
+                         name=f"playbook-event-{event_name}").start()
+        return []
+
+
 # --------------------------------------------------------------------------- #
 # CLI — the EventBridge schedule target. Real mode (ANTHROPIC_API_KEY + DSN)
 # wires PgPlaybookStore + a per-tenant Managed Agents runtime; offline runs
@@ -176,11 +206,12 @@ def _build_runner(dsn: str | None):
     api_key = os.environ.get(ENV_ANTHROPIC_API_KEY)
     if dsn and api_key:
         from agents.playbooks import runner as runner_mod  # noqa: PLC0415
-        from agents.playbooks.store import PgPlaybookStore  # noqa: PLC0415
+        from agents.playbooks.store import PgPlaybookRunStore, PgPlaybookStore  # noqa: PLC0415
         from agents.runtime import get_runtime  # noqa: PLC0415
         from agents.workspace_store import PgWorkspaceStore  # noqa: PLC0415
 
         store = PgPlaybookStore(dsn)
+        run_store = PgPlaybookRunStore(dsn)  # persist every scheduled-run digest (audit P0-2)
         workspaces = PgWorkspaceStore(dsn)
 
         def run_playbook(tenant_id: str, playbook_id: str, event: TriggerEvent) -> RunRecord:
@@ -193,7 +224,8 @@ def _build_runner(dsn: str | None):
             runtime = get_runtime({"runtime": "managed", "api_key": api_key,
                                    "environment_id": env_id})
             return runner_mod.run(runtime, store, tenant_id, playbook_id, event,
-                                  environment_id=env_id, vault_id=row.get("vault_id"))
+                                  environment_id=env_id, vault_id=row.get("vault_id"),
+                                  run_store=run_store)
 
         return store, run_playbook
 

@@ -66,6 +66,29 @@ export interface StudioTemplate {
   definition: PlaybookDefinition;
 }
 
+/** Which trigger legs this deployment actually fires (GET /studio/playbooks `dispatch`).
+ * Honesty surface: schedule/event playbooks are banner-flagged when their leg is off. */
+export interface DispatchState {
+  scheduling_enabled: boolean;
+  events_enabled: boolean;
+}
+
+/** One persisted run digest (GET /studio/playbooks/{id}/runs). */
+export interface PlaybookRunRow {
+  id: string;
+  playbook_id: string;
+  run_id: string;
+  status: "ok" | "pending" | "not_active" | "not_found" | "error";
+  trigger: { kind?: string; name?: string | null };
+  record: {
+    answer?: string;
+    error?: string | null;
+    actions_proposed?: Array<Record<string, unknown>>;
+    delegations?: string[];
+  };
+  created_at: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // Thin authed fetcher over the SAME auth primitives ApiClient uses. Never
 // sends tenant_id (the trust rule); only the bearer token rides along.
@@ -209,6 +232,12 @@ export function StudioView() {
   const [editorFeedback, setEditorFeedback] = useState<{ ok: boolean; message: string } | null>(null);
   const [serverFeedback, setServerFeedback] = useState<string | null>(null);
 
+  // Trigger-dispatch honesty + per-playbook run history (audit P0-2 / P0-4).
+  const [dispatch, setDispatch] = useState<DispatchState | null>(null);
+  const [runsFor, setRunsFor] = useState<string | null>(null); // playbook id with the panel open
+  const [runs, setRuns] = useState<PlaybookRunRow[] | null>(null);
+  const [runsError, setRunsError] = useState<string | null>(null);
+
   const mock = isApiMock();
 
   const load = useCallback(async () => {
@@ -217,10 +246,12 @@ export function StudioView() {
     setRollout(false);
     try {
       const [pb, tp] = await Promise.all([
-        studioRequest<{ playbooks: PlaybookRow[] }>("GET", "/studio/playbooks"),
+        studioRequest<{ playbooks: PlaybookRow[]; dispatch?: DispatchState }>("GET", "/studio/playbooks"),
         studioRequest<{ templates: StudioTemplate[] }>("GET", "/studio/templates"),
       ]);
       setPlaybooks(pb.playbooks);
+      // An older API image omits `dispatch` — treat as both-off (the honest default).
+      setDispatch(pb.dispatch ?? { scheduling_enabled: false, events_enabled: false });
       setTemplates(tp.templates);
     } catch (e) {
       if (e instanceof ApiError && e.status === 404) {
@@ -230,6 +261,23 @@ export function StudioView() {
       }
     } finally {
       setLoading(false);
+    }
+  }, []);
+
+  const loadRuns = useCallback(async (playbookId: string) => {
+    setRunsFor(playbookId);
+    setRuns(null);
+    setRunsError(null);
+    try {
+      const out = await studioRequest<{ runs: PlaybookRunRow[] }>(
+        "GET", `/studio/playbooks/${playbookId}/runs?limit=20`);
+      setRuns(out.runs);
+    } catch (e) {
+      if (e instanceof ApiError && (e.status === 503 || e.status === 404)) {
+        setRunsError("Run history isn't available on this deployment yet.");
+      } else {
+        setRunsError(friendlyErrorMessage(e, "Couldn't load the run history."));
+      }
     }
   }, []);
 
@@ -334,6 +382,46 @@ export function StudioView() {
   const remove = (id: string) =>
     act(() => studioRequest("DELETE", `/studio/playbooks/${id}`), "Playbook deleted.");
 
+  const runNow = async (id: string) => {
+    setBusy(true);
+    setNotice(null);
+    try {
+      const out = await studioRequest<{
+        ran: boolean;
+        run?: { status: string; actions_proposed?: unknown[]; error?: string | null };
+        run_reason?: string;
+      }>("POST", `/studio/playbooks/${id}/run`);
+      if (!out.ran) {
+        setNotice(`Couldn't run: ${out.run_reason ?? "the agent plane isn't configured here."}`);
+      } else if (out.run?.status === "pending") {
+        const n = out.run.actions_proposed?.length ?? 0;
+        setNotice(
+          `Run finished — ${n} draft action${n === 1 ? "" : "s"} now wait${n === 1 ? "s" : ""} in Greenlight for your approval. Nothing was sent.`,
+        );
+      } else if (out.run?.status === "ok") {
+        setNotice("Run finished — nothing needed your approval.");
+      } else {
+        setNotice(`Run ended with status "${out.run?.status}"${out.run?.error ? `: ${out.run.error}` : ""}.`);
+      }
+      if (runsFor === id) await loadRuns(id); // refresh the open history panel
+    } catch (e) {
+      setNotice(friendlyErrorMessage(e, "The run didn't start. Please try again."));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** True when this playbook's trigger leg isn't live on this deployment — it will NOT
+   * fire on its own (manual Run now still works). The banner + chip say so honestly. */
+  const triggerInert = (p: PlaybookRow): boolean => {
+    const t = p.definition?.trigger;
+    if (!t || !dispatch) return false;
+    if (t.kind === "schedule") return !dispatch.scheduling_enabled;
+    if (t.kind === "event") return !dispatch.events_enabled;
+    return false;
+  };
+  const inertActiveCount = (playbooks ?? []).filter((p) => p.status === "active" && triggerInert(p)).length;
+
   // Mock/preview builds run fully offline — the Studio is a live-workspace
   // surface, so the honest move is to say so rather than fake a library.
   if (mock) {
@@ -405,6 +493,19 @@ export function StudioView() {
 
       {!loading && !error && !rollout && playbooks !== null && (
         <>
+          {/* ----- trigger-dispatch honesty (audit P0-4): never present schedule/event
+                 playbooks as live automation when the leg is off ----- */}
+          {inertActiveCount > 0 && (
+            <div data-testid="studio-dispatch-banner" style={{ ...card, marginBottom: 14, fontSize: 13, padding: "12px 16px", borderColor: "var(--amber, #b88a2e)" }}>
+              <b>Heads up:</b>{" "}
+              {inertActiveCount === 1 ? "1 active playbook has" : `${inertActiveCount} active playbooks have`} a
+              trigger that isn&rsquo;t enabled on this workspace yet
+              {dispatch && !dispatch.scheduling_enabled && dispatch.events_enabled ? " (scheduled runs are pending enablement)" : ""}
+              {dispatch && dispatch.scheduling_enabled && !dispatch.events_enabled ? " (event triggers are pending enablement)" : ""}
+              — they won&rsquo;t fire on their own until it is. You can always trigger them with Run now.
+            </div>
+          )}
+
           {/* ----- the tenant's library ----- */}
           <section style={{ marginBottom: 26 }}>
             {playbooks.length === 0 && (
@@ -425,6 +526,11 @@ export function StudioView() {
                         {p.status}
                       </span>
                       <span style={{ ...muted, fontSize: 11.5 }}>v{p.version}</span>
+                      {p.status === "active" && triggerInert(p) && (
+                        <span data-testid="playbook-trigger-inert" style={chip("rgba(184, 138, 46, .12)", "var(--amber, #8a6a1e)")}>
+                          trigger not enabled yet
+                        </span>
+                      )}
                     </div>
                     <div style={{ ...muted, fontSize: 12.5, marginTop: 3 }}>
                       {triggerLabel(p.definition?.trigger)} · crew:{" "}
@@ -447,6 +553,17 @@ export function StudioView() {
                       </>
                     ) : (
                       <>
+                        <button data-testid="playbook-run" style={primaryBtn} disabled={busy} onClick={() => void runNow(p.id)}>
+                          Run now
+                        </button>
+                        <button
+                          data-testid="playbook-runs"
+                          style={ghostBtn}
+                          disabled={busy}
+                          onClick={() => (runsFor === p.id ? setRunsFor(null) : void loadRuns(p.id))}
+                        >
+                          {runsFor === p.id ? "Hide runs" : "Runs"}
+                        </button>
                         <button data-testid="playbook-deactivate" style={ghostBtn} disabled={busy} onClick={() => void deactivate(p.id)}>
                           Deactivate
                         </button>
@@ -456,6 +573,46 @@ export function StudioView() {
                       </>
                     )}
                   </div>
+
+                  {/* ----- run history panel (audit P0-2): the persisted digests ----- */}
+                  {runsFor === p.id && (
+                    <div data-testid="playbook-runs-panel" style={{ flexBasis: "100%", borderTop: "1px solid var(--line, #e3ddd3)", paddingTop: 10, marginTop: 4 }}>
+                      {runsError && <div style={{ ...muted, fontSize: 12.5 }}>{runsError}</div>}
+                      {!runsError && runs === null && <Spinner testid="playbook-runs-loading" label="Loading runs..." />}
+                      {!runsError && runs !== null && runs.length === 0 && (
+                        <div data-testid="playbook-runs-empty" style={{ ...muted, fontSize: 12.5 }}>
+                          No runs yet. Use Run now, or wait for the trigger to fire.
+                        </div>
+                      )}
+                      {!runsError && runs !== null && runs.length > 0 && (
+                        <div style={{ display: "grid", gap: 6 }}>
+                          {runs.map((r) => (
+                            <div key={r.id} data-testid="playbook-run-row" style={{ fontSize: 12.5, display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
+                              <span
+                                data-status={r.status}
+                                style={r.status === "error" ? chip("rgba(180, 65, 59, .12)", "var(--rose, #b4413b)")
+                                  : r.status === "pending" ? chip("rgba(184, 138, 46, .12)", "var(--amber, #8a6a1e)")
+                                  : chipActive}
+                              >
+                                {r.status === "pending" ? "awaiting approval" : r.status}
+                              </span>
+                              <span style={{ ...muted }}>
+                                {r.trigger?.kind ?? "manual"}{r.trigger?.name ? ` · ${r.trigger.name}` : ""}
+                              </span>
+                              <span style={{ ...muted }}>{r.created_at ? new Date(r.created_at).toLocaleString() : ""}</span>
+                              <span style={{ flexBasis: "100%", ...muted }}>
+                                {r.status === "error"
+                                  ? (r.record?.error ?? "run failed")
+                                  : r.status === "pending"
+                                    ? `${r.record?.actions_proposed?.length ?? 0} draft action(s) routed to Greenlight`
+                                    : (r.record?.answer || "completed")}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
