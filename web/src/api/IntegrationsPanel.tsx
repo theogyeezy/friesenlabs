@@ -6,6 +6,11 @@
 // secrets/sync configuration notes come straight from GET /integrations —
 // nothing is invented client-side and there are no fake successes anywhere.
 //
+// A 404 from GET /integrations means the live API image predates this route
+// (the web can deploy ahead of the API): a calm "rolling out" state with a
+// refresh affordance — NOT a red error wall. Non-404 errors keep the existing
+// red error + retry.
+//
 // Connect flow (sync-kind connectors): a masked token input POSTs to
 // /integrations/{name}/credentials. The token is write-only — held transiently
 // in component state, sent in the request body (token ONLY, never a tenant_id:
@@ -186,6 +191,7 @@ export function IntegrationsPanel({ client }: IntegrationsPanelProps) {
   const [data, setData] = useState<ListIntegrationsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [rollout, setRollout] = useState(false);
   // Per-integration UI state, keyed by integration name.
   const [connectOpen, setConnectOpen] = useState<Record<string, boolean>>({});
   // Tokens live ONLY here (in memory, masked in the DOM) until the POST
@@ -201,11 +207,18 @@ export function IntegrationsPanel({ client }: IntegrationsPanelProps) {
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setRollout(false);
     try {
       setData(await api.listIntegrations());
     } catch (e) {
       setData(null);
-      setError(friendlyErrorMessage(e, "Couldn't load your integrations. Please try again."));
+      if (e instanceof ApiError && e.status === 404) {
+        // The live API image predates /integrations (the web can deploy ahead of
+        // the API): a calm rollout note, not an error wall.
+        setRollout(true);
+      } else {
+        setError(friendlyErrorMessage(e, "Couldn't load your integrations. Please try again."));
+      }
     } finally {
       setLoading(false);
     }
@@ -323,8 +336,8 @@ export function IntegrationsPanel({ client }: IntegrationsPanelProps) {
         <p style={{ color: "var(--ink-3, #8a8278)", fontSize: 14 }}>
           Connect the tools your business runs on. Tokens go straight to your workspace vault and are never shown again.
         </p>
-        {/* Only claim a count once we actually know it (post-load, no error). */}
-        {!loading && !error && data !== null && syncItems.length > 0 && (
+        {/* Only claim a count once we actually know it (post-load, no error, not rolling out). */}
+        {!loading && !error && !rollout && data !== null && syncItems.length > 0 && (
           <div data-testid="int-connected-count" style={{ marginTop: 10, fontSize: 13, color: "var(--ink-3, #8a8278)" }}>
             {connectedCount} of {syncItems.length} connected
           </div>
@@ -333,13 +346,13 @@ export function IntegrationsPanel({ client }: IntegrationsPanelProps) {
 
       {/* Deployment configuration notes, straight from the API — shown so an
           unconfigured deployment is honest up front, not only after a 503. */}
-      {!loading && !error && data !== null && !data.secrets_configured && (
+      {!loading && !error && !rollout && data !== null && !data.secrets_configured && (
         <div data-testid="int-secrets-note" style={{ ...card, fontSize: 13, color: "var(--ink-3, #8a8278)" }}>
           Credential storage isn&rsquo;t configured on this deployment, so connecting an
           integration won&rsquo;t work yet. Connection statuses may show as Unknown.
         </div>
       )}
-      {!loading && !error && data !== null && data.secrets_configured && !data.sync_configured && (
+      {!loading && !error && !rollout && data !== null && data.secrets_configured && !data.sync_configured && (
         <div data-testid="int-sync-note" style={{ ...card, fontSize: 13, color: "var(--ink-3, #8a8278)" }}>
           Sync isn&rsquo;t configured on this deployment yet — connected integrations
           can&rsquo;t be synced from here for now.
@@ -361,7 +374,21 @@ export function IntegrationsPanel({ client }: IntegrationsPanelProps) {
         </div>
       )}
 
-      {!loading && !error && data !== null && items.length === 0 && (
+      {/* The live API image may predate /integrations: a calm rollout note, not an error wall. */}
+      {rollout && (
+        <div data-testid="int-rollout" style={{ ...card, color: "var(--ink, #2a2622)", fontSize: 13.5 }}>
+          <div style={{ fontWeight: 700, marginBottom: 4 }}>Integrations API is rolling out</div>
+          <p style={{ color: "var(--ink-3, #8a8278)", lineHeight: 1.5 }}>
+            Your deployment doesn&rsquo;t serve the integrations endpoint yet &mdash; refresh after
+            the next API deploy. Nothing is wrong with your workspace.
+          </p>
+          <button data-testid="int-rollout-refresh" onClick={() => void load()} style={{ ...ghostBtn, marginTop: 10, color: "var(--ink, #2a2622)" }}>
+            Refresh
+          </button>
+        </div>
+      )}
+
+      {!loading && !error && !rollout && data !== null && items.length === 0 && (
         <div data-testid="int-empty" style={{ ...card, textAlign: "center", color: "var(--ink-3, #8a8278)" }}>
           <div style={{ fontSize: 15, fontWeight: 700, color: "var(--ink, #2a2622)" }}>No integrations available yet</div>
           <p style={{ fontSize: 13, marginTop: 4 }}>
@@ -372,6 +399,7 @@ export function IntegrationsPanel({ client }: IntegrationsPanelProps) {
 
       {!loading &&
         !error &&
+        !rollout &&
         items.map((item) => {
           const isBusy = !!busy[item.name];
           const msg = msgs[item.name];

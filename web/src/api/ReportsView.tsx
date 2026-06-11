@@ -367,9 +367,10 @@ function Detail({
 
 export interface ReportsViewProps {
   client?: ApiClient;
+  onAskAgents?: () => void;
 }
 
-export function ReportsView({ client }: ReportsViewProps) {
+export function ReportsView({ client, onAskAgents }: ReportsViewProps) {
   const api = client ?? defaultClient();
   const [views, setViews] = useState<SavedViewRow[] | null>(null);
   const [loading, setLoading] = useState(true);
@@ -431,6 +432,21 @@ export function ReportsView({ client }: ReportsViewProps) {
                 Ask your agents for a metric or chart, then save it. Saved views land here,
                 versioned, for the whole workspace.
               </p>
+              {onAskAgents && (
+                <button
+                  data-testid="reports-empty-cta"
+                  onClick={onAskAgents}
+                  style={{
+                    ...ghostBtn,
+                    background: "var(--accent, #4f46e5)",
+                    color: "#fff",
+                    border: "1px solid transparent",
+                    marginTop: 16,
+                  }}
+                >
+                  Ask your agents
+                </button>
+              )}
             </div>
           )}
 

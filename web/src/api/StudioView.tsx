@@ -303,13 +303,30 @@ export function StudioView() {
       "Template added to your playbooks as a draft.",
     );
 
-  const activate = (id: string) =>
-    act(async () => {
+  const activate = async (id: string) => {
+    setBusy(true);
+    setNotice(null);
+    try {
       const row = await studioRequest<PlaybookRow>("POST", `/studio/playbooks/${id}/activate`);
-      if (row.registered === false && row.registration_reason) {
-        setNotice(`Active (record-only): ${row.registration_reason}`);
+      if (row.registered === false) {
+        const reason = row.registration_reason
+          ? ` (${row.registration_reason})`
+          : "";
+        setNotice(
+          `Playbook activated (record-only${reason}) — crew registration pending. Side effects still wait in Greenlight.`,
+        );
+      } else {
+        setNotice(
+          "Playbook activated — its crew is registered. Side effects still wait in Greenlight.",
+        );
       }
-    }, "Playbook activated — its crew is registered. Side effects still wait in Greenlight.");
+      await load();
+    } catch (e) {
+      setNotice(friendlyErrorMessage(e, "That didn't work. Please try again."));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const deactivate = (id: string) =>
     act(() => studioRequest("POST", `/studio/playbooks/${id}/deactivate`), "Playbook deactivated.");

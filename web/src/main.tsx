@@ -34,6 +34,7 @@ if (import.meta.env.VITE_API_MOCK !== "0" && import.meta.env.VITE_API_MOCK !== "
 // Playwright behave exactly as before.
 import { AuthProvider, useAuth } from "./auth/AuthContext";
 import { handleCallback, isAuthEnabled, signIn } from "./auth/cognito";
+import ErrorBoundary from "./ErrorBoundary";
 
 // The landing screen reads its demo components (FoxDemo, KanbanDemo, ...) off
 // window at module-eval time, and landing-demos registers them there — so
@@ -345,6 +346,10 @@ const isAuthCallback = /^\/auth\/callback\/?$/.test(window.location.pathname);
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <AuthProvider>{isAuthCallback ? <AuthCallback /> : <Root />}</AuthProvider>
+    <AuthProvider>
+      <ErrorBoundary>
+        {isAuthCallback ? <AuthCallback /> : <Root />}
+      </ErrorBoundary>
+    </AuthProvider>
   </React.StrictMode>
 );

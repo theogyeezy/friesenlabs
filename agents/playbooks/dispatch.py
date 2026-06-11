@@ -10,9 +10,10 @@ Two trigger surfaces, both over the SAME tenant-scoped ``PlaybookStore`` + ``run
     ``python -m agents.playbooks.dispatch --schedule --all`` on a fixed cadence; for each tenant it
     runs every ACTIVE playbook whose cron is due at the current minute.
   * EVENT — ``PlaybookDispatcher.dispatch_event(tenant_id, event_name, payload)`` is the in-process
-    seam a domain event (e.g. ``lead.created``) calls to run every active ``event`` playbook bound
-    to that name. (The producer wiring at each domain-event site is a follow-up; this is the
-    mechanism it calls.)
+    seam a domain event (e.g. ``deal.created``) calls to run every active ``event`` playbook bound
+    to that name. The first producer is wired: a successful ``POST /deals`` create fires
+    ``deal.created`` through ``api/deals_routes.py`` (guarded + inert without a dispatcher); more
+    domain-event sites can adopt the same seam.
 
 THE TRUST RULE: the tenant is the scheduler's/event-source's TRUSTED arg, never read from an event
 body. Every run is contained — one bad playbook never crashes the dispatch (runner.run already

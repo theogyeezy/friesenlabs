@@ -35,6 +35,7 @@ imported lazily inside the move-stage route, mirroring POST /actions.
 """
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -45,6 +46,8 @@ from pydantic import BaseModel
 from api.auth import TenantClaims
 from api.control.gate import ActionGate, GateContext
 from api.control.types import Action
+
+log = logging.getLogger("api.deals_routes")
 
 # --------------------------------------------------------------------------- #
 # Stage catalog — the canonical pipeline order for the board columns. Stages
@@ -111,6 +114,11 @@ class DealsDeps:
     # list_deal_activities). None = data plane unconfigured -> every endpoint
     # answers the honest 503, never invented rows.
     crm: Any | None = None
+    # A PlaybookDispatcher-shaped producer (dispatch_event(tenant_id, event_name,
+    # payload)). None = no dispatcher wired -> the create route is INERT (it never
+    # tries to fire event playbooks). The boss wires the live instance in api/asgi.py;
+    # every test / non-asgi constructor leaves it None so creating deps opens nothing.
+    dispatcher: Any | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -135,6 +143,23 @@ class EditDealBody(BaseModel):
 # --------------------------------------------------------------------------- #
 class MoveStageBody(BaseModel):
     to_stage: str
+
+
+def _emit_created(deps: DealsDeps, event_name: str, tenant_id: str, row: dict) -> None:
+    """Producer seam: fire ACTIVE event-playbooks bound to `event_name` for the VERIFIED
+    tenant, carrying the freshly-created record as the trigger payload.
+
+    INERT without a dispatcher (deps.dispatcher is None for every test / non-asgi
+    constructor) and CONTAINED: a dispatch failure is logged and swallowed so an event
+    playbook can never fail the user-initiated create that already succeeded. The
+    dispatcher itself runs each playbook draft-only through Greenlight (runner.run)."""
+    dispatcher = getattr(deps, "dispatcher", None)
+    if dispatcher is None:
+        return
+    try:
+        dispatcher.dispatch_event(tenant_id, event_name, {"deal": row})
+    except Exception:  # noqa: BLE001 — a playbook must never break deal creation
+        log.exception("event dispatch failed for %s (tenant scoped)", event_name)
 
 
 def _require_reader(deps: DealsDeps) -> Any:
@@ -235,6 +260,11 @@ def mount_deals(app: FastAPI, deps: DealsDeps, current_tenant, *, gate_deps: Any
             amount=body.amount,
             contact_id=contact_id,
         )
+        # Producer: a successful CREATE is a domain event. Fire every ACTIVE event-playbook
+        # bound to 'deal.created' for the VERIFIED tenant (THE TRUST RULE — tenant from the
+        # claim, never the body). Guarded + inert: with no dispatcher wired (every test /
+        # non-asgi deps) this is a no-op, and a playbook failure NEVER fails the create.
+        _emit_created(deps, "deal.created", claims.tenant_id, row)
         return {"deal": row}
 
     @app.patch("/deals/{deal_id}")

@@ -8,6 +8,8 @@
 //   * "Add to my agents" instantiates the template as a DRAFT playbook (the same
 //     gated path Studio uses); we say "added as a draft", never "live".
 //   * An empty catalog, a load error, or a 503 each render an honest state.
+//   * A 404 means the live API image predates this route (web can deploy ahead of
+//     the API): a calm "rolling out" state with a refresh affordance — not an error wall.
 //   * Raw transport strings never reach the DOM (friendlyErrorMessage).
 
 import React from "react";
@@ -39,6 +41,16 @@ const primaryBtn: React.CSSProperties = {
   fontWeight: 660,
   cursor: "pointer",
 };
+const ghostBtn: React.CSSProperties = {
+  padding: "8px 16px",
+  borderRadius: 10,
+  border: "1px solid var(--line, #e3ddd3)",
+  background: "transparent",
+  color: "var(--ink, #2a2622)",
+  fontSize: 13,
+  fontWeight: 660,
+  cursor: "pointer",
+};
 
 /** Title-case a template id like "lead_qualifier" → "Lead Qualifier". */
 function titleFor(id: string): string {
@@ -56,6 +68,7 @@ export function MarketplaceView({ client, onOpenStudio }: MarketplaceViewProps) 
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [rollout, setRollout] = useState(false);
   const [unavailable, setUnavailable] = useState(false);
   const [templates, setTemplates] = useState<StudioTemplateSummary[]>([]);
 
@@ -67,12 +80,20 @@ export function MarketplaceView({ client, onOpenStudio }: MarketplaceViewProps) 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setRollout(false);
     setUnavailable(false);
     try {
       setTemplates(await api.getStudioTemplates());
     } catch (e) {
-      if (e instanceof ApiError && e.status === 503) setUnavailable(true);
-      else setError(friendlyErrorMessage(e));
+      if (e instanceof ApiError && e.status === 404) {
+        // The live API image predates /studio/templates (the web can deploy ahead
+        // of the API): a calm rollout note, not an error wall.
+        setRollout(true);
+      } else if (e instanceof ApiError && e.status === 503) {
+        setUnavailable(true);
+      } else {
+        setError(friendlyErrorMessage(e));
+      }
     } finally {
       setLoading(false);
     }
@@ -105,6 +126,20 @@ export function MarketplaceView({ client, onOpenStudio }: MarketplaceViewProps) 
       </div>
     );
   }
+  if (rollout) {
+    return (
+      <div data-testid="marketplace-rollout" style={{ ...card, color: "var(--ink, #2a2622)", fontSize: 13.5 }}>
+        <div style={{ fontWeight: 700, marginBottom: 4 }}>Marketplace API is rolling out</div>
+        <p style={{ ...muted, lineHeight: 1.5 }}>
+          Your deployment doesn&rsquo;t serve the marketplace endpoint yet &mdash; refresh after
+          the next API deploy. Nothing is wrong with your workspace.
+        </p>
+        <button data-testid="marketplace-rollout-refresh" onClick={() => void load()} style={{ ...ghostBtn, marginTop: 10 }}>
+          Refresh
+        </button>
+      </div>
+    );
+  }
   if (unavailable) {
     return (
       <div data-testid="marketplace-unavailable" style={{ ...card, ...muted }}>
@@ -114,9 +149,10 @@ export function MarketplaceView({ client, onOpenStudio }: MarketplaceViewProps) 
   }
   if (error) {
     return (
-      <div data-testid="marketplace-error" style={{ ...card }}>
-        <div style={{ marginBottom: 10 }}>{error}</div>
-        <button style={primaryBtn} onClick={() => void load()}>Try again</button>
+      <div data-testid="marketplace-error" style={{ ...card, borderColor: "var(--rose, #b4413b)" }}>
+        <div style={{ fontWeight: 700, marginBottom: 4 }}>Something needs another try</div>
+        <p style={{ ...muted, lineHeight: 1.5 }}>{error}</p>
+        <button data-testid="marketplace-retry" style={primaryBtn} onClick={() => void load()}>Try again</button>
       </div>
     );
   }
