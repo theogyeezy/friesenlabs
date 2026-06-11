@@ -287,8 +287,8 @@ def _build_csv_importer() -> Callable[[str, str, bytes, dict | None], Any] | Non
 
     def run(tenant_id: str, entity: str, data: bytes, mapping: dict | None) -> Any:
         # tenant_id arrives from the VERIFIED claim (threaded by the route).
+        from ingest.connectors import default_structured_sink  # noqa: PLC0415
         from ingest.connectors.csv_import import import_csv  # noqa: PLC0415
-        from ingest.pipeline import InMemoryStructuredSink  # noqa: PLC0415
         from ingest.run_sync import (  # noqa: PLC0415 — boto3/psycopg2 only at call time
             build_embedder,
             build_raw_sink,
@@ -296,14 +296,16 @@ def _build_csv_importer() -> Callable[[str, str, bytes, dict | None], Any] | Non
         )
 
         store, cursors = build_stores()
-        # Structured sink stays in-memory in real mode too — same deliberate
-        # posture as ingest/run_sync.build_connector (the normalized rows carry
-        # source-ref columns the CRM tables don't have yet; `documents` is the
-        # real landing zone).
+        # Land structured rows into the Aurora CRM tables (companies/contacts/deals)
+        # the SAME way the connector sync path does — default_structured_sink() returns
+        # the RLS-scoped PgCrmStructuredSink in real mode (idempotent on the namespaced
+        # natural key, child→parent refs resolved to our uuids), and the in-memory sink
+        # offline. So a CSV import populates the Pipeline/Contacts boards, not only the
+        # `documents` vector store.
         report = import_csv(
             tenant_id, entity, data, mapping,
             store=store, cursor_store=cursors, embedder=build_embedder(),
-            raw_sink=build_raw_sink(), structured_sink=InMemoryStructuredSink(),
+            raw_sink=build_raw_sink(), structured_sink=default_structured_sink(),
         )
         return report.to_dict()
 
