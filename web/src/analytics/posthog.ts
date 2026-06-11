@@ -15,9 +15,11 @@
 //      (documented in web/README.md) so a third-party domain is never contacted
 //      directly from the browser. The proxy forwards to PostHog server-side.
 
-// The canonical funnel events. Revenue is captured SERVER-SIDE on the Stripe
-// webhook, so the client deliberately does NOT emit any `$`-amount on
-// `payment_succeeded`; it only marks the step.
+// The canonical funnel events. Payment success and revenue are captured
+// SERVER-SIDE on the signed Stripe webhook — the client never claims either.
+// It only marks honest client-side steps: handing the browser to Stripe's
+// hosted page (`checkout_redirected`) or learning the server settled an
+// env-gated internal bypass (`checkout_settled_internal`).
 export type FunnelEvent =
   | "landing_view"
   | "signup_started"
@@ -25,7 +27,8 @@ export type FunnelEvent =
   | "phone_verified"
   | "checkout_started"
   | "payment_submitted"
-  | "payment_succeeded"
+  | "checkout_redirected"
+  | "checkout_settled_internal"
   | "instance_provisioned"
   | "first_login"
   | "chat_message_sent"

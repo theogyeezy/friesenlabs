@@ -3,12 +3,21 @@ import { test, expect } from "@playwright/test";
 // Signup funnel e2e (mock mode, fully offline). The SignupFlow is wired to the
 // control-plane client, which defaults to mock mode, so no server and no real
 // network are involved. PostHog is a hard no-op in mock mode (no key, disabled),
-// so analytics make zero network calls. Asserts:
+// so analytics make zero network calls.
+//
+// PAYMENT HONESTY: the client never fakes payment success. The mock checkout
+// answers the server's internal-bypass shape ({checkout_url: null, bypass:
+// "internal_comp"} — settled server-side, no Stripe page offline), so this spec
+// exercises the bypass branch: advance to provisioning and let the GET /signup
+// status poll — never the client — declare the workspace active. The Stripe
+// redirect branch (checkout_url -> window.location.assign -> resume + poll) is
+// covered offline in signup-real.spec.ts against the real bundle. Asserts:
 //   1. the full funnel walks created -> ... -> active (the success step shows),
 //   2. the explicit price consent ("You'll be charged $X/mo") renders BEFORE pay,
 //   3. no password / verify token / OTP code is rendered back into the DOM,
 //   4. no tenant_id, password, or token leaks into the DOM or into any analytics
-//      call (we install a recording shim on window before the app loads).
+//      call (we install a recording shim on window before the app loads),
+//   5. the pending-checkout resume marker is cleaned up once the signup lands.
 
 const PW = "Sup3rSecret!pw";
 const EMAIL_TOKEN = "246810";
@@ -77,9 +86,17 @@ test("signup funnel walks to active with price consent and no secret leaks", asy
   await page.getByTestId("pay-submit").click();
 
   // --- Step 5: provisioning poll -> Step 6: success ----------------------
+  // The bypass-settled checkout advances to provisioning; only the status
+  // poll (GET /signup -> "active") moves the flow to success.
   await expect(flow).toHaveAttribute("data-step", "provisioning", { timeout: 15_000 });
   await expect(flow).toHaveAttribute("data-step", "success", { timeout: 15_000 });
   await expect(page.getByTestId("step-success")).toContainText("You're all set");
+
+  // The pending-checkout resume marker (written before handing the browser to
+  // checkout, so the flow can resume after the round-trip) must be cleaned up
+  // once the signup reaches active.
+  const pendingMarker = await page.evaluate(() => sessionStorage.getItem("fl_signup_pending"));
+  expect(pendingMarker).toBeNull();
 
   // --- Leak assertions: DOM ----------------------------------------------
   const bodyText = await page.evaluate(() => document.body.innerText);
