@@ -228,6 +228,32 @@ CREATE TABLE IF NOT EXISTS playbooks (
     updated_at  timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS playbooks_tenant_idx ON playbooks (tenant_id, created_at);
+-- ---------------------------------------------------------------------------
+-- predictions — Cortex score-time prediction log (drift honesty; ml/predictions.py, appended
+-- per the Matt-append rule). One row per champion-model score; `outcome` stays NULL until the
+-- deal closes and the retrain job backfills it (won=1/lost=0) — the resolved (score, outcome)
+-- pairs are the REAL input to the live-AUC drift check. Tenant-scoped + FORCE'd RLS like every
+-- other tenant table (it is in the tenant_tables array below); written via the same pooled
+-- per-op `SET LOCAL app.current_tenant` pattern. No FK on deal_id by design: scores may land
+-- before the deal row syncs, and the log must never block on referential timing.
+-- NOTE: declared BEFORE the RLS DO block (the block executes when reached; any table named in
+-- its array must already exist or a fresh load — CI psql ON_ERROR_STOP=1, api/migrate.py's
+-- single batch — aborts). Explicit RLS statements are at EOF, same as tenant_workspaces.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS predictions (
+    id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id     uuid NOT NULL,
+    deal_id       uuid,
+    model_version int NOT NULL,
+    score         double precision NOT NULL,
+    features      jsonb,
+    outcome       int,             -- NULL until resolved; 1 = won, 0 = lost
+    predicted_at  timestamptz NOT NULL DEFAULT now(),
+    outcome_at    timestamptz
+);
+CREATE INDEX IF NOT EXISTS predictions_tenant_predicted_idx ON predictions (tenant_id, predicted_at);
+CREATE INDEX IF NOT EXISTS predictions_tenant_deal_open_idx
+    ON predictions (tenant_id, deal_id) WHERE outcome IS NULL;
 
 -- ===========================================================================
 -- ROW LEVEL SECURITY — apply the identical pattern to every tenant-scoped table.
@@ -239,7 +265,7 @@ DECLARE
     tenant_tables text[] := ARRAY[
         'documents', 'companies', 'contacts', 'deals', 'activities',
         'saved_views', 'approvals', 'traces', 'ingest_cursor', 'tenant_workspaces',
-        'tenant_settings', 'playbooks'
+        'tenant_settings', 'playbooks', 'predictions'
     ];
 BEGIN
     FOREACH t IN ARRAY tenant_tables LOOP
@@ -445,5 +471,15 @@ END $$;
 ALTER TABLE playbooks ENABLE ROW LEVEL SECURITY; ALTER TABLE playbooks FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON playbooks;
 CREATE POLICY tenant_isolation ON playbooks
+    USING (tenant_id = current_setting('app.current_tenant', true)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.current_tenant', true)::uuid);
+
+-- ---------------------------------------------------------------------------
+-- predictions — explicit RLS statements (appended; belt and suspenders with the DO block above,
+-- same convention as tenant_workspaces/tenant_settings: the FORCE requirement stays greppable).
+-- ---------------------------------------------------------------------------
+ALTER TABLE predictions ENABLE ROW LEVEL SECURITY; ALTER TABLE predictions FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON predictions;
+CREATE POLICY tenant_isolation ON predictions
     USING (tenant_id = current_setting('app.current_tenant', true)::uuid)
     WITH CHECK (tenant_id = current_setting('app.current_tenant', true)::uuid);
