@@ -18,18 +18,27 @@ pre-tenant + unauthenticated by design (an attacker has no account/tenant yet):
      ACQUISITION-scoped twin of the tenant-limits lane's POST-AUTH, tenant-keyed limiter — they
      deliberately do NOT share a module.
 
-  3. ``CaptchaVerifier`` — a SEAM where a CAPTCHA / Turnstile token COULD be required at
-     signup-start, **no-op (defaults OPEN) by default**. Nothing real is integrated here; this
-     just gives a single, well-typed place to later wire Cloudflare Turnstile / hCaptcha / reCAPTCHA
-     verification without touching the route. See the PR body for the wiring plan.
+  3. ``CaptchaVerifier`` — CAPTCHA / Turnstile token verification at signup-start. Defaults OPEN
+     (``required=False`` → verify is a no-op). When ``required=True`` AND a provider secret is
+     configured (TURNSTILE_SECRET or HCAPTCHA_SECRET), ``from_env()`` wires a REAL siteverify
+     validator that POSTs the token to the provider's endpoint (Cloudflare Turnstile or hCaptcha,
+     auto-selected by which secret env is set). A failed verification raises ``CaptchaRequiredError``
+     (route → 400); a missing validator with required=True also fails closed (never a silent pass).
+
+     HTTP transport is lazy/injectable so tests can inject a fake without network access. The module
+     itself never opens a network connection at import time.
 
 All three are constructed in api/prod_deps.py and injected into the signup routes; tests build them
-directly. NONE of them reach the network in this module.
+directly. NONE of them reach the network at import time or module-level.
 """
 from __future__ import annotations
 
+import json
 import os
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Callable
 
@@ -184,6 +193,79 @@ class SignupVelocityLimiter:
             raise VelocityLimitError(action, self.limit, self.window_seconds)
 
 
+ENV_CAPTCHA_REQUIRED = "SIGNUP_CAPTCHA_REQUIRED"  # exactly 'true'/'1' -> the seam demands a token
+ENV_TURNSTILE_SECRET = "TURNSTILE_SECRET"         # Cloudflare Turnstile secret key → real verify
+ENV_HCAPTCHA_SECRET = "HCAPTCHA_SECRET"           # hCaptcha secret key → real verify
+
+# Siteverify endpoints (public; not secrets).
+_TURNSTILE_SITEVERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+_HCAPTCHA_SITEVERIFY_URL = "https://hcaptcha.com/siteverify"
+
+# HTTP client type: a callable that takes (url: str, data: bytes, headers: dict) and returns
+# the parsed JSON response body as a dict.  The default is the stdlib urllib.request shim;
+# tests inject a fake to avoid any real network calls.
+_HttpPost = Callable[[str, bytes, dict], dict]
+
+
+def _default_http_post(url: str, data: bytes, headers: dict) -> dict:
+    """Thin urllib.request wrapper (the production HTTP transport)."""
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        # Treat HTTP errors as verification failures — never raise through to the route.
+        return {"success": False, "error-codes": [f"http-error-{exc.code}"]}
+    except Exception:  # noqa: BLE001 — network timeout, DNS fail, etc.
+        return {"success": False, "error-codes": ["network-error"]}
+
+
+def _make_turnstile_validator(secret: str,
+                              http_post: _HttpPost | None = None) -> Callable[[str, str | None], bool]:
+    """Return a validator that verifies a Cloudflare Turnstile token against their siteverify API.
+
+    The returned callable matches the ``token_validator(token, remote_ip) -> bool`` signature
+    expected by ``CaptchaVerifier.__init__``. ``http_post`` is the injectable HTTP transport;
+    None uses the stdlib default (lazy: no connection is opened until a token is actually verified).
+    """
+    _post = http_post if http_post is not None else _default_http_post
+
+    def _validate(token: str, remote_ip: str | None) -> bool:
+        params: dict[str, str] = {"secret": secret, "response": token}
+        if remote_ip:
+            params["remoteip"] = remote_ip
+        body = urllib.parse.urlencode(params).encode()
+        result = _post(
+            _TURNSTILE_SITEVERIFY_URL, body,
+            {"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        return bool(result.get("success", False))
+
+    return _validate
+
+
+def _make_hcaptcha_validator(secret: str,
+                             http_post: _HttpPost | None = None) -> Callable[[str, str | None], bool]:
+    """Return a validator that verifies an hCaptcha token against their siteverify API.
+
+    Same injectable-transport shape as ``_make_turnstile_validator``.
+    """
+    _post = http_post if http_post is not None else _default_http_post
+
+    def _validate(token: str, remote_ip: str | None) -> bool:
+        params: dict[str, str] = {"secret": secret, "response": token}
+        if remote_ip:
+            params["remoteip"] = remote_ip
+        body = urllib.parse.urlencode(params).encode()
+        result = _post(
+            _HCAPTCHA_SITEVERIFY_URL, body,
+            {"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        return bool(result.get("success", False))
+
+    return _validate
+
+
 class CaptchaRequiredError(Exception):
     """A signup-start required a CAPTCHA token and the token was missing/invalid (route -> 400).
 
@@ -192,20 +274,20 @@ class CaptchaRequiredError(Exception):
 
 
 class CaptchaVerifier:
-    """A no-op-by-default seam where a CAPTCHA / Turnstile token COULD later be required.
+    """CAPTCHA / Turnstile token verification seam for signup-start.
 
     DEFAULT POSTURE = OPEN: ``required=False`` means ``verify`` always passes (returns None) and the
-    signup route is byte-identical to having no captcha at all. This exists so a real provider
-    (Cloudflare Turnstile / hCaptcha / reCAPTCHA) can be wired LATER in exactly one place without
-    touching the route:
+    signup route is byte-identical to having no captcha at all.
 
-      * flip ``required=True`` (or set SIGNUP_CAPTCHA_REQUIRED=true → built in from_env), and
-      * inject a ``token_validator(token, remote_ip) -> bool`` that calls the provider's
-        siteverify endpoint (server-side, with the secret key from Secrets Manager).
+    When ``required=True``:
+      * A missing token → ``CaptchaRequiredError``
+      * No validator wired → ``CaptchaRequiredError`` (fail closed: "required" is never a no-op lie)
+      * Validator returns False → ``CaptchaRequiredError``
+      * Validator returns True → passes (returns None)
 
-    Until then there is NO network call and NO real provider — this is a seam, not an integration
-    (see the PR body for the full wiring plan). When required but no validator is injected, the
-    verifier FAILS CLOSED (rejects) so "required" can never silently mean "open".
+    ``from_env()`` auto-selects a REAL siteverify validator when TURNSTILE_SECRET or HCAPTCHA_SECRET
+    is present in env (Turnstile takes precedence). The HTTP transport is lazy/injectable — tests
+    inject a fake; no network call is ever made at import time or module level.
     """
 
     def __init__(self, required: bool = False,
@@ -214,12 +296,27 @@ class CaptchaVerifier:
         self._validate = token_validator
 
     @classmethod
-    def from_env(cls) -> "CaptchaVerifier":
-        """Built default: OPEN unless SIGNUP_CAPTCHA_REQUIRED is exactly 'true'/'1'. No real
-        validator is wired here (that lands with the provider integration) — so when required is
-        flipped on without a validator, ``verify`` fails closed by design."""
+    def from_env(cls, http_post: _HttpPost | None = None) -> "CaptchaVerifier":
+        """Build from env.  OPEN unless SIGNUP_CAPTCHA_REQUIRED is exactly 'true'/'1'.
+
+        Provider selection (when a secret is present):
+          * TURNSTILE_SECRET set → Cloudflare Turnstile validator
+          * HCAPTCHA_SECRET set → hCaptcha validator
+          * Both set → Turnstile takes precedence (explicit TURNSTILE_SECRET wins)
+          * Neither set → no validator (required+unconfigured fails closed by design)
+
+        ``http_post`` is the injectable HTTP transport; None uses the stdlib default.
+        The seam is callable with NO args (api/prod_deps.py calls ``CaptchaVerifier.from_env()``).
+        """
         required = os.environ.get(ENV_CAPTCHA_REQUIRED, "") in ("true", "1")
-        return cls(required=required)
+        validator: Callable[[str, str | None], bool] | None = None
+        turnstile_secret = os.environ.get(ENV_TURNSTILE_SECRET, "")
+        hcaptcha_secret = os.environ.get(ENV_HCAPTCHA_SECRET, "")
+        if turnstile_secret:
+            validator = _make_turnstile_validator(turnstile_secret, http_post)
+        elif hcaptcha_secret:
+            validator = _make_hcaptcha_validator(hcaptcha_secret, http_post)
+        return cls(required=required, token_validator=validator)
 
     def verify(self, token: str | None, remote_ip: str | None = None) -> None:
         """Pass (return None) when not required. When required: reject a missing token, and reject
@@ -234,9 +331,6 @@ class CaptchaVerifier:
             raise CaptchaRequiredError("CAPTCHA is required but no verifier is configured")
         if not self._validate(token, remote_ip):
             raise CaptchaRequiredError("CAPTCHA verification failed")
-
-
-ENV_CAPTCHA_REQUIRED = "SIGNUP_CAPTCHA_REQUIRED"  # exactly 'true'/'1' -> the seam demands a token
 
 
 # Default acquisition-velocity budgets (per IP, per window). Conservative: generous enough for a

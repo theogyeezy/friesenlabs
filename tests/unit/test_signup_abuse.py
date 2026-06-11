@@ -2,7 +2,8 @@
 
 Covers the three building blocks directly (no HTTP): the disposable-email blocklist + its
 overrides, the per-IP velocity limiter window/keying, and the captcha seam's default-open /
-fail-closed contract.
+fail-closed contract — including the real siteverify validator path (provider selected by env,
+fake HTTP transport injected so tests never hit the network).
 """
 import pytest
 
@@ -13,8 +14,12 @@ from signup.abuse import (
     CaptchaVerifier,
     DisposableEmailBlocklist,
     DisposableEmailError,
+    ENV_HCAPTCHA_SECRET,
+    ENV_TURNSTILE_SECRET,
     SignupVelocityLimiter,
     VelocityLimitError,
+    _make_hcaptcha_validator,
+    _make_turnstile_validator,
 )
 
 
@@ -159,3 +164,153 @@ def test_captcha_required_with_validator():
     assert seen == {"token": "good", "ip": "1.2.3.4"}
     with pytest.raises(CaptchaRequiredError):
         c.verify("bad", "1.2.3.4")
+
+
+# --- real siteverify validator path (fake HTTP transport, no network) -------------------------
+
+def _fake_http_post(response: dict):
+    """Return a fake http_post that records calls and returns the given response dict."""
+    calls = []
+
+    def _post(url, data, headers):
+        calls.append({"url": url, "data": data, "headers": headers})
+        return response
+
+    _post.calls = calls
+    return _post
+
+
+def test_turnstile_validator_passes_valid_token():
+    """A Turnstile token that the provider marks success=True should pass (return True)."""
+    http = _fake_http_post({"success": True})
+    validate = _make_turnstile_validator("secret-key", http_post=http)
+    assert validate("valid-token", "1.2.3.4") is True
+    assert len(http.calls) == 1
+    call = http.calls[0]
+    assert "challenges.cloudflare.com" in call["url"]
+    assert b"secret=secret-key" in call["data"]
+    assert b"response=valid-token" in call["data"]
+    assert b"remoteip=1.2.3.4" in call["data"]
+
+
+def test_turnstile_validator_fails_invalid_token():
+    """A Turnstile token that the provider marks success=False should fail (return False)."""
+    http = _fake_http_post({"success": False, "error-codes": ["invalid-input-response"]})
+    validate = _make_turnstile_validator("secret-key", http_post=http)
+    assert validate("bad-token", "1.2.3.4") is False
+
+
+def test_hcaptcha_validator_passes_valid_token():
+    """An hCaptcha token that the provider marks success=True should pass."""
+    http = _fake_http_post({"success": True})
+    validate = _make_hcaptcha_validator("hcaptcha-secret", http_post=http)
+    assert validate("valid-token", "2.2.2.2") is True
+    call = http.calls[0]
+    assert "hcaptcha.com" in call["url"]
+    assert b"secret=hcaptcha-secret" in call["data"]
+    assert b"response=valid-token" in call["data"]
+    assert b"remoteip=2.2.2.2" in call["data"]
+
+
+def test_hcaptcha_validator_fails_invalid_token():
+    """An hCaptcha token that the provider marks success=False should fail."""
+    http = _fake_http_post({"success": False})
+    validate = _make_hcaptcha_validator("hcaptcha-secret", http_post=http)
+    assert validate("bad-token", None) is False
+
+
+def test_validator_omits_remoteip_when_none():
+    """remote_ip=None should not send a remoteip field to the provider."""
+    http = _fake_http_post({"success": True})
+    validate = _make_turnstile_validator("secret-key", http_post=http)
+    validate("token", None)
+    assert b"remoteip" not in http.calls[0]["data"]
+
+
+def test_captcha_required_valid_passes_via_real_validator():
+    """required=True + wired validator + success response → verify passes (returns None)."""
+    http = _fake_http_post({"success": True})
+    validate = _make_turnstile_validator("ts-secret", http_post=http)
+    c = CaptchaVerifier(required=True, token_validator=validate)
+    assert c.verify("good-token", "1.2.3.4") is None
+
+
+def test_captcha_required_invalid_fails_closed_via_real_validator():
+    """required=True + wired validator + failure response → CaptchaRequiredError."""
+    http = _fake_http_post({"success": False})
+    validate = _make_turnstile_validator("ts-secret", http_post=http)
+    c = CaptchaVerifier(required=True, token_validator=validate)
+    with pytest.raises(CaptchaRequiredError):
+        c.verify("bad-token", "1.2.3.4")
+
+
+def test_captcha_not_required_no_op_even_with_validator():
+    """required=False → verify is always a no-op regardless of the validator result."""
+    http = _fake_http_post({"success": False})  # would fail if called
+    validate = _make_turnstile_validator("ts-secret", http_post=http)
+    c = CaptchaVerifier(required=False, token_validator=validate)
+    assert c.verify("any-token", "1.2.3.4") is None
+    # The validator must never be called when not required.
+    assert len(http.calls) == 0
+
+
+def test_from_env_wires_turnstile_when_secret_present(monkeypatch):
+    """TURNSTILE_SECRET in env → from_env() wires the Turnstile validator."""
+    monkeypatch.setenv("SIGNUP_CAPTCHA_REQUIRED", "true")
+    monkeypatch.setenv(ENV_TURNSTILE_SECRET, "ts-secret-xyz")
+    monkeypatch.delenv(ENV_HCAPTCHA_SECRET, raising=False)
+    http = _fake_http_post({"success": True})
+    c = CaptchaVerifier.from_env(http_post=http)
+    assert c.required is True
+    assert c._validate is not None
+    # The validator actually calls the Turnstile endpoint (via the injected fake transport).
+    assert c.verify("token", "1.1.1.1") is None
+    assert "challenges.cloudflare.com" in http.calls[0]["url"]
+
+
+def test_from_env_wires_hcaptcha_when_only_hcaptcha_secret_present(monkeypatch):
+    """HCAPTCHA_SECRET in env (no TURNSTILE_SECRET) → from_env() wires the hCaptcha validator."""
+    monkeypatch.setenv("SIGNUP_CAPTCHA_REQUIRED", "true")
+    monkeypatch.delenv(ENV_TURNSTILE_SECRET, raising=False)
+    monkeypatch.setenv(ENV_HCAPTCHA_SECRET, "hc-secret-xyz")
+    http = _fake_http_post({"success": True})
+    c = CaptchaVerifier.from_env(http_post=http)
+    assert c.required is True
+    assert c._validate is not None
+    assert c.verify("token", "2.2.2.2") is None
+    assert "hcaptcha.com" in http.calls[0]["url"]
+
+
+def test_from_env_turnstile_takes_precedence_over_hcaptcha(monkeypatch):
+    """When BOTH secrets are present, Turnstile wins."""
+    monkeypatch.setenv("SIGNUP_CAPTCHA_REQUIRED", "true")
+    monkeypatch.setenv(ENV_TURNSTILE_SECRET, "ts-wins")
+    monkeypatch.setenv(ENV_HCAPTCHA_SECRET, "hc-loses")
+    http = _fake_http_post({"success": True})
+    c = CaptchaVerifier.from_env(http_post=http)
+    c.verify("token", None)
+    assert "challenges.cloudflare.com" in http.calls[0]["url"]
+
+
+def test_from_env_no_secret_no_validator_required_fails_closed(monkeypatch):
+    """required=True but no provider secret → from_env() has no validator → fails closed."""
+    monkeypatch.setenv("SIGNUP_CAPTCHA_REQUIRED", "true")
+    monkeypatch.delenv(ENV_TURNSTILE_SECRET, raising=False)
+    monkeypatch.delenv(ENV_HCAPTCHA_SECRET, raising=False)
+    c = CaptchaVerifier.from_env()
+    assert c.required is True
+    assert c._validate is None
+    with pytest.raises(CaptchaRequiredError):
+        c.verify("some-token", None)
+
+
+def test_from_env_no_secret_not_required_stays_no_op(monkeypatch):
+    """No provider secret + required=False → from_env() is a plain no-op (open seam)."""
+    monkeypatch.delenv("SIGNUP_CAPTCHA_REQUIRED", raising=False)
+    monkeypatch.delenv(ENV_TURNSTILE_SECRET, raising=False)
+    monkeypatch.delenv(ENV_HCAPTCHA_SECRET, raising=False)
+    c = CaptchaVerifier.from_env()
+    assert c.required is False
+    assert c._validate is None
+    assert c.verify(None) is None
+    assert c.verify("any-token") is None
