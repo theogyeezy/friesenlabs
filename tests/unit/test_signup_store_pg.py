@@ -165,6 +165,58 @@ def test_account_update_merges_meta_never_replaces(patched):
 
 
 @pytest.mark.unit
+def test_settle_paid_atomic_is_one_cas_statement(patched):
+    """The race fix: a SINGLE UPDATE .. WHERE status NOT IN (settled) RETURNING * — only the call
+    that flips the row gets the Account back (won); a row already settled returns None (lost)."""
+    store = PgAccountStore(DSN)
+    # Win: the UPDATE matched a row and RETURNING * came back.
+    patched.conn.results = [{
+        "id": "11111111-1111-1111-1111-111111111111",
+        "email": "a@b.co", "phone": "+15125550100", "status": "paid",
+        "plan": "pro", "tenant_id": None,
+        "meta": {"cognito_sub": "sub-1", "email_verified": True, "phone_verified": True,
+                 "stripe_customer_id": "cus_42", "account": {}},
+    }]
+    won = store.settle_paid_atomic("11111111-1111-1111-1111-111111111111")
+    assert won is not None and won.state is State.PAID
+    sql, params = patched.conn.log[0]
+    assert "UPDATE accounts SET status = %s" in sql
+    assert "WHERE id = %s AND status NOT IN (%s, %s, %s)" in sql
+    assert "RETURNING *" in sql
+    assert params[0] == "paid"
+    assert params[2:5] == ("paid", "provisioning", "active")   # the already-settled guard set
+    assert len(patched.conn.log) == 1                          # ONE statement, no read-then-write
+    assert not any("app.current_tenant" in s for s in _sql(patched))  # RLS-EXEMPT (pre-tenant)
+    # Lost: no row returned (already settled) -> None.
+    patched.conn.results = [None]
+    assert store.settle_paid_atomic("11111111-1111-1111-1111-111111111111") is None
+
+
+@pytest.mark.unit
+def test_checkout_intent_round_trip_is_atomic_merge(patched):
+    """save_checkout_intent persists the SERVER-known checkout facts under meta.checkout_intent via
+    the SAME one-statement merge the OTP writer uses (no read-modify-write window); get reads it
+    back. The signed webhook is verified against this intent before settlement."""
+    store = PgAccountStore(DSN)
+    intent = {"checkout_id": "cs_42", "customer": "cus_42", "plan": "team",
+              "price_id": "price_team", "mode": "subscription", "livemode": False}
+    store.save_checkout_intent("11111111-1111-1111-1111-111111111111", intent)
+    assert len(patched.conn.log) == 1                          # one atomic statement
+    sql, params = patched.conn.log[0]
+    assert "meta = meta || jsonb_build_object('checkout_intent', %s::jsonb)" in sql
+    assert isinstance(params[0], Json)
+    assert params[0].adapted["price_id"] == "price_team"
+    assert not any("app.current_tenant" in s for s in _sql(patched))  # RLS-EXEMPT (pre-tenant)
+    # read-back
+    patched.conn.results = [{"ci": dict(intent)}]
+    assert store.get_checkout_intent("11111111-1111-1111-1111-111111111111") == intent
+    assert any("SELECT meta->'checkout_intent' AS ci FROM accounts" in s for s in _sql(patched))
+    # absent intent -> honest None
+    patched.conn.results = [{"ci": None}]
+    assert store.get_checkout_intent("22222222-2222-2222-2222-222222222222") is None
+
+
+@pytest.mark.unit
 def test_account_get_round_trips_row_to_account(patched):
     store = PgAccountStore(DSN)
     patched.conn.results = [{
