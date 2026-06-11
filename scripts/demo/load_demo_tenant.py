@@ -55,8 +55,10 @@ DEFAULT_FIXTURE = os.path.join(HERE, "fixture", "demo_tenant.json")
 FIXTURE_DOC_REF_PREFIX = "demo:doc:"
 
 # Child-before-parent delete order (FKs: activities -> deals/contacts, deals -> companies/
-# contacts, contacts -> companies). approvals/saved_views are FK-free.
-WIPE_TABLES = ("activities", "approvals", "deals", "contacts", "companies", "saved_views")
+# contacts, contacts -> companies). saved_views is FK-free. approvals are NOT wiped: the audit
+# trail is append-only (db/roles.sql revokes crm_app DELETE on approvals) — fixture approvals
+# carry fixed ids and are idempotently upserted instead (INSERT .. ON CONFLICT (id) DO UPDATE).
+WIPE_TABLES = ("activities", "deals", "contacts", "companies", "saved_views")
 
 
 # --------------------------------------------------------------------------- fixture
@@ -139,11 +141,19 @@ def load(conn, dataset: dict, *, tenant_id: str, embedder) -> dict:
                  a.get("body"), a.get("occurred_at")))
 
         # --- approvals (proposed_action jsonb; decided rows carry decided_by/at) ---------
+        # Upsert, not wipe-then-insert: approvals are an append-only audit trail (crm_app has
+        # no DELETE — db/roles.sql), so idempotency rides the fixture's fixed ids instead.
         for ap in dataset["approvals"]:
             cur.execute(
                 "INSERT INTO approvals (id, tenant_id, proposed_action, agent, reasoning, "
                 "value_at_stake, status, decided_by, deny_message, created_at, decided_at) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                "ON CONFLICT (id) DO UPDATE SET "
+                "proposed_action=EXCLUDED.proposed_action, agent=EXCLUDED.agent, "
+                "reasoning=EXCLUDED.reasoning, value_at_stake=EXCLUDED.value_at_stake, "
+                "status=EXCLUDED.status, decided_by=EXCLUDED.decided_by, "
+                "deny_message=EXCLUDED.deny_message, created_at=EXCLUDED.created_at, "
+                "decided_at=EXCLUDED.decided_at",
                 (ap["id"], tenant, Json(ap["proposed_action"]), ap.get("agent"),
                  ap.get("reasoning"), ap.get("value_at_stake"), ap.get("status", "pending"),
                  ap.get("decided_by"), ap.get("deny_message"), ap.get("created_at"),
