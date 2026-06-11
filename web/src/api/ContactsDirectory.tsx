@@ -147,12 +147,27 @@ export interface ContactsDirectoryProps {
   /** Navigate to the Pipeline board (the shell passes navTo("crm")). Without
    * it the deal links point at the ?view=pipeline seam. */
   onOpenPipeline?: () => void;
+  /** First-run: a one-click "Load sample data" on the empty state. The shell
+   * passes a handler that loads the demo fixture into this tenant; without it
+   * the empty state stays explanatory-only (no CTA). */
+  onLoadSample?: () => void | Promise<void>;
 }
 
-export function ContactsDirectory({ client, onOpenPipeline }: ContactsDirectoryProps) {
+export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: ContactsDirectoryProps) {
   const api = client ?? defaultClient();
   const [tab, setTab] = useState<Tab>("people");
   const [query, setQuery] = useState("");
+  const [loadingSample, setLoadingSample] = useState(false);
+
+  const runLoadSample = useCallback(async () => {
+    if (loadingSample || !onLoadSample) return;
+    setLoadingSample(true);
+    try {
+      await onLoadSample();
+    } finally {
+      setLoadingSample(false);
+    }
+  }, [loadingSample, onLoadSample]);
 
   const [people, setPeople] = useState<ListState<ContactRow>>(emptyList);
   const [companies, setCompanies] = useState<ListState<CompanyRow>>(emptyList);
@@ -489,8 +504,34 @@ export function ContactsDirectory({ client, onOpenPipeline }: ContactsDirectoryP
           <p style={{ fontSize: 13, marginTop: 4 }}>
             {query.trim()
               ? "Nothing in your workspace matches that search."
-              : "When your CRM syncs into your workspace, everyone your business talks to appears here."}
+              : "When your CRM syncs into your workspace, everyone your business talks to appears here. New here? Load a realistic sample to explore."}
           </p>
+          {/* First-run CTA: only on a genuinely empty workspace (not a no-match). */}
+          {!query.trim() && onLoadSample && (
+            <button
+              type="button"
+              data-testid="dir-empty-load-sample"
+              onClick={() => void runLoadSample()}
+              disabled={loadingSample}
+              aria-busy={loadingSample}
+              style={{
+                marginTop: 16,
+                appearance: "none",
+                border: "1px solid transparent",
+                borderRadius: 10,
+                padding: "9px 16px",
+                fontSize: 13,
+                fontWeight: 700,
+                fontFamily: "inherit",
+                cursor: loadingSample ? "default" : "pointer",
+                background: "var(--accent, #b4593b)",
+                color: "var(--accent-ink-on, #fff)",
+                opacity: loadingSample ? 0.7 : 1,
+              }}
+            >
+              {loadingSample ? "Loading…" : "Load sample data"}
+            </button>
+          )}
         </div>
       )}
 

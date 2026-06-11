@@ -308,6 +308,38 @@ export interface DirectoryListParams {
 }
 
 // ---------------------------------------------------------------------------
+// Onboarding / first-run wire types (mirror api/onboarding_routes.py shapes).
+// The per-tenant first-run checklist state + the one-click load-sample result.
+// No tenant_id anywhere — the server derives it from the verified claim.
+// ---------------------------------------------------------------------------
+
+/** The first-run checklist step ids (the server's STEP_IDS allow-list). */
+export type OnboardingStepId = "load_data" | "try_chat" | "invite_team";
+
+/** GET /onboarding — the calling tenant's first-run state. A brand-new tenant
+ * gets the honest fresh default (every step false, not dismissed, no sample). */
+export interface OnboardingState {
+  tenant_id: string;
+  steps: Record<OnboardingStepId, boolean>;
+  dismissed: boolean;
+  sample_loaded: boolean;
+}
+
+/** PUT /onboarding body — a partial update. Only provided fields change; steps
+ * merge key-by-key. No `sample_loaded` (set ONLY by a real load-sample). */
+export interface OnboardingPutBody {
+  steps?: Partial<Record<OnboardingStepId, boolean>>;
+  dismissed?: boolean;
+}
+
+/** POST /onboarding/load-sample — the idempotent demo-fixture load result. */
+export interface LoadSampleResponse {
+  loaded: boolean;
+  counts: Record<string, number>;
+  onboarding: OnboardingState | null;
+}
+
+// ---------------------------------------------------------------------------
 // Agent crew wire types (mirror api/agents_routes.py shapes). READ-ONLY: the
 // crew is defined by the owned roster + assembled by signup provisioning —
 // there is nothing to mutate from the client.
@@ -1361,6 +1393,31 @@ export class ApiClient {
       `/control/traces?limit=${encodeURIComponent(String(limit))}`,
     );
     return data.traces;
+  }
+
+  /** GET /onboarding: the calling tenant's first-run state (checklist + flags). */
+  async getOnboarding(): Promise<OnboardingState> {
+    if (this.mock) {
+      return (await this.mockApi()).getOnboarding();
+    }
+    return this.request<OnboardingState>("GET", "/onboarding");
+  }
+
+  /** PUT /onboarding: persist a partial first-run update (step done / dismiss). */
+  async putOnboarding(body: OnboardingPutBody): Promise<OnboardingState> {
+    if (this.mock) {
+      return (await this.mockApi()).putOnboarding(body);
+    }
+    return this.request<OnboardingState>("PUT", "/onboarding", body);
+  }
+
+  /** POST /onboarding/load-sample: one-click, idempotent demo-fixture load into
+   * the calling tenant. Reports the loaded row counts + the updated state. */
+  async loadSampleData(): Promise<LoadSampleResponse> {
+    if (this.mock) {
+      return (await this.mockApi()).loadSampleData();
+    }
+    return this.request<LoadSampleResponse>("POST", "/onboarding/load-sample");
   }
 }
 

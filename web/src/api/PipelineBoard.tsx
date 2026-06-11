@@ -136,13 +136,28 @@ export interface PipelineBoardProps {
   /** Navigate to the Greenlight queue (the shell passes navTo("approvals")).
    * Without it the toast links to the ?view=greenlight seam. */
   onOpenGreenlight?: () => void;
+  /** First-run: a one-click "Load sample data" on the empty board. The shell
+   * passes a handler that loads the demo fixture into this tenant; without it
+   * the empty board stays explanatory-only (no CTA). */
+  onLoadSample?: () => void | Promise<void>;
 }
 
-export function PipelineBoard({ client, onOpenGreenlight }: PipelineBoardProps) {
+export function PipelineBoard({ client, onOpenGreenlight, onLoadSample }: PipelineBoardProps) {
   const api = client ?? defaultClient();
   const [data, setData] = useState<ListDealsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [loadingSample, setLoadingSample] = useState(false);
+
+  const runLoadSample = useCallback(async () => {
+    if (loadingSample || !onLoadSample) return;
+    setLoadingSample(true);
+    try {
+      await onLoadSample();
+    } finally {
+      setLoadingSample(false);
+    }
+  }, [loadingSample, onLoadSample]);
   // The live API image may predate /deals (the web deploys ahead): 404 = the
   // route isn't rolled out yet — an expected state, not a failure.
   const [rollout, setRollout] = useState(false);
@@ -311,8 +326,33 @@ export function PipelineBoard({ client, onOpenGreenlight }: PipelineBoardProps) 
           <div style={{ fontSize: 15, fontWeight: 700, color: "var(--ink, #2a2622)" }}>No deals yet</div>
           <p style={{ fontSize: 13, marginTop: 4 }}>
             When deals land in your workspace — synced from your CRM or created by your agents —
-            they&rsquo;ll appear here by stage.
+            they&rsquo;ll appear here by stage. New here? Load a realistic sample to explore the board.
           </p>
+          {onLoadSample && (
+            <button
+              type="button"
+              data-testid="pipeline-empty-load-sample"
+              onClick={() => void runLoadSample()}
+              disabled={loadingSample}
+              aria-busy={loadingSample}
+              style={{
+                marginTop: 16,
+                appearance: "none",
+                border: "1px solid transparent",
+                borderRadius: 10,
+                padding: "9px 16px",
+                fontSize: 13,
+                fontWeight: 700,
+                fontFamily: "inherit",
+                cursor: loadingSample ? "default" : "pointer",
+                background: "var(--accent, #b4593b)",
+                color: "var(--accent-ink-on, #fff)",
+                opacity: loadingSample ? 0.7 : 1,
+              }}
+            >
+              {loadingSample ? "Loading…" : "Load sample data"}
+            </button>
+          )}
         </div>
       )}
 
