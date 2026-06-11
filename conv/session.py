@@ -31,7 +31,10 @@ Routing (TODO AI/P1 resolved — coordinator-driven on real runtimes):
     context, or a stub runtime without the seam) is resolved through the TRUSTED registry and
     invoked here (=> Greenlight proposal, draft-only). Read-only/unknown events that reach the
     digest un-executed (no clients configured, unresolvable round, round bound) are surfaced
-    untouched — an unknown name is never default-allowed.
+    untouched — an unknown name is never default-allowed. Knowledge-shaped turns (nothing
+    queued for approval) additionally run the SAME grounded-citation RAG path as the facade
+    (`_grounded_answer`), so live chat answers carry citations whose source_refs exist in the
+    tenant-scoped retrieved set — the citation invariant holds on BOTH runtimes.
 """
 from __future__ import annotations
 
@@ -226,6 +229,20 @@ class Conversation:
                 return name, tool_cls
         return None, None
 
+    def _grounded_answer(self, message: str) -> Answer:
+        """The citation-invariant agentic-RAG path (conv.rag.answer) — ONE implementation shared
+        by the offline facade (_handle_knowledge) and the live coordinator path
+        (_handle_coordinator). Retrieval is tenant-scoped (PgRagClient under RLS in prod) and
+        assembly guarantees every grounded citation's source_ref EXISTS in the retrieved set —
+        an uncited claim is dropped, never returned as grounded."""
+        rctx = RagContext(
+            tenant_id=self.tenant_id,
+            rag=self.rag,
+            crm=self.rag_crm,
+            synthesizer=self.synthesizer,
+        )
+        return rag_answer(message, rctx)
+
     # ------------------------------------------------------------------ public API
     def send(self, message: str, **action_kwargs: Any) -> Turn:
         """Forward one user message; return the structured turn.
@@ -302,10 +319,26 @@ class Conversation:
                     pending.append({"status": "pending", "proposal": out.get("proposal")})
 
         answer = resp.get("answer") or ""
+        citations: list[dict] = []
+        # GROUNDED CITATIONS ON THE LIVE PATH: a knowledge-shaped turn (nothing queued for
+        # approval) runs the SAME citation-invariant RAG path the FakeRuntime facade uses
+        # (_grounded_answer -> conv.rag.answer over the tenant-scoped PgRagClient), so the chat
+        # answer carries verifiable citations. Only GROUNDED citations attach — assembly already
+        # dropped any claim whose source_ref does not exist in the retrieved set, and the
+        # `c.source_ref` filter additionally strips flag_uncited markers (empty refs): an
+        # uncited claim is never surfaced as grounded. When the coordinator produced no prose,
+        # the grounded extract stands in. Action turns skip retrieval entirely (no needless
+        # vector search + synthesizer call per approval round-trip).
+        if self.rag is not None and not pending:
+            grounded = self._grounded_answer(message)
+            citations = [c.as_dict() for c in grounded.citations if c.source_ref]
+            if not answer and citations:
+                answer = grounded.answer
         if not answer and pending:
             answer = "Prepared an action for your approval."
         return Turn(
             answer=answer,
+            citations=citations,
             pending_approvals=pending,
             slots=slots,
             needs_disambiguation=ambiguous,
@@ -344,13 +377,7 @@ class Conversation:
     def _handle_knowledge(self, message, slots, ambiguous) -> Turn:
         ans: Answer
         if self.rag is not None:
-            rctx = RagContext(
-                tenant_id=self.tenant_id,
-                rag=self.rag,
-                crm=self.rag_crm,
-                synthesizer=self.synthesizer,
-            )
-            ans = rag_answer(message, rctx)
+            ans = self._grounded_answer(message)
         else:
             ans = Answer(answer="I don't have grounded sources to answer that.", citations=[])
 

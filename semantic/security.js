@@ -129,6 +129,82 @@ function checkAuth(req, authorization) {
   req.securityContext = { tenant_id: payload.tenant_id };
 }
 
+/**
+ * Build the tenant-scoped Postgres driver class over `BaseDriver` (the real
+ * `@cubejs-backend/postgres-driver` in the image; a fake in tests — injectable so the unit
+ * tests need no Cube install).
+ *
+ * Issue #177 root cause: Cube connects as the NON-OWNER `crm_app` role and every tenant table
+ * carries a FORCE'd RLS policy on `current_setting('app.current_tenant', true)::uuid` — with
+ * the GUC unset, `current_setting(..., true)` is NULL, the policy is false, and EVERY query
+ * returns zero rows. The `queryRewrite` tenant filter is defense-in-depth OVER RLS; it cannot
+ * reveal what RLS hides. The fix: every pooled connection this driver hands out runs a
+ * PARAMETERIZED `set_config('app.current_tenant', $1, false)` right after the base driver's
+ * own connection prep, binding the connection to the verified tenant. Session-level (not
+ * SET LOCAL) is correct here: the pool itself is per-tenant — `driverFactory` keys the driver
+ * on the security context and `contextToAppId` keys Cube's orchestrator/compile cache the same
+ * way — so a connection only ever serves the one tenant it was prepared for.
+ */
+function buildTenantScopedDriverClass(BaseDriver) {
+  return class TenantScopedPostgresDriver extends BaseDriver {
+    constructor(tenantId, config = {}) {
+      super(config);
+      if (!isValidTenantId(tenantId)) throw new Error('forged tenant context');
+      this.tenantId = tenantId;
+    }
+
+    async prepareConnection(conn, options) {
+      await super.prepareConnection(conn, options);
+      // Parameterized on purpose: the tenant is never interpolated into SQL, even though
+      // requireTenant/isValidTenantId already constrained the charset (defense in depth).
+      await conn.query({
+        text: "SELECT set_config('app.current_tenant', $1, false)",
+        values: [this.tenantId],
+      });
+    }
+  };
+}
+
+/**
+ * driverFactory for cube.js: per-security-context tenant-scoped Postgres driver (#177).
+ *
+ * THE TRUST RULE: the tenant comes ONLY from `securityContext.tenant_id`, which `checkAuth`
+ * above stamped from the VERIFIED HS256 JWT — never from env/headers/query. A context that
+ * carries a tenant_id of a forged shape THROWS (same `requireTenant` contract as queryRewrite/
+ * contextToAppId).
+ *
+ * A context with NO tenant at all (internal bootstrap/health-check connections — never a
+ * governed query: checkAuth guarantees authed requests carry a tenant and queryRewrite throws
+ * without one) gets the UNSCOPED base driver. That is fail-CLOSED, not open: with the GUC
+ * unset, FORCE'd RLS hides every row.
+ *
+ * `opts.driverClass` is a test seam only — production always lazy-requires the real
+ * `@cubejs-backend/postgres-driver` (present in the cubejs/cube image, not in this repo).
+ */
+function driverFactory(context = {}, opts = {}) {
+  const securityContext = (context && context.securityContext) || undefined;
+  const BaseDriver = opts.driverClass || requirePostgresDriver();
+  const hasTenant =
+    securityContext !== undefined &&
+    securityContext !== null &&
+    securityContext.tenant_id !== undefined &&
+    securityContext.tenant_id !== null;
+  if (!hasTenant) {
+    return new BaseDriver({}); // unscoped: GUC unset => FORCE'd RLS yields zero rows (fail closed)
+  }
+  const tenantId = requireTenant(securityContext); // throws on forged shapes
+  const TenantScoped = buildTenantScopedDriverClass(BaseDriver);
+  return new TenantScoped(tenantId);
+}
+
+/** Lazy + shape-tolerant require: the package historically default-exported the class and now
+ * also names it — never required at module load so semantic/test/ runs without a Cube install. */
+function requirePostgresDriver() {
+  // eslint-disable-next-line global-require
+  const mod = require('@cubejs-backend/postgres-driver');
+  return (mod && (mod.PostgresDriver || mod.default)) || mod;
+}
+
 module.exports = {
   queryRewrite,
   contextToAppId,
@@ -136,4 +212,6 @@ module.exports = {
   checkAuth,
   decodeVerifiedJwt,
   isValidTenantId,
+  buildTenantScopedDriverClass,
+  driverFactory,
 };

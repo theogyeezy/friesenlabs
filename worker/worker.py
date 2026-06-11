@@ -32,12 +32,13 @@ import os
 from typing import Any, Callable
 
 from agents.tools.base import Tool, ToolContext
+from agents.tools.build_view import BuildView
 from agents.tools.readonly import QueryCube, ReadCrm, SearchRag
-from agents.tools.sideeffecting import DraftEmail, IssueQuote, SendEmail, UpdateDeal
+from agents.tools.run_model import RunModel
+from agents.tools.sideeffecting import DraftEmail, IssueQuote, UpdateDeal
 from shared.config import (
     ENV_ANTHROPIC_API_KEY,
     ENV_CLOUDWATCH_METRICS,
-    ENV_CUBE_ENDPOINT,
     ENV_UPLIFT_ENV_ID,
     ENV_UPLIFT_ENV_KEY,
     ENV_WORKER_HEARTBEAT_SECONDS,
@@ -47,7 +48,16 @@ from shared.config import (
 log = logging.getLogger(__name__)
 
 # The tool list the worker registers. Read-only run; side-effecting route to Greenlight.
-TOOLS = [SearchRag(), QueryCube(), ReadCrm(), DraftEmail(), SendEmail(), UpdateDeal(), IssueQuote()]
+# CONTRACT (tested: tests/unit/test_worker_roster_parity.py): served == the EXACT union of the
+# tools granted across the agent roster + coordinator (agents/roster, agents/coordinator). A
+# granted-but-unserved tool wedges sessions at requires_action forever; a served-but-ungranted
+# tool is dead weight nothing can call (send_email was exactly that — no agent grants it; the
+# real send still only ever runs through the post-approval Greenlight gate in api/control).
+TOOLS = [
+    SearchRag(), QueryCube(), ReadCrm(), RunModel(), BuildView(),  # read-only (AUTO)
+    DraftEmail(),                                                  # draft (AUTO)
+    UpdateDeal(), IssueQuote(),                                    # ALWAYS_ASK -> Greenlight
+]
 
 # Brief Option A: a fixed 30s emit interval — two emits per alarm period (60s), so a single
 # dropped PutMetricData can never trip the worker_absent alarm on its own.
@@ -141,7 +151,12 @@ def build_clients_from_env() -> dict:
     - DB (`UPLIFT_DB_URL` or DB_USER/DB_PASS/DB_HOST/...): PgCrmClient (ToolContext.db),
       PgRagClient (ToolContext.rag), and a PgApprovalStore-backed Greenlight — all on the FIXED RLS
       pattern (pooled per-op conn + SET LOCAL app.current_tenant in a transaction).
-    - CUBE_ENDPOINT: recorded for the (not-yet-built) Cube client; None until that client exists.
+    - CUBE_ENDPOINT + CUBEJS_API_SECRET_VALUE: the REAL governed-metrics client
+      (`agents.tools.cube_client.CubeClient` — the same per-request tenant-JWT minting client the
+      API uses), so worker-side `query_cube` returns real rows. Degradations are VISIBLE, never a
+      silent []: with only one of the two env pieces set, every call returns the 'unconfigured'
+      result; an unreachable Cube returns an 'error' status with detail (query_cube surfaces both
+      as cube_status/detail). Both unset keeps the key None (boots byte-identical).
     - CORTEX_S3_BUCKET / CORTEX_LOCAL_DIR: the persistent Cortex model registry
       (`ml.registry.registry_from_env`) -> ToolContext.cortex, so `run_model` scores with the
       tenant's durable champion. All-unset keeps the key ABSENT (unconfigured boots stay
@@ -161,9 +176,15 @@ def build_clients_from_env() -> dict:
         clients["db"] = PgCrmClient(dsn)            # build_context derives a fresh per-call binding
         clients["rag"] = PgRagClient(dsn)
         clients["greenlight"] = Greenlight(store=PgApprovalStore(dsn))
-    # Cube client not built yet; keep the endpoint visible for the future client + REQ-001 wiring.
-    if os.environ.get(ENV_CUBE_ENDPOINT):
-        clients["cube"] = None  # TODO(cube): governed-metrics client over CUBE_ENDPOINT
+    # Governed-metrics client over CUBE_ENDPOINT (+ CUBEJS_API_SECRET_VALUE) — the SAME
+    # tenant-JWT-minting CubeClient the API wires (#175); the worker just reuses the factory.
+    # THE TRUST RULE: the client takes tenant_id per call (from the session metadata the API
+    # stamped from the verified claim) and mints a short-lived HS256 JWT for Cube's checkAuth.
+    from agents.tools.cube_client import cube_client_from_env  # noqa: PLC0415 — lazy, import-safe
+
+    cube = cube_client_from_env()
+    if cube is not None:
+        clients["cube"] = cube
     # Persistent Cortex registry — the real factory now exists (ml/registry.py). Lazy + offline-
     # safe: S3Registry defers boto3 to first blob access; LocalFs is the dev/tests fallback.
     from ml.registry import registry_from_env  # noqa: PLC0415 — lazy, import-safe either way
