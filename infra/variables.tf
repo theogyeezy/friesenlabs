@@ -119,6 +119,18 @@ variable "signup_real_deps" {
   description = "Set SIGNUP_REAL_DEPS=1 on the API task (build_signup_deps selects real adapters)."
 }
 
+variable "allow_real_sends" {
+  type        = bool
+  default     = false # DRAFT-GATE (CLAUDE.md #2): senders log + drop until this is flipped.
+  description = <<-EOT
+    Set ALLOW_REAL_SENDS=true on the API task + provisioning Lambda so the email/SMS senders
+    actually DELIVER verification mail + phone OTPs (default false = log-and-drop). The deliberate,
+    separate go-live act — flip ONLY after: (1) SNS SMS is out of the sandbox with a spend limit +
+    an origination identity, and (2) the Resend sending domain is verified. Then a paid signup can
+    complete email + phone verification end to end.
+  EOT
+}
+
 variable "log_retention_days" {
   type        = number
   default     = 30 # the single retention knob for all uplift log groups (TODO 213)

@@ -47,6 +47,12 @@ variable "signup_real_deps" {
   type    = bool
   default = false
 }
+# The draft-gate (CLAUDE.md #2): when true, ALLOW_REAL_SENDS=true is set on the API task and the
+# email/SMS senders actually deliver. Default false = senders log + drop (the safe default).
+variable "allow_real_sends" {
+  type    = bool
+  default = false
+}
 variable "stripe_key_arn" {
   type    = string
   default = ""
@@ -214,6 +220,11 @@ resource "aws_ecs_task_definition" "api" {
         # REQ-003 step 0: the master switch appears ONLY at the deliberate go-live act —
         # without it build_signup_deps() boots all-stub even with every secret present.
         var.signup_real_deps ? [{ name = "SIGNUP_REAL_DEPS", value = "1" }] : [],
+        # DRAFT-GATE (CLAUDE.md hard-constraint #2): the email/SMS senders only deliver when this is
+        # exactly "true". Absent => senders log + drop (no verification email/OTP reaches users).
+        # Deliberate, separate go-live act — flip ONLY after SNS SMS is out of sandbox (spend limit +
+        # origination identity) and the Resend sending domain is verified.
+        var.allow_real_sends ? [{ name = "ALLOW_REAL_SENDS", value = "true" }] : [],
         var.provisioning_sfn_arn != "" ? [{ name = "PROVISIONING_SFN_ARN", value = var.provisioning_sfn_arn }] : [],
         var.cube_endpoint != "" ? [{ name = "CUBE_ENDPOINT", value = var.cube_endpoint }] : [],
         var.posthog_host != "" ? [{ name = "POSTHOG_HOST", value = var.posthog_host }] : [],

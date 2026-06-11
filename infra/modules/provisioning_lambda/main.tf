@@ -10,7 +10,8 @@
 #
 # SIGNUP_REAL_DEPS rides var.signup_real_deps — the SAME deliberate go-live act as the API task
 # (REQ-003 step 0); default false = all-stub invocations (deploy invariance per REQ-003).
-# ALLOW_REAL_SENDS remains DELIBERATELY ABSENT — draft-only is a hard constraint (CLAUDE.md #2).
+# ALLOW_REAL_SENDS rides var.allow_real_sends — DEFAULT FALSE (draft-only, CLAUDE.md #2); flipping
+# it (here + the API task) is the deliberate go-live act that lets real verification mail/SMS send.
 
 variable "project" { type = string }
 variable "image_uri" {
@@ -52,6 +53,10 @@ variable "posthog_host" {
 # REQ-003 step 0 on the LAMBDA: without it build_provisioner() boots all-stub no matter what
 # other env is present. Wire it to the SAME root flag as the API task so one deliberate flip
 # moves the whole signup plane together.
+variable "allow_real_sends" {
+  type    = bool
+  default = false
+}
 variable "signup_real_deps" {
   type    = bool
   default = false
@@ -176,6 +181,9 @@ resource "aws_lambda_function" "provisioning" {
       },
       # The deliberate signup go-live act (same flag as the API task — REQ-003 step 0).
       var.signup_real_deps ? { SIGNUP_REAL_DEPS = "1" } : {},
+      # DRAFT-GATE (CLAUDE.md #2): the provisioning-completion email only sends when true. Same
+      # flag + default-false posture as the API task; flip is a deliberate go-live act.
+      var.allow_real_sends ? { ALLOW_REAL_SENDS = "true" } : {},
       var.admin_key_available ? {
         ANTHROPIC_ADMIN_KEY_SECRET_ARN = var.admin_key_secret_id
       } : {},
