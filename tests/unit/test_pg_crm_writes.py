@@ -179,11 +179,35 @@ def test_insert_deal_set_local_and_bind_params(monkeypatch):
     assert sql[0].startswith("SET LOCAL app.current_tenant")
     insert_sql, params = pool.log[1]
     assert insert_sql.startswith("INSERT INTO deals")
-    assert "VALUES (%s,%s,%s,%s,%s)" in insert_sql
+    # 6 columns now (tenant_id, company_id, contact_id, title, stage, amount) — contact_id
+    # was added so a deal can carry its contact link (was silently dropped before).
+    assert "VALUES (%s,%s,%s,%s,%s,%s)" in insert_sql
     assert "tenant_id =" not in insert_sql
-    assert params == ("T1", "c-1", "Expansion", "new", 9900)
+    # contact_id is None when not supplied; company_id "c-1" is preserved.
+    assert params == ("T1", "c-1", None, "Expansion", "new", 9900)
     assert "Expansion" not in insert_sql
     assert out["name"] == "Expansion" and out["amount"] == 9900.0
+
+
+@pytest.mark.unit
+def test_insert_deal_binds_contact_id_when_given(monkeypatch):
+    """A supplied contact_id rides through to the bind params (the link is persisted)."""
+    pool = FakePool(one={
+        "id": "d-2", "title": "Linked", "stage": "new",
+        "amount": decimal.Decimal("100.00"), "company_id": None,
+        "contact_id": "ct-9", "created_at": None,
+    })
+    _patch_pool(monkeypatch, pool)
+    crm = PgCrmClient("postgresql://crm_app@h/db")
+
+    out = crm.insert_deal(
+        tenant_id="T1", company_id="", name="Linked", stage="new", amount=100,
+        contact_id="ct-9",
+    )
+    _, params = pool.log[1]
+    # blank company_id normalizes to None; contact_id is bound in position 3.
+    assert params == ("T1", None, "ct-9", "Linked", "new", 100)
+    assert out["contact_id"] == "ct-9"
 
 
 @pytest.mark.unit
