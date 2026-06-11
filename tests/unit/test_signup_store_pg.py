@@ -115,6 +115,28 @@ def test_account_store_is_pre_tenant_no_set_local(patched):
 
 
 @pytest.mark.unit
+def test_get_by_stripe_customer_id_queries_meta_no_tenant_bind(patched):
+    """The invoice.paid fallback resolver: a jsonb meta lookup, still pre-tenant (no SET LOCAL)."""
+    store = PgAccountStore(DSN)
+    patched.conn.results = [{
+        "id": "11111111-1111-1111-1111-111111111111",
+        "email": "a@b.co", "phone": "+15125550100", "status": "paid",
+        "plan": "pro", "tenant_id": None,
+        "meta": {"cognito_sub": "sub-1", "email_verified": True, "phone_verified": True,
+                 "stripe_customer_id": "cus_42", "account": {}},
+    }]
+    acct = store.get_by_stripe_customer_id("cus_42")
+    assert acct is not None and acct.stripe_customer_id == "cus_42"
+    sql, params = patched.conn.log[0]
+    assert "meta->>'stripe_customer_id' = %s" in sql
+    assert params == ("cus_42",)
+    assert not any("app.current_tenant" in s for s in _sql(patched))  # RLS-EXEMPT (pre-tenant)
+    # And a miss is an honest None.
+    patched.conn.results = [None]
+    assert store.get_by_stripe_customer_id("cus_nope") is None
+
+
+@pytest.mark.unit
 def test_account_insert_is_idempotent_on_id(patched):
     store = PgAccountStore(DSN)
     store.insert(_acct())
