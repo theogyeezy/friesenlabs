@@ -89,6 +89,54 @@ variable "integrations_real" {
   type    = bool
   default = false
 }
+# Signup-plane PLAIN (non-secret) config: Stripe Hosted-Checkout price ids (price_..., public
+# identifiers, not secret-shaped) + redirect URLs, the Resend from-address, the verification-link
+# base, and the internal-bypass domain list. All read by shared/config.py at call time; safe ""
+# defaults = the entry is omitted and the feature stays unconfigured (deploy invariance). Real
+# values land in the machine-local prod.auto.tfvars, never here.
+variable "stripe_price_id_starter" {
+  type    = string
+  default = ""
+}
+variable "stripe_price_id_team" {
+  type    = string
+  default = ""
+}
+variable "stripe_price_id_scale" {
+  type    = string
+  default = ""
+}
+variable "stripe_success_url" {
+  type    = string
+  default = ""
+}
+variable "stripe_cancel_url" {
+  type    = string
+  default = ""
+}
+variable "resend_from_email" {
+  type    = string
+  default = ""
+}
+variable "signup_verify_url_base" {
+  type    = string
+  default = ""
+}
+variable "signup_internal_bypass_domains" {
+  type    = string
+  default = ""
+}
+# Cortex persistent model registry (ml/registry.py registry_from_env -> S3Registry): a plain
+# bucket name, no secret material — access rides the task role (IAM grant in modules/iam).
+variable "cortex_s3_bucket" {
+  type    = string
+  default = ""
+}
+# Dev/tests filesystem fallback (CORTEX_S3_BUCKET wins in code); never set in prod.
+variable "cortex_local_dir" {
+  type    = string
+  default = ""
+}
 variable "cognito_user_pool_id" { type = string }
 variable "cognito_client_id" { type = string }
 variable "aurora_endpoint" {
@@ -102,6 +150,23 @@ variable "aurora_master_secret_arn" {
 variable "desired_count" {
   type    = number
   default = 2
+}
+
+# Plain env entries injected only when set, so an apply with the "" defaults changes nothing on
+# the live task (deploy invariance). Names mirror shared/config.py — never invented here.
+locals {
+  plain_env = { for k, v in {
+    STRIPE_PRICE_ID_STARTER        = var.stripe_price_id_starter
+    STRIPE_PRICE_ID_TEAM           = var.stripe_price_id_team
+    STRIPE_PRICE_ID_SCALE          = var.stripe_price_id_scale
+    STRIPE_SUCCESS_URL             = var.stripe_success_url
+    STRIPE_CANCEL_URL              = var.stripe_cancel_url
+    RESEND_FROM_EMAIL              = var.resend_from_email
+    SIGNUP_VERIFY_URL_BASE         = var.signup_verify_url_base
+    SIGNUP_INTERNAL_BYPASS_DOMAINS = var.signup_internal_bypass_domains
+    CORTEX_S3_BUCKET               = var.cortex_s3_bucket
+    CORTEX_LOCAL_DIR               = var.cortex_local_dir
+  } : k => v if v != "" }
 }
 
 resource "aws_cloudwatch_log_group" "api" {
@@ -152,7 +217,10 @@ resource "aws_ecs_task_definition" "api" {
         var.provisioning_sfn_arn != "" ? [{ name = "PROVISIONING_SFN_ARN", value = var.provisioning_sfn_arn }] : [],
         var.cube_endpoint != "" ? [{ name = "CUBE_ENDPOINT", value = var.cube_endpoint }] : [],
         var.posthog_host != "" ? [{ name = "POSTHOG_HOST", value = var.posthog_host }] : [],
-        var.integrations_real ? [{ name = "INTEGRATIONS_REAL_SECRETS", value = "1" }] : []
+        var.integrations_real ? [{ name = "INTEGRATIONS_REAL_SECRETS", value = "1" }] : [],
+        # Signup-plane plain config + Cortex registry (see local.plain_env above) — sorted-by-name
+        # map iteration keeps the rendered task def deterministic.
+        [for k, v in local.plain_env : { name = k, value = v }]
       )
       secrets = concat(
         [
