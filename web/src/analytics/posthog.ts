@@ -23,10 +23,12 @@ export type FunnelEvent =
   | "signup_started"
   | "email_verified"
   | "phone_verified"
+  | "checkout_started"
   | "payment_submitted"
   | "payment_succeeded"
   | "instance_provisioned"
-  | "first_login";
+  | "first_login"
+  | "chat_message_sent";
 
 /** Non-secret, coarse properties only. Never a password, token, or tenant_id. */
 export type EventProps = Record<string, string | number | boolean | null | undefined>;
@@ -43,10 +45,15 @@ export interface AnalyticsConfig {
   key?: string;
   /** When true (mock/test), the wrapper is a hard no-op. */
   disabled?: boolean;
-  /** First-party reverse-proxy origin for ingestion (same-origin path). */
+  /** First-party reverse-proxy origin for INGESTION (same-origin path). */
   apiHost?: string;
-  /** Inject a PostHog-like impl. When omitted in a real build, capture is a no-op
-   *  until `attach()` provides one. Tests inject a recording stub. */
+  /** Where the PostHog app/assets (toolbar) load from — distinct from apiHost.
+   *  A reverse proxy forwards ingestion but the UI host must point at the real
+   *  PostHog app, so reusing apiHost here breaks the toolbar. */
+  uiHost?: string;
+  /** Inject a PostHog-like impl. When omitted in a real build, the wrapper
+   *  lazy-loads `posthog-js` on init() (a separate chunk, kept off the landing's
+   *  first load). Tests inject a recording stub so nothing is ever loaded. */
   impl?: PostHogLike;
 }
 
@@ -64,24 +71,44 @@ export function analyticsConfigFromEnv(): AnalyticsConfig {
   // Mock unless explicitly disabled with "0" / "false" (same rule as the API client).
   const mock = mockFlag === undefined ? true : !(mockFlag === "0" || mockFlag === "false");
   return {
+    // Safe defaults: an absent key leaves analytics a hard no-op (see the
+    // disabled rule below). VITE_POSTHOG_KEY must be injected at build time on
+    // the Amplify app for ingestion to turn on in production.
     key: env.VITE_POSTHOG_KEY ?? "",
     disabled: mock,
-    // First-party proxy path; see web/README.md ("/ph reverse proxy"). The
-    // browser only ever talks to our own origin.
+    // First-party proxy path for INGESTION; see web/README.md ("/ph reverse
+    // proxy"). The browser only ever talks to our own origin. Resolved to an
+    // absolute URL in init() (posthog-js wants a full origin, not a bare path).
     apiHost: env.VITE_POSTHOG_HOST ?? "/ph",
+    // The PostHog app host for the toolbar/assets — NOT the ingestion proxy.
+    // Defaults to PostHog US cloud; override per-region with VITE_POSTHOG_UI_HOST.
+    uiHost: env.VITE_POSTHOG_UI_HOST ?? "https://us.posthog.com",
   };
 }
+
+/** A capture buffered before the lazily-loaded SDK is ready. Bounded so a
+ *  never-arriving impl can't grow memory without bound. */
+interface PendingCapture {
+  event: FunnelEvent;
+  props?: EventProps;
+}
+const MAX_QUEUE = 50;
 
 export class Analytics {
   private readonly key: string;
   private readonly disabled: boolean;
   private readonly apiHost: string;
+  private readonly uiHost: string;
   private impl: PostHogLike | null;
   private started = false;
+  private loading = false;
+  // Events captured before the SDK finished loading; flushed on attach.
+  private queue: PendingCapture[] = [];
 
   constructor(config: AnalyticsConfig = {}) {
     this.key = config.key ?? "";
     this.apiHost = config.apiHost ?? "/ph";
+    this.uiHost = config.uiHost ?? "https://us.posthog.com";
     this.impl = config.impl ?? null;
     // Hard no-op if explicitly disabled OR if there is no key. Either is enough.
     this.disabled = Boolean(config.disabled) || this.key === "";
@@ -93,22 +120,34 @@ export class Analytics {
   }
 
   /**
-   * Provide the real PostHog SDK (or a test stub) after construction. In a real
-   * build, app code would `import posthog from "posthog-js"` and call
-   * `analytics.attach(posthog)`; we keep the dependency out of the offline build.
+   * Provide a PostHog-like impl (the real SDK or a test stub). Initializes it
+   * and flushes any queued events. Tests call this directly to inject a
+   * recording stub; in a real build init() lazy-loads `posthog-js` and calls
+   * this for you.
    */
   attach(impl: PostHogLike): void {
     this.impl = impl;
+    if (!this.disabled) {
+      this.startImpl();
+      this.flush();
+    }
   }
 
-  /** Initialize the SDK once. No-op when disabled or no impl is attached. */
-  init(): void {
-    if (this.disabled || this.started || !this.impl) return;
+  /** Run the underlying SDK's init exactly once. */
+  private startImpl(): void {
+    if (!this.impl || this.started) return;
     this.started = true;
+    // Resolve a bare proxy path ("/ph") to an absolute same-origin URL — the
+    // SDK wants a full origin for ingestion, and a relative path silently
+    // breaks it. SSR-safe: fall back to the raw value when there's no window.
+    const apiHost =
+      /^https?:\/\//.test(this.apiHost) || typeof window === "undefined"
+        ? this.apiHost
+        : `${window.location.origin}${this.apiHost.startsWith("/") ? "" : "/"}${this.apiHost}`;
     this.impl.init(this.key, {
-      api_host: this.apiHost,
-      // Route asset loads through the same first-party proxy.
-      ui_host: this.apiHost,
+      api_host: apiHost,
+      // The toolbar/app host is the REAL PostHog app, not the ingestion proxy.
+      ui_host: this.uiHost,
       // Mask every input in session replay so no password / OTP / PII is captured.
       session_recording: { maskAllInputs: true },
       mask_all_text: false,
@@ -119,14 +158,56 @@ export class Analytics {
     });
   }
 
+  /** Flush queued events through the now-ready impl. */
+  private flush(): void {
+    if (!this.impl) return;
+    const pending = this.queue;
+    this.queue = [];
+    for (const c of pending) this.impl.capture(c.event, sanitize(c.props));
+  }
+
   /**
-   * Capture a funnel event. No-op when disabled. Strips any forbidden keys
-   * (tenant_id, password, token, code) defensively so a caller mistake can never
-   * leak a secret into analytics.
+   * Initialize analytics. No-op when disabled. When no impl is attached (the
+   * normal real build), lazy-loads `posthog-js` as a separate chunk so it never
+   * weighs down the landing's first load, then attaches + flushes. Idempotent.
+   */
+  init(): void {
+    if (this.disabled) return;
+    if (this.impl) {
+      this.startImpl();
+      this.flush();
+      return;
+    }
+    if (this.loading) return;
+    this.loading = true;
+    // Dynamic import => its own chunk, only fetched when analytics is actually
+    // enabled (real mode + a key present). Failure is silent: a missing/blocked
+    // SDK must never break the app or surface an error to the user.
+    void import("posthog-js")
+      .then((mod) => {
+        const ph = (mod.default ?? mod) as unknown as PostHogLike;
+        this.attach(ph);
+      })
+      .catch(() => {
+        this.loading = false;
+      });
+  }
+
+  /**
+   * Capture a funnel event. No-op when disabled. Buffers (bounded) until the
+   * SDK is ready so events fired during the async load aren't lost. Strips any
+   * forbidden keys (tenant_id, password, token, code) defensively so a caller
+   * mistake can never leak a secret into analytics.
    */
   capture(event: FunnelEvent, props?: EventProps): void {
-    if (this.disabled || !this.impl) return;
-    this.impl.capture(event, sanitize(props));
+    if (this.disabled) return;
+    if (this.impl) {
+      this.impl.capture(event, sanitize(props));
+      return;
+    }
+    // Kick off the lazy load on the first capture if init() hasn't run yet.
+    if (!this.loading) this.init();
+    if (this.queue.length < MAX_QUEUE) this.queue.push({ event, props });
   }
 
   /** Clear identity on logout. No-op when disabled. */

@@ -1072,6 +1072,14 @@ function Landing({ onSignIn = () => {} } = {}) {
     document.body.classList.add("lp-body");
     return () => document.body.classList.remove("lp-body");
   }, []);
+  // Top of funnel: init analytics + mark the landing view once. No-op in
+  // mock/test or without a PostHog key (the wrapper is disabled), so this is
+  // inert offline and never makes a network call there.
+  useEffect(() => {
+    const ph = defaultAnalytics();
+    ph.init();
+    ph.capture("landing_view", { surface: "landing" });
+  }, []);
   useReveal();
   useHeroParallax();
   useEffect(() => {
@@ -1431,7 +1439,7 @@ function Landing({ onSignIn = () => {} } = {}) {
                 {byo && <div className="sl" style={{ color: "var(--accent-ink)" }}><LpIcon name="link" size={15} style={{ color: "var(--accent-ink)" }} />Your CRM (HubSpot / Salesforce…)</div>}
                 <div className="sl" style={{ color: "var(--ink-3)" }}><LpIcon name="shield" size={15} style={{ color: "var(--ink-3)" }} />Security &amp; Control <span style={{ marginLeft: "auto", fontSize: 11, fontWeight: 700, color: "var(--green)" }}>FREE</span></div>
               </div>
-              <button className="btn btn-primary btn-lg" style={{ width: "100%" }} onClick={() => setModal("provision")}><LpIcon name="bolt" size={16} />Provision my instance</button>
+              <button className="btn btn-primary btn-lg" style={{ width: "100%" }} onClick={() => { defaultAnalytics().capture("checkout_started", { surface: "landing_builder", modules: selectedMods.length, monthly: total }); setModal("provision"); }}><LpIcon name="bolt" size={16} />Provision my instance</button>
               <button className="btn btn-ghost" style={{ width: "100%", marginTop: 10 }} onClick={() => setModal("book")}><LpIcon name="calendar" size={15} />Talk to us first</button>
               <p style={{ fontSize: 11.5, color: "var(--ink-4)", textAlign: "center", marginTop: 12 }}>Free to start · starter credits · no card required</p>
             </div>
