@@ -6,8 +6,21 @@
 //   2. email-verify enter the emailed token
 //   3. phone-verify enter the SMS OTP code
 //   4. plan         choose a plan + EXPLICIT price consent ("You'll be charged $X/mo")
-//   5. provisioning poll GET /signup until state === "active"
-//   6. success      done; route to login
+//   5. checkout     POST /signup/{id}/checkout answers {checkout_url}: the browser
+//                   is SENT THERE (window.location.assign) — Stripe's hosted page
+//                   takes the card. The env-gated internal bypass instead answers
+//                   {checkout_url: null, bypass: "internal_comp"} (settled
+//                   server-side through the same idempotent path as the webhook),
+//                   which advances straight to provisioning. The client NEVER
+//                   claims payment success on its own: success is only ever the
+//                   server's word via the status poll below.
+//   5b. resume      the Stripe round-trip unmounts the SPA, so the account id is
+//                   parked in sessionStorage before the redirect; on return the
+//                   flow resumes from it and asks GET /signup/{id} where the
+//                   funnel honestly is (the signed webhook — the ONLY provisioning
+//                   trigger — may lag the browser redirect).
+//   6. provisioning poll GET /signup until state === "active"
+//   7. success      done; route to login
 //
 // TRUST + PRIVACY RULES:
 //   - The password never leaves the browser: the API contract takes only
@@ -140,6 +153,39 @@ const errStyle: React.CSSProperties = {
   marginTop: 12,
 };
 
+// --- checkout round-trip marker ---------------------------------------------
+// Stripe's hosted Checkout page is a full navigation away from the SPA, so all
+// React state is lost. Before redirecting we park the OPAQUE account id (never
+// a password, token, or tenant_id) in sessionStorage; on return the flow
+// resumes from it and asks the server where the funnel honestly is.
+
+const PENDING_CHECKOUT_KEY = "fl_signup_pending";
+
+function readPendingCheckout(): string | null {
+  try {
+    return window.sessionStorage.getItem(PENDING_CHECKOUT_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function writePendingCheckout(accountId: string): void {
+  try {
+    window.sessionStorage.setItem(PENDING_CHECKOUT_KEY, accountId);
+  } catch {
+    // Storage unavailable: the redirect still works; resume degrades to a
+    // fresh signup rather than blocking checkout.
+  }
+}
+
+function clearPendingCheckout(): void {
+  try {
+    window.sessionStorage.removeItem(PENDING_CHECKOUT_KEY);
+  } catch {
+    // Best-effort cleanup only.
+  }
+}
+
 // --- the flow --------------------------------------------------------------
 
 type Step = "account" | "email" | "phone" | "plan" | "provisioning" | "success";
@@ -240,16 +286,86 @@ export function SignupFlow({ client, analytics, pollMs = 600 }: SignupFlowProps)
     setBusy(true);
     ph.capture("payment_submitted", { plan: plan.id });
     try {
-      await api.checkout(accountId, { plan: plan.id });
-      // Payment succeeded; the client does NOT emit a revenue amount (that is
-      // captured server-side on the Stripe webhook).
-      ph.capture("payment_succeeded", { plan: plan.id });
-      setStep("provisioning");
+      const res = await api.checkout(accountId, { plan: plan.id });
+      if (res.checkout_url) {
+        // Hand the browser to Stripe's hosted Checkout page. The client NEVER
+        // claims payment success: provisioning fires only off the signed
+        // Stripe webhook, and on return the flow resumes from the pending
+        // marker and polls GET /signup/{id} for the real state. (No revenue
+        // amount is emitted client-side either — that is captured server-side
+        // on the webhook.)
+        writePendingCheckout(accountId);
+        ph.capture("checkout_redirected", { plan: plan.id });
+        window.location.assign(res.checkout_url);
+        return; // navigating away — leave the button in its busy state
+      }
+      if (res.bypass === "internal_comp") {
+        // Env-gated internal-domain bypass: the server already settled the
+        // payment through the SAME idempotent ledger + provisioning path as
+        // the webhook (no Stripe page exists). Advance honestly and let the
+        // status poll — not this client — decide when the workspace is live.
+        writePendingCheckout(accountId);
+        ph.capture("checkout_settled_internal", { plan: plan.id });
+        setStep("provisioning");
+        return;
+      }
+      // No hosted page and no settled bypass: checkout did not start.
+      setError("Couldn't start checkout. You haven't been charged — please try again.");
+      setBusy(false);
     } catch (e) {
       setError(friendlyErrorMessage(e, "Couldn't start checkout. You haven't been charged — please try again."));
       setBusy(false);
     }
   }, [api, ph, accountId, plan]);
+
+  // Resume after the Stripe round-trip (the redirect unmounted the SPA). Runs
+  // once on mount: when a pending-checkout marker exists, ask the SERVER where
+  // the funnel honestly is (GET /signup/{id}) instead of trusting the redirect.
+  useEffect(() => {
+    const pending = readPendingCheckout();
+    if (!pending) return;
+    let cancelled = false;
+    setAccountId(pending);
+    setBusy(true);
+    void (async () => {
+      const returnedAs = new URLSearchParams(window.location.search).get("checkout");
+      try {
+        const { state } = await api.getSignup(pending);
+        if (cancelled) return;
+        if (state === "paid" || state === "provisioning" || state === "active") {
+          // Payment is the server's word now — keep polling to completion.
+          setStep("provisioning");
+          return;
+        }
+        if (returnedAs === "success") {
+          // Stripe redirected back as paid, but the signed webhook (the ONLY
+          // provisioning trigger) can lag the browser. Keep polling rather
+          // than calling it failed — the poll advances the moment it lands.
+          setStep("provisioning");
+          return;
+        }
+        // Cancelled / abandoned checkout: nothing was charged. Land back on
+        // the plan step honestly so the user can pay when ready.
+        clearPendingCheckout();
+        setBusy(false);
+        setStep("plan");
+        if (returnedAs === "cancel") {
+          setError("Checkout was cancelled. You haven't been charged — pick a plan when you're ready.");
+        }
+      } catch (e) {
+        if (cancelled) return;
+        clearPendingCheckout();
+        setBusy(false);
+        setStep("plan");
+        setError(friendlyErrorMessage(e, "We couldn't check your payment status. Refresh to try again — you won't be charged twice."));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // Mount-only by design: the marker is a cross-navigation handoff.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Provisioning poll: GET /signup until state === "active", then success.
   const pollRef = useRef<number | null>(null);
@@ -262,6 +378,9 @@ export function SignupFlow({ client, analytics, pollMs = 600 }: SignupFlowProps)
         const { state } = await api.getSignup(accountId);
         if (cancelled) return;
         if (state === ("active" as SignupState)) {
+          // The round-trip marker has served its purpose (a refresh mid-poll
+          // resumes via it; a finished signup must not).
+          clearPendingCheckout();
           ph.capture("instance_provisioned");
           setBusy(false);
           setStep("success");

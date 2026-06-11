@@ -43,6 +43,7 @@ import {
   type SynthesizeViewResponse,
   type KnowledgeInventoryResponse,
   type KnowledgeSearchResponse,
+  type CheckoutResponse,
   type SignupResponse,
   type SignupState,
   type StoreCredentialsResponse,
@@ -1089,12 +1090,16 @@ export class MockApi {
     return { state: s.state, phone_verified: true };
   }
 
-  checkout(accountId: string): { checkout_id: string; stripe_customer_id: string } {
+  checkout(accountId: string): CheckoutResponse {
     const s = this.requireSignup(accountId);
-    // Payment "succeeds" in the mock; provisioning kicks off server-side.
+    // The mock settles like the server's env-gated internal bypass: there is
+    // no Stripe-hosted page offline, so the response carries checkout_url null
+    // + bypass, and the state machine advances server-side (here) exactly like
+    // PaymentService.internal_comp -> on_paid. The SPA must NOT fake a payment
+    // success: it advances on the bypass marker and then polls getSignup.
     s.state = "provisioning";
     s.provisioningPollsLeft = 2;
-    return { checkout_id: "cs_mock_001", stripe_customer_id: "cus_mock_001" };
+    return { checkout_url: null, bypass: "internal_comp" };
   }
 
   getSignup(accountId: string): { state: SignupState } {

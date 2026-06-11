@@ -24,6 +24,7 @@ import AgentsRoster from "./api/AgentsRoster";
 import StudioView from "./api/StudioView";
 import WorkflowsView from "./api/WorkflowsView";
 import ReportsView from "./api/ReportsView";
+import DashboardsView from "./api/DashboardsView";
 import KnowledgeView from "./api/KnowledgeView";
 import SecurityControls from "./api/SecurityControls";
 const { useState, useEffect, useRef, useMemo, useCallback, useLayoutEffect, useReducer, useContext, useImperativeHandle, useId } = React;
@@ -190,6 +191,7 @@ function App() {
     marketplace: { h1: "Marketplace", p: "Add agents to your team" },
     knowledge: { h1: "Knowledge", p: "What your agents know" },
     reports:   { h1: "Reports", p: "Performance & outcomes" },
+    dashboards: { h1: "Dashboards", p: "Your saved views, composed and pinned" },
     sidecar:   { h1: "Sidecar", p: "Your agents, on top of the tools you already use" },
     cortex:    { h1: "Cortex", p: "Your private, compounding intelligence" },
     integrations: { h1: "Switchboard", p: "Connect the products your business runs on" },
@@ -446,6 +448,11 @@ function App() {
                   is wired) — never the FLStore Reports prototype + DataAssistant
                   overlay. */}
               {route === "reports" && <ReportsView />}
+              {/* Dashboards is LIVE in real mode: named compositions of saved
+                  views over GET/POST /dashboards (kind=dashboard rows), each
+                  referenced view rendered through the SAME trusted SpecRenderer
+                  — never executable code, never FLStore prototype numbers. */}
+              {route === "dashboards" && <DashboardsView />}
               {/* Knowledge is LIVE in real mode: the tenant's ingested corpus from
                   GET /knowledge (per-source inventory) + /knowledge/search (RLS
                   cosine search, honest degrade while the embedder warms up) —
@@ -459,7 +466,7 @@ function App() {
                   feature-detects a 404 and degrades to a disabled "not yet
                   enabled" state rather than a fake working toggle. */}
               {route === "security" && <SecurityControls />}
-              {route !== "dashboard" && route !== "crm" && route !== "contacts" && route !== "agents" && route !== "studio" && route !== "workflows" && route !== "reports" && route !== "knowledge" && route !== "approvals" && route !== "integrations" && route !== "security" && (
+              {route !== "dashboard" && route !== "crm" && route !== "contacts" && route !== "agents" && route !== "studio" && route !== "workflows" && route !== "reports" && route !== "dashboards" && route !== "knowledge" && route !== "approvals" && route !== "integrations" && route !== "security" && (
                 <ComingSoon title={meta.h1} icon={navIconFor(route)} />
               )}
             </>
@@ -487,6 +494,10 @@ function App() {
               {route === "knowledge" && <Knowledge agents={agents} onNavigate={navTo} />}
               {route === "integrations" && <IntegrationHub agents={agents} onNavigate={navTo} />}
               {route === "reports" && <Reports agents={agents} />}
+              {/* Dashboards has no FLStore prototype: the API-wired screen runs
+                  against the offline mock client here (like StudioView), so the
+                  nav entry never dead-ends in either mode. */}
+              {route === "dashboards" && <DashboardsView />}
               {route === "security" && <Security agents={agents} />}
               {route === "settings" && <Settings agents={agents} onNavigate={navTo} />}
             </>
