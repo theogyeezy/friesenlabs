@@ -320,3 +320,119 @@ def test_search_rag_and_read_crm_tools_accept_the_clients(monkeypatch):
             assert sql[i - 1].startswith("SET LOCAL app.current_tenant")
     # every bind carries the ToolContext tenant (flowed from the verified claim upstream)
     assert all(p == ("T1",) for s, p in pool.log if s.startswith("SET LOCAL"))
+
+
+# --------------------------------------------------------------------------- slot lookups
+# The live-/chat 500 regression (conv/slots): the slot resolver calls
+# crm.find_companies(tenant_id, name) / find_contacts(tenant_id, name) on the injected
+# TenantBoundCrm adapter — these prove the adapter serves them: ILIKE PREFIX search, limit 10,
+# tenant-scoped via the same per-op SET LOCAL pattern, cross-tenant input refused.
+from api.pg_clients import SLOT_SEARCH_LIMIT  # noqa: E402
+
+
+@pytest.mark.unit
+def test_search_companies_prefix_sql_shape(monkeypatch):
+    pool = FakePool(rows=[])
+    _patch_pool(monkeypatch, pool)
+    crm = PgCrmClient("postgresql://crm_app@h/db")
+
+    crm.search_companies_prefix(tenant_id="T1", name="Acme")
+
+    sql = _sql(pool)
+    assert sql[0].startswith("SET LOCAL app.current_tenant")
+    assert pool.log[0][1] == ("T1",)
+    select_sql, params = pool.log[1]
+    assert "FROM companies" in select_sql
+    assert "ILIKE %s ESCAPE" in select_sql
+    assert "tenant_id" not in select_sql            # tenancy is RLS-only
+    assert params == ("Acme%", SLOT_SEARCH_LIMIT)    # PREFIX pattern + the default limit 10
+    assert SLOT_SEARCH_LIMIT == 10
+
+
+@pytest.mark.unit
+def test_search_prefix_escapes_wildcards_and_clamps_limit(monkeypatch):
+    pool = FakePool(rows=[])
+    _patch_pool(monkeypatch, pool)
+    crm = PgCrmClient("postgresql://crm_app@h/db")
+
+    crm.search_contacts_prefix(tenant_id="T1", name="50%_off\\co", limit=10**9)
+
+    select_sql, params = pool.log[1]
+    assert "FROM contacts" in select_sql
+    # User %/_/\ match literally — never smuggled pattern syntax; only OUR trailing % remains.
+    assert params[0] == "50\\%\\_off\\\\co%"
+    assert params[1] == MAX_LIMIT  # runaway limit clamped
+
+
+@pytest.mark.unit
+def test_search_prefix_normalizes_slot_resolver_row_shapes(monkeypatch):
+    import uuid
+    cid = uuid.uuid4()
+    pool = FakePool(rows=[{"id": cid, "name": "Acme Corp", "domain": "acme.com"}])
+    _patch_pool(monkeypatch, pool)
+    crm = PgCrmClient("postgresql://crm_app@h/db")
+    rows = crm.search_companies_prefix(tenant_id="T1", name="Acme")
+    assert rows == [{"id": str(cid), "name": "Acme Corp", "domain": "acme.com"}]
+
+
+@pytest.mark.unit
+def test_tenant_bound_adapter_serves_slot_lookups_positionally():
+    # The conv.slots.CrmLookup protocol call shape: find_companies(tenant_id, name) POSITIONAL.
+    log: list = []
+    crm = PgCrmClient(conn_factory=lambda: FakeConn(log, rows=[]))
+    bound = crm.for_tenant("T1")
+
+    bound.find_companies("T1", "Acme")
+    bound.find_contacts("T1", "Dana")
+
+    sql = [s for s, _ in log]
+    assert sql[0].startswith("SET LOCAL app.current_tenant") and log[0][1] == ("T1",)
+    assert "FROM companies" in sql[1] and "ILIKE %s ESCAPE" in sql[1]
+    assert sql[2].startswith("SET LOCAL app.current_tenant") and log[2][1] == ("T1",)
+    assert "FROM contacts" in sql[3] and "ILIKE %s ESCAPE" in sql[3]
+    assert log[1][1] == ("Acme%", SLOT_SEARCH_LIMIT)
+    assert log[3][1] == ("Dana%", SLOT_SEARCH_LIMIT)
+
+
+@pytest.mark.unit
+def test_tenant_bound_adapter_refuses_cross_tenant_slot_lookup():
+    log: list = []
+    crm = PgCrmClient(conn_factory=lambda: FakeConn(log, rows=[]))
+    bound = crm.for_tenant("T1")
+    with pytest.raises(RuntimeError, match="cross-tenant"):
+        bound.find_companies("T2", "Acme")
+    with pytest.raises(RuntimeError, match="cross-tenant"):
+        bound.find_contacts("T2", "Dana")
+    assert log == []  # refused before ANY SQL (not even the tenant bind)
+
+
+@pytest.mark.unit
+def test_unbound_adapter_uses_the_callers_verified_tenant():
+    # SlotContext threads the verified claim; an unbound adapter scopes to exactly that tenant.
+    log: list = []
+    crm = PgCrmClient(conn_factory=lambda: FakeConn(log, rows=[]))
+    crm.binding().find_companies("T7", "Acme")
+    assert log[0][1] == ("T7",)
+
+
+@pytest.mark.unit
+def test_slot_resolver_resolves_company_through_the_real_adapter():
+    """The exact live path that 500'd: conv.slots.resolve_slots -> SlotContext.crm
+    (= TenantBoundCrm) -> find_companies. One prefix hit resolves cleanly to company_id."""
+    from datetime import date as _date
+
+    from conv.slots import SlotContext, resolve_slots
+
+    import uuid
+    cid = uuid.uuid4()
+    log: list = []
+    rows = [{"id": cid, "name": "Acme Corp", "domain": "acme.com"}]
+    crm = PgCrmClient(conn_factory=lambda: FakeConn(log, rows=rows))
+    ctx = SlotContext(tenant_id="T1", today=_date(2026, 6, 10), crm=crm.for_tenant("T1"))
+
+    out = resolve_slots("how is the Acme account doing?", ctx)
+
+    assert out.slots["company_id"] == str(cid)
+    assert out.ambiguous == [] and out.unresolved == []
+    assert log[0][0].startswith("SET LOCAL app.current_tenant") and log[0][1] == ("T1",)
+    assert log[1][1][0] == "Acme%"

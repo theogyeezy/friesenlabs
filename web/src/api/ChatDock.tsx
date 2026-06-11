@@ -5,6 +5,7 @@
 import React from "react";
 import { ApiClient, ApiError, defaultClient, friendlyErrorMessage, type Citation } from "./client";
 import { Spinner } from "./Spinner";
+import { Analytics, defaultAnalytics } from "../analytics/posthog";
 
 const { useState, useCallback } = React;
 
@@ -18,6 +19,7 @@ interface Message {
 
 export interface ChatDockProps {
   client?: ApiClient;
+  analytics?: Analytics;
   /**
    * When mounted inside the shell's slide-over panel (which carries its own
    * "Ask your agents" header), suppress the standalone heading.
@@ -25,8 +27,9 @@ export interface ChatDockProps {
   embedded?: boolean;
 }
 
-export function ChatDock({ client, embedded = false }: ChatDockProps) {
+export function ChatDock({ client, analytics, embedded = false }: ChatDockProps) {
   const api = client ?? defaultClient();
+  const ph = analytics ?? defaultAnalytics();
   const [msgs, setMsgs] = useState<Message[]>([
     {
       who: "agent",
@@ -43,6 +46,9 @@ export function ChatDock({ client, embedded = false }: ChatDockProps) {
       setDraft("");
       setSending(true);
       setMsgs((m) => [...m, { who: "me", text: body }]);
+      // Coarse usage signal only — the message TEXT is never captured (it can
+      // carry tenant data); we mark that a chat happened + its length bucket.
+      ph.capture("chat_message_sent", { embedded, length: body.length });
       try {
         const res = await api.chat(body);
         setMsgs((m) => [...m, { who: "agent", text: res.answer, citations: res.citations }]);
@@ -60,7 +66,7 @@ export function ChatDock({ client, embedded = false }: ChatDockProps) {
         setSending(false);
       }
     },
-    [api, draft, sending],
+    [api, ph, draft, sending, embedded],
   );
 
   return (

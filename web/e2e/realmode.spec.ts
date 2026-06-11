@@ -246,3 +246,87 @@ test("network failure shows friendly connection copy, not the transport error", 
   expect(text).not.toContain("Failed to fetch");
   expect(text).not.toMatch(/API \d+/);
 });
+
+// --- Security & control surface (real mode) --------------------------------
+// The kill switch + autonomy dial PUT real state through /control/*, and each
+// control feature-detects a 404 and degrades to a disabled "not yet enabled"
+// state rather than faking a working toggle. Decision traces are read-only.
+
+test("Security controls reflect + write real /control state", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+
+  let engaged = false;
+  let level = 1;
+  await page.route("**/control/killswitch", (route) => {
+    if (route.request().method() === "PUT") {
+      engaged = JSON.parse(route.request().postData() || "{}").engaged;
+    }
+    return route.fulfill({ json: { engaged, scope: "global" } });
+  });
+  await page.route("**/control/autonomy", (route) => {
+    if (route.request().method() === "PUT") {
+      level = JSON.parse(route.request().postData() || "{}").level;
+    }
+    return route.fulfill({ json: { level } });
+  });
+  await page.route("**/control/traces*", (route) =>
+    route.fulfill({
+      json: {
+        traces: [
+          { id: "t1", ts: "2026-06-10T14:00:00Z", tool: "send_email", decision: "approved", status: "executed" },
+        ],
+      },
+    }),
+  );
+
+  await page.goto("/");
+  await expect(page.getByTestId("dashboard-view")).toBeVisible({ timeout: 15_000 });
+  await page.locator(".nav-item", { hasText: "Security" }).click();
+
+  const controls = page.getByTestId("security-controls");
+  await expect(controls).toBeVisible({ timeout: 15_000 });
+
+  // Kill switch loads LIVE and flips on click (server-confirmed, not optimistic).
+  const toggle = page.getByTestId("killswitch-toggle");
+  await expect(toggle).toBeEnabled();
+  await expect(toggle).toHaveAttribute("aria-checked", "false");
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-checked", "true", { timeout: 15_000 });
+
+  // Autonomy reflects level 1, and choosing L2 writes it.
+  await expect(page.getByTestId("autonomy-1")).toHaveAttribute("aria-checked", "true");
+  await page.getByTestId("autonomy-2").click();
+  await expect(page.getByTestId("autonomy-2")).toHaveAttribute("aria-checked", "true", { timeout: 15_000 });
+
+  // Read-only traces render.
+  await expect(page.getByTestId("traces-list")).toBeVisible();
+  await expect(page.getByTestId("trace-row").first()).toContainText("send_email");
+
+  // No raw transport strings ever surface.
+  const text = await bodyText(page);
+  expect(text).not.toMatch(/API \d+/);
+  expect(errors, `page errors: ${errors.join("\n")}`).toHaveLength(0);
+});
+
+test("Security controls degrade honestly when /control 404s", async ({ page }) => {
+  await page.route("**/control/killswitch", (route) => route.fulfill({ status: 404, body: "nope" }));
+  await page.route("**/control/autonomy", (route) => route.fulfill({ status: 404, body: "nope" }));
+  await page.route("**/control/traces*", (route) => route.fulfill({ status: 404, body: "nope" }));
+
+  await page.goto("/");
+  await expect(page.getByTestId("dashboard-view")).toBeVisible({ timeout: 15_000 });
+  await page.locator(".nav-item", { hasText: "Security" }).click();
+
+  await expect(page.getByTestId("security-controls")).toBeVisible({ timeout: 15_000 });
+
+  // Disabled, honest degrade — never a fake working toggle.
+  await expect(page.getByTestId("killswitch-unavailable")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId("killswitch-toggle")).toBeDisabled();
+  await expect(page.getByTestId("autonomy-unavailable")).toBeVisible();
+  await expect(page.getByTestId("autonomy-0")).toBeDisabled();
+  await expect(page.getByTestId("traces-unavailable")).toBeVisible();
+
+  const text = await bodyText(page);
+  expect(text).not.toMatch(/API \d+/);
+});

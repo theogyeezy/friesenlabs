@@ -1,20 +1,22 @@
-"""Integration: coordinator-driven tool routing on real runtimes (TODO AI/P1 resolved).
+"""Integration: coordinator-driven routing on real runtimes — the conv layer EXECUTES NOTHING.
 
-On any NON-fake runtime, `Conversation.send` routes from the coordinator's send_message event
-digest (agent.custom_tool_use / delegations) — the offline `_ACTION_TOOLS` regex is explicitly
-gated to FakeRuntime and never runs:
+On any NON-fake runtime, `Conversation.send` handles the `send_message` event digest only
+(docs/decisions/custom-tool-execution-path.md: ONE executor owns tool execution — the deployed
+EnvironmentWorker on Managed Agents, the runtime's own loop on the self-hosted HIPAA fallback):
 
-- a side-effecting tool the coordinator names resolves through the TRUSTED registry and lands a
-  Greenlight proposal (draft-only — the Phase 4 base class never performs the side effect);
-- read-only tool events that reach the digest UN-EXECUTED pass through untouched (AUTO tools
-  normally execute client-side inside the runtime's send_message loop — ratified #123; the
-  facade never re-runs them); an unknown tool name is never default-allowed — surfaced as-is,
-  nothing executes;
-- an action-verb utterance with NO coordinator tool event produces NO proposal (regex is off).
+- digest `tool_results` (executor-served calls) are recorded to analytics, never re-run;
+- already-routed `tool_name` entries (a gated call's Greenlight proposal, built IN the executor)
+  pass through untouched — the proposal is never enqueued twice; approvals hit analytics;
+- pending `tool` entries that reached the digest UN-served (worker down, unknown name) surface
+  untouched — the conv layer never resolves a name through the registry, never invokes,
+  never default-allows;
+- the offline `_ACTION_TOOLS` regex stays explicitly gated to FakeRuntime and never runs;
+- `action_kwargs` are facade-only: with a server-side executor there is no in-process
+  invocation to top up.
 
 The MA-shaped send_message digest is exactly what agents.runtime.ManagedAgentsRuntime returns
-({session_id, tenant_id, delegations, answer, pending_approvals}); a stub runtime replays it
-offline. FakeRuntime regex tests live in test_conversation_turn.py, unchanged.
+({session_id, tenant_id, delegations, answer, pending_approvals, tool_results}); a stub runtime
+replays it offline. FakeRuntime regex tests live in test_conversation_turn.py, unchanged.
 """
 from datetime import date
 
@@ -55,7 +57,10 @@ def _convo(runtime, **kw):
 
 
 @pytest.mark.integration
-def test_coordinator_named_side_effecting_tool_routes_to_greenlight():
+def test_unserved_side_effecting_tool_surfaces_untouched_never_invoked():
+    # The executor (worker) didn't serve the gated call — it reaches the digest as a pending
+    # `tool` entry. The conv layer must NOT resolve it through the registry or invoke it:
+    # nothing may land in Greenlight from this process (ONE executor owns Greenlight routing).
     rt = StubManagedRuntime({
         "answer": "",
         "delegations": ["nadia"],
@@ -69,23 +74,53 @@ def test_coordinator_named_side_effecting_tool_routes_to_greenlight():
     analytics = Analytics()
     convo = _convo(rt, greenlight=gl, analytics=analytics)
 
-    # NO action verbs in the utterance — the COORDINATOR picked the tool, not a regex.
     turn = convo.send("what should we do about the Acme lead?")
 
-    assert turn.pending_approvals, "the coordinator's tool choice should surface an approval"
-    approval = turn.pending_approvals[0]
-    assert approval["status"] == "pending"
-    assert approval["proposed_action"]["action"] == "send_email"
-    # It landed in the real control-plane queue, tenant-scoped — and nothing was sent.
-    pending = gl.list_pending("tenant-A")
-    assert len(pending) == 1
-    assert pending[0]["proposed_action"]["to"] == "lead@acme.com"
-    assert gl.list_pending("tenant-B") == []
-    # Delegations + the default action answer flow through; analytics recorded the routing.
+    assert turn.pending_approvals == rt.response["pending_approvals"]  # surfaced verbatim
+    assert gl.list_pending("tenant-A") == []  # NEVER enqueued by the conv layer
+    assert analytics.list("tenant-A", type=EventType.TOOL_CALL) == []
+    assert analytics.list("tenant-A", type=EventType.APPROVAL) == []
     assert turn.delegations == ["nadia"]
     assert turn.answer == "Prepared an action for your approval."
-    assert analytics.list("tenant-A", type=EventType.TOOL_CALL)
-    assert analytics.list("tenant-A", type=EventType.APPROVAL)
+
+
+@pytest.mark.integration
+def test_already_routed_entry_passes_through_and_approval_hits_analytics():
+    # The EXECUTOR routed the gated call to Greenlight (Tool.invoke, draft-only) and the digest
+    # carries the already-routed `tool_name` entry + the served call in tool_results. The conv
+    # layer records the trace and passes the entry through untouched.
+    routed = {
+        "status": "pending_approval", "tool_name": "send_email",
+        "input": {"to": "lead@acme.com", "body": "hi"},
+        "custom_tool_use_id": "ctu_1",
+        "proposal": {"action": "send_email", "to": "lead@acme.com"},
+        "approval": {"id": 42, "status": "pending"},
+    }
+    rt = StubManagedRuntime({
+        "answer": "Queued for your approval.", "delegations": [],
+        "pending_approvals": [dict(routed)],
+        "tool_results": [
+            {"tool": "send_email", "custom_tool_use_id": "ctu_1",
+             "status": "queued_for_approval"},
+        ],
+    })
+    gl = Greenlight()
+    analytics = Analytics()
+    convo = _convo(rt, greenlight=gl, analytics=analytics)
+
+    turn = convo.send("email the Acme lead")
+
+    assert turn.pending_approvals == [routed]  # untouched — never re-invoked/enqueued twice
+    assert gl.list_pending("tenant-A") == []
+    tool_calls = analytics.list("tenant-A", type=EventType.TOOL_CALL)
+    assert [(e["payload"]["tool"], e["payload"]["status"]) for e in tool_calls] == [
+        ("send_email", "queued_for_approval")
+    ]
+    approvals = analytics.list("tenant-A", type=EventType.APPROVAL)
+    assert [(e["payload"]["action"], e["payload"]["approval_id"]) for e in approvals] == [
+        ("send_email", 42)
+    ]
+    assert turn.answer == "Queued for your approval."
 
 
 @pytest.mark.integration
@@ -107,8 +142,7 @@ def test_regex_routing_is_gated_off_on_real_runtimes():
 @pytest.mark.integration
 def test_readonly_and_unknown_tool_events_surface_untouched():
     events = [
-        # Read-only reaching the digest un-executed (no clients / gated round in the runtime
-        # loop) — the facade must NOT re-run it.
+        # Read-only reaching the digest un-served (worker down) — the facade must NOT run it.
         {"status": "pending", "tool": "read_crm", "input": {"entity": "deals"},
          "custom_tool_use_id": "ctu_r"},
         # Unknown: never default-allowed into the registry — surfaced as-is.
@@ -133,41 +167,46 @@ def test_readonly_and_unknown_tool_events_surface_untouched():
 
 
 @pytest.mark.integration
-def test_explicit_action_kwargs_top_up_the_coordinator_input():
-    rt = StubManagedRuntime({
-        "answer": "", "delegations": [],
-        "pending_approvals": [{
-            "status": "pending", "tool": "send_email",
-            "input": {"to": "lead@acme.com", "subject": "old subject", "body": "hi"},
-            "custom_tool_use_id": "ctu_1",
-        }],
-    })
+def test_action_kwargs_are_facade_only_nothing_invoked_on_real_runtimes():
+    # With one server-side executor there is no in-process invocation to top up: explicit
+    # caller kwargs change nothing on the real path — the entry surfaces verbatim and nothing
+    # lands in Greenlight from this process.
+    entry = {
+        "status": "pending", "tool": "send_email",
+        "input": {"to": "lead@acme.com", "subject": "old subject", "body": "hi"},
+        "custom_tool_use_id": "ctu_1",
+    }
+    rt = StubManagedRuntime({"answer": "", "delegations": [],
+                             "pending_approvals": [dict(entry)]})
     gl = Greenlight()
     convo = _convo(rt, greenlight=gl)
 
-    convo.send("follow up", subject="new subject")  # caller-supplied args win
+    turn = convo.send("follow up", subject="new subject")
 
-    pending = gl.list_pending("tenant-A")
-    assert len(pending) == 1
-    assert pending[0]["proposed_action"]["subject"] == "new subject"
-    assert pending[0]["proposed_action"]["to"] == "lead@acme.com"
+    assert turn.pending_approvals == [entry]  # untouched — no top-up, no invocation
+    assert gl.list_pending("tenant-A") == []
 
 
 @pytest.mark.integration
-def test_greenlight_unconfigured_still_surfaces_the_proposal():
+def test_executor_served_tool_results_hit_analytics_never_rerun():
     rt = StubManagedRuntime({
-        "answer": "", "delegations": [],
-        "pending_approvals": [{
-            "status": "pending", "tool": "send_email",
-            "input": {"to": "x@y.com", "subject": "s", "body": "b"},
-            "custom_tool_use_id": "ctu_1",
-        }],
+        "answer": "You have 2 open deals.", "delegations": ["scout"],
+        "pending_approvals": [],
+        "tool_results": [
+            {"tool": "read_crm", "custom_tool_use_id": "ctu_1", "status": "ok"},
+        ],
     })
-    convo = _convo(rt)  # no greenlight injected
+    analytics = Analytics()
 
-    turn = convo.send("anything")
+    class _ExplodingCrm:
+        def read(self, **kw):  # pragma: no cover — served results are never re-run
+            raise AssertionError("tool_results must never be re-executed")
 
-    assert len(turn.pending_approvals) == 1
-    entry = turn.pending_approvals[0]
-    assert entry["status"] == "pending"
-    assert entry["proposal"]["action"] == "send_email"  # surfaced — nothing silently executed
+    convo = _convo(rt, analytics=analytics, crm=_ExplodingCrm())
+    turn = convo.send("how many open deals?")
+
+    assert turn.answer == "You have 2 open deals."
+    tool_calls = analytics.list("tenant-A", type=EventType.TOOL_CALL)
+    assert [(e["payload"]["tool"], e["payload"]["status"]) for e in tool_calls] == [
+        ("read_crm", "ok")
+    ]

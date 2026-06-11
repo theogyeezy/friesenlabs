@@ -44,6 +44,20 @@ variable "image" {
   default = "" # set to the ECR worker image (uplift-worker) before apply
 }
 
+# Cortex persistent model registry (ml/registry.py registry_from_env — the worker's run_model /
+# retrain tools read it via build_clients_from_env). Plain bucket name, no secret material;
+# access rides the worker task role (IAM grant in modules/iam). "" = entry omitted -> no
+# persistent registry, run_model degrades cleanly.
+variable "cortex_s3_bucket" {
+  type    = string
+  default = ""
+}
+# Dev/tests filesystem fallback (CORTEX_S3_BUCKET wins in code); never set in prod.
+variable "cortex_local_dir" {
+  type    = string
+  default = ""
+}
+
 resource "aws_cloudwatch_log_group" "worker" {
   name              = "/ecs/${var.project}-worker"
   retention_in_days = var.log_retention_days
@@ -76,14 +90,18 @@ resource "aws_ecs_task_definition" "worker" {
       name      = "worker"
       image     = var.image != "" ? var.image : "${var.project}-worker:latest" # verify: real ECR URI
       essential = true
-      environment = [
+      environment = concat([
         # REQ-001: worker builds its tool clients from env in run().
         { name = "CLOUDWATCH_METRICS", value = "1" },
         { name = "CUBE_ENDPOINT", value = var.cube_endpoint },
         { name = "DB_HOST", value = var.db_host },
         { name = "DB_NAME", value = var.db_name },
         { name = "DB_PORT", value = var.db_port },
-      ]
+        ],
+        # Cortex registry — injected only when set (deploy invariance with the "" defaults).
+        var.cortex_s3_bucket != "" ? [{ name = "CORTEX_S3_BUCKET", value = var.cortex_s3_bucket }] : [],
+        var.cortex_local_dir != "" ? [{ name = "CORTEX_LOCAL_DIR", value = var.cortex_local_dir }] : []
+      )
       secrets = [
         # ONLY the environment key + id reach the worker. The org ANTHROPIC_API_KEY must never
         # be here — this api/worker asymmetry IS the security boundary (REQ-001).

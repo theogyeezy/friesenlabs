@@ -23,23 +23,18 @@ import React from "react";
 import { ApiClient, defaultClient, friendlyErrorMessage, type SignupState } from "../api/client";
 import { Analytics, defaultAnalytics } from "../analytics/posthog";
 import { isAuthEnabled, signIn } from "../auth/cognito";
+import { PLAN_TIERS, formatMonthlyPrice, type PlanTier } from "../pricing";
 
 const { useState, useCallback, useRef, useEffect } = React;
 
 // --- plans -----------------------------------------------------------------
+// The plan tiers + prices come from the single pricing source of truth
+// (../pricing): one place owns 99/299/799, so the cards, the consent line, and
+// the pay button can never drift apart.
 
-interface Plan {
-  id: string;
-  name: string;
-  pricePerMonth: number;
-  blurb: string;
-}
+type Plan = PlanTier;
 
-const PLANS: Plan[] = [
-  { id: "starter", name: "Starter", pricePerMonth: 49, blurb: "One Managed agent, core CRM, Greenlight review." },
-  { id: "team", name: "Team", pricePerMonth: 149, blurb: "Up to five Managed agents, Sidecar suite, shared inbox." },
-  { id: "scale", name: "Scale", pricePerMonth: 399, blurb: "Unlimited agents, Cortex intelligence, priority support." },
-];
+const PLANS: readonly Plan[] = PLAN_TIERS;
 
 // --- password strength (simple, zxcvbn-style, in-memory only) ---------------
 
@@ -439,7 +434,7 @@ export function SignupFlow({ client, analytics, pollMs = 600 }: SignupFlowProps)
                   >
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
                       <span style={{ fontWeight: 700, fontSize: 15 }}>{p.name}</span>
-                      <span style={{ fontWeight: 700, fontSize: 15 }}>${p.pricePerMonth}/mo</span>
+                      <span style={{ fontWeight: 700, fontSize: 15 }}>{formatMonthlyPrice(p.pricePerMonth)}</span>
                     </div>
                     <div style={{ fontSize: 12.5, color: "var(--ink-3, #8a8278)", marginTop: 3 }}>{p.blurb}</div>
                   </button>
@@ -461,12 +456,12 @@ export function SignupFlow({ client, analytics, pollMs = 600 }: SignupFlowProps)
               }}
             >
               You'll be charged{" "}
-              <b data-testid="price-consent-amount">${plan.pricePerMonth}/mo</b> for the {plan.name} plan.
+              <b data-testid="price-consent-amount">{formatMonthlyPrice(plan.pricePerMonth)}</b> for the {plan.name} plan.
               Billing starts today and renews monthly until you cancel.
             </div>
 
             <button data-testid="pay-submit" style={primaryBtn} disabled={busy} onClick={() => void submitCheckout()}>
-              {busy ? "Starting checkout..." : `Pay $${plan.pricePerMonth}/mo and continue`}
+              {busy ? "Starting checkout..." : `Pay ${formatMonthlyPrice(plan.pricePerMonth)} and continue`}
             </button>
           </div>
         )}

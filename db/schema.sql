@@ -269,3 +269,146 @@ CREATE POLICY tenant_isolation ON tenant_settings
 -- whether the approved proposal was applied to the CRM or deliberately left record-only.
 ALTER TABLE approvals ADD COLUMN IF NOT EXISTS applied_at timestamptz;
 ALTER TABLE approvals ADD COLUMN IF NOT EXISTS apply_result jsonb;
+
+-- ---------------------------------------------------------------------------
+-- workspace_keys — pre-minted Anthropic workspace-key POOL (appended per the Matt-append rule;
+-- issue #152: the Admin API's key-create endpoint 405s — keys are Console-only — so provisioning
+-- CONSUMES a pre-minted key from this pool instead of minting one; ratified workspace-ceiling
+-- direction on #123. Loader: scripts/ops/load_workspace_keys.py — an owner Console act feeds it).
+-- RLS-EXEMPT (pre-tenant infrastructure): pool rows exist BEFORE any tenant_id (consumed_by_tenant
+-- is NULL until provisioning claims the row), so the tenant_isolation policy cannot apply — this
+-- table is deliberately NOT in the tenant_tables array above. Access is restricted to crm_app DML
+-- via GRANTs (SELECT/INSERT/UPDATE, no DELETE — rows are audit trail), not RLS.
+-- Consume is ONE atomic claim (UPDATE .. WHERE id = (SELECT .. FOR UPDATE SKIP LOCKED) RETURNING)
+-- and is idempotent per tenant via the partial-unique consumed_by_tenant index: a retried
+-- provisioning step re-reads the SAME row instead of burning a second key.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS workspace_keys (
+    id                 bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    key_material       text NOT NULL,         -- the pre-minted workspace-scoped API key (Console)
+    key_hash           text NOT NULL UNIQUE,  -- sha256 hex of key_material (loader dedupe/idempotency)
+    key_hint           text,                  -- non-secret hint (e.g. last 4 chars) for ops logs
+    workspace_id       text,                  -- the Console workspace the key is scoped to (if known)
+    status             text NOT NULL DEFAULT 'available',   -- available|consumed
+    consumed_by_tenant uuid,                  -- set atomically at claim time by provisioning
+    consumed_at        timestamptz,
+    created_at         timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS workspace_keys_available_idx
+    ON workspace_keys (id) WHERE status = 'available';
+CREATE UNIQUE INDEX IF NOT EXISTS workspace_keys_consumed_tenant_idx
+    ON workspace_keys (consumed_by_tenant) WHERE consumed_by_tenant IS NOT NULL;
+
+-- ---------------------------------------------------------------------------
+-- leads — public marketing-site lead capture (POST /public/leads, api/public_routes.py;
+-- appended per the Matt-append rule).
+-- RLS-EXEMPT (pre-tenant): a lead precedes any account or tenant — there is no tenant_id to key
+-- a policy on, so this table is deliberately NOT in the tenant_tables array above. Access is
+-- restricted to crm_app DML via GRANTs (INSERT + SELECT), not RLS. The route validates + caps
+-- the payload (1KB) and rate-limits per IP before any row is written.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS leads (
+    id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    kind       text NOT NULL,    -- book_call|email (validated by the route)
+    name       text NOT NULL,
+    email      text NOT NULL,
+    message    text,
+    company    text,
+    source_ip  text,             -- the requester IP the in-process rate limit keyed on
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS leads_created_idx ON leads (created_at);
+
+-- tenant_settings.killswitch_* — the PERSISTED kill switch (appended per the Matt-append rule;
+-- idempotent). Reuses the existing tenant_settings table (no new table): TENANT scope lives on the
+-- tenant's own row; GLOBAL scope lives on the reserved all-zeros control row
+-- (api/control/settings.py GLOBAL_CONTROL_TENANT — uuid4 minting always sets version/variant bits,
+-- so a provisioned tenant can never collide with it). Reads/writes ride the same per-op
+-- `SET LOCAL app.current_tenant` pattern as every tenant table (RLS scopes both scopes' rows);
+-- crm_app DML arrives via the ALTER DEFAULT PRIVILEGES grant in db/roles.sql (live-proven by
+-- signup/tenant_defaults.py writing this table). killswitch_updated_at is ops audit only —
+-- policy (who may flip which scope) is enforced at the API boundary (api/routes_control.py).
+ALTER TABLE tenant_settings ADD COLUMN IF NOT EXISTS killswitch_engaged boolean NOT NULL DEFAULT false;
+ALTER TABLE tenant_settings ADD COLUMN IF NOT EXISTS killswitch_updated_at timestamptz;
+
+-- ---------------------------------------------------------------------------
+-- Cross-tenant FK hardening (appended; idempotent — psql ON_ERROR_STOP / api.migrate re-runs
+-- safely on fresh AND live databases).
+--
+-- THE HOLE: the inline single-column FKs (contacts.company_id -> companies(id),
+-- deals.company_id/contact_id, activities.contact_id/deal_id) validate against the parent's bare
+-- id — and Postgres FK checks run with the table OWNER's rights, so RLS does NOT scope the
+-- lookup. A row could therefore pass FK validation by pointing at ANOTHER tenant's parent row.
+--
+-- THE FIX: make tenant_id part of referential integrity itself. Each parent gets
+-- UNIQUE (tenant_id, id) (anchoring composite FKs; trivially satisfied — id alone is already the
+-- PK), and each child FK becomes (tenant_id, <parent>_id) REFERENCES parent (tenant_id, id), so a
+-- child can only ever reference a parent in the SAME tenant. The default MATCH SIMPLE keeps the
+-- nullable child columns optional (a NULL company_id/contact_id/deal_id still passes, exactly
+-- like the single-column FKs replaced here). The old single-column FKs are dropped LAST, inside
+-- the same DO block (one transaction): on a fresh load the inline FKs are created then replaced;
+-- if adding a composite FK fails on a live DB (pre-existing cross-tenant row = real data damage,
+-- surface it loudly), the whole block rolls back and the old FKs remain in place.
+-- ---------------------------------------------------------------------------
+DO $$
+BEGIN
+    -- Parents: UNIQUE (tenant_id, id) so the composite FKs have a key to reference.
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                   WHERE conname = 'companies_tenant_id_id_key'
+                     AND conrelid = 'companies'::regclass) THEN
+        ALTER TABLE companies ADD CONSTRAINT companies_tenant_id_id_key UNIQUE (tenant_id, id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                   WHERE conname = 'contacts_tenant_id_id_key'
+                     AND conrelid = 'contacts'::regclass) THEN
+        ALTER TABLE contacts ADD CONSTRAINT contacts_tenant_id_id_key UNIQUE (tenant_id, id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                   WHERE conname = 'deals_tenant_id_id_key'
+                     AND conrelid = 'deals'::regclass) THEN
+        ALTER TABLE deals ADD CONSTRAINT deals_tenant_id_id_key UNIQUE (tenant_id, id);
+    END IF;
+
+    -- Children: composite same-tenant FKs.
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                   WHERE conname = 'contacts_tenant_company_fkey'
+                     AND conrelid = 'contacts'::regclass) THEN
+        ALTER TABLE contacts ADD CONSTRAINT contacts_tenant_company_fkey
+            FOREIGN KEY (tenant_id, company_id) REFERENCES companies (tenant_id, id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                   WHERE conname = 'deals_tenant_company_fkey'
+                     AND conrelid = 'deals'::regclass) THEN
+        ALTER TABLE deals ADD CONSTRAINT deals_tenant_company_fkey
+            FOREIGN KEY (tenant_id, company_id) REFERENCES companies (tenant_id, id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                   WHERE conname = 'deals_tenant_contact_fkey'
+                     AND conrelid = 'deals'::regclass) THEN
+        ALTER TABLE deals ADD CONSTRAINT deals_tenant_contact_fkey
+            FOREIGN KEY (tenant_id, contact_id) REFERENCES contacts (tenant_id, id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                   WHERE conname = 'activities_tenant_contact_fkey'
+                     AND conrelid = 'activities'::regclass) THEN
+        ALTER TABLE activities ADD CONSTRAINT activities_tenant_contact_fkey
+            FOREIGN KEY (tenant_id, contact_id) REFERENCES contacts (tenant_id, id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                   WHERE conname = 'activities_tenant_deal_fkey'
+                     AND conrelid = 'activities'::regclass) THEN
+        ALTER TABLE activities ADD CONSTRAINT activities_tenant_deal_fkey
+            FOREIGN KEY (tenant_id, deal_id) REFERENCES deals (tenant_id, id);
+    END IF;
+
+    -- Retire the cross-tenant-capable single-column FKs (default psql names from the inline
+    -- REFERENCES above). Dropped only after every composite FK exists in this transaction —
+    -- there is no window where a child column has no tenant-aware FK. Also closes the existence
+    -- oracle: with both FKs in place, the error for "uuid exists in another tenant" differed
+    -- from "uuid does not exist".
+    ALTER TABLE contacts   DROP CONSTRAINT IF EXISTS contacts_company_id_fkey;
+    ALTER TABLE deals      DROP CONSTRAINT IF EXISTS deals_company_id_fkey;
+    ALTER TABLE deals      DROP CONSTRAINT IF EXISTS deals_contact_id_fkey;
+    ALTER TABLE activities DROP CONSTRAINT IF EXISTS activities_contact_id_fkey;
+    ALTER TABLE activities DROP CONSTRAINT IF EXISTS activities_deal_id_fkey;
+END $$;

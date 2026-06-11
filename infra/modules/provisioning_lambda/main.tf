@@ -1,8 +1,16 @@
 # Provisioning Lambda (REQ-005). Count-gated on var.image_uri — authored + role pre-created;
-# the function appears once Lane Nick pushes the image. Secrets arrive as ENV VALUES (Lambda env
-# is KMS-encrypted at rest; spec-blessed choice) so the function role needs no SM reads.
-# SIGNUP_REAL_DEPS and ALLOW_REAL_SENDS are DELIBERATELY ABSENT — unset = all-stub invocations
-# (deploy invariance per REQ-003); setting them is the separate signup go-live act.
+# the function appears once Lane Nick pushes the image.
+#
+# SECRETS BY ARN, NEVER BY VALUE: earlier revisions resolved Secrets Manager VALUES at plan time
+# (data.aws_secretsmanager_secret_version) into the Lambda env — which copies every secret into
+# Terraform state and breaks rotation (a rotated value needs a re-apply to reach the function).
+# The env now carries *_SECRET_ARN references only; the function role is granted
+# secretsmanager:GetSecretValue on exactly those ARNs and the handler resolves them at cold
+# start (code-side contract: signup/lambda_handler — owned by the signup lane).
+#
+# SIGNUP_REAL_DEPS rides var.signup_real_deps — the SAME deliberate go-live act as the API task
+# (REQ-003 step 0); default false = all-stub invocations (deploy invariance per REQ-003).
+# ALLOW_REAL_SENDS remains DELIBERATELY ABSENT — draft-only is a hard constraint (CLAUDE.md #2).
 
 variable "project" { type = string }
 variable "image_uri" {
@@ -26,8 +34,8 @@ variable "verify_url_base" {
   type    = string
   default = ""
 }
-# uplift/anthropic-admin-key is EMPTY until the # VERIFY'd endpoints are confirmed — a
-# secret-version data read on an empty secret fails, so the env entry is gated separately.
+# uplift/anthropic-admin-key may be EMPTY (no version) — a GetSecretValue on an empty secret
+# fails at cold start, so the env entry stays gated even though nothing reads it at plan time.
 variable "admin_key_secret_id" { type = string }
 variable "admin_key_available" {
   type    = bool
@@ -35,29 +43,33 @@ variable "admin_key_available" {
 }
 variable "posthog_key_secret_id" {
   type    = string
-  default = "" # REQ-006: the platform posthog-project-key (has a value; read as env VALUE)
+  default = "" # REQ-006: the platform posthog-project-key (ARN reference; resolved in-handler)
 }
 variable "posthog_host" {
   type    = string
   default = ""
 }
-
-data "aws_secretsmanager_secret_version" "db" {
-  secret_id = var.db_secret_arn
+# REQ-003 step 0 on the LAMBDA: without it build_provisioner() boots all-stub no matter what
+# other env is present. Wire it to the SAME root flag as the API task so one deliberate flip
+# moves the whole signup plane together.
+variable "signup_real_deps" {
+  type    = bool
+  default = false
 }
-
-data "aws_secretsmanager_secret_version" "resend" {
-  secret_id = var.resend_key_secret_id
+# The AI-plane pair the agent_plane provisioning step needs (org key + MA environment id) —
+# mirrors the api task's api_anthropic_env gate: flip ONLY after uplift/anthropic-api-key +
+# uplift/env-id hold values.
+variable "anthropic_api_key_secret_arn" {
+  type    = string
+  default = ""
 }
-
-data "aws_secretsmanager_secret_version" "admin_key" {
-  count     = var.admin_key_available ? 1 : 0
-  secret_id = var.admin_key_secret_id
+variable "env_id_secret_arn" {
+  type    = string
+  default = ""
 }
-
-data "aws_secretsmanager_secret_version" "posthog" {
-  count     = var.posthog_key_secret_id != "" ? 1 : 0
-  secret_id = var.posthog_key_secret_id
+variable "anthropic_env_available" {
+  type    = bool
+  default = false
 }
 
 data "aws_iam_policy_document" "lambda_assume" {
@@ -101,6 +113,31 @@ resource "aws_iam_role_policy" "cognito_signup" {
   })
 }
 
+# Exactly the secret ARNs the handler may resolve at cold start — listed, never a wildcard.
+locals {
+  secret_read_arns = compact([
+    var.db_secret_arn,
+    var.resend_key_secret_id,
+    var.admin_key_secret_id,
+    var.posthog_key_secret_id,
+    var.anthropic_api_key_secret_arn,
+    var.env_id_secret_arn,
+  ])
+}
+
+resource "aws_iam_role_policy" "secrets_read" {
+  name = "read-provisioning-secrets"
+  role = aws_iam_role.lambda.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["secretsmanager:GetSecretValue"]
+      Resource = local.secret_read_arns
+    }]
+  })
+}
+
 resource "aws_iam_role_policy_attachment" "vpc_access" {
   role       = aws_iam_role.lambda.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
@@ -124,21 +161,30 @@ resource "aws_lambda_function" "provisioning" {
   environment {
     variables = merge(
       {
-        DB_USER                = jsondecode(data.aws_secretsmanager_secret_version.db.secret_string)["username"]
-        DB_PASS                = jsondecode(data.aws_secretsmanager_secret_version.db.secret_string)["password"]
-        DB_HOST                = var.db_host
-        DB_NAME                = "uplift"
-        DB_PORT                = "5432"
-        COGNITO_USER_POOL_ID   = var.cognito_user_pool_id
-        RESEND_API_KEY         = data.aws_secretsmanager_secret_version.resend.secret_string
-        RESEND_FROM_EMAIL      = var.resend_from_email
-        SIGNUP_VERIFY_URL_BASE = var.verify_url_base
+        # Plain config + Secrets Manager ARN references — never resolved values (state safety +
+        # rotation). CRM_APP_SECRET_ARN carries the crm_app username/password JSON under the SAME
+        # env name api/migrate.py already resolves via boto3.
+        CRM_APP_SECRET_ARN        = var.db_secret_arn
+        DB_HOST                   = var.db_host
+        DB_NAME                   = "uplift"
+        DB_PORT                   = "5432"
+        COGNITO_USER_POOL_ID      = var.cognito_user_pool_id
+        RESEND_API_KEY_SECRET_ARN = var.resend_key_secret_id
+        RESEND_FROM_EMAIL         = var.resend_from_email
+        SIGNUP_VERIFY_URL_BASE    = var.verify_url_base
       },
+      # The deliberate signup go-live act (same flag as the API task — REQ-003 step 0).
+      var.signup_real_deps ? { SIGNUP_REAL_DEPS = "1" } : {},
       var.admin_key_available ? {
-        ANTHROPIC_ADMIN_KEY = data.aws_secretsmanager_secret_version.admin_key[0].secret_string
+        ANTHROPIC_ADMIN_KEY_SECRET_ARN = var.admin_key_secret_id
+      } : {},
+      # AI-plane pair for the agent_plane step (org key — Lambda/API posture, NEVER the worker).
+      var.anthropic_env_available ? {
+        ANTHROPIC_API_KEY_SECRET_ARN = var.anthropic_api_key_secret_arn
+        UPLIFT_ENV_ID_SECRET_ARN     = var.env_id_secret_arn
       } : {},
       var.posthog_key_secret_id != "" ? {
-        POSTHOG_PROJECT_KEY_VALUE = data.aws_secretsmanager_secret_version.posthog[0].secret_string
+        POSTHOG_PROJECT_KEY_SECRET_ARN = var.posthog_key_secret_id
       } : {},
       var.posthog_host != "" ? { POSTHOG_HOST = var.posthog_host } : {}
     )

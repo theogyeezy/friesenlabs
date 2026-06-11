@@ -365,10 +365,12 @@ def test_session_bound_side_effecting_tool_still_only_proposes():
 
     env, _ = _fake_session_env({"tenant_id": "tenant-A"})
     binding = worker.SessionToolBinding(env, {"db": None, "greenlight": None})
-    send = next(t for t in worker.TOOLS if t.name == "send_email")
-    tool = worker.SessionBoundTool(send, binding)
+    # update_deal: an ALWAYS_ASK registry tool the roster actually grants (worker TOOLS now
+    # mirror the granted roster exactly — see tests/unit/test_worker_roster_parity.py).
+    gated = next(t for t in worker.TOOLS if t.name == "update_deal")
+    tool = worker.SessionBoundTool(gated, binding)
 
     result = json.loads(
-        asyncio.run(tool.call({"to": "x@example.com", "subject": "hi", "body": "draft"}))
+        asyncio.run(tool.call({"deal_id": "deal-1", "changes": {"stage": "won"}}))
     )
     assert result["status"] == "pending_approval"

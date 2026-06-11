@@ -4,21 +4,25 @@
   * Boto3SecretProvider resolves SecretString/SecretBinary via an injected fake
     Secrets Manager client; a missing secret maps to SecretNotFoundError while
     other client errors propagate untouched
-  * HubSpotConnector.authenticate resolves the PER-TENANT ref first and only
-    falls back to the DEPRECATED shared ref (with a DeprecationWarning)
+  * HubSpotConnector.authenticate resolves the PER-TENANT ref and ONLY that —
+    the shared-token fallback is GONE: a missing/empty per-tenant secret is a
+    hard MissingTenantCredentialError (with a structured log line), and any
+    other provider failure propagates untouched (the except is narrow)
   * the resolved token is handed to the source client via set_token (the real
     HubSpotRestClient path)
 """
+import logging
 import warnings
 
 import pytest
 
 from ingest.connectors.base import (
     Boto3SecretProvider,
+    MissingTenantCredentialError,
     SecretNotFoundError,
     tenant_secret_ref,
 )
-from ingest.connectors.hubspot import HUBSPOT_TOKEN_SECRET_REF, HubSpotConnector
+from ingest.connectors.hubspot import HubSpotConnector
 from ingest.pipeline import InMemoryRawSink, InMemoryStructuredSink
 
 TENANT = "11111111-1111-1111-1111-111111111111"
@@ -157,23 +161,69 @@ def test_authenticate_prefers_per_tenant_secret_no_warning():
 
 
 @pytest.mark.unit
-def test_authenticate_falls_back_to_shared_ref_with_deprecation_warning():
-    secrets = RecordingSecrets({HUBSPOT_TOKEN_SECRET_REF: "pat-shared"})
+def test_authenticate_missing_per_tenant_secret_is_a_hard_error(caplog):
+    """No fallback: even with a shared-looking token in the vault, a missing
+    per-tenant secret must hard-fail — never resolve any OTHER ref."""
+    legacy_shared_ref = "uplift/hubspot-private-app-token"
+    secrets = RecordingSecrets({legacy_shared_ref: "pat-shared"})
     client = TokenRecordingClient()
     conn = _connector(secrets, client)
-    with pytest.warns(DeprecationWarning, match="DEPRECATED"):
-        conn.authenticate()
-    assert secrets.calls == [PER_TENANT_REF, HUBSPOT_TOKEN_SECRET_REF]  # per-tenant FIRST
-    assert client.token == "pat-shared"
-    assert conn._authed
+    with caplog.at_level(logging.ERROR, logger="ingest.connectors.hubspot"):
+        with pytest.raises(MissingTenantCredentialError) as exc_info:
+            conn.authenticate()
+    assert secrets.calls == [PER_TENANT_REF]      # the ONLY ref ever consulted
+    assert client.token is None                   # no token handed out
+    assert not conn._authed
+    # The error carries the structured identity of the failure (no secret values).
+    err = exc_info.value
+    assert (err.tenant_id, err.source, err.ref) == (TENANT, "hubspot", PER_TENANT_REF)
+    assert "no shared-token fallback" in str(err)
+    # Structured log line: event + tenant + source + ref, never a token value.
+    assert any(
+        "event=missing_tenant_credential" in r.getMessage()
+        and TENANT in r.getMessage()
+        and PER_TENANT_REF in r.getMessage()
+        and "pat-shared" not in r.getMessage()
+        for r in caplog.records
+    )
 
 
 @pytest.mark.unit
-def test_authenticate_empty_token_everywhere_raises():
-    secrets = RecordingSecrets({HUBSPOT_TOKEN_SECRET_REF: ""})
-    with pytest.warns(DeprecationWarning):
-        with pytest.raises(RuntimeError, match="empty token"):
+def test_authenticate_never_emits_deprecation_warning():
+    """The old fallback warned; the new path must not even have the seam."""
+    secrets = RecordingSecrets({})
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        with pytest.raises(MissingTenantCredentialError):
             _connector(secrets).authenticate()
+    assert not [w for w in caught if issubclass(w.category, DeprecationWarning)]
+
+
+@pytest.mark.unit
+def test_authenticate_empty_per_tenant_token_is_a_hard_error(caplog):
+    secrets = RecordingSecrets({PER_TENANT_REF: ""})
+    with caplog.at_level(logging.ERROR, logger="ingest.connectors.hubspot"):
+        with pytest.raises(MissingTenantCredentialError, match="empty value"):
+            _connector(secrets).authenticate()
+    assert secrets.calls == [PER_TENANT_REF]
+    assert any("reason=empty_secret_value" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.unit
+def test_authenticate_provider_errors_propagate_untouched():
+    """The except is NARROW: only SecretNotFoundError maps to the credential
+    error — an access/throttle/network failure must surface as itself, not be
+    swallowed into 'missing credential'."""
+
+    class Boom(Exception):
+        pass
+
+    class ExplodingSecrets:
+        def get_secret(self, ref):
+            raise Boom("AccessDeniedException")
+
+    with pytest.raises(Boom):
+        _connector(ExplodingSecrets()).authenticate()
 
 
 @pytest.mark.unit

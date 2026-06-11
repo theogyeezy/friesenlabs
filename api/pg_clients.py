@@ -99,6 +99,19 @@ def _escape_ilike(q: str) -> str:
     return f"%{escaped}%"
 
 
+# Slot resolution (conv/slots) wants a SMALL candidate set: >1 match triggers a human
+# disambiguation prompt, so anything beyond a handful of prefix hits is noise.
+SLOT_SEARCH_LIMIT = 10
+
+
+def _escape_ilike_prefix(q: str) -> str:
+    r"""Escape the LIKE metacharacters (\, %, _) in a user-supplied name and wrap it for a
+    PREFIX match ('Acme' -> 'Acme%'). Same discipline as `_escape_ilike`: always a bind
+    parameter with an explicit `ESCAPE '\'` clause — user input can never smuggle wildcards."""
+    escaped = str(q).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"{escaped}%"
+
+
 def _clamp_offset(offset: Any, *, max_offset: int = 100_000) -> int:
     """Pagination offset: junk -> 0, negatives -> 0, runaway -> capped (bound, never trusted)."""
     try:
@@ -434,6 +447,49 @@ class PgCrmClient(_PgTenantClient):
                                      "deal_id": deal_id}.items() if v is not None}
         return self.read(tenant_id=tenant_id, entity="activities", filters=filters, limit=limit)
 
+    # ----------------------------------------------------------------- slot-resolution lookups
+    # ILIKE PREFIX search for the conversational slot resolver (conv/slots): "Acme account" ->
+    # candidate company rows, "email Dana" -> candidate contact rows. Same security discipline
+    # as every read above: HAND-WRITTEN column lists, the search term is a bind param run
+    # through `_escape_ilike_prefix` with an explicit ESCAPE clause (user `%`/`_` match
+    # literally), tenancy is RLS-only via the per-op `SET LOCAL` transaction.
+
+    def search_companies_prefix(self, *, tenant_id: str, name: str,
+                                limit: int = SLOT_SEARCH_LIMIT) -> list[dict]:
+        """Companies whose name starts with `name` (case-insensitive), tenant-scoped via RLS.
+        Returns the slot-resolver row shape: [{id, name, domain}]."""
+        n = _clamp_limit(limit, SLOT_SEARCH_LIMIT)
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "SELECT id, name, domain FROM companies "
+                "WHERE name ILIKE %s ESCAPE '\\' "
+                "ORDER BY name ASC LIMIT %s",
+                (_escape_ilike_prefix(name), n),
+            )
+            rows = _dict_rows(cur)
+        return [
+            {"id": _as_str(r.get("id")), "name": r.get("name"), "domain": r.get("domain")}
+            for r in rows
+        ]
+
+    def search_contacts_prefix(self, *, tenant_id: str, name: str,
+                               limit: int = SLOT_SEARCH_LIMIT) -> list[dict]:
+        """Contacts whose name starts with `name` (case-insensitive), tenant-scoped via RLS.
+        Returns the slot-resolver row shape: [{id, name, email}]."""
+        n = _clamp_limit(limit, SLOT_SEARCH_LIMIT)
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "SELECT id, name, email FROM contacts "
+                "WHERE name ILIKE %s ESCAPE '\\' "
+                "ORDER BY name ASC LIMIT %s",
+                (_escape_ilike_prefix(name), n),
+            )
+            rows = _dict_rows(cur)
+        return [
+            {"id": _as_str(r.get("id")), "name": r.get("name"), "email": r.get("email")}
+            for r in rows
+        ]
+
     # ----------------------------------------------------------------- deals board reads
     # Fixed-SQL reads for api/deals_routes.py (the Pipeline board). Column lists are
     # HAND-WRITTEN (the allow-list discipline: identifiers never come from input), every value
@@ -763,6 +819,68 @@ class PgCrmClient(_PgTenantClient):
         return TenantBoundCrm(self, tenant_id)
 
 
+class PgControlSettingsStore(_PgTenantClient):
+    """Control-plane settings over the EXISTING `tenant_settings` table (FORCE'd RLS).
+
+    Backs the persisted kill switch + autonomy dial (api/control/settings.py): one row per
+    tenant — `autonomy_level` (seeded 'L1' at provisioning by signup/tenant_defaults.py) and
+    `killswitch_engaged` (db/schema.sql append). The GLOBAL kill-switch scope rides the reserved
+    all-zeros control row (api/control/settings.py GLOBAL_CONTROL_TENANT), written/read by
+    deliberately scoping a transaction to that sentinel — request-path tenant scoping still
+    comes ONLY from the verified claim (THE TRUST RULE).
+
+    Same per-op `SET LOCAL app.current_tenant` transaction discipline as everything above
+    (RLS scopes every read/write; WITH CHECK covers the upserts). Writes are upserts:
+    `ON CONFLICT (tenant_id) DO UPDATE` — unlike the provisioning seed's DO NOTHING, a control
+    flip is an explicit operator action and MUST win over the seeded default.
+    """
+
+    # The persisted autonomy texts (api/control/types.py Level values) — validated before SQL.
+    _VALID_LEVELS = ("L0", "L1", "L2", "L3")
+
+    def get(self, tenant_id) -> dict | None:
+        """The tenant's control row (None when not yet seeded/flipped). RLS-scoped."""
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "SELECT tenant_id, autonomy_level, killswitch_engaged "
+                "FROM tenant_settings WHERE tenant_id = %s",
+                (str(tenant_id),),
+            )
+            row = _dict_one(cur)
+        if row is None:
+            return None
+        return {
+            "tenant_id": _as_str(row.get("tenant_id")),
+            "autonomy_level": row.get("autonomy_level"),
+            "killswitch_engaged": bool(row.get("killswitch_engaged")),
+        }
+
+    def set_killswitch(self, tenant_id, engaged: bool) -> None:
+        """Upsert the kill-switch flag (audit timestamp rides along). RLS WITH CHECK enforces
+        tenant_id == app.current_tenant on both the INSERT and the UPDATE arm."""
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "INSERT INTO tenant_settings (tenant_id, killswitch_engaged, killswitch_updated_at) "
+                "VALUES (%s,%s,now()) "
+                "ON CONFLICT (tenant_id) DO UPDATE SET "
+                "killswitch_engaged = EXCLUDED.killswitch_engaged, killswitch_updated_at = now()",
+                (str(tenant_id), bool(engaged)),
+            )
+
+    def set_autonomy(self, tenant_id, level: str) -> None:
+        """Upsert the tenant's autonomy level ('L0'..'L3' — validated BEFORE any SQL)."""
+        if level not in self._VALID_LEVELS:
+            raise ValueError(
+                f"autonomy level must be one of {', '.join(self._VALID_LEVELS)}, got {level!r}"
+            )
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "INSERT INTO tenant_settings (tenant_id, autonomy_level) VALUES (%s,%s) "
+                "ON CONFLICT (tenant_id) DO UPDATE SET autonomy_level = EXCLUDED.autonomy_level",
+                (str(tenant_id), level),
+            )
+
+
 class TenantBoundCrm:
     """Per-request `ToolContext.db` adapter: `set_tenant(...)` + `read(entity=, limit=)`.
 
@@ -785,3 +903,39 @@ class TenantBoundCrm:
             raise RuntimeError("tenant not bound — call set_tenant() (ToolContext.bind_tenant) first")
         return self._client.read(tenant_id=self._tenant_id, entity=entity,
                                  filters=filters, limit=limit)
+
+    # ----------------------------------------------------------------- slot-resolver lookups
+    # The `conv.slots.CrmLookup` protocol: `find_companies(tenant_id, name)` /
+    # `find_contacts(tenant_id, name)`. The prod /chat path injects THIS adapter as
+    # `SlotContext.crm` (asgi wires `crm.for_tenant(tenant_id)` into the Conversation), so
+    # these methods are what keeps slot resolution from 500ing on a live turn. ILIKE prefix
+    # search, capped at SLOT_SEARCH_LIMIT (10), same per-op SET LOCAL pattern underneath.
+
+    def _slot_tenant(self, tenant_id: str) -> str:
+        """THE TRUST RULE, defense in depth: when this adapter is pre-bound (for_tenant /
+        set_tenant from the verified claim), a caller-supplied tenant that DISAGREES is a
+        cross-tenant attempt — refuse loudly, never silently serve either tenant. Unbound
+        adapters use the caller's tenant_id (the slot context threads the verified claim)."""
+        tid = str(tenant_id)
+        if self._tenant_id is not None and tid != self._tenant_id:
+            raise RuntimeError(
+                f"cross-tenant slot lookup refused: adapter is bound to {self._tenant_id!r} "
+                f"but the lookup asked for {tid!r}"
+            )
+        return self._tenant_id if self._tenant_id is not None else tid
+
+    def find_companies(self, tenant_id: str, name: str,
+                       limit: int = SLOT_SEARCH_LIMIT) -> list[dict]:
+        """Slot-resolver company lookup: ILIKE prefix match on name, tenant-scoped (RLS via the
+        client's SET LOCAL transaction), limit 10. Rows: [{id, name, domain}]."""
+        return self._client.search_companies_prefix(
+            tenant_id=self._slot_tenant(tenant_id), name=name, limit=limit
+        )
+
+    def find_contacts(self, tenant_id: str, name: str,
+                      limit: int = SLOT_SEARCH_LIMIT) -> list[dict]:
+        """Slot-resolver contact lookup: ILIKE prefix match on name, tenant-scoped (RLS via the
+        client's SET LOCAL transaction), limit 10. Rows: [{id, name, email}]."""
+        return self._client.search_contacts_prefix(
+            tenant_id=self._slot_tenant(tenant_id), name=name, limit=limit
+        )

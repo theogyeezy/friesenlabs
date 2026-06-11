@@ -515,6 +515,71 @@ export interface GetSignupResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Public lead capture (pre-auth: no bearer token, no tenant_id).
+//
+// The marketing site's "Book a call" / "Email us" forms POST here. Public by
+// design — there is no account or tenant yet — so the request carries only the
+// visitor's contact details. Callers degrade to a mailto: link on any non-2xx
+// (see web/src/screens/landing.tsx) so a lead is never silently dropped.
+// ---------------------------------------------------------------------------
+
+/** Which marketing form produced the lead. */
+export type LeadKind = "book_call" | "email";
+
+/** Body for POST /public/leads. Carries no tenant_id (none exists yet). */
+export interface LeadBody {
+  kind: LeadKind;
+  name: string;
+  email: string;
+  message?: string;
+  company?: string;
+}
+
+/** Response from POST /public/leads — just an acknowledgement. */
+export interface LeadResponse {
+  ok: boolean;
+  id?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Control plane: kill switch + autonomy + decision traces (authed).
+//
+// These back the Security & control surface. The TRUST RULE still holds — the
+// server scopes every read/write to the verified JWT tenant; the client never
+// sends a tenant_id. Each endpoint may answer 404 on a deployment where the
+// control plane isn't wired yet; the UI feature-detects that and shows the
+// control as honestly disabled rather than faking a working toggle.
+// ---------------------------------------------------------------------------
+
+/** GET/PUT /control/killswitch — the master stop for all agents. */
+export interface KillswitchState {
+  engaged: boolean;
+  scope: "global";
+}
+
+/** Autonomy ladder: 0 = off/suggest-only … 3 = fully autonomous. */
+export type AutonomyLevel = 0 | 1 | 2 | 3;
+
+/** GET/PUT /control/autonomy — the workspace-wide autonomy level. */
+export interface AutonomyState {
+  level: AutonomyLevel;
+}
+
+/** One row in the decision-trace feed (GET /control/traces). Display-only:
+ * no payloads, no tenant_id — just what a human needs to audit a decision. */
+export interface DecisionTrace {
+  id: string;
+  ts: string | null;
+  tool: string | null;
+  decision: string | null;
+  status: string | null;
+}
+
+export interface DecisionTracesResponse {
+  traces: DecisionTrace[];
+}
+
+// ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
@@ -1122,6 +1187,76 @@ export class ApiClient {
       "GET",
       `/signup/${encodeURIComponent(accountId)}`,
     );
+  }
+
+  // --- public lead capture (pre-auth) ---------------------------------------
+
+  /**
+   * POST /public/leads: capture a "Book a call" / "Email us" lead. Public, so
+   * it sends no bearer token and no tenant_id. Throws ApiError on non-2xx (incl.
+   * 404 when the route isn't deployed yet) so the caller can fall back to a
+   * mailto: link and keep the user-visible confirmation honest.
+   */
+  async submitLead(body: LeadBody): Promise<LeadResponse> {
+    if (this.mock) {
+      // Offline/test builds: acknowledge without a network call so the funnel
+      // is exercisable without a backend.
+      return { ok: true };
+    }
+    return this.requestPublic<LeadResponse>("POST", "/public/leads", body);
+  }
+
+  // --- control plane: kill switch / autonomy / traces (authed) ---------------
+  //
+  // Each may throw ApiError(404) where the control plane isn't deployed yet;
+  // the Security surface feature-detects that and degrades to a disabled
+  // control instead of a fake working toggle.
+
+  /** GET /control/killswitch: the master stop state. */
+  async getKillswitch(): Promise<KillswitchState> {
+    if (this.mock) {
+      return (await this.mockApi()).getKillswitch();
+    }
+    return this.request<KillswitchState>("GET", "/control/killswitch");
+  }
+
+  /** PUT /control/killswitch: engage/disengage the master stop. */
+  async setKillswitch(engaged: boolean): Promise<KillswitchState> {
+    if (this.mock) {
+      return (await this.mockApi()).setKillswitch(engaged);
+    }
+    return this.request<KillswitchState>("PUT", "/control/killswitch", {
+      engaged,
+      scope: "global",
+    });
+  }
+
+  /** GET /control/autonomy: the workspace autonomy level (0–3). */
+  async getAutonomy(): Promise<AutonomyState> {
+    if (this.mock) {
+      return (await this.mockApi()).getAutonomy();
+    }
+    return this.request<AutonomyState>("GET", "/control/autonomy");
+  }
+
+  /** PUT /control/autonomy: set the workspace autonomy level (0–3). */
+  async setAutonomy(level: AutonomyLevel): Promise<AutonomyState> {
+    if (this.mock) {
+      return (await this.mockApi()).setAutonomy(level);
+    }
+    return this.request<AutonomyState>("PUT", "/control/autonomy", { level });
+  }
+
+  /** GET /control/traces?limit=: the recent decision-trace feed (read-only). */
+  async getControlTraces(limit = 50): Promise<DecisionTrace[]> {
+    if (this.mock) {
+      return (await this.mockApi()).getControlTraces(limit);
+    }
+    const data = await this.request<DecisionTracesResponse>(
+      "GET",
+      `/control/traces?limit=${encodeURIComponent(String(limit))}`,
+    );
+    return data.traces;
   }
 }
 
