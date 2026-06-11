@@ -54,6 +54,7 @@ from agents.tools.sideeffecting import IssueQuote, SendEmail, UpdateDeal
 from .analytics import Analytics, Event, EventType
 from .rag import Answer, RagContext, answer as rag_answer
 from .slots import SlotContext, resolve_slots
+from .views import BALTO_STATUS, detect_view_intent
 
 # Sentinel distinguishing "runtime has no tool_context_factory seam" from "seam present, unset".
 _SEAM_ABSENT = object()
@@ -77,6 +78,11 @@ class Turn:
     delegations: list[str] = field(default_factory=list)
     session_id: str | None = None
     tenant_id: str | None = None
+    # Balto (conv/views.py): True when the utterance asks to SEE data (a view/graph/chart) —
+    # the answer is then the EXACT Balto status line and `view_request` echoes the ask the
+    # client forwards to POST /views/synthesize. Nothing is generated inside the chat turn.
+    view_intent: bool = False
+    view_request: str | None = None
 
     def as_dict(self) -> dict:
         return {
@@ -88,6 +94,8 @@ class Turn:
             "delegations": self.delegations,
             "session_id": self.session_id,
             "tenant_id": self.tenant_id,
+            "view_intent": self.view_intent,
+            "view_request": self.view_request,
         }
 
 
@@ -271,6 +279,22 @@ class Conversation:
         self._record(EventType.UTTERANCE, {"text": message})
 
         slots, ambiguous = self._resolve_slots(message)
+
+        # BALTO (conv/views.py): a view-shaped ask routes to the dedicated synthesis path on
+        # EVERY runtime — the chat turn answers the exact Balto status line immediately and the
+        # client drives POST /views/synthesize (steps 1-4 live there: saved-view coverage check,
+        # member-catalog gate, build_view generation, draft id). No tool runs in this layer and
+        # nothing is persisted by the turn itself.
+        if detect_view_intent(message):
+            return Turn(
+                answer=BALTO_STATUS,
+                view_intent=True,
+                view_request=message,
+                slots=slots,
+                needs_disambiguation=ambiguous,
+                session_id=self.session.id,
+                tenant_id=self.tenant_id,
+            )
 
         # EXPLICIT GATE (TODO AI/P1): the regex action-routing is the OFFLINE FACADE — FakeRuntime
         # only. On any real runtime (ManagedAgentsRuntime) the coordinator picks the tools; its
