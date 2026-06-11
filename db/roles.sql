@@ -98,6 +98,16 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON playbooks TO crm_app;
 GRANT SELECT, INSERT, UPDATE ON predictions TO crm_app;
 REVOKE DELETE ON predictions FROM crm_app;
 
+-- onboarding_state (per-tenant first-run progress — RLS-FORCEd tenant table; see schema.sql):
+-- the onboarding route SELECTs the tenant's row and UPSERTs it (INSERT .. ON CONFLICT (tenant_id)
+-- DO UPDATE) on checklist progress / dismissal / sample-data load. EXPLICIT grant for the same
+-- fresh-load reason as tenant_workspaces/tenant_settings (schema.sql runs first, so ALTER DEFAULT
+-- PRIVILEGES never covers it). No DELETE: a tenant's onboarding row is upserted, never erased by
+-- the app (the row is durable state, not a transient — re-running the loader flips sample_loaded,
+-- it does not delete the row). REQ-006 documents the same GRANT in infra/REQUESTS.md.
+GRANT SELECT, INSERT, UPDATE ON onboarding_state TO crm_app;
+REVOKE DELETE ON onboarding_state FROM crm_app;
+
 -- ---------------------------------------------------------------------------
 -- Pre-tenant infrastructure / acquisition tables (RLS-EXEMPT by design; see schema.sql) —
 -- rows exist before any tenant_id, so access control is GRANT-based, not RLS. EXPLICIT grants
