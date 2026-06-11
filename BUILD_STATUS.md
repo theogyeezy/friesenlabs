@@ -824,4 +824,18 @@ tiered builders in isolated worktrees → 3-haiku refute-by-default panel → bo
   base inside the worktree and claimed "no code"; boss hand-verified: 11 tests pass, endpoint mounted).
 - **Metrics across waves:** 12 build tasks, 11 merged, 1 genuine rejection (real bug, then fixed), 1
   false-rejection (recovered). Main stayed green throughout; every feature CI-gated + adversarially
-  reviewed. **Remaining work is owner-gated, web-UI (client.ts-coupled), or landing-legal.**
+  reviewed.
+- **Web-UI wave (#228 + #229):** the backlog's Cortex/CSV/billing UI items pointed at the demo-only
+  `web/src/screens/*` mock prototype; the REAL authed app had no such tabs. Built net-new real-mode
+  views in `web/src/api/*` consuming pre-wired client methods (#228): **CortexView** (`GET /cortex/health`,
+  honest no_registry/no_champion/404-rollout states, NO number simulation — the honesty fix done in the
+  *real* app), **CSV upload** (IntegrationsPanel), **invoice display** (BillingManage), **account
+  export/delete** (Settings). The wave's 4 builders each rewrote the shared client.ts differently and the
+  verifier panel false-rejected all 4 (same git-state confusion as Wave 4 — main checkout left on a
+  feature branch broke their origin/main diffs); boss hand-verified, reconciled client.ts against the
+  BACKEND (corrected CortexDrift.registered_auc, Integration.kind/csv_import_configured, the real
+  CsvImportReport shape), fixed an account-view field bug + the cortex e2e nav. Verified: typecheck +
+  mock/real builds + **126 Playwright e2e** + 30 node tests green (#229).
+- **Remaining after all waves:** owner-gated infra flips/seeding, a few backend depth items (CRM-table
+  landing, status probes, agent-marketplace, a settings-persistence endpoint), and the deferred
+  landing/demo-honesty + legal pages. **The buildable backend + web-UI backlog (ex-landing-legal) is drained.**
