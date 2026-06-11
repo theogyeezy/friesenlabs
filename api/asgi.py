@@ -50,6 +50,7 @@ from api.workflows_routes import WorkflowsDeps
 from conv.cache import TenantConversationCache
 from conv.session import Conversation
 from conv.synthesizer import AnthropicSynthesizer
+from conv.views import ViewSynthesizer
 from ml.registry import registry_from_env
 from shared.config import ENV_ANTHROPIC_API_KEY, dsn_from_env, load
 
@@ -249,6 +250,7 @@ def build_app():
         saved_views = SavedViews()
         workspace_store = None
         crm = rag = None
+        cube = None
         # Unconfigured: in-memory control plane (instance-local — fine for /healthz-only boots).
         killswitch = KillSwitch()
         autonomy_dial = None
@@ -278,6 +280,13 @@ def build_app():
     else:
         conversation_factory = lambda tenant_id: None  # noqa: E731 — unconfigured: /chat 503
 
+    # Balto view synthesis (conv/views.py): rides the SAME SavedViews facade + Cube client +
+    # spec generator the rest of the app uses. Honest degradation per piece: no cube/secret ->
+    # 'unavailable' (route 503), no generator -> 'unavailable' — never a hallucinated view.
+    view_synthesizer = ViewSynthesizer(
+        saved_views=saved_views, cube=cube, generator=spec_generator,
+    )
+
     from api.prod_deps import build_signup_deps
 
     deps = ApiDeps(
@@ -294,6 +303,8 @@ def build_app():
         killswitch=killswitch,
         trace_store=trace_store,
         autonomy_dial=autonomy_dial,
+        # Balto: POST /views/synthesize + /views/drafts/{id}/save (NL view creation from chat).
+        view_synthesizer=view_synthesizer,
         # mounts /signup, /verify-*, /checkout, /webhooks/stripe; provisioning persists the
         # tenant's Managed Agents ids into tenant_workspaces when the DB is configured.
         signup=build_signup_deps(workspace_store=workspace_store),
