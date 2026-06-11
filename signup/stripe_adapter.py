@@ -106,7 +106,15 @@ class StripeAdapter:
         # `url` is the Hosted Checkout page the BROWSER must be sent to — the checkout route
         # returns it to the SPA (window.location), so the client never fakes payment success;
         # the signed webhook remains the only provisioning trigger.
-        return {"id": session["id"], "url": session.get("url")}
+        # NOTE: index access, not `.get` — the stripe lib's StripeObject routes attribute
+        # lookups through __getattr__ and exposes no dict-style `.get` method on current
+        # versions (session.get("url") raises AttributeError: get; caught live by the
+        # main-only live-signup-e2e job).
+        try:
+            url = session["url"]
+        except KeyError:
+            url = None
+        return {"id": session["id"], "url": url}
 
     def construct_event(self, payload: bytes, sig_header: str, secret: str) -> Any:
         """Signature-verify a webhook payload; raises on bad/missing signature.
