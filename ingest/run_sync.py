@@ -159,9 +159,10 @@ def build_raw_sink():
 def build_connector(tenant_id: str, *, raw_sink=None):
     """A HubSpot connector for `tenant_id`.
 
-    Real mode: Boto3SecretProvider (per-tenant uplift/{tenant_id}/hubspot, with
-    the deprecated shared fallback inside the connector) + HubSpotRestClient
-    (token injected by authenticate()). Offline: stubs that pull nothing.
+    Real mode: Boto3SecretProvider (per-tenant uplift/{tenant_id}/hubspot ONLY —
+    a missing per-tenant secret is a hard MissingTenantCredentialError, there is
+    no shared-token fallback) + HubSpotRestClient (token injected by
+    authenticate()). Offline: stubs that pull nothing.
 
     The structured sink stays IN-MEMORY in both modes for now — the normalized
     rows still carry source-ref columns the CRM tables don't have (see

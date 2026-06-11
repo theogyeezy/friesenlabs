@@ -6,7 +6,8 @@ Also asserts tenant_id is carried on every stored document.
 import pytest
 
 from ingest import EMBEDDING_DIM
-from ingest.connectors.hubspot import HUBSPOT_TOKEN_SECRET_REF, HubSpotConnector
+from ingest.connectors.base import tenant_secret_ref
+from ingest.connectors.hubspot import HubSpotConnector
 from ingest.pipeline import (
     InMemoryCursorStore,
     InMemoryDocumentStore,
@@ -20,7 +21,9 @@ TENANT = "22222222-2222-2222-2222-222222222222"
 
 class FakeSecrets:
     def get_secret(self, ref):
-        assert ref == HUBSPOT_TOKEN_SECRET_REF
+        # The connector must resolve THIS tenant's per-tenant ref and only that
+        # (the shared-token fallback is gone).
+        assert ref == tenant_secret_ref(TENANT, "hubspot")
         return "pat-fake-token"
 
 

@@ -23,10 +23,24 @@ psql "$OWNER_URL" -c "ALTER ROLE crm_app PASSWORD '<from Secrets Manager>'"
   app connected as the owner or a BYPASSRLS role, policies would silently no-op.
 - Vector ANN queries are tenant-scoped too; `hnsw.iterative_scan='relaxed_order'` keeps filtered ANN
   from under-returning.
+- **FKs are composite** — Postgres FK checks run as the table owner (they bypass RLS), so the CRM
+  child FKs are `(tenant_id, <parent>_id) REFERENCES parent (tenant_id, id)`: a child row can never
+  reference another tenant's parent, even with a valid uuid.
+- **The audit trail is append-only for the app** — `crm_app` has no DELETE on `approvals`/`traces`
+  and no UPDATE on `traces` (approvals keep UPDATE for the Greenlight decided-flip + apply audit).
+- **Every tenant table is granted explicitly in roles.sql** — `ALTER DEFAULT PRIVILEGES` only covers
+  tables created AFTER it runs, and on a fresh load schema.sql runs first, so a tenant table without
+  an explicit GRANT leaves crm_app with zero privileges (the static gate enforces this).
 
 ## Tests
 - Static (no DB): `pytest tests/unit/test_sql_schema.py` — parses both files with libpg_query and
-  asserts FORCE'd RLS + the policy GUC on all 8 tables. Catches the "forgot FORCE" gotcha.
+  asserts FORCE'd RLS + the policy GUC on **every tenant table, with the list DERIVED from
+  schema.sql itself** (mandatory `tenant_id` minus explicit `-- RLS-EXEMPT` markers), cross-checked
+  against the schema's `tenant_tables` array and the crm_app GRANT surface in roles.sql — the gate
+  cannot silently go stale when a table is added. Catches the "forgot FORCE" gotcha.
 - Live proof: `pytest tests/integration/test_rls_isolation.py` with `UPLIFT_TEST_DB_URL` (owner) or
   `UPLIFT_DB_URL` (crm_app) set — two-tenant row + vector + update isolation. Skips cleanly with no DB.
-- Cross-cutting gate: `python scripts/isolation_test.py` (run after any data/agent/auth change).
+- Live tenancy hygiene: `pytest tests/integration/test_tenancy_grants_fk.py` — fresh-load grants on
+  `tenant_workspaces`/`tenant_settings`, append-only approvals/traces, cross-tenant FK rejection.
+- Cross-cutting gate: `python scripts/isolation_test.py` (run after any data/agent/auth change;
+  now also probes the composite same-tenant FKs).
