@@ -53,6 +53,7 @@ const ContactsDirectory = React.lazy(() => import("./api/ContactsDirectory"));
 const AgentsRoster = React.lazy(() => import("./api/AgentsRoster"));
 const WorkflowsView = React.lazy(() => import("./api/WorkflowsView"));
 const ReportsView = React.lazy(() => import("./api/ReportsView"));
+const DashboardsView = React.lazy(() => import("./api/DashboardsView"));
 const KnowledgeView = React.lazy(() => import("./api/KnowledgeView"));
 const SignupFlow = React.lazy(() => import("./signup/SignupFlow"));
 
@@ -206,6 +207,12 @@ function Root() {
       return (
         <Gated seam>
           <React.Suspense fallback={null}><ReportsView /></React.Suspense>
+        </Gated>
+      );
+    case "dashboards":
+      return (
+        <Gated seam>
+          <React.Suspense fallback={null}><DashboardsView /></React.Suspense>
         </Gated>
       );
     case "knowledge":

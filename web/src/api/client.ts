@@ -71,6 +71,19 @@ export interface RefineViewBody {
   instruction: string;
 }
 
+/** GET /dashboards — named compositions of saved views (kind=dashboard rows). */
+export interface ListDashboardsResponse {
+  dashboards: SavedViewRow[];
+}
+
+/** GET /dashboards/{id} — the dashboard row plus the latest row of every view it
+ * references, resolved server-side in one shot. A referenced view that no longer
+ * resolves is simply absent from `views` (the screen shows a per-panel notice). */
+export interface DashboardResolvedResponse {
+  dashboard: SavedViewRow;
+  views: Record<string, SavedViewRow>;
+}
+
 export interface Citation {
   claim: string;
   source_ref: string;
@@ -950,6 +963,34 @@ export class ApiClient {
       `/views/${encodeURIComponent(viewId)}/refine`,
       body,
     );
+  }
+
+  /** GET /dashboards: the tenant's named dashboards (kind=dashboard saved views). */
+  async listDashboards(): Promise<SavedViewRow[]> {
+    if (this.mock) {
+      return (await this.mockApi()).listDashboards();
+    }
+    const data = await this.request<ListDashboardsResponse>("GET", "/dashboards");
+    return data.dashboards;
+  }
+
+  /** GET /dashboards/{id}: the dashboard plus every referenced view, resolved. */
+  async getDashboard(viewId: string): Promise<DashboardResolvedResponse> {
+    if (this.mock) {
+      return (await this.mockApi()).getDashboard(viewId);
+    }
+    return this.request<DashboardResolvedResponse>(
+      "GET",
+      `/dashboards/${encodeURIComponent(viewId)}`,
+    );
+  }
+
+  /** POST /dashboards: save (create or version-bump) a kind=dashboard spec. */
+  async saveDashboard(body: SaveViewBody): Promise<SavedViewRow> {
+    if (this.mock) {
+      return (await this.mockApi()).saveDashboard(body);
+    }
+    return this.request<SavedViewRow>("POST", "/dashboards", body);
   }
 
   async chat(message: string): Promise<ChatResponse> {

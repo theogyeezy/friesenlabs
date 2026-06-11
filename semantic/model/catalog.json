@@ -1,0 +1,9 @@
+{
+  "description": "Canonical member catalog for the governed Cube model (semantic/model/cubes/*.js). One entry per queryable member in Cube.member form. Hidden members (shown: false, e.g. *.tenant_id) are NOT listed: a view-spec must never reference them. tests/unit/test_semantic_catalog.py asserts this file never drifts from the .js cube definitions; shared/semantic_catalog.py is the loader consumers (view-spec member validation) read.",
+  "members": {
+    "Activities": ["count", "id", "kind", "occurred_at"],
+    "Companies": ["count", "id", "name", "domain", "created_at"],
+    "Contacts": ["count", "id", "name", "email", "phone", "created_at"],
+    "Deals": ["count", "pipeline_value", "avg_deal_size", "id", "title", "stage", "currency", "created_at"]
+  }
+}

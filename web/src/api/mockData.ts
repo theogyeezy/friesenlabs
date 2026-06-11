@@ -612,13 +612,55 @@ export class MockApi {
   }
 
   listViews(): SavedViewRow[] {
-    return this.views.map((v) => ({ ...v }));
+    // Mirrors GET /views: renderable view specs only — kind=dashboard rows
+    // live on listDashboards.
+    return this.views
+      .filter((v) => (v.spec_json as Record<string, unknown>).kind !== "dashboard")
+      .map((v) => ({ ...v }));
   }
 
   getView(viewId: string): SavedViewRow {
     const v = this.views.find((row) => row.view_id === viewId);
     if (!v) throw new ApiError(404, "no such view");
     return { ...v };
+  }
+
+  // --- dashboards (kind=dashboard saved views) — mirror api/app.py /dashboards ---
+
+  listDashboards(): SavedViewRow[] {
+    return this.views
+      .filter((v) => (v.spec_json as Record<string, unknown>).kind === "dashboard")
+      .map((v) => ({ ...v }));
+  }
+
+  getDashboard(viewId: string): { dashboard: SavedViewRow; views: Record<string, SavedViewRow> } {
+    const dash = this.views.find(
+      (row) =>
+        row.view_id === viewId &&
+        (row.spec_json as Record<string, unknown>).kind === "dashboard",
+    );
+    if (!dash) throw new ApiError(404, "no such dashboard");
+    const items = ((dash.spec_json as Record<string, unknown>).items ?? []) as Array<{
+      view_id: string;
+    }>;
+    const views: Record<string, SavedViewRow> = {};
+    for (const item of items) {
+      const ref = this.views
+        .filter(
+          (r) =>
+            r.view_id === item.view_id &&
+            (r.spec_json as Record<string, unknown>).kind !== "dashboard",
+        )
+        .reduce<SavedViewRow | null>((a, b) => (a === null || b.version > a.version ? b : a), null);
+      if (ref) views[item.view_id] = { ...ref };
+    }
+    return { dashboard: { ...dash }, views };
+  }
+
+  saveDashboard(body: SaveViewBody): SavedViewRow {
+    const spec = body.spec as Record<string, unknown>;
+    if (spec.kind !== "dashboard") throw new ApiError(422, 'spec.kind must be "dashboard"');
+    return this.saveView(body);
   }
 
   saveView(body: SaveViewBody): SavedViewRow {

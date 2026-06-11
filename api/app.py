@@ -250,14 +250,20 @@ def create_app(deps: ApiDeps) -> FastAPI:
             return out
         return deps.greenlight.store.get(claims.tenant_id, approval_id)
 
-    @app.get("/views")
-    def list_views(claims: TenantClaims = Depends(current_tenant)):
-        views = deps.saved_views.store.list(claims.tenant_id)
+    def _assert_request_tenant(rows, claims: TenantClaims):
         # Defense in depth: never return a row whose tenant_id isn't the verified request tenant
         # (RLS already scopes the read; this re-check makes a silent leak fail loud, not propagate).
-        for v in views:
+        for v in rows:
             if str(v["tenant_id"]) != str(claims.tenant_id):
                 raise HTTPException(status_code=500, detail="tenant isolation violation")
+
+    @app.get("/views")
+    def list_views(claims: TenantClaims = Depends(current_tenant)):
+        # Renderable view specs only — kind=dashboard composition rows live on GET /dashboards,
+        # so every existing /views consumer (gallery, view pickers) keeps seeing only specs the
+        # SpecRenderer can draw directly.
+        views = deps.saved_views.list_views(claims.tenant_id)
+        _assert_request_tenant(views, claims)
         return {"views": views}
 
     @app.get("/views/{view_id}")
@@ -322,6 +328,38 @@ def create_app(deps: ApiDeps) -> FastAPI:
         if row is None:
             raise HTTPException(status_code=404, detail="no such draft")
         return row
+
+    # --- dashboards (spec_version 2) — named compositions of saved views -------------------
+    # Additive CRUD over the SAME saved-view store: a dashboard is a saved_views row whose
+    # spec_json carries kind="dashboard" (no new table, RLS unchanged). Tenant identity comes
+    # only from the verified claim, exactly like /views.
+
+    @app.get("/dashboards")
+    def list_dashboards(claims: TenantClaims = Depends(current_tenant)):
+        dashboards = deps.saved_views.list_dashboards(claims.tenant_id)
+        _assert_request_tenant(dashboards, claims)
+        return {"dashboards": dashboards}
+
+    @app.get("/dashboards/{view_id}")
+    def get_dashboard(view_id: str, claims: TenantClaims = Depends(current_tenant)):
+        resolved = deps.saved_views.resolve_dashboard(claims.tenant_id, view_id)
+        if resolved is None:
+            raise HTTPException(status_code=404, detail="no such dashboard")
+        dash, views = resolved
+        _assert_request_tenant([dash, *views.values()], claims)
+        return {"dashboard": dash, "views": views}
+
+    @app.post("/dashboards")
+    def save_dashboard(body: SaveViewBody, claims: TenantClaims = Depends(current_tenant)):
+        # The discriminator is required, not inferred: a body that isn't a dashboard spec is a
+        # caller bug, answered as a validation failure — never silently coerced.
+        if body.spec.get("kind") != "dashboard":
+            raise HTTPException(status_code=422, detail='spec.kind must be "dashboard"')
+        try:
+            return deps.saved_views.save(claims.tenant_id, body.spec,
+                                         source_prompt=body.source_prompt, created_by=claims.sub)
+        except Exception as e:  # validation error -> 422
+            raise HTTPException(status_code=422, detail=str(e))
 
     @app.post("/chat")
     def chat(body: ChatBody, claims: TenantClaims = Depends(current_tenant)):
