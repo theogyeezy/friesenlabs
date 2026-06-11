@@ -711,6 +711,46 @@ _Last updated 2026-06-09. Synthesized from 5 dimension audits (frontend-auth, ai
 - [x] **Add GuardDuty + AWS Config + the SCP-deny follow-up** — no GuardDuty, no Config recorder for the account now holding tenant data behind an internet-facing ALB. Enable GuardDuty + Config baseline; the SCP needs an Org. _(P3 · blocked: AWS Org context for the SCP · `infra/modules/baseline/main.tf` · done when: `list-detectors` shows an enabled GuardDuty; `describe-configuration-recorders` shows a recorder; SCP tracked as an Org follow-up)_ **DONE 2026-06-09 (Nick): detector live; recorder recording=True into the trail bucket (config/). SCP remains the Org follow-up.**
 ---
 
+## Security audit — TODOs (2026-06-11, Lane Matt)
+
+Release-readiness audit: 5 parallel deep-dives (auth/tenancy/RLS · signup/billing ·
+agent plane/Greenlight · web/public/ingest · Terraform) + Semgrep. Full report with
+evidence + the verified-holding invariant list: `docs/audits/security-audit-2026-06-11.md`.
+**Core architecture verified sound** (Trust Rule, FORCEd RLS + SET LOCAL, draft-only,
+TOCTOU-safe approvals, Stripe trust model, spec-not-code, key-pool/secrets hygiene all
+hold in code). Items below are the gaps. Infra fixes: author = either lane, **apply = Lane
+Nick only**. Overlaps with the 2026-06-09 backlog were not re-added (SCP, Redis AUTH,
+repo exposure, force_ssl, exec-role split, egress).
+
+### P0 — fix before real paying customers
+- [ ] **[CRITICAL] Scope the GitHub OIDC deploy role off `AdministratorAccess`** — `infra/modules/iam/main.tf:319-322`; trust policy is pinned to repo+branch+env (good) but a compromised workflow = full account takeover. Replace with a scoped deploy policy (ECS/ECR + exact-ARN `iam:PassRole`, CloudFront, state/asset S3, `uplift/*` SM read) or at minimum a permissions boundary. _(author either lane; apply Lane Nick)_
+- [ ] **[HIGH] Drop `ALLOW_ADMIN_USER_PASSWORD_AUTH` from the prod SPA Cognito client** — `infra/modules/auth/main.tf:74`; bypasses the Hosted-UI/PKCE design; smoke tests should use a separate non-public client. _(apply Lane Nick)_
+- [ ] **[HIGH] Set `UPLIFT_ENVIRONMENT=prod` on the API + provisioning-Lambda tasks** — `shared/config.py:228-245` `is_prod()` reads it but no task sets it, so the refuse-to-boot-with-Stripe-bypass-in-prod guard is dead code; only the empty default keeps comped provisioning off. _(infra env wire; apply Lane Nick)_
+- [ ] **[HIGH→latent] Run compliance (TCPA/CAN-SPAM) in `Greenlight.propose` + re-validate after human `edit`** — `api/control/compliance.py:41` has ONE call site (`api/control/gate.py:44`); worker (`agents/tools/base.py:94`), Sidecar (`api/sidecar_routes.py:94`), playbooks, and `apply_approved_action` (`api/app.py:283-284`) all skip it. Masked only by `record_only` appliers — must land BEFORE any real sender is wired into `APPLIERS`. _(Lane Matt, code)_
+
+### P1 — high-value hardening (before/at first team-tenant)
+- [ ] **[HIGH] Intra-tenant RBAC** — any authed tenant user can flip the kill switch, set autonomy L3, open the billing portal, change paid module entitlements, trigger GDPR export (`api/routes_control.py:17-30`, `api/billing_routes.py:59-96`, `api/modules_routes.py:88-109`). Acceptable solo-tenant; not for teams. Add a Cognito group/role claim + gate the privileged routes. Also make global kill-switch operators user-granular, not tenant-granular (`routes_control.py:66-69` — today every user of an operator tenant can pause the whole platform). _(Lane Matt code + pool attribute via Nick)_
+- [ ] **[HIGH] Cognito threat protection (advanced security ENFORCED)** — no `user_pool_add_ons` in `infra/modules/auth/main.tf`; verify the `~> 6.49` provider attribute name first. _(apply Lane Nick)_
+- [ ] **[HIGH] VPC flow logs** — no `aws_flow_log` in any module; GuardDuty has no flow signal. _(apply Lane Nick)_
+- [ ] **[HIGH] WAF logging** — WAFv2 ACL has managed rules + rate limit but no `aws_wafv2_web_acl_logging_configuration` (`infra/modules/api_cdn/main.tf:27-97`); no edge forensics. _(apply Lane Nick)_
+- [ ] **[MED] SPA security headers + CSP on the Amplify origin** — `infra/modules/web_hosting/main.tf` sets none (the headers policy at `api_cdn/main.tf:141-161` covers only the API distro); refresh token sits in localStorage with DOMPurify as the sole XSS defense. Amplify `custom_headers`/`customHttp.yml`: CSP, `frame-ancestors 'none'`, nosniff, referrer-policy, HSTS. Consider refresh-token-out-of-localStorage as a follow-up. _(author Lane Matt; deploy via Amplify)_
+- [ ] **[MED] Aurora + Performance Insights onto a customer-managed KMS key** — `infra/modules/data/main.tf:25,56`; PI captures query text (tenant PII in literals). ⚠️ `kms_key_id` change = cluster REPLACEMENT (snapshot-restore migration; never let a plan propose it silently). _(plan + apply Lane Nick, runbook'd)_
+- [ ] **[MED] CAPTCHA: flip it on (owner-gated)** — #248 wired real Turnstile/hCaptcha siteverify validators, auto-selected from env (`signup/abuse.py` `CaptchaVerifier.from_env`). Remaining: create the Turnstile site, put `TURNSTILE_SECRET` on the API task, set `SIGNUP_CAPTCHA_REQUIRED=true`, and add the widget to the signup form. NOTE: required-without-secret fails closed = blocks all signups (by design) — set the secret first. _(owner + Lane Nick env wire; web widget Lane Matt)_
+- [ ] **[MED] Pg-backed used-token store for email verification** — `api/prod_deps.py:591-595` defaults to in-memory per task → cross-task replay within TTL (OTP path already uses `PgOtpStore`; mirror it). _(Lane Matt)_
+
+### P2 — defense-in-depth
+- [ ] **[MED] Whitelist Vega chart `spec` fragment keys** — `web/src/dashboard/viewSpec.ts:351-360` allows any object, spread into vega-embed (`SpecRenderer.tsx:297-304`); containment currently rests on vega-embed config (SVG, no actions, loader off). Allow `mark`/`encoding`/vetted `transform`; reject `params`/`signals`/`href`/`usermeta`/`data`; mirror in `shared/schemas/view_spec.schema.json`; pin vega versions. _(Lane Matt)_
+- [ ] **[MED] Delimit untrusted tenant content in agent prompts** — RAG chunks (`conv/synthesizer.py:170-177`), tool results (`agents/runtime.py:434-460`), playbook trigger payloads (`agents/playbooks/runner.py:125-126`, reachable from `/public/leads` content) are concatenated raw; injection can steer drafts a human rubber-stamps. Wrap in treat-as-data delimiters. _(Lane Matt)_
+- [ ] **[MED] ECS hardening batch** — pin the ADOT sidecar by digest (floats `:latest` on api/cube/worker); add `readonlyRootFilesystem` + non-root `user`; gate `enable_execute_command` behind a var + add an `execute_command_configuration` session-log sink. _(apply Lane Nick)_
+- [ ] **[MED] Split cube out of the shared `sg_api`** — `infra/modules/security/main.tf:116-124` self-rule gives worker/provisioning-Lambda free reach to cube:4000 (+Aurora:5432); replace with an explicit api→cube rule. _(apply Lane Nick)_
+- [ ] **[LOW] Mask PII in send logs** — full email (`signup/resend_sender.py:128,149,152`), full phone (`signup/sms_sender.py:59,82`). _(Lane Matt)_
+- [ ] **[LOW] Worker: assert `ANTHROPIC_API_KEY` is ABSENT at startup** — `worker/worker.py:203-206` happily builds an org-key client in the creds-laden container if it's ever misconfigured onto the task. _(Lane Matt)_
+- [ ] **[LOW] Replace the raw `innerHTML` sinks on the landing constellation** — `web/src/screens/landing-constellation.tsx:228,238` (static constants today, violates the SafeHtml-only rule). _(Lane Matt)_
+- [ ] **[LOW] Tighten JWT `token_use` to require `"id"`** (`api/auth.py:65-66`) **+ stop echoing `str(e)` in 422s** (`api/app.py:351,363,396,431`, `api/signup_routes.py:268,276`). _(Lane Matt)_
+- [ ] **[LOW] X-Origin-Verify secret rotation runbook** — generated once, never rotated (`infra/modules/secrets/main.tf:49-64`); document regenerate→CloudFront header→ALB rule. _(Lane Nick, runbook)_
+- [ ] **[LOW] Formula-escape `=+-@` cell leaders on any future CSV/XLSX export** — latent (`/account/export` is JSON today); note on `ingest/connectors/csv_import.py`. _(Lane Matt, when an export ships)_
+- [ ] **[VERIFY] Cube #177 per-tenant driver-pool keying** — the session-level `set_config` fix is safe ONLY because `contextToAppId`/`driverFactory` key pools per tenant (`semantic/security.js:144-198`); confirm against the deployed Cube image. **[VERIFY] XFF `trusted_hops=2`** (`api/public_routes.py:137-159`) holds iff the 403-default origin-verify covers every ALB listener path — re-check on any listener change. _(Lane Nick, live verify)_
+
 ## Security audit (2026-06-09, 37-agent adversarial)
 
 27 confirmed findings. ✅ = fixed this session.
