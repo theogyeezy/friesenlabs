@@ -19,6 +19,10 @@ env:
 jobs:
   images:
     runs-on: ubuntu-latest
+    # Trust gate: this job assumes the privileged deploy OIDC role and pushes to the prod ECR
+    # namespace, and there is no later approval gate (unlike deploy.yml's apply). Restrict it to
+    # main so a workflow_dispatch from an arbitrary branch cannot publish an untrusted image.
+    if: github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v5
       - uses: aws-actions/configure-aws-credentials@v6
