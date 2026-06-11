@@ -2,8 +2,8 @@
 (the sixth honest-stub tab converted to REAL, after Pipeline + Contacts + Agents + Workflows +
 Reports; the web half is web/src/api/KnowledgeView.tsx).
 
-Two endpoints, both READ-ONLY and bound to the VERIFIED JWT claims (THE TRUST RULE — tenant
-never from a header or the request body):
+Three endpoints, all bound to the VERIFIED JWT claims (THE TRUST RULE — tenant never from a
+header or the request body):
 
   GET /knowledge          the tenant's knowledge-base INVENTORY: per-source document counts +
                           the newest ingested timestamp, plus the totals. This is the always-
@@ -20,6 +20,14 @@ never from a header or the request body):
                           `search_available: false` + a reason and an empty result list (the
                           inventory tab stays useful), never a 500 and never a raw AWS error.
 
+  POST /knowledge/documents  the customer corpus-add path (knowledge audit P0): paste a doc,
+                          the ingest seam (ingest/upload.py) chunks → embeds (ALL chunks before
+                          the first upsert — a mid-doc failure lands NOTHING) → upserts under
+                          source='upload' with deterministic upload:<slug>-<hash8>#<seq> refs.
+                          Gated on the ingest plane's INGEST_REAL_STORES switch
+                          (build_doc_ingestor): unswitched -> honest 503; an ingest failure is
+                          a LOUD 503 (never search's quiet degrade — a write must not no-op).
+
 Reads ride the SAME crm_app DSN every live surface (/approvals, /views, /deals, /contacts)
 already rides — the PgRagClient `SET LOCAL app.current_tenant` per-op transaction (RLS), no
 hand-written tenant filter anywhere. The free-text `q` is length-capped (q > MAX_Q_LEN -> 422)
@@ -35,9 +43,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import Depends, FastAPI, HTTPException
+from pydantic import BaseModel
 
 from api.auth import TenantClaims
 
@@ -47,6 +56,20 @@ _UNCONFIGURED_DETAIL = (
     "knowledge data plane not configured — no crm_app DSN on this task "
     "(DB_*/UPLIFT_DB_URL unset); the knowledge base is unavailable"
 )
+
+_UNCONFIGURED_UPLOAD_DETAIL = (
+    "document upload not configured — the ingest plane (INGEST_REAL_STORES + a DSN) "
+    "is not wired on this task"
+)
+
+# The honest loud-failure detail when the ingest plane raises mid-upload. A WRITE never
+# degrades to a quiet 200 the way search does — the customer must know the doc did not land.
+REASON_UPLOAD_FAILED = "document ingest failed — the document was not saved; try again"
+
+# Upload bounds — one source of truth with the ingest seam (ingest/upload.py mirrors these;
+# the values are duplicated as literals here so importing this module never imports ingest).
+MAX_TITLE_LEN = 200
+MAX_DOC_CHARS = 100_000
 
 # Free-text search cap (the Contacts/Pipeline hardening note): a q longer than this is a 422,
 # never a scan/embedding term. Generous for a real question; hostile for payload smuggling.
@@ -73,6 +96,11 @@ class KnowledgeDeps:
     # wiring is api/asgi.py passing the SAME PgRagClient instance the executor/chat RAG tool and
     # the agent runtime already use (one pool, the exact dsn_from_env guard the live siblings ride).
     rag: Any | None = None
+    # The customer document-add seam (knowledge audit P0): a callable
+    # (tenant_id, title, content) -> {ref_id, chunks, source, title} that chunks→embeds→upserts
+    # via ingest.upload (build_doc_ingestor below). None = upload unconfigured -> the POST
+    # answers an honest 503, never a quiet success that landed nothing.
+    ingest_document: Callable[[str, str, str], Any] | None = None
 
 
 def _require_reader(deps: KnowledgeDeps) -> Any:
@@ -159,3 +187,70 @@ def mount_knowledge(app: FastAPI, deps: KnowledgeDeps, current_tenant) -> None:
             for h in (hits or [])
         ]
         return {"query": query, "results": results, "search_available": True, "reason": None}
+
+    @app.post("/knowledge/documents", status_code=201)
+    def knowledge_add_document(body: AddDocumentBody,
+                               claims: TenantClaims = Depends(current_tenant)):
+        """Add one document to the tenant's corpus (paste/upload). Tenant comes ONLY from the
+        verified claims (THE TRUST RULE — pydantic ignores any smuggled body keys). The ingest
+        seam embeds every chunk before the first upsert, so a failure lands NOTHING — and is a
+        loud 503 here, never a quiet 200."""
+        if deps.ingest_document is None:
+            raise HTTPException(status_code=503, detail=_UNCONFIGURED_UPLOAD_DETAIL)
+        title, content = _clean_doc(body)
+        try:
+            out = deps.ingest_document(claims.tenant_id, title, content)
+        except ValueError as exc:
+            # The seam re-validates (one source of truth) — surface its message, it is ours.
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+        except Exception as exc:  # noqa: BLE001 — embedder/DB failure: loud, but never the raw
+            # error string (it can carry AWS detail). Log the TYPE; the body says it failed.
+            log.error("knowledge: document ingest failed (%s)", type(exc).__name__)
+            raise HTTPException(status_code=503, detail=REASON_UPLOAD_FAILED) from None
+        return {"ref_id": out.get("ref_id"), "chunks": out.get("chunks"),
+                "source": out.get("source"), "title": out.get("title")}
+
+
+class AddDocumentBody(BaseModel):
+    title: str
+    content: str
+
+
+def _clean_doc(body: AddDocumentBody) -> tuple[str, str]:
+    """Bound + strip the upload fields: blank or oversize input is a 422, never truncated."""
+    title = body.title.strip()
+    content = body.content.strip()
+    if not title:
+        raise HTTPException(status_code=422, detail="title is required")
+    if len(title) > MAX_TITLE_LEN:
+        raise HTTPException(status_code=422, detail=f"title must be at most {MAX_TITLE_LEN} characters")
+    if not content:
+        raise HTTPException(status_code=422, detail="content (the document text) is required")
+    if len(content) > MAX_DOC_CHARS:
+        raise HTTPException(status_code=422, detail=f"content must be at most {MAX_DOC_CHARS} characters")
+    return title, content
+
+
+def build_doc_ingestor() -> Callable[[str, str, str], Any] | None:
+    """The default document ingestor — wired ONLY under the ingest plane's own deliberate
+    master switch (INGEST_REAL_STORES), the same rationale as the CSV importer: "uploading"
+    into an unswitched in-memory store would succeed while discarding the document. Lazy AND
+    absence-tolerant: no ingest/ in the image = no ingestor = the route answers its honest 503."""
+    try:
+        from ingest.run_sync import real_mode  # noqa: PLC0415
+    except ImportError:
+        return None
+
+    if not real_mode():
+        return None
+
+    def run(tenant_id: str, title: str, content: str) -> Any:
+        # tenant_id arrives from the VERIFIED claim (threaded by the route).
+        from ingest.run_sync import build_embedder, build_stores  # noqa: PLC0415 — boto3/
+        from ingest.upload import ingest_document  # noqa: PLC0415 — psycopg2 at call time only
+
+        store, _cursors = build_stores()
+        return ingest_document(store, build_embedder(),
+                               tenant_id=tenant_id, title=title, content=content)
+
+    return run

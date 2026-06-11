@@ -126,6 +126,10 @@ export interface ChatResponse {
    * Balto status line and `view_request` is what the client forwards to synthesizeView. */
   view_intent?: boolean;
   view_request?: string | null;
+  /** Grounding observability (knowledge audit P0): the retrieval evidence for this turn.
+   * null/undefined when retrieval was deliberately skipped (action/Balto turns). */
+  grounding_status?: "grounded" | "no_sources_found" | "ungrounded" | "unavailable" | null;
+  retrieved_count?: number | null;
 }
 
 /** Body for POST /views/synthesize — the NL ask Balto builds a view for. No tenant_id. */
@@ -550,6 +554,14 @@ export interface KnowledgeSearchResponse {
    * error. The inventory tab stays useful regardless. */
   search_available: boolean;
   reason: string | null;
+}
+
+/** POST /knowledge/documents result — the customer document-add path (knowledge audit P0). */
+export interface KnowledgeAddDocumentResponse {
+  ref_id: string | null;
+  chunks: number;
+  source: string | null;
+  title: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -1663,6 +1675,19 @@ export class ApiClient {
     const params = new URLSearchParams({ q: query });
     if (limit !== undefined) params.set("limit", String(limit));
     return this.request<KnowledgeSearchResponse>("GET", `/knowledge/search?${params.toString()}`);
+  }
+
+  /** POST /knowledge/documents: add one document (paste) to the tenant's corpus —
+   * chunked + embedded server-side under the verified tenant. A 503 means uploads
+   * aren't switched on for this deployment (the ingest plane's INGEST_REAL_STORES gate). */
+  async addKnowledgeDocument(title: string, content: string): Promise<KnowledgeAddDocumentResponse> {
+    if (this.mock) {
+      return (await this.mockApi()).addKnowledgeDocument(title, content);
+    }
+    return this.request<KnowledgeAddDocumentResponse>("POST", "/knowledge/documents", {
+      title,
+      content,
+    });
   }
 
   // --- integrations (authed) -------------------------------------------------

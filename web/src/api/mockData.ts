@@ -44,6 +44,7 @@ import {
   type SynthesizeViewBody,
   type SynthesizeViewResponse,
   type KnowledgeInventoryResponse,
+  type KnowledgeAddDocumentResponse,
   type KnowledgeSearchResponse,
   type CheckoutResponse,
   type SignupResponse,
@@ -568,6 +569,8 @@ function cannedChat(_message: string): ChatResponse {
     delegations: [],
     session_id: "mock-session",
     tenant_id: MOCK_TENANT,
+    grounding_status: "grounded",
+    retrieved_count: 2,
   };
 }
 
@@ -834,6 +837,12 @@ export class MockApi {
       },
     ];
     return { query, results: results.map((r) => ({ ...r })), search_available: true, reason: null };
+  }
+
+  addKnowledgeDocument(title: string, _content: string): KnowledgeAddDocumentResponse {
+    // Mirrors api/knowledge_routes.py: upload:<slug>-<hash8> under source='upload'.
+    const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "doc";
+    return { ref_id: `upload:${slug}-mock1234`, chunks: 1, source: "upload", title };
   }
 
   runAction(body: ActionBody): ActionResponse {

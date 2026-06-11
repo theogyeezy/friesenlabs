@@ -14,8 +14,11 @@
 //     today — so when the model isn't reachable the API answers
 //     search_available: false and this view shows a calm "search is warming up"
 //     note, NOT an error. The inventory stays useful regardless.
-//   * READ-ONLY by design: no upload/delete controls this cycle — ingestion is
-//     the worker's job; the UI promises nothing it can't keep.
+//   * Documents can be ADDED directly (POST /knowledge/documents — paste a doc,
+//     the API chunks + embeds it under the verified tenant; knowledge audit P0).
+//     A 503 means uploads aren't switched on for this deployment (the ingest
+//     plane's INGEST_REAL_STORES gate) — the form degrades to honest copy, never
+//     a fake success. Delete is deliberately absent this cycle.
 //   * A 404 from /knowledge means the live API image predates these routes (the
 //     web can deploy ahead of the API): a calm "rolling out" state with a
 //     refresh affordance — NOT an error wall.
@@ -40,6 +43,10 @@ const { useState, useEffect, useCallback } = React;
 // Mirrors api/knowledge_routes.py MAX_Q_LEN — the input enforces it so typing
 // can never produce a 422.
 const MAX_Q_LEN = 500;
+
+// Mirror api/knowledge_routes.py upload bounds (the inputs enforce them client-side).
+const MAX_TITLE_LEN = 200;
+const MAX_DOC_CHARS = 100_000;
 
 // Friendly labels for the known ingest sources (db/schema.sql: hubspot|stripe|
 // call|email|upload). An unknown source renders its raw value, never dropped.
@@ -126,6 +133,15 @@ export function KnowledgeView({ client }: KnowledgeViewProps) {
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
 
+  // Add-document state (knowledge audit P0: the customer corpus-add path).
+  const [adding, setAdding] = useState(false);
+  const [docTitle, setDocTitle] = useState("");
+  const [docContent, setDocContent] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [addNote, setAddNote] = useState<string | null>(null);
+  const [addError, setAddError] = useState<string | null>(null);
+  const [uploadsOff, setUploadsOff] = useState(false);
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -171,6 +187,41 @@ export function KnowledgeView({ client }: KnowledgeViewProps) {
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     void runSearch(query);
+  };
+
+  const onAddDocument = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const title = docTitle.trim();
+    const content = docContent.trim();
+    if (!title || !content || saving) return;
+    setSaving(true);
+    setAddError(null);
+    setAddNote(null);
+    try {
+      const res = await api.addKnowledgeDocument(title, content);
+      setAddNote(
+        `Added "${res.title ?? title}" — ${res.chunks} ${res.chunks === 1 ? "section" : "sections"} indexed.`,
+      );
+      setDocTitle("");
+      setDocContent("");
+      setAdding(false);
+      void load(); // the inventory now includes the new upload
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 503) {
+        // The ingest plane isn't switched on for this deployment — honest copy, never
+        // a fake success (the API refused loudly; nothing landed).
+        setUploadsOff(true);
+      } else {
+        setAddError(friendlyErrorMessage(err, "Couldn't add that document. Please try again."));
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const openAddForm = () => {
+    setAdding(true);
+    setAddNote(null);
   };
 
   // --- source inventory card ---
@@ -232,8 +283,9 @@ export function KnowledgeView({ client }: KnowledgeViewProps) {
         </div>
         <h1 style={{ fontSize: 26, fontWeight: 760, letterSpacing: "-.02em", margin: "6px 0 4px" }}>Knowledge</h1>
         <p style={{ ...muted, fontSize: 14 }}>
-          Everything your agents can draw on — ingested from your connected sources and searchable
-          in plain language. Read-only: this is the live corpus, not an editor.
+          Everything your agents can draw on — searchable in plain language. Add documents
+          directly (pricing, playbooks, FAQs) or connect sources; agents ground their answers on
+          what lives here.
         </p>
       </div>
 
@@ -339,14 +391,126 @@ export function KnowledgeView({ client }: KnowledgeViewProps) {
             </div>
           )}
 
-          {/* inventory — sources + totals, or the honest empty state */}
-          <h2 style={{ fontSize: 16, fontWeight: 750, letterSpacing: "-.01em", margin: "0 0 10px" }}>
-            Your sources
-          </h2>
+          {/* add a document — the customer corpus-add path (knowledge audit P0) */}
+          <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "0 0 10px" }}>
+            <h2 style={{ fontSize: 16, fontWeight: 750, letterSpacing: "-.01em", margin: 0 }}>
+              Your sources
+            </h2>
+            {!adding && !uploadsOff && (
+              <button
+                data-testid="knowledge-add-toggle"
+                onClick={openAddForm}
+                style={{ ...ghostBtn, marginLeft: "auto", padding: "6px 14px" }}
+              >
+                Add document
+              </button>
+            )}
+          </div>
+
+          {uploadsOff && (
+            <div
+              data-testid="knowledge-add-unavailable"
+              style={{ ...card, background: "var(--accent-soft, #f4f1ea)", fontSize: 13.5, marginBottom: 12 }}
+            >
+              <div style={{ fontWeight: 700, marginBottom: 4 }}>Direct uploads aren&rsquo;t switched on yet</div>
+              <p style={{ ...muted, lineHeight: 1.55, margin: 0 }}>
+                Your document was not saved. Adding documents needs the ingestion plane, which
+                isn&rsquo;t enabled on this deployment yet — your corpus still fills from connected
+                sources, and search keeps working on what&rsquo;s already here.
+              </p>
+            </div>
+          )}
+
+          {addNote && (
+            <div data-testid="knowledge-add-note" style={{ ...card, fontSize: 13.5, marginBottom: 12 }}>
+              {addNote}
+            </div>
+          )}
+
+          {adding && (
+            <form onSubmit={onAddDocument} data-testid="knowledge-add-form" style={{ ...card, marginBottom: 12 }}>
+              <input
+                data-testid="knowledge-add-title"
+                type="text"
+                value={docTitle}
+                maxLength={MAX_TITLE_LEN}
+                onChange={(e) => setDocTitle(e.target.value)}
+                placeholder="Title — e.g. Pricing policy"
+                aria-label="Document title"
+                style={{
+                  width: "100%",
+                  boxSizing: "border-box",
+                  padding: "9px 12px",
+                  borderRadius: 10,
+                  border: "1px solid var(--line, #e3ddd3)",
+                  background: "var(--surface, #fff)",
+                  color: "var(--ink, #2a2622)",
+                  fontSize: 14,
+                  fontFamily: "inherit",
+                  marginBottom: 8,
+                }}
+              />
+              <textarea
+                data-testid="knowledge-add-content"
+                value={docContent}
+                maxLength={MAX_DOC_CHARS}
+                onChange={(e) => setDocContent(e.target.value)}
+                placeholder="Paste the document text — agents will cite it by section."
+                aria-label="Document text"
+                rows={6}
+                style={{
+                  width: "100%",
+                  boxSizing: "border-box",
+                  padding: "9px 12px",
+                  borderRadius: 10,
+                  border: "1px solid var(--line, #e3ddd3)",
+                  background: "var(--surface, #fff)",
+                  color: "var(--ink, #2a2622)",
+                  fontSize: 13.5,
+                  fontFamily: "inherit",
+                  lineHeight: 1.5,
+                  resize: "vertical",
+                  marginBottom: 10,
+                }}
+              />
+              {addError && (
+                <p data-testid="knowledge-add-error" style={{ color: "var(--rose, #b4413b)", fontSize: 13, margin: "0 0 10px" }}>
+                  {addError}
+                </p>
+              )}
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  data-testid="knowledge-add-submit"
+                  type="submit"
+                  disabled={saving || !docTitle.trim() || !docContent.trim()}
+                  style={{
+                    ...ghostBtn,
+                    background: "var(--ink, #2a2622)",
+                    color: "#fff",
+                    border: "none",
+                    opacity: saving || !docTitle.trim() || !docContent.trim() ? 0.55 : 1,
+                    cursor: saving || !docTitle.trim() || !docContent.trim() ? "default" : "pointer",
+                  }}
+                >
+                  {saving ? "Indexing..." : "Add to knowledge base"}
+                </button>
+                <button
+                  data-testid="knowledge-add-cancel"
+                  type="button"
+                  onClick={() => setAdding(false)}
+                  style={ghostBtn}
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          )}
+
           {data.total_documents === 0 ? (
             <div data-testid="knowledge-empty" style={{ ...card, fontSize: 13.5, ...muted }}>
-              No documents yet. Your knowledge base fills in automatically as your connected sources
-              (CRM, calls, email, uploads) are ingested — there&rsquo;s nothing for you to do here.
+              No documents yet. Add your first document above (pricing, playbooks, FAQs), or
+              connect sources in Switchboard — your agents ground their answers on what lives
+              here, so an empty knowledge base means ungrounded answers.
             </div>
           ) : (
             <>

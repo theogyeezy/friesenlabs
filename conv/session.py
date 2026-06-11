@@ -83,6 +83,12 @@ class Turn:
     # client forwards to POST /views/synthesize. Nothing is generated inside the chat turn.
     view_intent: bool = False
     view_request: str | None = None
+    # Grounding observability (knowledge audit P0): the retrieval evidence for THIS turn.
+    # grounding_status: "grounded" | "no_sources_found" | "ungrounded" | "unavailable" (no rag
+    # client wired) | None (retrieval deliberately skipped — action/Balto turns).
+    # retrieved_count: chunks retrieval returned; None whenever retrieval didn't run.
+    grounding_status: str | None = None
+    retrieved_count: int | None = None
 
     def as_dict(self) -> dict:
         return {
@@ -96,6 +102,8 @@ class Turn:
             "tenant_id": self.tenant_id,
             "view_intent": self.view_intent,
             "view_request": self.view_request,
+            "grounding_status": self.grounding_status,
+            "retrieved_count": self.retrieved_count,
         }
 
 
@@ -400,11 +408,21 @@ class Conversation:
         # uncited claim is never surfaced as grounded. When the coordinator produced no prose,
         # the grounded extract stands in. Action turns skip retrieval entirely (no needless
         # vector search + synthesizer call per approval round-trip).
-        if self.rag is not None and not pending:
-            grounded = self._grounded_answer(message)
-            citations = [c.as_dict() for c in grounded.citations if c.source_ref]
-            if not answer and citations:
-                answer = grounded.answer
+        grounding_status: str | None = None
+        retrieved_count: int | None = None
+        if not pending:
+            if self.rag is not None:
+                grounded = self._grounded_answer(message)
+                citations = [c.as_dict() for c in grounded.citations if c.source_ref]
+                grounding_status = grounded.status
+                retrieved_count = grounded.retrieved_count
+                if not answer and citations:
+                    answer = grounded.answer
+            else:
+                # Knowledge-shaped turn but no rag client wired — say so, observably (the audit's
+                # "silent degraded mode" finding): never leave the customer guessing whether
+                # retrieval ran. Action turns keep None (retrieval deliberately skipped).
+                grounding_status = "unavailable"
         if not answer and pending:
             answer = "Prepared an action for your approval."
         return Turn(
@@ -416,6 +434,8 @@ class Conversation:
             delegations=resp.get("delegations", []),
             session_id=self.session.id,
             tenant_id=self.tenant_id,
+            grounding_status=grounding_status,
+            retrieved_count=retrieved_count,
         )
 
     def _handle_action(self, message, action_name, tool_cls, slots, ambiguous, action_kwargs) -> Turn:
@@ -449,8 +469,10 @@ class Conversation:
         ans: Answer
         if self.rag is not None:
             ans = self._grounded_answer(message)
+            grounding_status, retrieved_count = ans.status, ans.retrieved_count
         else:
             ans = Answer(answer="I don't have grounded sources to answer that.", citations=[])
+            grounding_status, retrieved_count = "unavailable", None
 
         resp = self._send_to_runtime(message)
         return Turn(
@@ -461,4 +483,6 @@ class Conversation:
             delegations=resp.get("delegations", []),
             session_id=self.session.id,
             tenant_id=self.tenant_id,
+            grounding_status=grounding_status,
+            retrieved_count=retrieved_count,
         )
