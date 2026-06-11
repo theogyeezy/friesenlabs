@@ -68,7 +68,7 @@ Until this is done, a real paid signup gets charged then parks `provisioning_fai
 - [ ] `ingest_schedule_enabled = true` + `ingest_tenants = "auto"` — `auto` discovers the tenant set from the vaulted slots, so a customer who connects in the panel is auto-enrolled (no hand-list; a comma list still works). The rule syncs `--source hubspot`; add per-source runs when stripe/gohighlevel tenants exist.
 - [ ] `INTEGRATIONS_REAL_SECRETS` (flag `api_integrations_real`) + `INGEST_REAL_STORES` on the api task for live connector connect/disconnect/sync + CSV-import landing in the CRM tables. (In-request sync risk is gone — API kicks are 202 + background + guarded.)
 - [ ] Live per-connector `# VERIFY` pass against the real vendor APIs on the first connect (HubSpot + Stripe self-confirmed in code; **GoHighLevel still needs a live verify** — incremental filter AND the new connect-probe endpoint). Also verify put/create/describe/delete_secret shapes + the REQ-008 ARN-suffix match.
-- [ ] **Bill the module:** mint the $29/mo `integration` Price → `module_prices = { STRIPE_PRICE_ID_MODULE_INTEGRATION = "price_..." }` (until then Switchboard toggles visibility but never bills).
+- [ ] **Bill the module:** minted DONE (test mode): `stripe_module_price_ids = { STRIPE_PRICE_ID_MODULE_INTEGRATION = "price_1ThHLBRCMItYjxIJAUlF0E1q" }` — staged in the machine-local `prod.auto.tfvars` with the other Switchboard flips; rides the next deploy. (Re-mint in LIVE mode at the live-keys cutover.)
 
 ## 7. Turn on playbook automation
 
