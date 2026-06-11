@@ -193,6 +193,8 @@ def _normalize_deal_write_row(row: dict) -> dict:
     }
     if "company_id" in row:
         out["company_id"] = _as_str(row.get("company_id"))
+    if "contact_id" in row:
+        out["contact_id"] = _as_str(row.get("contact_id"))
     if "created_at" in row:
         out["created_at"] = _as_iso(row.get("created_at"))
     return out
@@ -795,14 +797,22 @@ class PgCrmClient(_PgTenantClient):
         return _normalize_activity_write_row(row)
 
     def insert_deal(self, *, tenant_id: str, company_id: str, name: str,
-                    stage: str, amount: float | int | None) -> dict:
-        """Insert one CRM deal after Greenlight approval. `name` writes to deals.title."""
+                    stage: str, amount: float | int | None,
+                    contact_id: str | None = None) -> dict:
+        """Insert one CRM deal after Greenlight approval. `name` writes to deals.title.
+
+        `company_id` is normalized to NULL when blank/empty (the schema column is a
+        nullable FK; an empty string is not a valid uuid). `contact_id`, when given, is
+        the verified-and-existing contact this deal belongs to — its tenant-composite FK
+        (deals_tenant_contact_fkey) is the last line of defense, but the route validates
+        existence first so a bad id is a clean 404, not an opaque FK 500."""
+        company = str(company_id).strip() if company_id else ""
         with self._tx(tenant_id) as cur:
             cur.execute(
-                "INSERT INTO deals (tenant_id, company_id, title, stage, amount) "
-                "VALUES (%s,%s,%s,%s,%s) "
-                "RETURNING id, title, stage, amount, company_id, created_at",
-                (str(tenant_id), str(company_id), name, stage, amount),
+                "INSERT INTO deals (tenant_id, company_id, contact_id, title, stage, amount) "
+                "VALUES (%s,%s,%s,%s,%s,%s) "
+                "RETURNING id, title, stage, amount, company_id, contact_id, created_at",
+                (str(tenant_id), company or None, contact_id, name, stage, amount),
             )
             row = _dict_one(cur)
         if row is None:

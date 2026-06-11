@@ -74,6 +74,7 @@ def apply_create_deal(crm: Any, tenant_id: str, payload: dict) -> ApplyResult:
         name=payload["name"],
         stage=payload["stage"],
         amount=payload.get("amount"),
+        contact_id=payload.get("contact_id"),
     )
     return {"performed": True, "action": "create_deal", "result": result}
 

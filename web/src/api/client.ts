@@ -330,6 +330,67 @@ export interface DirectoryListParams {
 }
 
 // ---------------------------------------------------------------------------
+// CRM write wire types (POST /contacts, PATCH /contacts/{id},
+//                       POST /deals, PATCH /deals/{id}).
+// No tenant_id anywhere — the trust rule; the server derives it from the JWT.
+// ---------------------------------------------------------------------------
+
+/** Body for POST /contacts. */
+export interface CreateContactBody {
+  name: string;
+  email?: string | null;
+  phone?: string | null;
+  company_id?: string | null;
+}
+
+/** Body for PATCH /contacts/{id}: partial update, at least one field required. */
+export interface EditContactBody {
+  name?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  company_id?: string | null;
+}
+
+/** Response from POST /contacts (201). The created contact row (without tenant_id). */
+export interface CreateContactResponse {
+  contact: { id: string; name: string | null; email: string | null; phone: string | null };
+}
+
+/** Response from PATCH /contacts/{id}. */
+export interface EditContactResponse {
+  id: string;
+  updated: Record<string, unknown>;
+  skipped?: Record<string, string>;
+  contact?: { id: string; name: string | null; email: string | null; phone: string | null };
+}
+
+/** Body for POST /deals. */
+export interface CreateDealBody {
+  title: string;
+  amount?: number | null;
+  stage?: string;
+  contact_id?: string | null;
+}
+
+/** Body for PATCH /deals/{id}: partial update (title and/or amount). */
+export interface EditDealBody {
+  title?: string | null;
+  amount?: number | null;
+}
+
+/** Response from POST /deals (201). */
+export interface CreateDealResponse {
+  deal: { id: string; name: string | null; stage: string; amount: number | null };
+}
+
+/** Response from PATCH /deals/{id}. */
+export interface EditDealResponse {
+  id: string;
+  updated: Record<string, unknown>;
+  deal?: { id: string; name: string | null; stage: string; amount: number | null };
+}
+
+// ---------------------------------------------------------------------------
 // Onboarding / first-run wire types (mirror api/onboarding_routes.py shapes).
 // The per-tenant first-run checklist state + the one-click load-sample result.
 // No tenant_id anywhere — the server derives it from the verified claim.
@@ -1238,6 +1299,82 @@ export class ApiClient {
     return this.request<CompanyDetailResponse>(
       "GET",
       `/companies/${encodeURIComponent(companyId)}`,
+    );
+  }
+
+  /**
+   * POST /contacts: create a contact in the tenant's CRM. Body carries name and
+   * optional fields ONLY (no tenant_id — the trust rule). Returns 201 + the
+   * created contact row. Errors: 503 data plane unconfigured, 422 validation.
+   *
+   * Mock builds return a canned shape (offline/prototype: no persistence, just
+   * confirms the wire contract so forms can render a success state in Playwright).
+   */
+  async createContact(body: CreateContactBody): Promise<CreateContactResponse> {
+    if (this.mock) {
+      return {
+        contact: {
+          id: `mock-contact-${Date.now()}`,
+          name: body.name,
+          email: body.email ?? null,
+          phone: body.phone ?? null,
+        },
+      };
+    }
+    return this.request<CreateContactResponse>("POST", "/contacts", body);
+  }
+
+  /**
+   * PATCH /contacts/{id}: edit name/company/email/phone. Body carries only
+   * the fields to change (no tenant_id — the trust rule). Returns the update
+   * result. Errors: 503 unconfigured, 404 no such contact (cross-tenant or
+   * missing — indistinguishable by design), 422 validation.
+   */
+  async updateContact(contactId: string, body: EditContactBody): Promise<EditContactResponse> {
+    if (this.mock) {
+      return { id: contactId, updated: body as Record<string, unknown> };
+    }
+    return this.request<EditContactResponse>(
+      "PATCH",
+      `/contacts/${encodeURIComponent(contactId)}`,
+      body,
+    );
+  }
+
+  /**
+   * POST /deals: create a deal in the tenant's pipeline. Body carries title and
+   * optional fields ONLY (no tenant_id — the trust rule). Returns 201 + the
+   * created deal row. Errors: 503 data plane unconfigured, 422 validation.
+   *
+   * Mock builds return a canned shape (offline/prototype — no persistence).
+   */
+  async createDeal(body: CreateDealBody): Promise<CreateDealResponse> {
+    if (this.mock) {
+      return {
+        deal: {
+          id: `mock-deal-${Date.now()}`,
+          name: body.title,
+          stage: body.stage ?? "new",
+          amount: body.amount ?? null,
+        },
+      };
+    }
+    return this.request<CreateDealResponse>("POST", "/deals", body);
+  }
+
+  /**
+   * PATCH /deals/{id}: edit title/amount. Body carries only the fields to
+   * change (no tenant_id — the trust rule). Errors: 503 unconfigured, 404 no
+   * such deal (cross-tenant or missing — indistinguishable by design), 422 validation.
+   */
+  async updateDeal(dealId: string, body: EditDealBody): Promise<EditDealResponse> {
+    if (this.mock) {
+      return { id: dealId, updated: body as Record<string, unknown> };
+    }
+    return this.request<EditDealResponse>(
+      "PATCH",
+      `/deals/${encodeURIComponent(dealId)}`,
+      body,
     );
   }
 
