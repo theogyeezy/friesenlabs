@@ -54,6 +54,8 @@ MODULES: tuple[Module, ...] = (
            "STRIPE_PRICE_ID_MODULE_INTEGRATION"),
     Module("sidecar", "Sidecar", 3500, False, ("sidecar",),  # the agentic layer over your CRM
            "STRIPE_PRICE_ID_MODULE_SIDECAR"),
+    Module("sell", "Sell", 2500, False, ("sell",),  # gamified selling: levels, streaks, quests, board
+           "STRIPE_PRICE_ID_MODULE_SELL"),
 )
 
 # Account + governance surfaces every tenant can always reach (never gated by a module).

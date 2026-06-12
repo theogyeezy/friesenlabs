@@ -25,8 +25,11 @@ What remains is **owner-gated** (infra flips/seeding — see P0/P1 below), **web
 
 ### P1 — make built features actually usable
 - [x] **Web→Cube live data endpoint** (`POST /views/{id}/data`) + web loader wiring dashboards/reports/Balto to it — Waves 1+2 (#222, #223). _(Live-rows still need the prod Cube env flag flipped — owner-gated, below.)_
-- [ ] **Seed the knowledge corpus** → live `/chat` citations appear (today empty). _(owner-gated: run `seed_knowledge.py` as a one-off ECS task with `INGEST_REAL_STORES=1`.)_
-- [ ] **Flip owner-gated registries when ready:** Cortex S3 (`cortex_s3_registry=false`) + attach the retrain EventBridge target; enable ingest schedule (`ingest_tenants` + flip); `INTEGRATIONS_REAL_SECRETS`; `api_cube_env` for live Cube rows.
+- [ ] **Seed the knowledge corpus (demo tenant)** → live `/chat` citations appear for the demo.
+  _(owner-gated: run `seed_knowledge.py` as a one-off ECS task with `INGEST_REAL_STORES=1`.
+  Since #251 (deployed 2026-06-12) real customers self-populate via Knowledge → Add document —
+  this item is now demo/golden-path only.)_
+- [ ] **Flip owner-gated registries when ready:** Cortex S3 (`cortex_s3_registry=false`) + attach the retrain EventBridge target; `api_cube_env` for live Cube rows. _(APPLIED 2026-06-12 via REQ-012: ingest schedule — nightly rule ENABLED + `ingest_tenants="auto"` — and `INTEGRATIONS_REAL_SECRETS` + `INGEST_REAL_STORES` on the api task.)_
 - [x] **Contacts/deals create-edit** (#225) + **`GET /account/export`** (Wave 2) + **`POST /account/delete`** (Wave 4, inert-by-default → asgi must wire a live `PgAccountDeleter` to enable the destructive path). **Web entry points DONE** (#229: AccountDataControls in real-mode Settings — Download-my-data + confirm-gated Delete-account).
 
 ### P2 — depth
@@ -94,8 +97,9 @@ What remains is **owner-gated** (infra flips/seeding — see P0/P1 below), **web
   - ~~Build a PgStructuredSink~~ DONE @#222 (CRM structured sink; CSV + sync rows land in Pipeline/Contacts).
   - Run a live VERIFY pass per connector (HubSpot CRM v3 datetime filter format, notes searchability, GHL v2 Version header + cursor params, Stripe param shapes) before any prod sync — rides REQ-012 step 5's first live connect.
   - ~~Extend the connector secret IAM + ingest read role to gohighlevel/stripe slots~~ DONE @#235 (verify applied — REQ-012 step 4).
-- [ ] **Ingest scheduler (nightly EventBridge -> Fargate run_sync --all)** — `not-wired` _(flip = REQ-012 step 7)_
-  - Set `ingest_tenants = "auto"` (vault-slot discovery @feat/matt-switchboard-audit — no hand-list needed), flip ingest_schedule_enabled=true, targeted apply, and verify a run lands documents (and ~0 on the next incremental run). NOTE: the rule's command syncs `--source hubspot` only — add per-source runs when stripe/gohighlevel tenants connect.
+- [ ] **Ingest scheduler (nightly EventBridge -> Fargate run_sync --all)** — `APPLIED 2026-06-12 (REQ-012); first-run verify open`
+  - ~~Set `ingest_tenants = "auto"` ... flip ingest_schedule_enabled=true, targeted apply~~ APPLIED 2026-06-12 (REQ-012 go-live, #278): nightly rule ENABLED, `ingest_tenants="auto"` vault-slot discovery.
+  - Verify the first nightly run lands documents for a connected tenant (and ~0 on the next incremental run). NOTE: the rule's command syncs `--source hubspot` only — add per-source runs when stripe/gohighlevel tenants connect.
   - ~~Land the PgStructuredSink first~~ DONE @#222.
 
 ### Cortex / ML
@@ -438,6 +442,84 @@ items are documented postures (audit doc § "Documented postures"), not code.
 - [x] Thread `approval_id`/`decided_by` into the applier signature for downstream audit/Cortex
   feedback tie-in.
 
+## Knowledge customer-readiness audit — TODOs (2026-06-11, Lane Matt)
+
+From a 4-pass audit (API+DB · web UI · ingest+seeding · RAG/grounding), every claim
+spot-checked against source; knowledge test suites green locally (31 passed, 1 skipped —
+needs `UPLIFT_TEST_DB_URL`). Full report: `docs/audits/knowledge-audit-2026-06-11.md`.
+**Update 2026-06-12: the three P0s below SHIPPED in #251 and are deployed live**
+(api `uplift-api:414e82c`; upload gate INGEST_REAL_STORES applied with REQ-012).
+P1/P2 remain open. Original verdict at audit time:
+**Verdict: architecturally sound, not customer-ready** — tenancy/RLS, the citation invariant,
+and honest degraded states are all correct; the gaps are product-completeness. Items already
+tracked elsewhere in this file (seed the corpus, enable the scheduler, live-citation test,
+connector VERIFY/IAM, batch-embed live run) are NOT repeated below.
+
+### P0 — before paying customers
+- [x] **Give customers a path to a populated corpus** _(implemented in #251)_ — the knowledge API is read-only, the
+  ingest scheduler is DISABLED, and seeding is operator-only, yet the empty state
+  (`web/src/api/KnowledgeView.tsx:347-350`) promises the corpus "fills in automatically."
+  Either ship a tenant-scoped document-add path (upload/paste → the existing
+  chunk→embed→upsert pipeline) or make the auto-ingest promise real per tenant and point the
+  empty state at connecting sources. Until one of these exists the tab is permanently empty
+  for every real customer.
+- [x] **Fix placeholder citation refs on the live path** _(implemented in #251)_ — `conv/rag.py:106` `_normalize`
+  checks `ref`/`id` but live `PgRagClient.search` returns **`ref_id`**
+  (`api/pg_clients.py:330-337`), so every live citation reads `doc:0`-style positional refs
+  and `source="rag"` discards the real source. One-line fix (`or hit.get("ref_id")` + carry
+  the hit's source) + a regression test using the live hit shape (FakeRag fixtures returning
+  `ref` keys are why tests miss it).
+- [x] **Make grounding observable** _(implemented in #251)_ — empty retrieval yields "No supporting material found."
+  with zero citations, indistinguishable from a refusal; `Turn.as_dict()`
+  (`conv/session.py:87-99`) drops the `dropped` claims and no retrieval evidence is returned.
+  Add `grounding_status` (`grounded` / `no_sources_found` / `synthesis_unavailable`) +
+  `retrieved_count` to `/chat` responses; render in `ChatDock`; structured-log dropped claims.
+
+### P1 — soon after
+- [ ] **Differentiate degrade reasons + stop silent degraded modes** — every embed failure
+  reads "search model not configured" (`api/knowledge_routes.py:139-146`, type-only WARNING);
+  UI says "warming up" even for permanent config gaps (`KnowledgeView.tsx:318-329`);
+  `AnthropicSynthesizer` swallows client-build failures unlogged
+  (`conv/synthesizer.py:136-139`); the worker boots silently with `rag=None`
+  (`worker/worker.py:170-177`). Reason codes (transient vs unconfigured), matching UI copy,
+  startup log for degraded worker mode.
+- [ ] **Embedding cost/rate-limit controls** — per-text sync Titan embeds with no
+  backoff/circuit-breaker/cost accounting (`ingest/embed.py:71-90`); `batch_embed` silently
+  falls back to sync when env unset (`ingest/embed.py:253-257`). Add throttle backoff + cost
+  logging (extend the existing Anthropic cost-attribution pattern), and warn loudly on the
+  batch→sync fallback for large corpora.
+- [ ] **Report partial-sync failures** — `sync_tenant` continues past failed chunks with no
+  partial status / failed-chunk count (`ingest/pipeline.py:96-149`); re-runs heal it but ops
+  can't see it. Return `status=partial` + counts; add a fails-on-5th-chunk test.
+- [ ] **Answer/citation coherence on live knowledge turns** — displayed prose is the
+  coordinator's; citations come from an independent `_grounded_answer` synthesis
+  (`conv/session.py:403-407`), so claims may not match the prose. Merge/dedupe or render the
+  grounded claims as their own block.
+- [ ] **Onboarding never touches knowledge** — `STEP_IDS` (`api/onboarding_routes.py:51`) has
+  no knowledge step and `/onboarding/load-sample` seeds CRM only. Seed a small sample corpus
+  with load-sample (reuse `agents/knowledge_seed`). _(The empty-state half is DONE in #251 —
+  it now guides the customer to add a document / connect sources instead of the false
+  "fills in automatically" promise.)_
+- [ ] **Unprovisioned ≠ rolling-out** — DSN-unwired `GET /knowledge` is a bare 404
+  (`knowledge_routes.py:78-81`) the UI renders as "rolling out" + refresh forever
+  (`KnowledgeView.tsx:136-143`). Carry a reason code; distinct copy.
+
+### P2 — hygiene
+- [ ] Search pagination/total (`MAX_SEARCH_LIMIT=25`, no offset/total_hits in
+  `api/knowledge_routes.py`).
+- [ ] Embedding-dim assert at search time (upsert validates 1024, search assumes —
+  `api/pg_clients.py:317-337`).
+- [ ] Fix the stale `ingest/run_sync.py:~172` docstring ("structured sink stays IN-MEMORY in
+  both modes" — false since #231).
+- [ ] Test gaps: real-DB empty-tenant `/knowledge` integration test; `PgCrmStructuredSink`
+  cross-tenant isolation integration test; cursor advancement/tenant-scoping tests; CSV-import
+  unit tests; knowledge module-gating e2e; positive-row assertion in the isolation-test ANN
+  probe (`scripts/isolation_test.py:87-96`).
+- [ ] _Disproven during audit (do not re-file): `limit=abc` 500s (FastAPI 422s it); chat UI
+  missing citations (`ChatDock.tsx:320-336` renders them); run_sync hardcoding the in-memory
+  CRM sink (`default_structured_sink()` is gated-real)._
+
+
 ## FLEETAGENT session follow-ups (2026-06-11)
 
 - [x] Live DB migrate (new schema: workspace_keys/leads/playbooks/predictions + tenant_settings
@@ -505,7 +587,7 @@ _Last updated 2026-06-09. Synthesized from 5 dimension audits (frontend-auth, ai
 | ✅ **Live & working** | Cognito JWKS auth on the API | enforced + verified (`/api/approvals` → 401 unauth) | — |
 | ✅ **Live & working** | Terraform state in S3 (KMS), $200 CLI budget alarm | applied | — |
 | ✅ **Live & working** | Web UI with real login (Hosted-UI PKCE, `web/src/auth/`) | real-mode build deployed; **browser-verified**: gate → Hosted UI → code exchange → app shell → real RLS-scoped rows | — |
-| ✅ **Live & verified** | AI / agent plane (chat, tool execution) | `scripts/verify_agent_plane.py` PASSED live 2026-06-10: provision 7 agents + coordinator → `/chat` answer + delegation → Greenlight approve/execute, **draft-only held**. Worker **2/2 polling**. Bedrock-embed IAM gap caught + fixed | — (seed a tenant corpus for positive grounding citations — TODO below) |
+| ✅ **Live & verified** | AI / agent plane (chat, tool execution) | `scripts/verify_agent_plane.py` PASSED live 2026-06-10: provision 7 agents + coordinator → `/chat` answer + delegation → Greenlight approve/execute, **draft-only held**. Worker **2/2 polling**. Bedrock-embed IAM gap caught + fixed | — (demo-corpus seed — TODO below; since #251, deployed 2026-06-12, customers self-populate via Knowledge → Add document and `/chat` reports `grounding_status`) |
 | ✅ **Live & working** | cube + worker services + observability | applied + running (worker 2/2, cube 1/1, 5 alarms + SNS) | — |
 | ✅ **Live & working** | Provisioning (Stripe checkout/webhook, Resend email, signup) | `signup_real_deps` flipped; real clients wired (no `_Stub`/`_Noop`); Stripe/Resend/Anthropic-admin/webhook secrets present | — |
 | ⛔ **Not live** | Cortex retrain pipeline; API → 2-task HA + autoscaling | authored `validate`-clean / cost-parked vs the $200 ceiling | cortex job unapplied; API-scale flip when the ceiling moves |
@@ -521,7 +603,7 @@ _Last updated 2026-06-09. Synthesized from 5 dimension audits (frontend-auth, ai
 ## What is PARKED / NOT REAL YET _(updated 2026-06-10 — most of the old parked list is now LIVE)_
 - **Domain/TLS cutover**: ~~parked~~ **DONE 2026-06-10** — NS delegated, wildcard cert ISSUED, **https://friesenlabs.com (apex+www) LIVE** on uplift-web, and the ALB TLS cutover executed (sweep) + verified: ALB 443 + real cert + 403-default origin-verify, api_cdn origin `api.friesenlabs.com` https-only:443, :80 redirect-only. Follow-on hardening still tracked below (drop the :80 SG rule #211, CF min-TLS #257); api_cdn retirement RECOMMEND-AGAINST (Lane Ship note).
 - **Cortex retrain pipeline**: authored `validate`-clean, not applied.
-- **Grounding corpus**: agent-plane grounding plumbing is green (no-uncited-claim invariant holds) but live tenants have empty knowledge corpora (`citations=0`); seed a doc for a positive citation — see the seed-corpus item below.
+- **Grounding corpus**: agent-plane grounding plumbing is green (no-uncited-claim invariant holds). Since #251 (deployed 2026-06-12) customers self-populate via Knowledge → Add document (`POST /knowledge/documents`) and empty-corpus turns are observable (`grounding_status=no_sources_found`); the DEMO tenant's corpus is still unseeded — see the seed-corpus item below.
 - _**No longer parked** (now LIVE — see the table above): the AI/agent plane (`/chat`, verified end-to-end), the provisioning clients (`signup_real_deps`, real Stripe/Resend/admin), and the cube/worker/observability/provisioning-Lambda modules. The CloudFront→ALB X-Origin-Verify shared secret is also live._
 
 ---
@@ -596,7 +678,7 @@ _Last updated 2026-06-09. Synthesized from 5 dimension audits (frontend-auth, ai
 - [x] **Make `build_view`'s spec generator a real model call** *(code @#31 validate+retry; default-wired @#42)* — `build_view.py` requires `ctx.extra['generate_spec']` and raises if absent (faked in tests). Provide an Anthropic generator that validates against `view_spec.schema.json` (reject-and-retry). _(P1 · blocked: Anthropic creds + Cube members · `agents/tools/build_view.py`, `shared/view_spec.py`, `api/app.py`, `api/asgi.py` · done when: `build_view` returns `valid`; `/views/{id}/refine` produces a validated spec; invalid specs rejected)_
 - [x] **Build the ingestion scheduler/infra (connectors → chunk → embed → pgvector)** *(code @e30c3b7: run_sync entrypoint + per-tenant SecretProvider + SET LOCAL cursors + Titan batch; REQ-004 filed — infra half = Lane Nick, now in PR #62)* — `ingest/` is authored+tested but has no scheduler module; RAG is empty until docs are populated. Add EventBridge→Fargate/Lambda running `sync_tenant` with Pg stores + real connector creds. _(P1 · blocked: AWS apply (Nick) + HubSpot creds · `ingest/pipeline.py`, `ingest/connectors/hubspot.py`, `infra/modules/secrets/main.tf`, `infra/main.tf` · done when: a scheduled sync populates pgvector; a 2nd run embeds ~0; search_rag returns hits)_
 - [x] **End-to-end agent-plane verify script** *(scripts/verify_agent_plane.py @PR68, offline-PLAN mode default; LIVE run = Lane Nick, UPLIFT_LIVE_VERIFY gated)* — no live smoke exists. Provision a test tenant → chat (grounded answer + citations) → action (lands in Greenlight, no send) → approve (gated send runs) → exactly one trace. _(P1 · blocked: all P0 agent-plane items · `scripts/`, `conv/session.py`, `api/control/gate.py`, `worker/worker.py` · done when: the script passes against live creds and is gated out of offline CI)_ **LIVE-VERIFIED 2026-06-10 (Nick): workspace/chat/greenlight/approve/execute all PASS against live MA; draft-only held. Caught + fixed a live RAG-embed IAM gap (bedrock:InvokeModel on the api+worker roles). Only grounding is non-green — see the seed-corpus item below.**
-- [ ] **Seed a tenant knowledge corpus so grounding returns positive citations** *(the agent-plane live smoke step [3] is GREEN through embed→retrieve and the no-uncited-claim invariant HOLDS (grounded=True, dropped=0) — it returns citations=0 only because live tenants have EMPTY corpora; the bedrock:InvokeModel embed gap is already fixed, 2026-06-10)* — chunk → embed (Titan V2) → upsert one doc into `documents` for a test/demo tenant (mirrors the ingest path; a `scripts/seed_knowledge_doc.py` runnable as an in-VPC Fargate one-off would make it reusable), then re-run the grounding leg. _(P2 · blocked: none — crm_app DSN + bedrock embed both live · `scripts/` (new seed_knowledge_doc.py), `ingest/chunk.py`, `ingest/embed.py`, `ingest/pipeline.py` PgDocumentStore · done when: a seeded tenant's `verify_agent_plane.py` step [3] returns `citations >= 1, grounded=True`)_
+- [ ] **Seed a tenant knowledge corpus so grounding returns positive citations** *(the agent-plane live smoke step [3] is GREEN through embed→retrieve and the no-uncited-claim invariant HOLDS (grounded=True, dropped=0) — it returns citations=0 only because live tenants have EMPTY corpora; the bedrock:InvokeModel embed gap is already fixed, 2026-06-10)* — chunk → embed (Titan V2) → upsert one doc into `documents` for a test/demo tenant (mirrors the ingest path; the build half is DONE: `scripts/demo/seed_knowledge.py` covers the demo corpus and #251's `ingest/upload.py` + `POST /knowledge/documents` are the reusable one-doc path, live since 2026-06-12), then re-run the grounding leg. _(P2 · blocked: none — only the demo-seed RUN remains · done when: a seeded tenant's `verify_agent_plane.py` step [3] returns `citations >= 1, grounded=True`)_
 
 ### P2
 - [ ] **(LANE NICK) Deploy the Cortex retrain EventBridge target** — `modules/cortex` rule `uplift-cortex-retrain` has no target by design; add `aws_cloudwatch_event_target` → retrain compute (SageMaker/Lambda/Fargate `ml.retrain`) + EventBridge invoke/PassRole. _(P2 · blocked: AWS apply (Nick) + choose retrain compute · `infra/modules/cortex/main.tf`, `ml/retrain.py`, `infra/main.tf` · done when: `list-targets-by-rule` returns a target; a manual run registers a challenger)_

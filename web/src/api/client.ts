@@ -1000,6 +1000,73 @@ export interface ModuleCatalog {
   billing?: ModuleBilling;
 }
 
+// --- Sell (gamification) surface (GET /sell/me · /leaderboard · /quests, POST /sell/nudge) -------
+// Every shape is what the rep's REAL ledger backs (api/sell_routes.py) — never a fabricated
+// level/board. The reads answer an honest 503 when the points store isn't wired on the task;
+// /sell/nudge never sends, it drafts into the existing Greenlight queue (draft_only: true).
+
+/** The rep's standing within their current level band — enough for a progress bar (matches
+ * shared/gamify_rules.level_progress). */
+export interface SellLevelProgress {
+  level: number;
+  xp: number;
+  into_level: number;
+  span: number;
+  to_next: number;
+  next_level_xp: number;
+  pct: number;
+}
+/** Points + scored events the rep earned TODAY (UTC), straight off the ledger. */
+export interface SellTodayProgress {
+  points: number;
+  events: number;
+}
+/** GET /sell/me — the signed-in rep's level/xp/streak + today's progress (claims-bound). */
+export interface SellMeResponse {
+  user_id: string;
+  level: number;
+  xp: number;
+  events: number;
+  streak: number;
+  today: SellTodayProgress;
+  progress: SellLevelProgress;
+}
+/** One leaderboard row — a teammate's total points over the window (tenant_id stripped server-side). */
+export interface SellLeaderboardRow {
+  user_id: string;
+  display_name: string | null;
+  points: number;
+  events: number;
+}
+/** GET /sell/leaderboard — the tenant's reps ranked by points (RLS-scoped). */
+export interface SellLeaderboardResponse {
+  leaderboard: SellLeaderboardRow[];
+}
+/** One quest — derived straight from the ledger (the v1 close-based milestone). */
+export interface SellQuest {
+  id: string;
+  title: string;
+  description: string;
+  event_type: string;
+  window_days: number;
+  target: number;
+  current: number;
+  progress: number;
+  complete: boolean;
+  reward_points: number;
+}
+/** GET /sell/quests — the rep's active quests (honest, ledger-backed). */
+export interface SellQuestsResponse {
+  quests: SellQuest[];
+}
+/** POST /sell/nudge — the nudge is queued as a DRAFT into Greenlight, never sent (draft_only: true). */
+export interface SellNudgeResponse {
+  status: string;
+  approval_id: string | null;
+  channel: string;
+  draft_only: boolean;
+}
+
 /** A Sidecar next-action suggestion grounded in a real CRM row (GET /sidecar/suggestions). */
 export interface SidecarSuggestion {
   id: string;
@@ -2190,6 +2257,51 @@ export class ApiClient {
       return { modules: [], monthly_total_cents: 0, enabled_routes: [] };
     }
     return this.request<ModuleCatalog>("PUT", "/account/modules", { enabled });
+  }
+
+  // --- sell (gamification: levels, streaks, quests, leaderboard) ---------------
+  //
+  // Honest by construction: real mode reads through the claims-bound /sell/* routes and lets the
+  // ApiError surface (the SellView catches it → friendlyErrorMessage / honest offline + rollout
+  // states; never raw transport copy in the DOM). Mock/offline builds DON'T fabricate a level or
+  // board — the reads throw an honest 503 so the view shows its offline state, exactly like a live
+  // task without the points store wired. The nudge is always draft-only.
+
+  /** GET /sell/me: the signed-in rep's level/xp/streak + today's progress. 503 when the points
+   * store isn't wired (gamification unavailable); 404 when the API image predates the route. */
+  async getSellMe(): Promise<SellMeResponse> {
+    if (this.mock) {
+      throw new ApiError(503, "gamification is unavailable in the offline demo");
+    }
+    return this.request<SellMeResponse>("GET", "/sell/me");
+  }
+
+  /** GET /sell/leaderboard: the tenant's reps ranked by points (RLS-scoped, tenant_id stripped). */
+  async getSellLeaderboard(): Promise<SellLeaderboardResponse> {
+    if (this.mock) {
+      throw new ApiError(503, "gamification is unavailable in the offline demo");
+    }
+    return this.request<SellLeaderboardResponse>("GET", "/sell/leaderboard");
+  }
+
+  /** GET /sell/quests: the rep's active, ledger-backed quests. */
+  async getSellQuests(): Promise<SellQuestsResponse> {
+    if (this.mock) {
+      throw new ApiError(503, "gamification is unavailable in the offline demo");
+    }
+    return this.request<SellQuestsResponse>("GET", "/sell/quests");
+  }
+
+  /** POST /sell/nudge: propose a nudge to a teammate. NEVER sends — it drafts into the existing
+   * Greenlight queue (draft_only: true); a human must approve, and even then send stays draft-only.
+   * `user_id` is the recipient (a payload field, never an identity claim — the trust rule). */
+  async sellNudge(userId: string, message: string, subject?: string): Promise<SellNudgeResponse> {
+    if (this.mock) {
+      return { status: "queued", approval_id: null, channel: "email", draft_only: true };
+    }
+    const body: { user_id: string; message: string; subject?: string } = { user_id: userId, message };
+    if (subject !== undefined) body.subject = subject;
+    return this.request<SellNudgeResponse>("POST", "/sell/nudge", body);
   }
 
   // --- sidecar (the agentic layer: grounded next-action suggestions) ----------
