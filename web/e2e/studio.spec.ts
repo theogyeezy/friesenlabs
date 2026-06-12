@@ -48,6 +48,23 @@ const RUN_PENDING = {
   created_at: "2026-06-11T10:00:00Z",
 };
 
+// The digest split: unserved tool calls are NOT drafts — status "incomplete", never
+// "awaiting approval" (the live 15:15Z run's read_crm/query_cube case).
+const RUN_INCOMPLETE = {
+  id: "44444444-4444-4444-4444-444444444444",
+  playbook_id: PB_ACTIVE.id,
+  run_id: "r-2",
+  status: "incomplete",
+  trigger: { kind: "schedule", name: "*/15 * * * *" },
+  record: {
+    answer: "",
+    actions_proposed: [],
+    calls_unserved: [{ tool: "read_crm" }, { tool: "query_cube" }],
+    delegations: ["scout"],
+  },
+  created_at: "2026-06-12T15:16:00Z",
+};
+
 async function shell(page: Page) {
   await page.route("**/views/*", (route) => route.fulfill({ json: { views: [] } }));
   await page.route("**/approvals", (route) => route.fulfill({ json: { approvals: [] } }));
@@ -128,15 +145,20 @@ test("The runs panel lists persisted history and degrades honestly", async ({ pa
   await shell(page);
   await studioRoutes(page);
   await page.route(`**/studio/playbooks/${PB_ACTIVE.id}/runs?*`, (route) =>
-    route.fulfill({ json: { runs: [RUN_PENDING] } }),
+    route.fulfill({ json: { runs: [RUN_PENDING, RUN_INCOMPLETE] } }),
   );
   await gotoStudio(page);
 
   await page.getByTestId("playbook-runs").click();
   await expect(page.getByTestId("playbook-runs-panel")).toBeVisible();
-  await expect(page.getByTestId("playbook-run-row")).toHaveCount(1);
-  await expect(page.getByTestId("playbook-run-row")).toContainText("awaiting approval");
-  await expect(page.getByTestId("playbook-run-row")).toContainText("2 draft action(s) routed to Greenlight");
+  await expect(page.getByTestId("playbook-run-row")).toHaveCount(2);
+  const rows = page.getByTestId("playbook-run-row");
+  await expect(rows.nth(0)).toContainText("awaiting approval");
+  await expect(rows.nth(0)).toContainText("2 draft action(s) routed to Greenlight");
+  // The split: unserved tool calls are honestly "tools unserved" — NEVER "awaiting approval".
+  await expect(rows.nth(1)).toContainText("tools unserved");
+  await expect(rows.nth(1)).toContainText("2 tool call(s) left unserved — nothing awaits your approval");
+  await expect(rows.nth(1)).not.toContainText("awaiting approval");
 });
 
 test("Runs panel 503 shows the not-available note, not an error wall", async ({ page }) => {

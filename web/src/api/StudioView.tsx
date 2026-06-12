@@ -78,12 +78,15 @@ export interface PlaybookRunRow {
   id: string;
   playbook_id: string;
   run_id: string;
-  status: "ok" | "pending" | "not_active" | "not_found" | "error";
+  // "incomplete" = the turn ended with UNSERVED tool calls but nothing awaiting a human
+  // (worker drain latency) — split from "pending" so unserved reads never read as drafts.
+  status: "ok" | "pending" | "incomplete" | "not_active" | "not_found" | "error";
   trigger: { kind?: string; name?: string | null };
   record: {
     answer?: string;
     error?: string | null;
     actions_proposed?: Array<Record<string, unknown>>;
+    calls_unserved?: Array<Record<string, unknown>>;
     delegations?: string[];
   };
   created_at: string | null;
@@ -388,7 +391,7 @@ export function StudioView() {
     try {
       const out = await studioRequest<{
         ran: boolean;
-        run?: { status: string; actions_proposed?: unknown[]; error?: string | null };
+        run?: { status: string; actions_proposed?: unknown[]; calls_unserved?: unknown[]; error?: string | null };
         run_reason?: string;
       }>("POST", `/studio/playbooks/${id}/run`);
       if (!out.ran) {
@@ -397,6 +400,11 @@ export function StudioView() {
         const n = out.run.actions_proposed?.length ?? 0;
         setNotice(
           `Run finished — ${n} draft action${n === 1 ? "" : "s"} now wait${n === 1 ? "s" : ""} in Greenlight for your approval. Nothing was sent.`,
+        );
+      } else if (out.run?.status === "incomplete") {
+        const n = out.run.calls_unserved?.length ?? 0;
+        setNotice(
+          `Run ended with ${n} tool call${n === 1 ? "" : "s"} unserved — the agents may still be working; check the runs list and Greenlight in a minute. Nothing awaits your approval yet.`,
         );
       } else if (out.run?.status === "ok") {
         setNotice("Run finished — nothing needed your approval.");
@@ -591,10 +599,12 @@ export function StudioView() {
                               <span
                                 data-status={r.status}
                                 style={r.status === "error" ? chip("rgba(180, 65, 59, .12)", "var(--rose, #b4413b)")
-                                  : r.status === "pending" ? chip("rgba(184, 138, 46, .12)", "var(--amber, #8a6a1e)")
+                                  : r.status === "pending" || r.status === "incomplete" ? chip("rgba(184, 138, 46, .12)", "var(--amber, #8a6a1e)")
                                   : chipActive}
                               >
-                                {r.status === "pending" ? "awaiting approval" : r.status}
+                                {r.status === "pending" ? "awaiting approval"
+                                  : r.status === "incomplete" ? "tools unserved"
+                                  : r.status}
                               </span>
                               <span style={{ ...muted }}>
                                 {r.trigger?.kind ?? "manual"}{r.trigger?.name ? ` · ${r.trigger.name}` : ""}
@@ -605,7 +615,9 @@ export function StudioView() {
                                   ? (r.record?.error ?? "run failed")
                                   : r.status === "pending"
                                     ? `${r.record?.actions_proposed?.length ?? 0} draft action(s) routed to Greenlight`
-                                    : (r.record?.answer || "completed")}
+                                    : r.status === "incomplete"
+                                      ? `${r.record?.calls_unserved?.length ?? 0} tool call(s) left unserved — nothing awaits your approval`
+                                      : (r.record?.answer || "completed")}
                               </span>
                             </div>
                           ))}

@@ -354,7 +354,13 @@ approve a non-CAN-SPAM draft at all (decide-time 422). Follow-ups:
   so they are PERMANENTLY un-approvable (deny is the only exit). Re-seed with applier-shaped
   payloads (`deal_id`+`changes`; full `body` with an unsubscribe line) or mark seeds
   display-only and exclude them from decide.
-- [ ] **Runner digest overstates "pending"** — `actions_proposed` includes UNSERVED READ-ONLY
+- [x] **Runner digest overstates "pending"** **DONE 2026-06-12: `RunRecord.calls_unserved`
+  splits unserved open calls + wedged-session sentinels from routed Greenlight drafts
+  (`_is_routed_draft`: tool_name/proposal/approval keys); new status `incomplete` when only
+  unserved work remains (`pending` still wins when a draft exists); trace gains
+  `call_unserved` events. Studio surfaces it: "tools unserved" chip + count in the runs
+  panel, an honest Run-now notice branch; e2e pins the incomplete row never reads
+  "awaiting approval".** — `actions_proposed` includes UNSERVED READ-ONLY
   calls (the 15:15Z scheduled run's two entries were `read_crm`/`query_cube`, `approval: None`),
   so run status "pending" suggests Greenlight drafts where none exist. Split unserved-call
   entries from routed drafts in `RunRecord` (e.g. `calls_unserved` vs `actions_proposed`) and

@@ -79,13 +79,20 @@ class RunRecord:
     ``status`` is one of:
       * ``ok``        — the trigger turn completed, nothing pending;
       * ``pending``   — the turn proposed side-effecting action(s) for human approval (draft-only);
+      * ``incomplete``— the turn ended with UNSERVED tool calls but nothing awaiting a human
+                        (worker drain latency / a wedged session — see ``calls_unserved``);
       * ``not_active``— the playbook exists but isn't activated (no trigger should reach here);
       * ``not_found`` — no such playbook for this tenant (RLS-equivalent: absent);
       * ``error``     — the run failed and was CONTAINED (the trigger source is never crashed).
 
-    ``actions_proposed`` carries the surfaced Greenlight proposals (draft-only; approved NOTHING),
-    ``actions_approved`` stays EMPTY by construction (a trigger never auto-approves), ``tool_results``
-    the executor-served read-only/gated calls, and ``trace`` an ordered, append-only event log.
+    ``actions_proposed`` carries ONLY routed Greenlight proposals (draft-only; approved NOTHING)
+    — a human is genuinely awaited. ``calls_unserved`` carries what the turn left open: calls no
+    executor served before the drain ended (read-only included) and wedged-session sentinels
+    (``reason``-only entries) — surfaced verbatim, never re-invoked. The split exists because
+    lumping them made a run with two unserved ``read_crm`` calls read "pending" as if drafts
+    awaited approval (found live 2026-06-12). ``actions_approved`` stays EMPTY by construction
+    (a trigger never auto-approves), ``tool_results`` the executor-served read-only/gated calls,
+    and ``trace`` an ordered, append-only event log.
     """
     playbook_id: str
     tenant_id: str
@@ -96,6 +103,7 @@ class RunRecord:
     delegations: list[str] = field(default_factory=list)
     actions_proposed: list[dict] = field(default_factory=list)
     actions_approved: list[dict] = field(default_factory=list)
+    calls_unserved: list[dict] = field(default_factory=list)
     tool_results: list[dict] = field(default_factory=list)
     trace: list[dict] = field(default_factory=list)
     error: str | None = None
@@ -113,6 +121,7 @@ class RunRecord:
             "delegations": self.delegations,
             "actions_proposed": self.actions_proposed,
             "actions_approved": self.actions_approved,
+            "calls_unserved": self.calls_unserved,
             "tool_results": self.tool_results,
             "trace": self.trace,
             "error": self.error,
@@ -226,32 +235,51 @@ class PlaybookRunner:
         return registration["coordinator_id"]
 
     @staticmethod
-    def _digest(record: RunRecord, resp: dict) -> None:
+    def _is_routed_draft(entry: dict) -> bool:
+        """A ROUTED Greenlight draft (the worker served an ALWAYS_ASK tool and the base class
+        proposed it): carries ``tool_name`` and/or the proposal/approval payloads. Everything
+        else in ``pending_approvals`` is an UNSERVED open call (``tool``) or a wedged-session
+        sentinel (``reason``-only) — open work, not a human-awaiting draft."""
+        return any(k in entry for k in ("tool_name", "proposal", "approval"))
+
+    @classmethod
+    def _digest(cls, record: RunRecord, resp: dict) -> None:
         """Map ONE ``send_message`` digest onto the run record — OBSERVATION only.
 
         ``tool_results`` = calls the single executor served this turn (read-only auto-runs +
-        gated calls it already routed to Greenlight). ``pending_approvals`` = the surfaced
-        Greenlight DRAFTS (already-routed ``tool_name`` entries) plus any call that reached the
-        digest UN-served (worker down / unknown tool) — surfaced VERBATIM, never re-invoked,
-        never enqueued a second time. NOTHING here approves or executes.
+        gated calls it already routed to Greenlight). ``pending_approvals`` mixes two things
+        the record SPLITS (found live 2026-06-12 — lumping them made unserved ``read_crm``
+        calls read as Greenlight drafts): routed drafts -> ``actions_proposed``; unserved
+        open calls + wedged-session sentinels -> ``calls_unserved``. All surfaced VERBATIM,
+        never re-invoked, never enqueued a second time. NOTHING here approves or executes.
         """
         record.answer = resp.get("answer") or ""
         record.delegations = list(resp.get("delegations") or [])
         record.tool_results = list(resp.get("tool_results") or [])
-        record.actions_proposed = list(resp.get("pending_approvals") or [])
         for tr in record.tool_results:
             record.trace.append({"event": "tool_result", "tool": tr.get("tool"),
                                  "status": tr.get("status")})
-        for pa in record.actions_proposed:
-            if isinstance(pa, dict):
-                record.trace.append({
-                    "event": "action_proposed",
-                    # a routed draft carries `tool_name`; an unserved call carries `tool`
-                    "tool": pa.get("tool_name") or pa.get("tool"),
-                    "status": pa.get("status"),
-                })
+        for pa in resp.get("pending_approvals") or []:
+            if not isinstance(pa, dict):
+                continue
+            if cls._is_routed_draft(pa):
+                record.actions_proposed.append(pa)
+                record.trace.append({"event": "action_proposed",
+                                     "tool": pa.get("tool_name"), "status": pa.get("status")})
+            else:
+                record.calls_unserved.append(pa)
+                record.trace.append({"event": "call_unserved",
+                                     "tool": pa.get("tool"),
+                                     "reason": pa.get("reason"),
+                                     "status": pa.get("status")})
         # Draft-only invariant made explicit: a trigger never auto-approves a side effect.
-        record.status = "pending" if record.actions_proposed else "ok"
+        # `pending` means a HUMAN is awaited; unserved-only work is honestly `incomplete`.
+        if record.actions_proposed:
+            record.status = "pending"
+        elif record.calls_unserved:
+            record.status = "incomplete"
+        else:
+            record.status = "ok"
 
     # ------------------------------------------------------------------ public API
     def run(self, tenant_id: str, playbook_id: str, event: "TriggerEvent | dict | None" = None) -> RunRecord:

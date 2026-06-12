@@ -573,6 +573,15 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   CMK, `adot_image` digest pin, `readonly_root_filesystem`, CAPTCHA Turnstile, broader-user RBAC.
   _(Note for Lane Nick: README.md §security + CLAUDE.md status are stale — they still cite only the
   2026-06-09 audit / "25 findings"; they're your single-writer files, flagging for your next pass.)_
+- 2026-06-12 — **Runner digest split SHIPPED (the "pending" honesty fix):** `RunRecord` now
+  separates routed Greenlight drafts (`actions_proposed` — a human is genuinely awaited) from
+  `calls_unserved` (open calls no executor served before the drain + wedged-session sentinels,
+  surfaced verbatim); new status `incomplete` for unserved-only runs (`pending` wins when a
+  draft exists; `ok` stays clean-only). The live shape that motivated it (the 15:15Z scheduled
+  run's unserved `read_crm`/`query_cube` reading as "awaiting approval") is pinned in unit
+  tests; Studio renders the split ("tools unserved" chip + honest Run-now notice; e2e asserts
+  the incomplete row NEVER reads "awaiting approval"). Backend 2147 passed; web
+  typecheck + 6/6 studio e2e.
 - 2026-06-12 — **Deploy-pipeline hardening SHIPPED (the incident pair):** deploy.yml gets a
   `concurrency: deploy-production` group (queued, never cancelled — four concurrent runs
   trampled the state lock + raced the immutable-tag gate tonight), and the tfvars CLOBBER
