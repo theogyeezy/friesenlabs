@@ -9,10 +9,13 @@ signature against the pool JWKS (authored + flagged verify, never called in test
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Protocol
 
 from fastapi import Depends, HTTPException, Request
+
+logger = logging.getLogger("api.auth")
 
 
 @dataclass(frozen=True)
@@ -74,11 +77,17 @@ def _bearer(request: Request) -> str:
     return auth[7:].strip()
 
 
-def make_current_tenant(verifier: JwtVerifier):
+def make_current_tenant(verifier: JwtVerifier, member_store=None):
     """Build the FastAPI dependency that yields TenantClaims from the verified token ONLY.
 
     tenant_id is read exclusively from the verified `custom:tenant_id` claim. Nothing from the request
     body, query, or any other header can set or override it.
+
+    `member_store` (optional, the Sell roster — api.gamify_stores.PgMemberStore/InMemoryMemberStore)
+    enables member-upsert-on-auth: every successful auth refreshes the caller's `members` row from
+    the VERIFIED claims (sub + name/email — THE TRUST RULE, never a header/body). It is ADDITIVE and
+    GUARDED — None means no-op (the default, so the unauth path and every existing test are unchanged),
+    and a member-store failure is swallowed so roster bookkeeping can NEVER break authentication.
     """
 
     def current_tenant(request: Request) -> TenantClaims:
@@ -92,7 +101,20 @@ def make_current_tenant(verifier: JwtVerifier):
         tenant_id = claims.get("custom:tenant_id")
         if not tenant_id:
             raise HTTPException(status_code=401, detail="no tenant in token")
-        return TenantClaims(tenant_id=tenant_id, sub=claims.get("sub", ""), email=claims.get("email"))
+        sub = claims.get("sub", "")
+        email = claims.get("email")
+        if member_store is not None and sub:
+            # Best-effort roster refresh on the authed (verified-JWT) path only. display_name prefers
+            # a friendly name claim, falling back to email; COALESCE in the store means a bare
+            # presence-ping never erases a known name. Guarded: auth must succeed regardless.
+            try:
+                member_store.upsert(
+                    tenant_id, sub,
+                    display_name=claims.get("name") or claims.get("cognito:username") or email,
+                )
+            except Exception:  # noqa: BLE001 — roster bookkeeping must never break auth
+                logger.exception("member upsert on auth failed (tenant scoped); continuing")
+        return TenantClaims(tenant_id=tenant_id, sub=sub, email=email)
 
     return current_tenant
 
