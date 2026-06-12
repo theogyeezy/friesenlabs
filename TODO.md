@@ -311,13 +311,13 @@ exactly REQ-012** (`infra/REQUESTS.md`): migrate + two IAM deltas + the flips + 
 Price — Lane Nick / owner.
 
 ### P0 — before paying customers
-- [ ] **Prod is 100% dark while the SKU is sellable** — `infra/prod.auto.tfvars` carries none
-  of: `api_integrations_real` (credentials POST → 503, all statuses "unknown"), `INGEST_*` on
-  the API task (sync + CSV import → 503), `ingest_schedule_enabled`/`ingest_tenants` (nightly
-  rule DISABLED), `module_prices` → `STRIPE_PRICE_ID_MODULE_INTEGRATION` (the $29 is never
-  billed). A tenant can enable Switchboard in Settings today and every button 503s.
-  _(BLOCKED: Lane Nick — the full ordered go-live is REQ-012 incl. the live
-  put/create/describe/delete_secret + probe-endpoint # VERIFYs on first connect.)_
+- [x] **Prod is 100% dark while the SKU is sellable** — RESOLVED 2026-06-12: REQ-012 EXECUTED
+  (owner-approved deploy 27394841845 + Migrate workflow 27395832294). All four flips + the
+  module Price live on the api task; `integration_sync_runs` migrated (exit 0) + isolation
+  PASS; nightly rule ENABLED with `ingest_tenants="auto"`; unauthed /api/integrations[+/syncs]
+  401 live. REMAINING (user): the first-connect live # VERIFY — paste a real HubSpot/Stripe
+  token in the panel (probe/vault shapes + the GHL probe endpoint), then watch the first
+  nightly `auto` run.
 - [x] **Fix the Switchboard marketing overclaims** — DONE @this branch: "18+ tools" → the real
   four named outright; carousel = the real four + two explicitly "Planned" pills; "Keep
   HubSpot, Salesforce, or Pipedrive" → "Keep HubSpot, or bring your data in by CSV"; "Two-way
