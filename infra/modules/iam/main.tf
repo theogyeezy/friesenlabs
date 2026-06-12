@@ -462,6 +462,11 @@ resource "aws_iam_policy" "github_deploy_scoped" {
           "serverlessrepo:*",
           "servicediscovery:*",
           "sns:*",
+          # SSM Parameter Store: terraform manages /uplift/live/* params (outputs.tf) and the
+          # deploy pipeline's tfvars clobber guard reads /uplift/live/tfvars-keys — without
+          # this, every plan dies on ssm:GetParameter the moment the admin fallback detaches
+          # (exactly the 2026-06-12 16:48/16:53 failures).
+          "ssm:*",
           "states:*",
           "wafv2:*",
         ]

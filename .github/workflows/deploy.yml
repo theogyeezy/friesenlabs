@@ -6,6 +6,14 @@ name: Deploy
 on:
   workflow_dispatch:
 
+# One deploy at a time, queued not cancelled: on 2026-06-12 four concurrent runs trampled the
+# terraform state lock (412 PreconditionFailed) and raced the immutable-tag build gate (two
+# runs both saw "no image", both built, the second push failed). Serializing whole runs kills
+# both failure modes. cancel-in-progress stays false — a mid-apply cancel strands the lock.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
 permissions:
   id-token: write
   contents: read
@@ -62,6 +70,14 @@ jobs:
         run: |
           printf '%s' "${{ secrets.TF_BACKEND_HCL_B64 }}" | base64 -d > backend.hcl
           printf '%s' "${{ secrets.PROD_AUTO_TFVARS_B64 }}" | base64 -d > prod.auto.tfvars
+      - name: tfvars clobber guard (key-name manifest)
+        # The 2026-06-12 incident: a secret re-encoded WITHOUT another lane's staged flags made
+        # four deploys silently plan a REVERT of live security posture (45-min Lambda-ENI hangs).
+        # This fails the run fast — before the state lock, before any apply — when the
+        # materialized tfvars is missing variables the SSM manifest (/uplift/live/tfvars-keys)
+        # says the live config carries. Update the secret ONLY via scripts/ops/set_tfvars_secret.py
+        # (it maintains the manifest; deliberate removals use --allow-remove there).
+        run: python3 scripts/ops/set_tfvars_secret.py --check infra/prod.auto.tfvars
       - name: Plan
         working-directory: infra
         run: |
