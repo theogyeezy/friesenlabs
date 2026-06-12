@@ -549,6 +549,15 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   usable + safe; RAG-embed IAM gap closed live.
 
 ## Lane Matt (app code) — log
+- 2026-06-12 — **Settle round 4 — bounded stream reads + 504 recovery (live re-test 504'd
+  again):** the settle budget is only checkable when EVENTS arrive — a 40s+ silent inference
+  round blocked the stream wait past the 60s edge ceiling. Fixes: the MA client is built with a
+  bounded SSE read timeout (`UPLIFT_STREAM_READ_SECONDS`, default 20s; httpx timeouts classified
+  as stream drops), a reconnect-exhausted/budget-spent drop SURFACES the turn unsettled
+  (`stream_interrupted`) instead of raising — /chat/continue re-attaches — and ChatDock treats
+  an edge 502/504 as "turn still settling server-side" and recovers through the continue leg
+  (never the error wall). One deliberate contract update: the legacy second-drop raise is now
+  the surfaced-unsettled shape. TDD (+4 tests); full pytest exit 0; realmode Playwright 14/14.
 - 2026-06-12 — **Async turn contract (settle round 3 — the live 504):** holding one request
   can't clear the 60s CloudFront/ALB ceilings (a delegation-heavy live turn 504'd mid-settle).
   Shipped the durable shape: `ManagedAgentsRuntime.continue_drain` re-attaches to the in-flight

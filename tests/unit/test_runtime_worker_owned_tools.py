@@ -371,13 +371,15 @@ def test_replayed_duplicate_worker_result_is_processed_once():
 
 
 @pytest.mark.unit
-def test_second_drop_fails_loud_bounded_retry():
+def test_second_drop_surfaces_unsettled_bounded_retry():
+    # Async turn contract (settle round 4): the second drop SURFACES the turn unsettled —
+    # /chat/continue re-attaches and finishes it — instead of the old customer-facing raise.
     r, _sends, client = _reconnect_runtime(
         streams=[_DroppingStream([]), _DroppingStream([])], replay=[],
     )
     session = r.create_session("coord_1", tenant_id="tenant-a")
-    with pytest.raises(RuntimeError, match="dropped again .* giving up"):
-        r.send_message(session, "hello")
+    out = r.send_message(session, "hello")
+    assert out["pending_approvals"] == [{"status": "pending", "reason": "stream_interrupted"}]
     assert client.beta.sessions.events.stream.call_count == 2  # exactly one reconnect attempt
 
 
