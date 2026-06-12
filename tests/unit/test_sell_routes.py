@@ -174,7 +174,10 @@ def test_nudge_routes_through_greenlight_draft_only_never_sends():
     assert len(pending) == 1
     proposed = pending[0]["proposed_action"]
     assert proposed["action"] == "send_email"          # the existing draft-only outbound tool
-    assert proposed["body"] == "You're 1 close from level 2!"
+    # The draft carries the message + the opt-out footer that satisfies the Greenlight
+    # CAN-SPAM compliance floor (an unsubscribe-less send_email is denied at propose).
+    assert proposed["body"].startswith("You're 1 close from level 2!")
+    assert "unsubscribe" in proposed["body"]
     assert pending[0]["status"] == "pending"           # awaits human approval; never auto-sent
     assert pending[0]["agent"] == "u1"                 # the acting user, from the verified JWT
 

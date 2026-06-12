@@ -158,7 +158,11 @@ def mount_sell(app: FastAPI, deps: Any, current_tenant: Callable) -> None:
             agent=claims.sub,
             reasoning=f"Sell nudge to {body.user_id}: {body.message}",
             value_at_stake=None,
-            payload={"to": body.user_id, "subject": body.subject, "body": body.message},
+            # The opt-out footer makes the DRAFT compliant by construction: the Greenlight
+            # compliance floor denies any send_email without an unsubscribe mechanism, and the
+            # human approver must see exactly the body that would send — never a silent rewrite.
+            payload={"to": body.user_id, "subject": body.subject,
+                     "body": f"{body.message}\n\nReply 'unsubscribe' to opt out of nudges."},
         )
         return {
             "status": "queued",

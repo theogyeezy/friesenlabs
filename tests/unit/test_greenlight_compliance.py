@@ -59,7 +59,7 @@ def test_direct_propose_of_unsubscribeless_email_is_denied():
     assert "CAN-SPAM" in rec["deny_message"]
     # Not executable: never pending, and decide() refuses it like any decided row.
     assert gl.list_pending("t1") == []
-    with pytest.raises(ValueError, match="not pending"):
+    with pytest.raises(ValueError, match="already denied"):
         gl.decide("t1", rec["id"], "approve")
 
 
