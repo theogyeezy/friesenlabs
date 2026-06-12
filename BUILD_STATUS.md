@@ -549,6 +549,17 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   usable + safe; RAG-embed IAM gap closed live.
 
 ## Lane Matt (app code) — log
+- 2026-06-12 — **CHAT LIVE-VERIFIED end-to-end (browser, demo tenant) — the "clanky chat"
+  program closes:** "What is our discount policy?" answered in SECONDS via the Tier-0 fast
+  lane: ONE 200 request, `grounding_status=grounded`, `retrieved_count=8`, `settled=true`,
+  **11 citations across 4 real corpus docs** (`demo:kb:pricing-discount-authority#0`,
+  `pricing-policy-overview#0`, `pricing-service-agreement-rates#0`,
+  `playbook-objection-handling#0`) rendered in the dock with claims + snippets;
+  `pending=[]`, `delegations=[]` — zero MA round-trips, zero human nudges. Crew-lane transport
+  (settle rounds 1-6 + /chat/continue + ChatDock auto-continue + 504 recovery) all deployed
+  behind it. Remaining polish filed in TODO: persist the MA session id per tenant (a deploy
+  roll still kills an in-flight CREW turn), bound fast-lane citation snippets (~320 chars like
+  the API does — today they carry the full chunk), optional LLM router upgrade, SSE streaming.
 - 2026-06-12 — **Tier-0 knowledge fast lane (the Moveworks front door, owner-directed):**
   knowledge-shaped asks now answer DIRECTLY from the grounded RAG path in seconds — no MA
   session round-trip at all (the live "discount policy" turn took 3+ minutes through
