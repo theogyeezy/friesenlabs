@@ -169,9 +169,13 @@ export interface ContactsDirectoryProps {
    * passes a handler that loads the demo fixture into this tenant; without it
    * the empty state stays explanatory-only (no CTA). */
   onLoadSample?: () => void | Promise<void>;
+  /** Navigate to the Switchboard CSV importer (the shell passes navTo("integrations")).
+   * Discoverability glue ONLY — the import itself is the existing /integrations/csv/import
+   * pipeline (idempotent natural-key landing into the CRM tables); this never duplicates it. */
+  onOpenImport?: () => void;
 }
 
-export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: ContactsDirectoryProps) {
+export function ContactsDirectory({ client, onOpenPipeline, onLoadSample, onOpenImport }: ContactsDirectoryProps) {
   const api = client ?? defaultClient();
   const [tab, setTab] = useState<Tab>("people");
   const [query, setQuery] = useState("");
@@ -744,24 +748,44 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: Cont
               Uplift CRM
             </div>
             <h1 style={{ fontSize: 26, fontWeight: 760, letterSpacing: "-.02em", margin: "6px 0 4px" }}>Contacts</h1>
-            <button
-              data-testid="find-duplicates-btn"
-              onClick={() => setShowMerge(true)}
-              style={{
-                marginTop: 2,
-                padding: "4px 10px",
-                borderRadius: 8,
-                border: "1px solid var(--line, #e3ddd3)",
-                background: "transparent",
-                color: "var(--ink-2, #6b6358)",
-                fontSize: 12.5,
-                fontWeight: 600,
-                cursor: "pointer",
-                fontFamily: "inherit",
-              }}
-            >
-              Find duplicates
-            </button>
+            <div style={{ display: "flex", gap: 8, marginTop: 2, flexWrap: "wrap" }}>
+              <button
+                data-testid="find-duplicates-btn"
+                onClick={() => setShowMerge(true)}
+                style={{
+                  padding: "4px 10px",
+                  borderRadius: 8,
+                  border: "1px solid var(--line, #e3ddd3)",
+                  background: "transparent",
+                  color: "var(--ink-2, #6b6358)",
+                  fontSize: 12.5,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                }}
+              >
+                Find duplicates
+              </button>
+              {onOpenImport && (
+                <button
+                  data-testid="import-csv-btn"
+                  onClick={onOpenImport}
+                  style={{
+                    padding: "4px 10px",
+                    borderRadius: 8,
+                    border: "1px solid var(--line, #e3ddd3)",
+                    background: "transparent",
+                    color: "var(--ink-2, #6b6358)",
+                    fontSize: 12.5,
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    fontFamily: "inherit",
+                  }}
+                >
+                  Import CSV
+                </button>
+              )}
+            </div>
           </div>
           {tab === "people" && (
             <button

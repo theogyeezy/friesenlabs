@@ -563,7 +563,7 @@ function App() {
               {/* Contacts is LIVE in real mode: RLS-scoped directory from
                   GET /contacts + /companies, read-only; open deals link to
                   the Pipeline board. */}
-              {route === "contacts" && <ContactsDirectory key={sampleReloadKey} onOpenPipeline={() => navTo("crm")} onLoadSample={loadSampleData} />}
+              {route === "contacts" && <ContactsDirectory key={sampleReloadKey} onOpenPipeline={() => navTo("crm")} onLoadSample={loadSampleData} onOpenImport={() => navTo("integrations")} />}
               {/* Tasks is LIVE in real mode: RLS-scoped reminders from GET /tasks;
                   create/complete/edit/archive are direct user writes (never Greenlight). */}
               {route === "tasks" && <TasksView key={sampleReloadKey} onLoadSample={loadSampleData} />}

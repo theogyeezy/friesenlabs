@@ -120,6 +120,26 @@ test("toggling to Companies re-queries /companies/duplicates", async ({ page }) 
   expect(await bodyText(page)).toContain("same domain");
 });
 
+test("the Contacts tab surfaces 'Import CSV' which routes to the Switchboard importer", async ({ page }) => {
+  // The CSV importer is the existing /integrations/csv/import pipeline (Switchboard tab); the
+  // Contacts tab only adds a discoverability link. This proves the link navigates there.
+  await stubDirectory(page);
+  await page.route((url) => url.pathname === "/contacts/duplicates", (r) => r.fulfill({ json: EMPTY }));
+  await page.route((url) => url.pathname === "/companies/duplicates", (r) => r.fulfill({ json: EMPTY }));
+  // The Switchboard panel loads the connector list on mount.
+  await page.route(
+    (url) => url.pathname === "/integrations",
+    (r) => r.fulfill({ json: { integrations: [], csv_import_configured: true } }),
+  );
+
+  await page.goto("/");
+  await page.locator(".nav-item", { hasText: "Contacts" }).click();
+  await expect(page.getByTestId("contacts-directory")).toBeVisible({ timeout: 15_000 });
+
+  await page.getByTestId("import-csv-btn").click();
+  await expect(page.getByTestId("integrations-panel")).toBeVisible({ timeout: 15_000 });
+});
+
 test("a winner pick other than the default is the kept record", async ({ page }) => {
   await stubDirectory(page);
   let postBody: Record<string, unknown> | null = null;
