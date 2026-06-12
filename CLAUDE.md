@@ -46,7 +46,9 @@ app shell → real RLS-scoped tenant rows. Unauth `/api/*` → 401; **`/chat` is
   5 alarms + SNS + billing-alarm action + `uplift-live` dashboard + budget subscriber; CloudTrail
   scoped S3 data events + ALB access logs; IAM tightening (exact-ARN api task secrets, no SFN
   wildcard); provisioning Lambda + pinned SFN (idempotent executions, smoked all-stub); ingest
-  scheduler applied DISABLED; prod isolation gate PASSED live as `crm_app`; baseline plan CLEAN.
+  scheduler applied DISABLED **(→ ENABLED 2026-06-12 via REQ-012: nightly rule on,
+  `ingest_tenants="auto"` vault-slot discovery, `INGEST_REAL_STORES` on the api task)**;
+  prod isolation gate PASSED live as `crm_app`; baseline plan CLEAN.
 - ✅ **AI/agent plane LIVE + verified (2026-06-10):** MA env `uplift-prod` (env_012JvqRKUZzUDeH3Gse6TBgZ)
   live; org key + env-id + `SIGNUP_REAL_DEPS=1` on the API task (rev 10); the real
   `signup.agent_plane.AgentPlaneEnsure` is wired (not `_Noop`). `scripts/verify_agent_plane.py` PASSED
@@ -54,7 +56,12 @@ app shell → real RLS-scoped tenant rows. Unauth `/api/*` → 401; **`/chat` is
   approve/execute with the **draft-only guarantee held** (no real send). **Worker 2/2 polling; cube
   live.** A RAG-embed IAM gap (`bedrock:InvokeModel` on Titan, missing from the api+worker roles) was
   caught by the verify and FIXED live. Grounding plumbing is green (no-uncited-claim invariant holds);
-  a positive citation just needs a seeded tenant corpus (see `TODO.md`).
+  **knowledge P0s SHIPPED + DEPLOYED 2026-06-12 (#251 on `uplift-api:414e82c`):** customers
+  self-populate the corpus (Knowledge → Add document → `POST /knowledge/documents`, chunk→Titan
+  embed→RLS upsert; the `INGEST_REAL_STORES` gate is applied), live citations carry real
+  `ref_id`s (the `doc:0` placeholder bug is fixed), and every `/chat` turn reports
+  `grounding_status` + `retrieved_count`. The demo tenant's corpus seed is still pending for a
+  positive demo citation (see `TODO.md`).
 - 🟙 **Domain:** friesenlabs.com on Route53 — the Squarespace NS cutover is **DONE** and the
   wildcard ACM cert is **ISSUED** (confirmed 2026-06-10). The apex+www Amplify domain association
   initially FAILED (CNAMEAlreadyExists): a stale us-east-2 Amplify app ("friesenlabs", branch
