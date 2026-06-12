@@ -756,6 +756,80 @@ test("Enter continues markdown lists in the editor; an empty item exits the list
   await expect(content).toHaveValue("1. one\n2. two");
 });
 
+// ---------------------------------------------------------------------------
+// Citation → knowledge page (chat grounds on pages; pages open from citations)
+// ---------------------------------------------------------------------------
+
+const CHAT_TURN = {
+  answer: "Standard discounts cap at 15% without owner approval.",
+  citations: [
+    { claim: "Discounts cap at 15%.", source_ref: `${REF_PRICING}#1`,
+      snippet: "Standard discounts cap at 15% without approval." },
+    { claim: "The Westlake deal is in negotiation.", source_ref: "deal-westlake",
+      snippet: "Westlake Galleria chiller retrofit, negotiation stage." },
+  ],
+  pending_approvals: [], slots: {}, needs_disambiguation: [], delegations: [],
+  session_id: "s1", tenant_id: "t1", view_intent: false, view_request: null,
+  grounding_status: "grounded", retrieved_count: 2, settled: true,
+};
+
+test("a chat citation into the editable corpus deep-links to its knowledge page (standalone)", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+
+  await page.route((url) => url.pathname === "/chat", (route) => route.fulfill({ json: CHAT_TURN }));
+  await page.route(inventoryApi, (route) => route.fulfill({ json: INVENTORY }));
+  await page.route(docsApi, (route) => route.fulfill({ json: PAGES }));
+  await page.route(docDetailApi, (route) => route.fulfill({ json: PRICING_DOC }));
+
+  await page.goto("/?view=chat");
+  await expect(page.getByTestId("chat-dock")).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId("chat-input").fill("What's our discount policy?");
+  await page.getByTestId("chat-send").click();
+
+  await expect(page.getByTestId("citation")).toHaveCount(2, { timeout: 15_000 });
+  // Only the page-chunk citation links — a CRM ref ('deal-westlake') is not a page.
+  await expect(page.getByTestId("citation-open-page")).toHaveCount(1);
+
+  // Standalone chat has no shell to soft-navigate: the link is a real ?view=knowledge&doc=
+  // deep link (knowledge pages are URL-addressable).
+  await page.getByTestId("citation-open-page").click();
+  await expect(page).toHaveURL(/view=knowledge&doc=/);
+  await expect(page.getByTestId("knowledge-doc-title")).toHaveText("Pricing policy", { timeout: 15_000 });
+
+  expect(errors, `page errors: ${errors.join("\n")}`).toHaveLength(0);
+});
+
+test("in the shell, a citation opens the page WITHOUT a reload (soft route switch)", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+
+  await page.route("**/views/*", (route) => route.fulfill({ status: 404, json: { detail: "no such view" } }));
+  await page.route("**/approvals", (route) => route.fulfill({ json: { approvals: [] } }));
+  await page.route((url) => url.pathname === "/chat", (route) => route.fulfill({ json: CHAT_TURN }));
+  await page.route(inventoryApi, (route) => route.fulfill({ json: INVENTORY }));
+  await page.route(docsApi, (route) => route.fulfill({ json: PAGES }));
+  await page.route(docDetailApi, (route) => route.fulfill({ json: PRICING_DOC }));
+
+  await page.goto("/");
+  await expect(page.getByTestId("dashboard-empty")).toBeVisible({ timeout: 15_000 });
+
+  await page.getByRole("button", { name: "Ask agents" }).click();
+  const dock = page.locator(".chat.show").getByTestId("chat-dock");
+  await expect(dock).toBeVisible({ timeout: 15_000 });
+  await dock.getByTestId("chat-input").fill("What's our discount policy?");
+  await dock.getByTestId("chat-send").click();
+
+  await expect(page.getByTestId("citation-open-page")).toHaveCount(1, { timeout: 15_000 });
+  await page.getByTestId("citation-open-page").click();
+
+  // The shell routed to Knowledge and opened the page in place — same document, no reload.
+  await expect(page.getByTestId("knowledge-doc-title")).toHaveText("Pricing policy", { timeout: 15_000 });
+  expect(page.url()).not.toContain("doc=");
+
+  expect(errors, `page errors: ${errors.join("\n")}`).toHaveLength(0);
+});
+
 test("pages endpoint 404 (web ahead of the API) degrades calmly; inventory + search stay useful", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(String(e)));

@@ -549,6 +549,15 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   usable + safe; RAG-embed IAM gap closed live.
 
 ## Lane Matt (app code) — log
+- 2026-06-12 — **Citations → knowledge pages + URL-addressable pages (#338):** the chat loop
+  closes — a citation whose source_ref is a page chunk (upload:…#n / demo:kb:…#n; the SAME
+  chunked-family rule as the rail, shape-decided client-side) gets "Open page". In-shell it
+  soft-switches the route and opens in place (no reload, chat thread survives; handoff is
+  consumed-and-cleared so re-clicks work). Standalone chat falls back to a real
+  /?view=knowledge&doc=<ref> deep link — every knowledge page is now URL-addressable
+  (KnowledgeView reads ?doc= once on mount; non-page refs 404 honestly). CRM refs and
+  single-row corpus shadows get NO link. +2 e2e; knowledge spec 24/24; FULL chromium-real
+  project 175/175; no API changes.
 - 2026-06-12 — **Pages-rail integrity + onboarding seeds knowledge (#337):** (1) LATENT BUG —
   the demo fixture lands 169 single-row activity shadows under source='upload'
   (demo:doc:act:N); post-#332 they'd flood the pages rail as junk read-only "pages" titled by

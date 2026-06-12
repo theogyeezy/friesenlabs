@@ -96,9 +96,22 @@ export interface ChatDockProps {
    * "Ask your agents" header), suppress the standalone heading.
    */
   embedded?: boolean;
+  /** In-shell citation → knowledge-page navigation (the shell switches route without a
+   * reload). Absent (standalone /?view=chat mount): the link falls back to the
+   * /?view=knowledge&doc=<ref> deep link. */
+  onOpenKnowledgePage?: (refPrefix: string) => void;
 }
 
-export function ChatDock({ client, analytics, embedded = false }: ChatDockProps) {
+/** A citation source_ref that IS a knowledge-page chunk ('upload:pricing-policy-ab12#1',
+ * 'demo:kb:discounts#0') -> its page ref. CRM refs ('deal-42') and single-row corpus
+ * shadows ('demo:doc:act:1' — no chunk suffix) get no link: they aren't pages. */
+export function citationPageRef(sourceRef: string | null | undefined): string | null {
+  if (!sourceRef || !/^[a-z0-9][a-z0-9:.-]*#\d+$/.test(sourceRef)) return null;
+  const prefix = sourceRef.split("#")[0];
+  return prefix.includes(":") ? prefix : null;
+}
+
+export function ChatDock({ client, analytics, embedded = false, onOpenKnowledgePage }: ChatDockProps) {
   const api = client ?? defaultClient();
   const ph = analytics ?? defaultAnalytics();
   const [msgs, setMsgs] = useState<Message[]>([
@@ -398,7 +411,34 @@ export function ChatDock({ client, analytics, embedded = false }: ChatDockProps)
                     <div data-testid="citation-claim" style={{ fontWeight: 600, color: "var(--ink, #2a2622)" }}>
                       {c.claim}
                     </div>
-                    <div data-testid="citation-source">{c.source_ref || "ungrounded"}</div>
+                    <div data-testid="citation-source" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                      {c.source_ref || "ungrounded"}
+                      {citationPageRef(c.source_ref) && (
+                        <button
+                          data-testid="citation-open-page"
+                          onClick={() => {
+                            const ref = citationPageRef(c.source_ref)!;
+                            if (onOpenKnowledgePage) {
+                              onOpenKnowledgePage(ref);
+                            } else {
+                              window.location.assign(`/?view=knowledge&doc=${encodeURIComponent(ref)}`);
+                            }
+                          }}
+                          style={{
+                            border: "1px solid var(--line, #e3ddd3)",
+                            background: "transparent",
+                            color: "var(--ink-2, #5d564d)",
+                            borderRadius: 7,
+                            padding: "1px 8px",
+                            fontSize: 11,
+                            fontWeight: 650,
+                            cursor: "pointer",
+                          }}
+                        >
+                          Open page
+                        </button>
+                      )}
+                    </div>
                     <div style={{ fontStyle: "italic" }}>{c.snippet}</div>
                   </div>
                 ))}
