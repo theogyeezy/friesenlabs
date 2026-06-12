@@ -549,6 +549,25 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   usable + safe; RAG-embed IAM gap closed live.
 
 ## Lane Matt (app code) — log
+- 2026-06-12 — **Knowledge → a Notion-style pages workspace (#332):** the sixth real tab grows
+  full document CRUD with NO schema change. Ingest seam now lands a `<ref>#raw` row per upload
+  (the exact original, embedding NULL — invisible to search; chunks land FIRST so a mid-write
+  failure means "indexed, not yet editable", never the reverse; titles normalize to one line so
+  the raw row's first paragraph break splits title/body unambiguously). PgRagClient grows
+  list/get/delete for the upload namespace (bounded raw heads in LIST — never full dumps;
+  LIKE-escaped prefixes; inventory now excludes the #raw mirrors) and the routes grow
+  GET /knowledge/documents + GET/PUT/DELETE /knowledge/documents/{ref}: PUT re-ingests through
+  the SAME seam as POST and removes the old namespace only AFTER the new one fully lands (a
+  cleanup failure answers `previous_removed:false` — duplicate, never lost); refs are
+  charset-validated pre-reader (both real shapes: `upload:<slug>-<hash8>` AND the seeded
+  `demo:kb:<slug>` — the demo corpus lists/reads/deletes as honest read-only pages, edit→409).
+  KnowledgeView rebuilt: pages rail · safe-markdown reader (the spec-not-code subset renderer)
+  · write/preview editor (⌘S, dirty-guard, two-step delete) · search hit → Open page only when
+  the chunk family IS a listed page; new calm pages-rolling-out state covers the web deploying
+  ahead of the API. Mock API gains a stateful pages map (offline demo fully drivable). Tests:
+  8 unit + 31 integration + 19 Playwright knowledge e2e; full pytest exit 0; tsc + all three
+  builds clean; FULL Playwright suite green. Crew RBAC/Greenlight untouched — pages are the
+  tenant's own corpus, the same openness tier POST /knowledge/documents has had since #251.
 - 2026-06-12 — **CREW LANE LIVE-VERIFIED + the worker-discovery bug found (the Vada Fenwick
   test):** the contact-lookup router fix deployed and the question correctly took the crew
   lane — transport flawless (1 send + 10 auto-continues, all 200, zero 504s, zero nudges,

@@ -52,6 +52,11 @@ import {
   type KnowledgeInventoryResponse,
   type KnowledgeAddDocumentResponse,
   type KnowledgeSearchResponse,
+  type KnowledgeDocumentListResponse,
+  type KnowledgeDocumentDetail,
+  type KnowledgeDocumentSummary,
+  type KnowledgeUpdateDocumentResponse,
+  type KnowledgeDeleteDocumentResponse,
   type CheckoutResponse,
   type SignupResponse,
   type SignupState,
@@ -898,10 +903,99 @@ export class MockApi {
     return { query, results: results.map((r) => ({ ...r })), search_available: true, reason: null };
   }
 
-  addKnowledgeDocument(title: string, _content: string): KnowledgeAddDocumentResponse {
-    // Mirrors api/knowledge_routes.py: upload:<slug>-<hash8> under source='upload'.
-    const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "doc";
-    return { ref_id: `upload:${slug}-mock1234`, chunks: 1, source: "upload", title };
+  // --- knowledge pages (the editable corpus) -------------------------------------
+  // Stateful in the mock so the Notion-style Knowledge workspace is fully drivable
+  // offline: add/edit/delete mutate this map with the SAME semantics as the real
+  // API (changed content = a new ref namespace; the old one is removed on edit).
+  private knowledgePages: Map<string, { title: string; content: string; created: string; updated: string }> =
+    new Map([
+      [
+        "upload:pricing-policy-aa11bb22",
+        {
+          title: "Pricing policy",
+          content:
+            "## Standard rates\n\nThe 2026 price book lists every service with its standard rate. Prices are reviewed **quarterly**.\n\n## Discounts\n\n- Standard discounts cap at 15% without approval\n- Seasonal promotions are pre-approved\n- Stacking promotions is *not permitted*",
+          created: "2026-06-07T18:05:00+00:00",
+          updated: "2026-06-07T18:05:00+00:00",
+        },
+      ],
+      [
+        "upload:onboarding-checklist-cc33dd44",
+        {
+          title: "Onboarding checklist",
+          content:
+            "## Day one\n\n1. Badge and laptop\n2. Intro call with the account lead\n3. Workspace access\n\n## First week\n\nShadow two customer calls and read the `troubleshooting` guide.",
+          created: "2026-06-08T09:00:00+00:00",
+          updated: "2026-06-09T11:15:00+00:00",
+        },
+      ],
+    ]);
+
+  private knowledgeRef(title: string, content: string): string {
+    // Mirrors api/knowledge_routes.py: upload:<slug>-<hash8> under source='upload'
+    // (the mock "hash" is a stable 8-char digest of the content so edits move refs).
+    const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "doc";
+    let h = 0;
+    for (let i = 0; i < content.length; i++) h = (h * 31 + content.charCodeAt(i)) >>> 0;
+    return `upload:${slug}-${h.toString(16).padStart(8, "0").slice(0, 8)}`;
+  }
+
+  addKnowledgeDocument(title: string, content: string): KnowledgeAddDocumentResponse {
+    const ref = this.knowledgeRef(title, content);
+    const now = new Date().toISOString();
+    const existing = this.knowledgePages.get(ref);
+    this.knowledgePages.set(ref, {
+      title,
+      content,
+      created: existing ? existing.created : now,
+      updated: now,
+    });
+    return { ref_id: ref, chunks: Math.max(1, Math.ceil(content.length / 1600)), source: "upload", title };
+  }
+
+  listKnowledgeDocuments(): KnowledgeDocumentListResponse {
+    const documents: KnowledgeDocumentSummary[] = [...this.knowledgePages.entries()]
+      .sort((a, b) => (a[1].updated < b[1].updated ? 1 : -1))
+      .map(([ref, page]) => ({
+        ref_id: ref,
+        title: page.title,
+        preview: page.content.replace(/\s+/g, " ").slice(0, 160),
+        chunks: Math.max(1, Math.ceil(page.content.length / 1600)),
+        editable: true,
+        created_at: page.created,
+        updated_at: page.updated,
+      }));
+    return { documents, total: documents.length };
+  }
+
+  getKnowledgeDocument(refId: string): KnowledgeDocumentDetail {
+    const page = this.knowledgePages.get(refId);
+    if (!page) throw new ApiError(404, "no document with that ref in your knowledge base");
+    return {
+      ref_id: refId,
+      title: page.title,
+      content: page.content,
+      editable: true,
+      sections: null,
+      chunks: Math.max(1, Math.ceil(page.content.length / 1600)),
+      created_at: page.created,
+      updated_at: page.updated,
+    };
+  }
+
+  updateKnowledgeDocument(refId: string, title: string, content: string): KnowledgeUpdateDocumentResponse {
+    const page = this.knowledgePages.get(refId);
+    if (!page) throw new ApiError(404, "no document with that ref in your knowledge base");
+    const out = this.addKnowledgeDocument(title, content);
+    if (out.ref_id !== refId) this.knowledgePages.delete(refId);
+    return { ...out, replaced_ref_id: refId, previous_removed: true };
+  }
+
+  deleteKnowledgeDocument(refId: string): KnowledgeDeleteDocumentResponse {
+    const page = this.knowledgePages.get(refId);
+    if (!page) throw new ApiError(404, "no document with that ref in your knowledge base");
+    this.knowledgePages.delete(refId);
+    return { ref_id: refId, deleted: true, rows_removed: 1 };
   }
 
   runAction(body: ActionBody): ActionResponse {

@@ -578,6 +578,21 @@ connector VERIFY/IAM, batch-embed live run) are NOT repeated below.
   Add `grounding_status` (`grounded` / `no_sources_found` / `synthesis_unavailable`) +
   `retrieved_count` to `/chat` responses; render in `ChatDock`; structured-log dropped claims.
 
+### Shipped after the audit (Lane Matt)
+- [x] **Editable knowledge pages — Notion-style workspace (#332, 2026-06-12)** — the corpus is
+  now a real pages surface, end to end: every upload also lands a `<ref>#raw` row (the exact
+  original, embedding NULL — invisible to search; chunks land first so a mid-write failure
+  can only mean "indexed, not yet editable"); `GET /knowledge/documents` +
+  `GET/PUT/DELETE /knowledge/documents/{ref}` (edit re-ingests through the SAME seam as POST,
+  new namespace lands BEFORE the old is removed, cleanup failure → `previous_removed:false`,
+  never a lost doc); KnowledgeView rebuilt as a two-pane workspace (pages rail · safe-markdown
+  reader · write/preview editor with ⌘S + dirty-guard + two-step delete · search hit → Open
+  page). Legacy pre-raw uploads incl. the seeded `demo:kb:*` corpus list/read/delete honestly
+  read-only (edit → 409). NO schema change (rides `documents` + the existing crm_app DELETE
+  grant). 8 unit + 31 integration + 19 Playwright knowledge tests; full pytest + full
+  Playwright suite green. Web deploy ahead of the API degrades to a calm pages-rolling-out
+  note (inventory + search stay useful).
+
 ### P1 — soon after
 - [ ] **Differentiate degrade reasons + stop silent degraded modes** — every embed failure
   reads "search model not configured" (`api/knowledge_routes.py:139-146`, type-only WARNING);

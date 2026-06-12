@@ -103,6 +103,30 @@ def _escape_ilike(q: str) -> str:
 # disambiguation prompt, so anything beyond a handful of prefix hits is noise.
 SLOT_SEARCH_LIMIT = 10
 
+# Uploaded-document namespace (ingest/upload.py ref scheme). The literals are DUPLICATED here —
+# this module must never import ingest/ (the boto3-free import invariant the knowledge routes
+# and the image-fileset test pin).
+_UPLOAD_SOURCE = "upload"
+_RAW_SUFFIX = "#raw"
+# How much of the raw original the LIST query ships per document: enough for the one-line
+# title + a body preview, never the full (up to 100KB) content.
+_RAW_HEAD_LEN = 800
+
+
+def _escape_like(value: str) -> str:
+    r"""Escape the LIKE metacharacters (\, %, _) in a ref prefix that becomes a LIKE pattern.
+    The route layer already validates the prefix shape; this keeps the client safe on its own."""
+    return str(value).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _chunk_seq(ref_id: Any) -> int:
+    """Numeric #seq of a chunk ref ('upload:x-ab12#3' -> 3); junk sorts last, stably."""
+    tail = str(ref_id or "").rpartition("#")[2]
+    try:
+        return int(tail)
+    except ValueError:
+        return 1 << 30
+
 
 def _escape_ilike_prefix(q: str) -> str:
     r"""Escape the LIKE metacharacters (\, %, _) in a user-supplied name and wrap it for a
@@ -386,11 +410,15 @@ class PgRagClient(_PgTenantClient):
         scoped via SET LOCAL. A PLAIN aggregate — NO embedding model is touched, so the Knowledge
         inventory works the moment the data plane is wired even if the Titan embedder isn't. An
         un-ingested tenant gets an empty list (never a hand-written tenant filter; `documents` has
-        created_at only — there is no updated_at column — so last_updated is MAX(created_at))."""
+        created_at only — there is no updated_at column — so last_updated is MAX(created_at)).
+        Raw-original mirror rows (`…#raw`, ingest/upload.py) are excluded — they duplicate
+        content the chunk rows already count."""
         with self._tx(tenant_id) as cur:
             cur.execute(
                 "SELECT source, COUNT(*) AS document_count, MAX(created_at) AS last_updated "
-                "FROM documents GROUP BY source ORDER BY document_count DESC, source"
+                "FROM documents WHERE ref_id IS NULL OR ref_id NOT LIKE %s "
+                "GROUP BY source ORDER BY document_count DESC, source",
+                ("%" + _RAW_SUFFIX,),
             )
             rows = _dict_rows(cur)
         return [
@@ -401,6 +429,84 @@ class PgRagClient(_PgTenantClient):
             }
             for r in rows
         ]
+
+    # ------------------------------------------------------------------ uploaded documents
+    # The editable knowledge corpus (source='upload', ingest/upload.py ref scheme). A
+    # "document" is the family of rows sharing one `upload:<slug>-<hash8>` prefix: embedded
+    # chunk rows `#0..#n` plus the raw-original row `#raw` (embedding NULL). Same discipline
+    # as every read above: tenancy is RLS-only via the per-op SET LOCAL transaction; the
+    # ref prefix is validated upstream (api/knowledge_routes.py) AND escaped here before it
+    # becomes a LIKE pattern — belt and suspenders.
+
+    def list_uploaded_documents(self, *, tenant_id: str) -> list[dict]:
+        """One row per uploaded document, newest first: ref prefix, a bounded head of the raw
+        original (title line + the start of the body — never the full content), embedded chunk
+        count, and created/updated stamps. Legacy uploads (pre-raw-row) come back with
+        raw_head None — listable and deletable, not editable."""
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "SELECT split_part(ref_id, '#', 1) AS ref,"
+                " MAX(CASE WHEN ref_id LIKE %s THEN left(content, %s) END) AS raw_head,"
+                " COUNT(*) FILTER (WHERE embedding IS NOT NULL) AS chunk_count,"
+                " MIN(created_at) AS created_at, MAX(created_at) AS updated_at "
+                "FROM documents WHERE source = %s "
+                "GROUP BY 1 ORDER BY MAX(created_at) DESC, 1",
+                ("%" + _RAW_SUFFIX, _RAW_HEAD_LEN, _UPLOAD_SOURCE),
+            )
+            rows = _dict_rows(cur)
+        return [
+            {
+                "ref_id": r.get("ref"),
+                "raw_head": r.get("raw_head"),
+                "chunk_count": int(r.get("chunk_count") or 0),
+                "created_at": r.get("created_at"),
+                "updated_at": r.get("updated_at"),
+            }
+            for r in rows
+        ]
+
+    def get_uploaded_document(self, *, tenant_id: str, ref_prefix: str) -> dict | None:
+        """One uploaded document in full: the raw original (None for a legacy upload) plus its
+        embedded chunks in #seq order (the legacy read-only fallback) and stamps. Returns None
+        when nothing exists under the prefix for this tenant (RLS-scoped)."""
+        like = _escape_like(ref_prefix) + "#%"
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "SELECT ref_id, content, embedding IS NOT NULL AS embedded, created_at "
+                "FROM documents WHERE source = %s AND ref_id LIKE %s ESCAPE '\\'",
+                (_UPLOAD_SOURCE, like),
+            )
+            rows = _dict_rows(cur)
+        if not rows:
+            return None
+        raw = next((r for r in rows if r.get("ref_id") == ref_prefix + _RAW_SUFFIX), None)
+        chunks = sorted(
+            (r for r in rows if r.get("embedded")),
+            key=lambda r: _chunk_seq(r.get("ref_id")),
+        )
+        stamps = [r.get("created_at") for r in rows if r.get("created_at") is not None]
+        return {
+            "ref_id": ref_prefix,
+            "raw_content": raw.get("content") if raw else None,
+            "chunk_count": len(chunks),
+            "chunk_contents": [c.get("content") for c in chunks],
+            "created_at": min(stamps) if stamps else None,
+            "updated_at": max(stamps) if stamps else None,
+        }
+
+    def delete_uploaded_document(self, *, tenant_id: str, ref_prefix: str) -> int:
+        """Delete every row of one uploaded document (chunks + raw) in ONE tenant-scoped
+        transaction; returns the number of rows removed (0 = nothing existed for this tenant).
+        Upload rows only — the source predicate keeps connector/seeded corpora untouchable
+        through this path even if a crafted prefix slipped past route validation."""
+        like = _escape_like(ref_prefix) + "#%"
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "DELETE FROM documents WHERE source = %s "
+                "AND (ref_id = %s OR ref_id LIKE %s ESCAPE '\\')",
+                (_UPLOAD_SOURCE, ref_prefix, like),
+            )
+            return cur.rowcount or 0
 
 
 # Allow-listed CRM tables + their filterable columns (identifiers are NEVER taken from input
