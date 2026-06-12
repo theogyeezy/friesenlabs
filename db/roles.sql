@@ -174,3 +174,22 @@ REVOKE UPDATE, DELETE ON cost_events FROM crm_app;
 -- ---------------------------------------------------------------------------
 GRANT SELECT, INSERT, UPDATE ON integration_sync_runs TO crm_app;
 REVOKE DELETE ON integration_sync_runs FROM crm_app;
+
+-- ---------------------------------------------------------------------------
+-- Sell (gamification) data foundation — members + points_ledger (RLS-FORCEd tenant tables; see
+-- schema.sql). EXPLICIT grants for the same fresh-load reason as the blocks above: schema.sql
+-- creates them BEFORE roles.sql's ALTER DEFAULT PRIVILEGES runs, so crm_app has ZERO privileges
+-- on them until these lines land — without them the leaderboard + member upsert permission-deny.
+--   members: full DML — a member row is mutable (display_name/role/last_seen refresh on upsert)
+--     and removable (a user leaves the workspace), so SELECT/INSERT/UPDATE/DELETE.
+--   points_ledger: SELECT/INSERT ONLY — strictly append-only points trail. NO UPDATE, NO DELETE:
+--     a recorded scored event is immutable audit, exactly like traces/cost_events; a mis-score is
+--     corrected by appending a compensating row, never by editing or erasing history.
+-- ---------------------------------------------------------------------------
+GRANT SELECT, INSERT, UPDATE, DELETE ON members TO crm_app;
+GRANT SELECT, INSERT ON points_ledger TO crm_app;
+-- The ALTER DEFAULT PRIVILEGES block above hands UPDATE + DELETE to crm_app on tables created
+-- later by the migration role — including points_ledger. Revoke the unintended privileges
+-- explicitly so the append-only intent is not silently superseded, and a roles.sql re-run
+-- converges a grant-history live DB to this design.
+REVOKE UPDATE, DELETE ON points_ledger FROM crm_app;
