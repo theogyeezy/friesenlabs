@@ -549,6 +549,17 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   usable + safe; RAG-embed IAM gap closed live.
 
 ## Lane Matt (app code) — log
+- 2026-06-12 — **Knowledge degrade reasons differentiated (#334 — audit P1, knowledge slice):**
+  `PgRagClient._embed` raises a TYPED `EmbedderUnavailable` (RuntimeError subclass — broad
+  callers unchanged; a Bedrock outage never touches the pool), `/knowledge/search` classifies
+  on the type (never string-sniffing): embedder down -> pinned "search model not configured" +
+  `reason_code embedder_unavailable` (calm warming-up), post-embed failure -> "search failed" +
+  `search_error` with RETRY copy (no more "warming up" forever over a Postgres outage). And
+  unprovisioned ≠ rolling-out: 503 from GET /knowledge gets its own calm "isn't switched on
+  for this workspace yet" panel vs the 404 deploy-lag story. Wire only GAINS `reason_code`
+  (older API image -> web defaults to the embedder story). +3 integration tests (typed
+  boundary fires pre-pool), e2e 22/22, full pytest exit 0. Synthesizer/worker halves of the
+  P1 item remain (tracked in TODO).
 - 2026-06-12 — **Knowledge editor ergonomics + rail filter (#333, on top of #332):** Enter
   continues markdown lists ("- "/"* "/"3. "→"4. "; empty item exits — caret restore is a
   LAYOUT effect so fast typing can't race it), the editor textarea auto-grows (page scrolls,
