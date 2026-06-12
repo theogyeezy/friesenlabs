@@ -1,4 +1,5 @@
-"""OAuth "connect with login" helpers for connectors — HubSpot + GoHighLevel + Microsoft 365 + Google.
+"""OAuth "connect with login" helpers for connectors — HubSpot + GoHighLevel +
+Salesforce + Microsoft 365 + Google + Pipedrive.
 
 This is the small, dependency-free core of the OAuth flow. It changes only WHAT
 fills a tenant's vault slot (`uplift/{tenant_id}/{source}`): instead of a pasted
@@ -163,6 +164,29 @@ PROVIDERS: dict[str, OAuthProvider] = {
         # `user_type=Location` selects a location-scoped token (vs Company).
         # # VERIFY on first live connect against the LeadConnector token endpoint.
         token_extra=(("user_type", "Location"),),
+    ),
+    "pipedrive": OAuthProvider(
+        name="pipedrive",
+        # Pipedrive marketplace authorization_code flow. The token response carries
+        # `api_domain` — the tenant's PER-COMPANY API base host (e.g.
+        # https://yourco.pipedrive.com) — which EVERY subsequent API call uses as its
+        # base; it is persisted in the vault envelope (see oauth_secret_value).
+        authorize_url="https://oauth.pipedrive.com/oauth/authorize",
+        token_url="https://oauth.pipedrive.com/oauth/token",
+        # Read-only scopes for what the connector pulls — persons+organizations ride
+        # `contacts:read`, deals `deals:read`, activities `activities:read`, plus the
+        # `base` scope every Pipedrive app needs. Read-only by design — Uplift never
+        # writes back. # VERIFY scope names against the app's settings on first connect.
+        scopes=(
+            "base",
+            "contacts:read",
+            "deals:read",
+            "activities:read",
+        ),
+        client_id_ref="uplift/oauth/pipedrive/client_id",
+        client_secret_ref="uplift/oauth/pipedrive/client_secret",
+        # Pipedrive supports (and we require) PKCE S256 on the authorization-code flow.
+        pkce=True,
     ),
     "microsoft": OAuthProvider(
         name="microsoft",
@@ -334,15 +358,16 @@ TOKEN_TYPE = "oauth"
 
 def oauth_secret_value(*, access_token: str, refresh_token: str, expires_at: int,
                        location_id: str | None = None, company_id: str | None = None,
-                       instance_url: str | None = None) -> str:
+                       instance_url: str | None = None, api_domain: str | None = None) -> str:
     """Serialize the OAuth token set into the JSON string stored in the vault slot.
 
     `token_type:"oauth"` is the discriminator the connector uses to tell an OAuth
     envelope apart from a legacy pasted bare token (a plain string). For
     GoHighLevel/LeadConnector the token response also carries the chosen
-    `location_id`/`company_id`, and Salesforce carries `instance_url` (the tenant's
-    per-org API host — every subsequent REST/SOQL call uses it as the base host);
-    they are persisted (when present) so the connector can make org/location-level
+    `location_id`/`company_id`, Salesforce carries `instance_url` (the tenant's
+    per-org API host), and Pipedrive carries `api_domain` (the tenant's per-company
+    API base host — every subsequent API call uses it as the base host); they are
+    persisted (when present) so the connector can make org/location/company-level
     API calls without a second round trip. HubSpot passes none of them, so its
     envelope is byte-for-byte unchanged.
     """
@@ -358,6 +383,8 @@ def oauth_secret_value(*, access_token: str, refresh_token: str, expires_at: int
         obj["company_id"] = str(company_id)
     if instance_url:
         obj["instance_url"] = str(instance_url)
+    if api_domain:
+        obj["api_domain"] = str(api_domain)
     return json.dumps(obj, separators=(",", ":"))
 
 
@@ -482,6 +509,13 @@ def _tokens_from_response(resp: dict, *, fallback_refresh: str | None = None,
     instance_url = resp.get("instance_url") or resp.get("instanceUrl")
     if instance_url:
         out["instance_url"] = str(instance_url)
+    # Pipedrive returns `api_domain` (the tenant's per-company API base host) on BOTH
+    # the code exchange and the refresh response — capture it so every subsequent API
+    # call targets the right company host. Providers that don't send it leave `out`
+    # unchanged.
+    api_domain = resp.get("api_domain") or resp.get("apiDomain")
+    if api_domain:
+        out["api_domain"] = str(api_domain)
     return out
 
 
