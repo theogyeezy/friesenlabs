@@ -549,6 +549,12 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   usable + safe; RAG-embed IAM gap closed live.
 
 ## Lane Matt (app code) — log
+- 2026-06-12 — **Knowledge editor ergonomics + rail filter (#333, on top of #332):** Enter
+  continues markdown lists ("- "/"* "/"3. "→"4. "; empty item exits — caret restore is a
+  LAYOUT effect so fast typing can't race it), the editor textarea auto-grows (page scrolls,
+  not the box), and a client-side filter narrows the pages rail past 4 pages (semantic search
+  stays the corpus-wide tool; honest no-match state). Pure KnowledgeView + spec — no API
+  change. knowledge e2e 21/21 ×2 (--repeat-each=2); tsc + real build clean.
 - 2026-06-12 — **Knowledge → a Notion-style pages workspace (#332):** the sixth real tab grows
   full document CRUD with NO schema change. Ingest seam now lands a `<ref>#raw` row per upload
   (the exact original, embedding NULL — invisible to search; chunks land FIRST so a mid-write

@@ -672,6 +672,59 @@ test("a search hit inside the editable corpus opens its page", async ({ page }) 
   await expect(page.getByTestId("knowledge-doc-title")).toHaveText("Pricing policy");
 });
 
+test("the pages rail filter narrows a long list client-side", async ({ page }) => {
+  const MANY_PAGES = {
+    documents: ["Pricing policy", "Refund policy", "Onboarding SOP", "Safety guide", "Vendor list", "Holiday hours"]
+      .map((title, i) => ({
+        ref_id: `upload:page-${i}-aabbcc0${i}`, title, preview: `${title} preview text.`,
+        chunks: 1, editable: true,
+        created_at: "2026-06-10T08:00:00+00:00", updated_at: "2026-06-10T08:00:00+00:00",
+      })),
+    total: 6,
+  };
+  await page.route(inventoryApi, (route) => route.fulfill({ json: INVENTORY }));
+  await page.route(docsApi, (route) => route.fulfill({ json: MANY_PAGES }));
+
+  await page.goto("/?view=knowledge");
+  await expect(page.getByTestId("knowledge-page-item")).toHaveCount(6, { timeout: 15_000 });
+
+  await page.getByTestId("knowledge-pages-filter").fill("policy");
+  await expect(page.getByTestId("knowledge-page-item")).toHaveCount(2);
+
+  await page.getByTestId("knowledge-pages-filter").fill("zzz");
+  await expect(page.getByTestId("knowledge-pages-nomatch")).toContainText("zzz");
+
+  await page.getByTestId("knowledge-pages-filter").fill("");
+  await expect(page.getByTestId("knowledge-page-item")).toHaveCount(6);
+});
+
+test("Enter continues markdown lists in the editor; an empty item exits the list", async ({ page }) => {
+  await page.route(inventoryApi, (route) => route.fulfill({ json: EMPTY_INVENTORY }));
+  await page.route(docsApi, (route) => route.fulfill({ json: { documents: [], total: 0 } }));
+
+  await page.goto("/?view=knowledge");
+  await expect(page.getByTestId("knowledge-view")).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId("knowledge-add-toggle").click();
+
+  const content = page.getByTestId("knowledge-add-content");
+  await content.fill("- first");
+  await content.press("Enter");
+  await content.pressSequentially("second");
+  await expect(content).toHaveValue("- first\n- second");
+
+  // Empty item + Enter exits the list (the dangling "- " is removed).
+  await content.press("Enter");
+  await expect(content).toHaveValue("- first\n- second\n- ");
+  await content.press("Enter");
+  await expect(content).toHaveValue("- first\n- second\n");
+
+  // Ordered lists increment.
+  await content.fill("1. one");
+  await content.press("Enter");
+  await content.pressSequentially("two");
+  await expect(content).toHaveValue("1. one\n2. two");
+});
+
 test("pages endpoint 404 (web ahead of the API) degrades calmly; inventory + search stay useful", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(String(e)));

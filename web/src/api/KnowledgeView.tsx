@@ -44,7 +44,7 @@ import {
 import { Spinner } from "./Spinner";
 import { SafeMarkdown } from "../dashboard/markdown";
 
-const { useState, useEffect, useCallback, useRef } = React;
+const { useState, useEffect, useCallback, useLayoutEffect, useRef } = React;
 
 // Mirrors api/knowledge_routes.py MAX_Q_LEN — the input enforces it so typing
 // can never produce a 422.
@@ -206,7 +206,16 @@ export function KnowledgeView({ client }: KnowledgeViewProps) {
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
 
+  // Rail filter — pure client-side narrowing of the loaded pages list (the semantic
+  // search box above is the corpus-wide tool; this is for eyeballing a long rail).
+  const [pageFilter, setPageFilter] = useState("");
+
   const titleRef = useRef<HTMLInputElement | null>(null);
+  const contentRef = useRef<HTMLTextAreaElement | null>(null);
+  // Where the caret belongs after a programmatic list-continuation edit — applied in a
+  // layout effect (synchronously after commit, BEFORE the next key event can land), so
+  // fast typing can never race the caret restore.
+  const pendingCursor = useRef<number | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -385,6 +394,49 @@ export function KnowledgeView({ client }: KnowledgeViewProps) {
       closeEditor();
     }
   };
+
+  // Auto-grow the editor with its content (Notion-style: the page scrolls, not the box).
+  useEffect(() => {
+    const ta = contentRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    ta.style.height = `${Math.max(320, ta.scrollHeight)}px`;
+  }, [editor, editorPreview]);
+
+  // Enter inside a markdown list continues it ("- " / "* " / "3. " -> "4. "); Enter on an
+  // EMPTY item exits the list (removes the dangling prefix) — the Notion muscle memory.
+  const onContentKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key !== "Enter" || e.shiftKey || e.metaKey || e.ctrlKey || e.altKey) return;
+    const ta = e.currentTarget;
+    const { selectionStart, selectionEnd, value } = ta;
+    if (selectionStart !== selectionEnd) return; // replacing a selection: browser default
+    const lineStart = value.lastIndexOf("\n", selectionStart - 1) + 1;
+    const line = value.slice(lineStart, selectionStart);
+    const m = /^(\s*)(?:([-*])|(\d+)([.)]))\s/.exec(line);
+    if (!m) return;
+    e.preventDefault();
+    const [prefix, indent, bullet, num, numSep] = m;
+    let newValue: string;
+    let cursor: number;
+    if (line.length === prefix.length) {
+      // Empty item: drop the prefix, stay on this line.
+      newValue = value.slice(0, lineStart) + value.slice(selectionStart);
+      cursor = lineStart;
+    } else {
+      const next = bullet ? `${indent}${bullet} ` : `${indent}${Number(num) + 1}${numSep} `;
+      newValue = `${value.slice(0, selectionStart)}\n${next}${value.slice(selectionEnd)}`;
+      cursor = selectionStart + 1 + next.length;
+    }
+    pendingCursor.current = cursor;
+    setEditorField({ content: newValue });
+  };
+
+  useLayoutEffect(() => {
+    if (pendingCursor.current !== null && contentRef.current) {
+      contentRef.current.selectionStart = contentRef.current.selectionEnd = pendingCursor.current;
+      pendingCursor.current = null;
+    }
+  });
 
   // --- delete ------------------------------------------------------------------
 
@@ -621,10 +673,12 @@ export function KnowledgeView({ client }: KnowledgeViewProps) {
         </div>
       ) : (
         <textarea
+          ref={contentRef}
           data-testid="knowledge-add-content"
           value={editor.content}
           maxLength={MAX_DOC_CHARS}
           onChange={(e) => setEditorField({ content: e.target.value })}
+          onKeyDown={onContentKeyDown}
           placeholder="Write the page — your agents will ground answers on it and cite it by section."
           aria-label="Page content"
           rows={14}
@@ -634,6 +688,7 @@ export function KnowledgeView({ client }: KnowledgeViewProps) {
             lineHeight: 1.6,
             resize: "vertical",
             minHeight: 320,
+            overflow: "hidden",
           }}
         />
       )}
@@ -972,11 +1027,36 @@ export function KnowledgeView({ client }: KnowledgeViewProps) {
                     No pages yet — write your first one.
                   </p>
                 )}
-                {pages !== null && pages.length > 0 && (
-                  <nav data-testid="knowledge-pages" style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                    {pages.map(pageRow)}
-                  </nav>
-                )}
+                {pages !== null && pages.length > 0 && (() => {
+                  const needle = pageFilter.trim().toLowerCase();
+                  const visible = needle
+                    ? pages.filter((p) => `${p.title}\n${p.preview}`.toLowerCase().includes(needle))
+                    : pages;
+                  return (
+                    <>
+                      {pages.length > 4 && (
+                        <input
+                          data-testid="knowledge-pages-filter"
+                          type="text"
+                          value={pageFilter}
+                          onChange={(e) => setPageFilter(e.target.value)}
+                          placeholder="Filter pages..."
+                          aria-label="Filter pages"
+                          style={{ ...fieldStyle, padding: "6px 10px", fontSize: 12.5, margin: "2px 0 8px" }}
+                        />
+                      )}
+                      {visible.length === 0 ? (
+                        <p data-testid="knowledge-pages-nomatch" style={{ fontSize: 12.5, lineHeight: 1.5, margin: "6px 0 0", ...muted }}>
+                          No pages match &ldquo;{pageFilter.trim()}&rdquo;.
+                        </p>
+                      ) : (
+                        <nav data-testid="knowledge-pages" style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                          {visible.map(pageRow)}
+                        </nav>
+                      )}
+                    </>
+                  );
+                })()}
               </div>
 
               <div>
