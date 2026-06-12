@@ -549,6 +549,18 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   usable + safe; RAG-embed IAM gap closed live.
 
 ## Lane Matt (app code) — log
+- 2026-06-12 — **Async turn contract (settle round 3 — the live 504):** holding one request
+  can't clear the 60s CloudFront/ALB ceilings (a delegation-heavy live turn 504'd mid-settle).
+  Shipped the durable shape: `ManagedAgentsRuntime.continue_drain` re-attaches to the in-flight
+  session observe-only (events.list replay + per-session dedupe ledger — the existing
+  consolidation machinery), per-REQUEST settle budget (default now 25s), `Turn.settled`,
+  `POST /chat/continue` (same auth/kill-switch posture), and ChatDock auto-continues unsettled
+  turns with progressive narration — ONE user action, zero nudges, any turn length. Honesty
+  upgrade: an UNSERVED side-effecting call no longer renders the false "Prepared an action for
+  your approval." copy (it claimed a draft that hadn't landed) — unsettled turns continue
+  instead; 3 legacy tests updated deliberately. TDD throughout (runtime continue/dedupe, conv
+  settled+continue_turn grounding against the original question, API leg, e2e auto-continue).
+  Full pytest exit 0 · typecheck/builds/node units · realmode+knowledge Playwright 23/23.
 - 2026-06-12 — **First SCHEDULED playbook run LIVE-VERIFIED end-to-end + Cognito threat
   protection ON (owner-approved, Matt's session):** activated a starter playbook
   (pipeline-hygiene-scout instantiated via the live Studio API as the demo tenant, cron

@@ -191,3 +191,66 @@ def test_budget_exhausted_no_open_calls_surfaces_requires_action_reason():
     # Today's fail-closed shape for the no-open-calls case.
     assert out["pending_approvals"] == [{"status": "pending", "reason": "requires_action"}]
     assert "AEs can approve up to 10%" not in out["answer"]
+
+
+# Live finding ROUND 3 (2026-06-12): holding ONE request can't clear the 60s CloudFront/ALB
+# ceiling — a delegation-heavy turn 504'd at the edge mid-settle. The async turn contract:
+# send_message returns when the per-REQUEST budget is spent (unsettled), and continue_drain
+# picks the SAME session back up — replaying missed events via events.list (deduped by the
+# per-session ledger) then streaming on — so the client can settle a turn across several
+# short requests with zero human intervention.
+
+class _FakeEventsList:
+    def __init__(self, events):
+        self._events = list(events)
+
+    def __call__(self, *a, **kw):
+        return iter(self._events)
+
+
+@pytest.mark.unit
+def test_continue_drain_replays_missed_events_then_finishes_the_turn():
+    first_leg = [
+        _ev(type="session.thread_created", agent_name="scout", session_thread_id="th_1", id="e1"),
+        _ev(type="agent.message", id="e2",
+            content=[_ev(type="text", text="Routing this to Scout.")]),
+        _ev(type="session.status_idle", id="e3",
+            stop_reason=_ev(type="requires_action")),
+    ]
+    # Emitted while no request was attached (between /chat and /chat/continue):
+    missed = [
+        _ev(type="agent.custom_tool_use", name="search_rag", input={"q": "policy"}, id="ctu_5"),
+        _ev(type="user.custom_tool_result", custom_tool_use_id="ctu_5", id="e5",
+            content=[_ev(type="text", text='{"status": "ok", "hits": []}')]),
+        _ev(type="agent.message", id="e6",
+            content=[_ev(type="text", text="AEs can approve up to 10% on their own.")]),
+        _ev(type="session.status_idle", id="e7", stop_reason=_ev(type="end_turn")),
+    ]
+
+    # Per-request budget burns out during leg 1 (clock jumps), so send_message returns
+    # unsettled; the continue call gets a fresh budget (anchor resets per request).
+    t = {"now": 0.0, "step": 100.0}
+
+    def clock():
+        t["now"] += t["step"]
+        return t["now"]
+
+    r = _managed(first_leg, clock=clock, settle_budget_s=45.0)
+    session = _session(r)
+    out1 = r.send_message(session, "What can an AE approve?")
+    assert out1["pending_approvals"] == [{"status": "pending", "reason": "requires_action"}]
+
+    # The continue request: list-replay carries the FULL session history (already-seen leg-1
+    # events MUST dedupe) + everything missed; no new stream events needed.
+    t["step"] = 0.1  # plenty of budget this request
+    r._client.beta.sessions.events.list = _FakeEventsList(first_leg + missed)
+    r._client.beta.sessions.events.stream.return_value = _FakeStream([])
+    out2 = r.continue_drain(session)
+
+    assert "AEs can approve up to 10%" in out2["answer"]
+    assert out2["pending_approvals"] == []
+    assert [(x["tool"], x["status"]) for x in out2["tool_results"]] == [("search_rag", "ok")]
+    # Dedupe held: leg-1's delegation is not re-reported on the continue.
+    assert out2["delegations"] == []
+    # And NO user.message was sent by the continue (observe-only).
+    r._client.beta.sessions.events.send.assert_called_once()

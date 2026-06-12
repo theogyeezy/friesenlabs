@@ -49,10 +49,12 @@ What remains is **owner-gated** (infra flips/seeding — see P0/P1 below), **web
     reads in `pending`). `send_message` now drains through `requires_action` within a
     wall-clock budget (`UPLIFT_TURN_SETTLE_SECONDS`, default 45s under the 60s edge ceilings);
     fail-closed unchanged on exhaustion/worker-down.
-- [ ] **Streaming/async chat turns** — the settle loop holds the HTTP request, so a turn whose
-  delegation rounds exceed the ~60s CloudFront-origin/ALB ceilings still clips (budget
-  exhaustion → today's surfaced-pending shape). The durable fix is SSE streaming or a
-  turn-id + poll contract on `/chat`, plus progressive "agents working" UI in ChatDock.
+- [ ] **Streaming/async chat turns** — ~~holds the HTTP request / clips at 60s~~ the ASYNC TURN
+  CONTRACT shipped (2026-06-12, after a live 504 at the edge ceiling): `/chat` returns
+  `settled:false`, `POST /chat/continue` re-drains the SAME session (events.list replay, deduped)
+  across short requests, ChatDock auto-continues with progressive narration — zero human nudges.
+  Remaining (optional polish): SSE streaming instead of polling; multi-task api stickiness
+  (the in-flight Conversation cache is per-process — fine at the current single api task).
 - [ ] **NL refine of an existing saved view (POST /views/{id}/refine)** — `not-wired`
   - Wire a real view_patcher (an agent-runtime spec patcher, analogous to AnthropicSpecGenerator) into build_app() ApiDeps so POST /views/{id}/refine works, or remove the route if NL-refine is deferred.
   - Add a real-mode test for view refine once wired.

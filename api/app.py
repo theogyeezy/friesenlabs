@@ -558,6 +558,23 @@ def create_app(deps: ApiDeps) -> FastAPI:
         turn = convo.send(body.message)
         return turn.as_dict() if hasattr(turn, "as_dict") else turn
 
+    @app.post("/chat/continue")
+    def chat_continue(claims: TenantClaims = Depends(current_tenant)):
+        """The async turn contract (2026-06-12): a delegation-heavy turn can't settle inside one
+        HTTP request under the edge's 60s ceiling, so /chat returns `settled: false` and the
+        client continues the SAME in-flight turn here — no new user message, no human nudge.
+        Same kill-switch gate as /chat; with nothing in flight this returns a settled empty
+        turn and the client simply stops."""
+        if deps.killswitch.is_paused(claims.tenant_id):
+            raise HTTPException(status_code=409, detail="kill switch engaged — agents are paused")
+        convo = deps.conversation_factory(claims.tenant_id)
+        if convo is None:
+            raise HTTPException(status_code=503, detail="chat backend not configured")
+        if not hasattr(convo, "continue_turn"):
+            raise HTTPException(status_code=501, detail="turn continuation not supported")
+        turn = convo.continue_turn()
+        return turn.as_dict() if hasattr(turn, "as_dict") else turn
+
     @app.post("/actions")
     def run_action(body: ActionBody, claims: TenantClaims = Depends(current_tenant)):
         # Derive whether the action is side-effecting + its channel from the TRUSTED tool registry,

@@ -174,4 +174,7 @@ def test_unserved_call_fails_closed_through_the_conversation():
     }]
     assert gl.list_pending("tenant-A") == []  # nothing enqueued by this process
     assert len(sends) == 1                    # nothing answered by this process
-    assert turn.answer == "Prepared an action for your approval."
+    # Unserved call = in-flight turn under the async contract (settled=False, the client
+    # continues) — the old "Prepared an action" copy claimed a draft that had not landed.
+    assert turn.settled is False
+    assert turn.answer == ""

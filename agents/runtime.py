@@ -32,7 +32,9 @@ MAX_CONCURRENT_THREADS = 25
 # (live demo-tenant finding). On exhaustion the turn fails closed exactly as before. The
 # default must clear the edge's 60s CloudFront-origin-read/ALB-idle ceilings with headroom.
 ENV_TURN_SETTLE_SECONDS = "UPLIFT_TURN_SETTLE_SECONDS"
-DEFAULT_TURN_SETTLE_SECONDS = 45.0
+# Per-REQUEST: a turn that needs longer settles across /chat/continue requests (the async turn
+# contract) — each request must clear the 60s edge ceilings with inference headroom.
+DEFAULT_TURN_SETTLE_SECONDS = 25.0
 
 # Reconnect-with-consolidation bound (the ratified brief's named risk: an SSE drop while a
 # custom_tool_use round is in flight is a documented deadlock). On a connection-shaped stream
@@ -356,8 +358,22 @@ class ManagedAgentsRuntime(AgentRuntime):
         )
 
     def send_message(self, session, message) -> dict:
-        """One turn against the live session as the real event-stream flow:
-        stream-first -> send -> drain-to-idle. THIS ADAPTER EXECUTES NO TOOLS — the deployed
+        return self._drain(session, message)
+
+    def continue_drain(self, session) -> dict:
+        """Re-attach to an in-flight turn WITHOUT sending a user message (the async turn
+        contract, 2026-06-12): a delegation-heavy turn can't settle inside one HTTP request
+        under the edge's 60s ceiling, so the client continues it across short requests. The
+        continue leg replays everything the session emitted while no request was attached
+        (`events.list`, deduped by the per-session ledger — the same consolidation machinery
+        the reconnect path uses) and then streams on until settle/budget. Observe-only:
+        nothing is sent, nothing executes here."""
+        return self._drain(session, None)
+
+    def _drain(self, session, message) -> dict:
+        """One request's drain against the live session as the real event-stream flow:
+        stream-first -> send (initial leg only) -> drain-to-idle. THIS ADAPTER EXECUTES NO
+        TOOLS — the deployed
         EnvironmentWorker is the single executor (docs/decisions/custom-tool-execution-path.md;
         see the class docstring). The drain OBSERVES the worker's round-trip on the session
         event stream:
@@ -532,7 +548,7 @@ class ManagedAgentsRuntime(AgentRuntime):
             with client.beta.sessions.events.stream(
                 session_id=session.id, extra_headers=self._beta_headers()
             ) as stream:
-                if reconnects == 0:
+                if reconnects == 0 and message is not None:
                     client.beta.sessions.events.send(
                         session_id=session.id,
                         events=[{
@@ -656,6 +672,11 @@ class FakeRuntime(AgentRuntime):
             "delegations": [self.agents[a].name for a in roster if a in self.agents],
             "answer": f"[fake] handled: {message}",
         }
+
+    def continue_drain(self, session) -> dict:
+        # The fake settles every turn in one round — a continue finds nothing in flight.
+        return {"session_id": session.id, "tenant_id": session.tenant_id,
+                "delegations": [], "answer": "", "pending_approvals": [], "tool_results": []}
 
 
 def get_runtime(config: dict[str, Any] | None = None) -> AgentRuntime:
