@@ -23,10 +23,31 @@ header or the request body):
   POST /knowledge/documents  the customer corpus-add path (knowledge audit P0): paste a doc,
                           the ingest seam (ingest/upload.py) chunks → embeds (ALL chunks before
                           the first upsert — a mid-doc failure lands NOTHING) → upserts under
-                          source='upload' with deterministic upload:<slug>-<hash8>#<seq> refs.
-                          Gated on the ingest plane's INGEST_REAL_STORES switch
-                          (build_doc_ingestor): unswitched -> honest 503; an ingest failure is
-                          a LOUD 503 (never search's quiet degrade — a write must not no-op).
+                          source='upload' with deterministic upload:<slug>-<hash8>#<seq> refs,
+                          PLUS one `#raw` row holding the exact original (embedding NULL) so the
+                          document stays readable + editable. Gated on the ingest plane's
+                          INGEST_REAL_STORES switch (build_doc_ingestor): unswitched -> honest
+                          503; an ingest failure is a LOUD 503 (never search's quiet degrade —
+                          a write must not no-op).
+
+  GET /knowledge/documents   the tenant's PAGES — every uploaded document, newest first:
+                          ref, title, a bounded preview, chunk count, stamps, and whether it is
+                          editable (legacy pre-raw uploads list as read-only). A plain RLS-scoped
+                          aggregate, no embedder — honest the moment the data plane is wired.
+
+  GET /knowledge/documents/{ref}  one page in full: the exact original title + body when the
+                          raw row exists; a legacy upload degrades honestly to its indexed
+                          chunk texts (read-only, `editable: false`) — never invented content.
+
+  PUT /knowledge/documents/{ref}  edit a page: re-ingest the new title+content through the SAME
+                          seam as POST (changed content = a NEW ref namespace), then remove the
+                          old namespace. The new version lands BEFORE the old one is deleted —
+                          a mid-edit failure can duplicate, never lose. Legacy uploads (no raw
+                          row) refuse with an honest 409 (re-add to make editable).
+
+  DELETE /knowledge/documents/{ref}  remove a page: every row under the ref namespace (chunks +
+                          raw) in one RLS-scoped transaction; 404 when nothing existed. crm_app
+                          holds DELETE on documents (db/roles.sql) — no broader grant involved.
 
 Reads ride the SAME crm_app DSN every live surface (/approvals, /views, /deals, /contacts)
 already rides — the PgRagClient `SET LOCAL app.current_tenant` per-op transaction (RLS), no
@@ -42,6 +63,7 @@ boto3-free at import by tests/integration/test_api_knowledge.py.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -87,6 +109,29 @@ SNIPPET_LEN = 320
 # env-key-gated on the live task today). The web banner keys off `search_available`, not this
 # string, but the integration test pins it so the operator story stays stable.
 REASON_SEARCH_UNAVAILABLE = "search model not configured"
+
+# --- uploaded-document (pages) surface ------------------------------------------------------
+# A page ref is the chunk-family prefix under source='upload'. TWO shapes exist in real
+# corpora: customer uploads `upload:<slug>-<hash8>` (ingest/upload.py) and seeded docs
+# `demo:kb:<slug>` (scripts/demo/seed_knowledge.py) — so validation is a conservative
+# CHARSET bound (lowercase + digits + : . -, no '#'/'%'/'_' so a ref can never carry a seq
+# suffix or LIKE wildcards), not one exact shape. The reader LIKE-escapes again — belt and
+# suspenders. Literals duplicated from ingest/ so importing this module never imports ingest/.
+_REF_RE = re.compile(r"^[a-z0-9][a-z0-9:.-]{0,158}$")
+RAW_SUFFIX = "#raw"
+# The upload content-hash suffix, stripped when de-slugging a legacy ref into a title.
+_HASH8_RE = re.compile(r"-[0-9a-f]{8}$")
+
+# Bounded body preview per page in the LIST response (the title line is separate).
+PREVIEW_LEN = 160
+
+DETAIL_DOC_NOT_FOUND = "no document with that ref in your knowledge base"
+DETAIL_BAD_REF = "not a valid uploaded-document ref"
+# A pre-raw-row upload has no stored original to edit — re-adding it (POST) makes it editable.
+DETAIL_DOC_NOT_EDITABLE = (
+    "this document predates editable knowledge and has no stored original — "
+    "add it again to make it editable, or delete it"
+)
 
 
 @dataclass
@@ -135,9 +180,66 @@ def _snippet(content: Any) -> str:
     return text if len(text) <= SNIPPET_LEN else text[: SNIPPET_LEN - 1].rstrip() + "…"
 
 
+def _check_ref(ref_id: str) -> str:
+    """An uploaded-document ref must match the ingest scheme exactly — anything else is a 422
+    before it can reach the reader (it could only ever be a typo or smuggling attempt)."""
+    if not _REF_RE.match(ref_id or ""):
+        raise HTTPException(status_code=422, detail=DETAIL_BAD_REF)
+    return ref_id
+
+
+def _parse_raw(raw: str) -> tuple[str, str]:
+    """Split a raw-original row back into (title, body). The writer (ingest/upload.py)
+    normalizes the title to one line and joins with a blank line, so the FIRST paragraph
+    break is the unambiguous separator."""
+    head, sep, body = raw.partition("\n\n")
+    title = head.strip()
+    return (title or "Untitled", body if sep else "")
+
+
+def _title_from_prefix(ref_prefix: str) -> str:
+    """Legacy fallback (no raw row): de-slug the ref into a title. Handles both real shapes —
+    'upload:pricing-policy-ab12cd34' -> 'Pricing policy' (content-hash suffix stripped) and
+    'demo:kb:pricing-discount-authority' -> 'Pricing discount authority'. Lossy but honest —
+    clearly better than 'Untitled'."""
+    tail = ref_prefix.rsplit(":", 1)[-1]
+    tail = _HASH8_RE.sub("", tail)
+    words = [w for w in tail.split("-") if w]
+    return " ".join(words).capitalize() if words else "Untitled"
+
+
+def _preview(text: str) -> str:
+    """A bounded one-line body preview for the pages list."""
+    flat = " ".join((text or "").split())
+    return flat if len(flat) <= PREVIEW_LEN else flat[: PREVIEW_LEN - 1].rstrip() + "…"
+
+
+def _doc_summary(row: dict) -> dict:
+    """Shape one list_uploaded_documents row for the wire: title/preview out of the bounded
+    raw head when it exists; the legacy de-slug fallback (editable: false) when it doesn't."""
+    raw_head = row.get("raw_head")
+    if raw_head:
+        title, body = _parse_raw(str(raw_head))
+        editable = True
+    else:
+        title, body = _title_from_prefix(str(row.get("ref_id") or "")), ""
+        editable = False
+    return {
+        "ref_id": row.get("ref_id"),
+        "title": title,
+        "preview": _preview(body),
+        "chunks": int(row.get("chunk_count") or 0),
+        "editable": editable,
+        "created_at": _iso(row.get("created_at")),
+        "updated_at": _iso(row.get("updated_at")),
+    }
+
+
 def mount_knowledge(app: FastAPI, deps: KnowledgeDeps, current_tenant) -> None:
     """Mount the /knowledge routes on `app`, authed via `current_tenant` (the same verified-claims
-    dependency every other authed route uses). Read-only: no gate deps — nothing here mutates."""
+    dependency every other authed route uses). The only writes are the tenant's OWN corpus
+    (add/edit/delete an uploaded page) — nothing here sends anything, so no Greenlight gate;
+    same openness tier as POST /knowledge/documents has had since the knowledge P0s."""
 
     @app.get("/knowledge")
     def knowledge_inventory(claims: TenantClaims = Depends(current_tenant)):
@@ -209,6 +311,93 @@ def mount_knowledge(app: FastAPI, deps: KnowledgeDeps, current_tenant) -> None:
             raise HTTPException(status_code=503, detail=REASON_UPLOAD_FAILED) from None
         return {"ref_id": out.get("ref_id"), "chunks": out.get("chunks"),
                 "source": out.get("source"), "title": out.get("title")}
+
+    @app.get("/knowledge/documents")
+    def knowledge_list_documents(claims: TenantClaims = Depends(current_tenant)):
+        """The tenant's pages, newest first. A plain RLS-scoped aggregate (no embedder) — an
+        un-uploaded tenant gets an honest empty list, never invented pages."""
+        rag = _require_reader(deps)
+        rows = rag.list_uploaded_documents(tenant_id=claims.tenant_id)
+        docs = [_doc_summary(r) for r in rows]
+        return {"documents": docs, "total": len(docs)}
+
+    @app.get("/knowledge/documents/{ref_id}")
+    def knowledge_get_document(ref_id: str,
+                               claims: TenantClaims = Depends(current_tenant)):
+        """One page in full. The raw original (title + exact body) when it exists; a legacy
+        upload degrades honestly to its indexed chunk texts, read-only — never invented
+        content, never another tenant's rows (RLS)."""
+        rag = _require_reader(deps)
+        ref = _check_ref(ref_id)
+        doc = rag.get_uploaded_document(tenant_id=claims.tenant_id, ref_prefix=ref)
+        if doc is None:
+            raise HTTPException(status_code=404, detail=DETAIL_DOC_NOT_FOUND)
+        raw = doc.get("raw_content")
+        if raw:
+            title, body = _parse_raw(str(raw))
+            return {"ref_id": ref, "title": title, "content": body, "editable": True,
+                    "sections": None, "chunks": int(doc.get("chunk_count") or 0),
+                    "created_at": _iso(doc.get("created_at")),
+                    "updated_at": _iso(doc.get("updated_at"))}
+        return {"ref_id": ref, "title": _title_from_prefix(ref), "content": None,
+                "editable": False,
+                "sections": [str(c) for c in (doc.get("chunk_contents") or [])],
+                "chunks": int(doc.get("chunk_count") or 0),
+                "created_at": _iso(doc.get("created_at")),
+                "updated_at": _iso(doc.get("updated_at"))}
+
+    @app.put("/knowledge/documents/{ref_id}")
+    def knowledge_update_document(ref_id: str, body: AddDocumentBody,
+                                  claims: TenantClaims = Depends(current_tenant)):
+        """Edit a page: re-ingest through the SAME seam as POST, then remove the old namespace.
+        Order is deliberate — the new version lands fully BEFORE the old one is touched, so a
+        mid-edit failure can leave a duplicate (visible, deletable), never a lost document.
+        When the edit produces the same namespace (unchanged content), the upsert was in place
+        and there is nothing to delete."""
+        rag = _require_reader(deps)
+        if deps.ingest_document is None:
+            raise HTTPException(status_code=503, detail=_UNCONFIGURED_UPLOAD_DETAIL)
+        ref = _check_ref(ref_id)
+        title, content = _clean_doc(body)
+        existing = rag.get_uploaded_document(tenant_id=claims.tenant_id, ref_prefix=ref)
+        if existing is None:
+            raise HTTPException(status_code=404, detail=DETAIL_DOC_NOT_FOUND)
+        if not existing.get("raw_content"):
+            raise HTTPException(status_code=409, detail=DETAIL_DOC_NOT_EDITABLE)
+        try:
+            out = deps.ingest_document(claims.tenant_id, title, content)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+        except Exception as exc:  # noqa: BLE001 — same loud-write contract as POST
+            log.error("knowledge: document re-ingest failed (%s)", type(exc).__name__)
+            raise HTTPException(status_code=503, detail=REASON_UPLOAD_FAILED) from None
+        new_ref = str(out.get("ref_id") or "")
+        previous_removed = True
+        if new_ref != ref:
+            try:
+                rag.delete_uploaded_document(tenant_id=claims.tenant_id, ref_prefix=ref)
+            except Exception as exc:  # noqa: BLE001 — the NEW version already landed; deleting
+                # the old one failing must not turn a successful edit into a reported failure.
+                # Honest signal instead: previous_removed=false (the old page is still listed).
+                log.error("knowledge: stale namespace cleanup failed (%s)", type(exc).__name__)
+                previous_removed = False
+        return {"ref_id": new_ref, "chunks": out.get("chunks"), "source": out.get("source"),
+                "title": out.get("title"), "replaced_ref_id": ref,
+                "previous_removed": previous_removed}
+
+    @app.delete("/knowledge/documents/{ref_id}")
+    def knowledge_delete_document(ref_id: str,
+                                  claims: TenantClaims = Depends(current_tenant)):
+        """Remove a page — every row under the ref namespace (chunks + raw) in one RLS-scoped
+        transaction. 404 when nothing existed for THIS tenant (another tenant's ref deletes
+        nothing — RLS sees zero rows)."""
+        rag = _require_reader(deps)
+        ref = _check_ref(ref_id)
+        removed = int(rag.delete_uploaded_document(tenant_id=claims.tenant_id,
+                                                   ref_prefix=ref) or 0)
+        if removed == 0:
+            raise HTTPException(status_code=404, detail=DETAIL_DOC_NOT_FOUND)
+        return {"ref_id": ref, "deleted": True, "rows_removed": removed}
 
 
 class AddDocumentBody(BaseModel):

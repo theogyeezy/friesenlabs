@@ -210,6 +210,18 @@ class InMemoryDocumentStore:
             "content_hash": content_hash,
         }
 
+    def upsert_raw(self, tenant_id, source, ref_id, content):
+        """The raw-original row (ingest/upload.py): same key shape, embedding None — the
+        search path (which filters embedding IS NOT NULL) never sees it."""
+        self.docs[(tenant_id, source, ref_id)] = {
+            "tenant_id": tenant_id,
+            "source": source,
+            "ref_id": ref_id,
+            "content": content,
+            "embedding": None,
+            "content_hash": None,
+        }
+
 
 class InMemoryCursorStore:
     def __init__(self) -> None:
@@ -357,6 +369,20 @@ class PgDocumentStore(_PgPooledStore):
                 "ON CONFLICT (tenant_id, source, ref_id) "
                 "DO UPDATE SET content=EXCLUDED.content, embedding=EXCLUDED.embedding",
                 (str(tenant_id), source, ref_id, content, vec),
+            )
+
+    def upsert_raw(self, tenant_id, source, ref_id, content):
+        """The raw-original row (ingest/upload.py): embedding NULL — the documents schema
+        allows it and the search path (embedding IS NOT NULL) never sees the row. The
+        ON CONFLICT arm pins embedding back to NULL so a raw ref can never silently keep a
+        stale vector if a row class ever flips."""
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "INSERT INTO documents (tenant_id, source, ref_id, content, embedding) "
+                "VALUES (%s,%s,%s,%s,NULL) "
+                "ON CONFLICT (tenant_id, source, ref_id) "
+                "DO UPDATE SET content=EXCLUDED.content, embedding=NULL",
+                (str(tenant_id), source, ref_id, content),
             )
 
 
