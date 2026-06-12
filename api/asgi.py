@@ -619,7 +619,10 @@ def build_app():
     # rest of the app uses — the tenant is ONLY ever the verified JWT claim (THE TRUST RULE).
     from api.auth import make_current_tenant
     from api.onboarding_routes import deps_from_dsn as onboarding_deps_from_dsn, mount_onboarding
-    mount_onboarding(app, onboarding_deps_from_dsn(dsn), make_current_tenant(deps.verifier))
+    # load-sample seeds the sample knowledge pages through the SAME document ingestor the
+    # knowledge routes ride (one seam) — unwired ingest plane -> honest pages_seeded: 0.
+    mount_onboarding(app, onboarding_deps_from_dsn(dsn, ingest_document=build_doc_ingestor()),
+                     make_current_tenant(deps.verifier))
     return app
 
 

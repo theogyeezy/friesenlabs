@@ -17,6 +17,15 @@ from a header or the request body; it comes only from `custom:tenant_id`):
                                  — re-running NEVER duplicates). On success the `sample_loaded` flag
                                  + the "load_data" checklist step are marked done so the populated
                                  views surface immediately, and the loaded row counts are reported.
+                                 ALSO seeds the SAMPLE KNOWLEDGE PAGES (the audit's "onboarding
+                                 never touches knowledge" gap): three short, clearly-labelled
+                                 markdown pages through the SAME ingest seam the Knowledge tab's
+                                 add/edit path uses (chunk → embed → upsert + the `#raw` original,
+                                 so they land EDITABLE in the pages rail). Idempotent (same
+                                 title+content → same ref namespace, in-place upsert). HONEST
+                                 DEGRADE: no ingest plane wired -> `knowledge.pages_seeded: 0` +
+                                 a reason; a seeding failure NEVER fails the CRM load that
+                                 already happened — it is reported, not hidden.
 
 All three ride the same crm_app DSN every live surface (/contacts, /deals, /views) rides — RLS via
 the per-op `SET LOCAL app.current_tenant` transaction (the _PgTenantClient pattern). The onboarding
@@ -36,6 +45,7 @@ regression test imports api.app, which mounts this module).
 """
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -45,10 +55,41 @@ from pydantic import BaseModel, Field
 
 from api.auth import TenantClaims
 
+log = logging.getLogger("api.onboarding")
+
 # The first-run checklist's step ids (the SINGLE source of truth the web checklist mirrors). A
 # flat allow-list: a PUT may only toggle these — an unknown step id is a 422, never persisted, so
 # the `steps` jsonb can never accrete arbitrary keys from a hostile body.
 STEP_IDS: tuple[str, ...] = ("load_data", "try_chat", "invite_team")
+
+# The sample knowledge pages load-sample seeds (clearly labelled, written to be EDITED —
+# they land as editable pages in the Knowledge rail via the same ingest seam as the tab's
+# own add path). Markdown stays inside the safe subset the web renderer supports.
+SAMPLE_PAGES: tuple[tuple[str, str], ...] = (
+    ("Pricing and discounts (sample)",
+     "## Standard rates\n\nEvery service is quoted from the current price book. Prices are "
+     "reviewed quarterly.\n\n## Discounts\n\n- Standard discounts cap at **15%** without "
+     "owner approval\n- Seasonal promotions are pre-approved and published in advance\n"
+     "- Stacking promotions is not permitted\n\nThis is a sample page — edit it with your "
+     "real pricing, and your agents will quote from it."),
+    ("Refunds and returns (sample)",
+     "## Returns\n\nItems can be returned within **30 days** with proof of purchase for a "
+     "full refund. Opened consumables are non-returnable unless defective.\n\n## Refund "
+     "handling\n\nRefunds go back to the original payment method within 5 business days. "
+     "Refund requests route to a human for approval before completion.\n\nThis is a sample "
+     "page — replace it with your real policy."),
+    ("Customer FAQ (sample)",
+     "## Hours\n\nMonday to Friday, 9:00am to 5:30pm.\n\n## Common questions\n\n- *Where is "
+     "my order?* Check the confirmation email for tracking, or ask us with the order "
+     "number.\n- *Can I change an appointment?* Yes — up to 24 hours before, at no "
+     "charge.\n\nThis is a sample page — add the questions your customers actually ask."),
+)
+
+# The honest reason strings the knowledge-seed half of load-sample reports (pinned by tests).
+REASON_PAGES_UNCONFIGURED = (
+    "sample pages not seeded — the ingest plane (INGEST_REAL_STORES + a DSN) is not wired"
+)
+REASON_PAGES_FAILED = "sample page seeding failed — the CRM sample still loaded"
 
 _UNCONFIGURED_DETAIL = (
     "onboarding data plane not configured — no crm_app DSN on this task "
@@ -228,14 +269,21 @@ class OnboardingDeps:
     # Override the sample loader in tests (so load-sample can be exercised without a real loader
     # run). Default: the real reuse of scripts/demo/load_demo_tenant.py.
     sample_loader: Callable[[OnboardingStateStore, str], dict] = _load_sample_into_tenant
+    # The SAME (tenant_id, title, content) ingest seam the Knowledge tab's add/edit path rides
+    # (api/knowledge_routes.build_doc_ingestor) — load-sample seeds SAMPLE_PAGES through it so
+    # they land as EDITABLE pages. None = ingest plane unwired -> pages_seeded: 0 + the honest
+    # reason, never a fake success.
+    ingest_document: Callable[[str, str, str], Any] | None = None
 
 
-def deps_from_dsn(dsn: str | None) -> OnboardingDeps:
+def deps_from_dsn(dsn: str | None,
+                  ingest_document: Callable[[str, str, str], Any] | None = None) -> OnboardingDeps:
     """Build OnboardingDeps from the crm_app DSN (None -> the honest-unconfigured stub). Called by
-    api/asgi.py with `dsn_from_env()` — the SAME DSN every live surface rides."""
+    api/asgi.py with `dsn_from_env()` — the SAME DSN every live surface rides — plus the document
+    ingestor the knowledge routes already build (one seam, not a parallel pipeline)."""
     if not dsn:
-        return OnboardingDeps()
-    return OnboardingDeps(store=OnboardingStateStore(dsn))
+        return OnboardingDeps(ingest_document=ingest_document)
+    return OnboardingDeps(store=OnboardingStateStore(dsn), ingest_document=ingest_document)
 
 
 def _require_store(deps: OnboardingDeps) -> OnboardingStateStore:
@@ -277,6 +325,24 @@ def mount_onboarding(app: FastAPI, deps: OnboardingDeps, current_tenant) -> None
         # loader through the same SET LOCAL RLS path; re-running NEVER duplicates.
         store = _require_store(deps)
         counts = deps.sample_loader(store, claims.tenant_id)
+
+        # Sample knowledge pages, through the SAME seam as Knowledge → add page (idempotent:
+        # unchanged title+content upserts in place). The CRM fixture above already landed —
+        # a pages failure is REPORTED, never converted into a failed load.
+        knowledge: dict = {"pages_seeded": 0, "reason": None}
+        if deps.ingest_document is None:
+            knowledge["reason"] = REASON_PAGES_UNCONFIGURED
+        else:
+            try:
+                for title, content in SAMPLE_PAGES:
+                    deps.ingest_document(claims.tenant_id, title, content)
+                    knowledge["pages_seeded"] += 1
+            except Exception as exc:  # noqa: BLE001 — loud in the server log (type only on the
+                # wire-adjacent message; the raw error can carry AWS detail), honest on the wire.
+                log.error("onboarding: sample page seeding failed after %d page(s) (%s)",
+                          knowledge["pages_seeded"], type(exc).__name__)
+                knowledge["reason"] = REASON_PAGES_FAILED
+
         # Mark the load done so the populated views surface immediately. A persistence failure here
         # must NOT pretend the data didn't load — record it honestly but still report the counts.
         state: dict | None = None
@@ -286,4 +352,4 @@ def mount_onboarding(app: FastAPI, deps: OnboardingDeps, current_tenant) -> None
             )
         except Exception:  # noqa: BLE001 — the data DID load; surface that truth regardless
             state = None
-        return {"loaded": True, "counts": counts, "onboarding": state}
+        return {"loaded": True, "counts": counts, "knowledge": knowledge, "onboarding": state}
