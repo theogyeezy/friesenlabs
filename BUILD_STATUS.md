@@ -549,6 +549,20 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   usable + safe; RAG-embed IAM gap closed live.
 
 ## Lane Matt (app code) — log
+- 2026-06-12 — **Agentic chat settle loop (the "clanky chat" fix, owner-reported):** live
+  browser test as the demo user proved the diagnosis — `/chat` returned at the FIRST
+  `requires_action` idle with the coordinator's `search_rag` calls still unserved (worker race),
+  so the customer got "I've asked Scout — I'll report back" as the final answer, needed a human
+  nudge to harvest the result, and grounding/citations were skipped (unserved reads in
+  `pending_approvals`; captured response: `pending=[search_rag×3], grounding_status=null`).
+  Fix (TDD, 5 new unit tests): `ManagedAgentsRuntime.send_message` now keeps draining through
+  `requires_action` while open calls are the worker's to serve, bounded by a wall-clock settle
+  budget (`UPLIFT_TURN_SETTLE_SECONDS`, default 45s — under the 60s CloudFront-origin/ALB
+  ceilings, both verified); on exhaustion / worker-down / stream-end the fail-closed surface is
+  byte-identical to before; routed Greenlight proposals never wait (approval is a legitimate
+  stop). Narration now paragraph-folds (was jammed `"".join`). Settled knowledge turns leave
+  `pending` empty → the grounding/citation pass runs again. Full pytest exit 0. Follow-up filed:
+  SSE/async turns for the >60s long tail.
 - 2026-06-12 — **Playbook scheduler FLIPPED ON + live-verified (owner-approved, Matt's session):**
   GO_LIVE §7 executed end-to-end via the deploy pipeline. One flag drives both legs since #289
   (`playbook_dispatch_enabled` → the EventBridge rule AND `PLAYBOOK_DISPATCH_ENABLED=1` on the

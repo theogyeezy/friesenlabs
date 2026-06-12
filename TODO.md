@@ -41,8 +41,18 @@ What remains is **owner-gated** (infra flips/seeding — see P0/P1 below), **web
 
 ### Chat & agent plane (Balto, citations, tools)
 - [ ] **Live-runtime citations (grounded RAG on the real coordinator path)** — `partial`
-  - Seed the demo tenant knowledge corpus (RAG embeddings) so live chat returns >=1 grounded citation.
+  - ~~Seed the demo tenant knowledge corpus~~ DONE 2026-06-12 (26 docs, retrieval verified in-VPC).
   - Add a live or near-live integration test that proves a populated corpus yields grounded citations through ManagedAgentsRuntime (current coverage is FakeRuntime/unit only).
+  - ~~Turns ended at the first `requires_action` idle~~ FIXED (settle loop): the live browser
+    test showed turns returning "I've asked Scout — I'll report back" while the worker was
+    seconds from serving the reads, forcing a human nudge AND skipping grounding (unserved
+    reads in `pending`). `send_message` now drains through `requires_action` within a
+    wall-clock budget (`UPLIFT_TURN_SETTLE_SECONDS`, default 45s under the 60s edge ceilings);
+    fail-closed unchanged on exhaustion/worker-down.
+- [ ] **Streaming/async chat turns** — the settle loop holds the HTTP request, so a turn whose
+  delegation rounds exceed the ~60s CloudFront-origin/ALB ceilings still clips (budget
+  exhaustion → today's surfaced-pending shape). The durable fix is SSE streaming or a
+  turn-id + poll contract on `/chat`, plus progressive "agents working" UI in ChatDock.
 - [ ] **NL refine of an existing saved view (POST /views/{id}/refine)** — `not-wired`
   - Wire a real view_patcher (an agent-runtime spec patcher, analogous to AnthropicSpecGenerator) into build_app() ApiDeps so POST /views/{id}/refine works, or remove the route if NL-refine is deferred.
   - Add a real-mode test for view refine once wired.
