@@ -615,7 +615,6 @@ function App() {
                   "connects to your live workspace" card (never a fake library). */}
               {route === "studio" && <StudioView />}
               {route === "sidecar" && <Sidecar agents={agents} onNavigate={navTo} />}
-              {route === "cortex" && <Cortex agents={agents} onNavigate={navTo} />}
               {route === "knowledge" && <Knowledge agents={agents} onNavigate={navTo} />}
               {route === "integrations" && <IntegrationHub agents={agents} onNavigate={navTo} />}
               {route === "reports" && <Reports agents={agents} />}
