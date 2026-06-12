@@ -409,3 +409,108 @@ test("csv import 503 -> 'not enabled on this deployment' copy, no fake rows-land
   expect(text).not.toMatch(/API \d+/);
   expect(text).not.toContain("ingestion plane");
 });
+
+// ---------------------------------------------------------------------------
+// Release-readiness surfaces: last-synced line, disconnect, async (202) sync.
+// ---------------------------------------------------------------------------
+
+const RUN = {
+  id: "run-1",
+  source: "hubspot",
+  triggered_by: "api" as const,
+  status: "succeeded" as const,
+  started_at: "2026-06-11T10:00:00Z",
+  finished_at: "2026-06-11T10:02:00Z",
+  pulled: 12,
+  landed_rows: 12,
+  chunks: 30,
+  embedded: 28,
+  skipped: 2,
+  error: null as string | null,
+};
+
+test("last-synced line renders straight from the API; absent history renders nothing", async ({ page }) => {
+  await page.route("**/integrations", (route) =>
+    route.fulfill({
+      json: {
+        integrations: [
+          { ...HUBSPOT, connected: true, status: "connected", last_sync: RUN },
+        ],
+        secrets_configured: true,
+        sync_configured: true,
+        csv_import_configured: true,
+        sync_history_configured: true,
+      },
+    }),
+  );
+
+  await page.goto("/?view=integrations");
+
+  const line = page.getByTestId("int-last-sync");
+  await expect(line).toBeVisible({ timeout: 15_000 });
+  await expect(line).toContainText("Last synced");
+  await expect(line).toContainText("12 landed");
+
+  // And the inverse: no last_sync -> no line, never an invented timestamp.
+  await page.unroute("**/integrations");
+  await page.route("**/integrations", (route) => route.fulfill({ json: LIST_CONNECTED }));
+  await page.reload();
+  await expect(page.getByTestId("integration-item")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId("int-last-sync")).toHaveCount(0);
+});
+
+test("disconnect: inline confirm first, DELETE on confirm only, status flips from the response", async ({ page }) => {
+  const deletes: string[] = [];
+  await page.route("**/integrations", (route) => route.fulfill({ json: LIST_CONNECTED }));
+  await page.route("**/integrations/hubspot/credentials", async (route) => {
+    if (route.request().method() !== "DELETE") return route.fallback();
+    deletes.push(route.request().url());
+    await route.fulfill({
+      json: { name: "hubspot", deleted: true, status: "not_connected" },
+    });
+  });
+
+  await page.goto("/?view=integrations");
+  await expect(page.getByTestId("int-disconnect-btn")).toBeVisible({ timeout: 15_000 });
+
+  // Step 1: the destructive click only opens the inline confirm — no DELETE yet.
+  await page.getByTestId("int-disconnect-btn").click();
+  await expect(page.getByTestId("int-disconnect-confirm")).toBeVisible();
+  expect(deletes).toHaveLength(0);
+
+  // Cancel keeps the connection (still no DELETE).
+  await page.getByTestId("int-disconnect-cancel").click();
+  await expect(page.getByTestId("int-disconnect-confirm")).toHaveCount(0);
+  expect(deletes).toHaveLength(0);
+
+  // Confirm fires exactly one DELETE; the badge flips from the response.
+  await page.getByTestId("int-disconnect-btn").click();
+  await page.getByTestId("int-disconnect-confirm").click();
+  await expect(page.getByTestId("int-card-msg")).toContainText("disconnected", { timeout: 15_000 });
+  expect(deletes).toHaveLength(1);
+  await expect(page.getByTestId("int-status")).toContainText("Not connected");
+});
+
+test("async sync: 202 run accepted, panel polls history and reports the recorded counts", async ({ page }) => {
+  await page.route("**/integrations", (route) => route.fulfill({ json: LIST_CONNECTED }));
+  await page.route("**/integrations/hubspot/sync", (route) =>
+    route.fulfill({
+      status: 202,
+      json: { name: "hubspot", run: { ...RUN, status: "running", finished_at: null } },
+    }),
+  );
+  // First (immediate) poll already finds the run finished with its counts.
+  await page.route("**/integrations/hubspot/syncs", (route) =>
+    route.fulfill({ json: { name: "hubspot", runs: [RUN] } }),
+  );
+
+  await page.goto("/?view=integrations");
+  await expect(page.getByTestId("int-sync-btn")).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId("int-sync-btn").click();
+
+  // The settled message reports ONLY the recorded counts, via the history poll.
+  await expect(page.getByTestId("int-card-msg")).toContainText("Sync finished: 12 pulled", {
+    timeout: 15_000,
+  });
+  await expect(page.getByTestId("int-card-msg")).toContainText("28 embedded");
+});

@@ -126,6 +126,10 @@ export interface ChatResponse {
    * Balto status line and `view_request` is what the client forwards to synthesizeView. */
   view_intent?: boolean;
   view_request?: string | null;
+  /** Grounding observability (knowledge audit P0): the retrieval evidence for this turn.
+   * null/undefined when retrieval was deliberately skipped (action/Balto turns). */
+  grounding_status?: "grounded" | "no_sources_found" | "ungrounded" | "unavailable" | null;
+  retrieved_count?: number | null;
 }
 
 /** Body for POST /views/synthesize — the NL ask Balto builds a view for. No tenant_id. */
@@ -553,6 +557,14 @@ export interface KnowledgeSearchResponse {
   reason: string | null;
 }
 
+/** POST /knowledge/documents result — the customer document-add path (knowledge audit P0). */
+export interface KnowledgeAddDocumentResponse {
+  ref_id: string | null;
+  chunks: number;
+  source: string | null;
+  title: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // Integrations wire types (mirror api/integrations_routes.py shapes).
 // ---------------------------------------------------------------------------
@@ -576,6 +588,26 @@ export interface Integration {
   kind: IntegrationKind;
   /** True when the connector is experimental/preview. */
   experimental?: boolean;
+  /** Latest recorded sync run for this connector; null/absent = none recorded
+   *  (or history isn't configured) — the UI never invents a "last synced". */
+  last_sync?: SyncRun | null;
+}
+
+/** One sync-run history row (integration_sync_runs; GET /integrations/{name}/syncs). */
+export interface SyncRun {
+  id: string;
+  source: string;
+  triggered_by: "api" | "schedule";
+  status: "running" | "succeeded" | "failed" | "aborted";
+  started_at: string | null;
+  finished_at: string | null;
+  pulled: number | null;
+  landed_rows: number | null;
+  chunks: number | null;
+  embedded: number | null;
+  skipped: number | null;
+  /** Exception CLASS name only — the API never relays provider error text. */
+  error: string | null;
 }
 
 export interface ListIntegrationsResponse {
@@ -586,6 +618,9 @@ export interface ListIntegrationsResponse {
   sync_configured: boolean;
   /** False = the csv importer isn't wired: POST /integrations/csv/import will 503. */
   csv_import_configured: boolean;
+  /** False/absent = no sync-run store: history 503s and last_sync stays null.
+   *  Optional so a web deploy ahead of the API parses older payloads cleanly. */
+  sync_history_configured?: boolean;
 }
 
 /**
@@ -604,12 +639,35 @@ export interface StoreCredentialsResponse {
   secret_ref: string;
   stored: boolean;
   status: IntegrationStatus;
+  /** true = the provider accepted the token at connect time; null/absent = the
+   *  API couldn't verify (no prober / provider unreachable) — stored anyway.
+   *  A definitive provider rejection never reaches here (the POST 422s). */
+  verified?: boolean | null;
 }
 
-/** Response from POST /integrations/{name}/sync: one SyncResult-shaped bag. */
+/** Response from DELETE /integrations/{name}/credentials (disconnect). */
+export interface DeleteCredentialsResponse {
+  name: string;
+  /** false = nothing was vaulted (idempotent disconnect, still a 200). */
+  deleted: boolean;
+  status: IntegrationStatus;
+}
+
+/**
+ * Response from POST /integrations/{name}/sync. With a sync-run store wired the
+ * API answers 202 with `run` (the background run to watch in the history);
+ * a legacy/storeless deployment answers 200 with the inline `result` bag.
+ */
 export interface IntegrationSyncResponse {
   name: string;
-  result: Record<string, unknown>;
+  result?: Record<string, unknown>;
+  run?: SyncRun;
+}
+
+/** Response from GET /integrations/{name}/syncs (newest first). */
+export interface IntegrationSyncHistoryResponse {
+  name: string;
+  runs: SyncRun[];
 }
 
 // ---------------------------------------------------------------------------
@@ -1621,6 +1679,19 @@ export class ApiClient {
     return this.request<KnowledgeSearchResponse>("GET", `/knowledge/search?${params.toString()}`);
   }
 
+  /** POST /knowledge/documents: add one document (paste) to the tenant's corpus —
+   * chunked + embedded server-side under the verified tenant. A 503 means uploads
+   * aren't switched on for this deployment (the ingest plane's INGEST_REAL_STORES gate). */
+  async addKnowledgeDocument(title: string, content: string): Promise<KnowledgeAddDocumentResponse> {
+    if (this.mock) {
+      return (await this.mockApi()).addKnowledgeDocument(title, content);
+    }
+    return this.request<KnowledgeAddDocumentResponse>("POST", "/knowledge/documents", {
+      title,
+      content,
+    });
+  }
+
   // --- integrations (authed) -------------------------------------------------
 
   /** GET /integrations: known connectors + this tenant's connection status. */
@@ -1652,9 +1723,26 @@ export class ApiClient {
   }
 
   /**
+   * DELETE /integrations/{name}/credentials: disconnect — remove this tenant's
+   * vault slot. Idempotent (deleted:false when nothing was vaulted). Errors:
+   * 503 storage unconfigured, 409 file-kind, 502 vault delete failed.
+   */
+  async deleteIntegrationCredentials(name: string): Promise<DeleteCredentialsResponse> {
+    if (this.mock) {
+      return (await this.mockApi()).deleteIntegrationCredentials(name);
+    }
+    return this.request<DeleteCredentialsResponse>(
+      "DELETE",
+      `/integrations/${encodeURIComponent(name)}/credentials`,
+    );
+  }
+
+  /**
    * POST /integrations/{name}/sync: kick one incremental sync for THIS tenant
-   * (server derives the tenant from the verified claim). Errors: 503 sync
-   * unconfigured, 409 connect first (no vaulted credential), 502 sync failed.
+   * (server derives the tenant from the verified claim). A run-store deployment
+   * answers 202 {run} (poll the history); a storeless one answers 200 {result}.
+   * Errors: 503 sync unconfigured, 409 connect first OR a sync already running,
+   * 502 sync failed.
    */
   async kickIntegrationSync(name: string): Promise<IntegrationSyncResponse> {
     if (this.mock) {
@@ -1663,6 +1751,20 @@ export class ApiClient {
     return this.request<IntegrationSyncResponse>(
       "POST",
       `/integrations/${encodeURIComponent(name)}/sync`,
+    );
+  }
+
+  /**
+   * GET /integrations/{name}/syncs: recent sync-run history, newest first.
+   * Errors: 503 no run store wired, 409 file-kind, 502 read failed.
+   */
+  async listIntegrationSyncs(name: string): Promise<IntegrationSyncHistoryResponse> {
+    if (this.mock) {
+      return (await this.mockApi()).listIntegrationSyncs(name);
+    }
+    return this.request<IntegrationSyncHistoryResponse>(
+      "GET",
+      `/integrations/${encodeURIComponent(name)}/syncs`,
     );
   }
 

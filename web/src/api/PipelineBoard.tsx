@@ -25,7 +25,6 @@ import {
   ApiError,
   defaultClient,
   friendlyErrorMessage,
-  type CompanyRow,
   type ContactRow,
   type CreateDealBody,
   type DealCard,
@@ -138,13 +137,16 @@ interface QueuedMove {
 interface DealFormFields {
   title: string;
   amount: string; // string so the input is editable; converted to number on submit
-  contact_id: string;
-  company_id: string;
+  contact_id: string; // "" when no contact is attached
 }
 
 function emptyDealForm(): DealFormFields {
-  return { title: "", amount: "", contact_id: "", company_id: "" };
+  return { title: "", amount: "", contact_id: "" };
 }
+
+// How many contacts to pull into the picker. The form filters this page
+// client-side; the contact is optional, so a partial page is never a problem.
+const CONTACT_PICKER_LIMIT = 100;
 
 export interface PipelineBoardProps {
   client?: ApiClient;
@@ -198,9 +200,13 @@ export function PipelineBoard({ client, onOpenGreenlight, onLoadSample }: Pipeli
   const [dealFormBusy, setDealFormBusy] = useState(false);
   const [dealFormError, setDealFormError] = useState<string | null>(null);
 
-  // Picker lists loaded when the create form opens (fail-soft: empty = only "— None —").
-  const [pickerContacts, setPickerContacts] = useState<ContactRow[]>([]);
-  const [pickerCompanies, setPickerCompanies] = useState<CompanyRow[]>([]);
+  // Contact picker (typeahead) state. Contacts load lazily when the form opens;
+  // the query string is the visible input text, the chosen id lives in the form
+  // fields. Attaching a contact is optional — a failed load never blocks a save.
+  const [contacts, setContacts] = useState<ContactRow[]>([]);
+  const [contactsLoaded, setContactsLoaded] = useState(false);
+  const [contactQuery, setContactQuery] = useState("");
+  const [contactMenuOpen, setContactMenuOpen] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -283,37 +289,74 @@ export function PipelineBoard({ client, onOpenGreenlight, onLoadSample }: Pipeli
     }
   }, [api, detail, moveTo]);
 
+  // Pull a page of contacts the first time a form opens; the contact field is
+  // optional, so a failed load just leaves the picker empty (never an error).
+  const loadContactsForPicker = useCallback(async () => {
+    if (contactsLoaded) return;
+    try {
+      const res = await api.listContacts({ limit: CONTACT_PICKER_LIMIT });
+      setContacts(res.contacts);
+      setContactsLoaded(true);
+    } catch {
+      // Contact is optional — swallow and leave the picker empty.
+    }
+  }, [api, contactsLoaded]);
+
   const openCreateDealForm = useCallback(() => {
     setDealFormMode("create");
     setDealFormFields(emptyDealForm());
     setDealFormError(null);
-    // Load picker lists when the form opens; fail-soft on any error.
-    void api.listContacts({ limit: 200 }).then(
-      (r) => setPickerContacts(r.contacts),
-      () => setPickerContacts([]),
-    );
-    void api.listCompanies({ limit: 200 }).then(
-      (r) => setPickerCompanies(r.companies),
-      () => setPickerCompanies([]),
-    );
-  }, [api]);
+    setContactQuery("");
+    setContactMenuOpen(false);
+  }, []);
 
   const openEditDealForm = useCallback((d: DealCard) => {
     setDealFormMode({ kind: "edit", id: d.id });
     setDealFormFields({
       title: d.title ?? "",
       amount: d.amount !== null && d.amount !== undefined ? String(d.amount) : "",
-      contact_id: "",
-      company_id: "",
+      contact_id: d.contact_id ?? "",
     });
     setDealFormError(null);
+    // The display name is resolved once the picker page loads (see effect below).
+    setContactQuery("");
+    setContactMenuOpen(false);
   }, []);
 
   const closeDealForm = useCallback(() => {
     setDealFormMode(null);
     setDealFormError(null);
     setDealFormBusy(false);
+    setContactQuery("");
+    setContactMenuOpen(false);
   }, []);
+
+  // Lazy-load the contacts page whenever a form is open.
+  useEffect(() => {
+    if (dealFormMode !== null) void loadContactsForPicker();
+  }, [dealFormMode, loadContactsForPicker]);
+
+  // When editing a deal that already has a contact, fill the input with that
+  // contact's display name once the page is available.
+  useEffect(() => {
+    if (!dealFormFields.contact_id || contactQuery) return;
+    const c = contacts.find((x) => x.id === dealFormFields.contact_id);
+    if (c) setContactQuery(c.name ?? c.email ?? "Selected contact");
+  }, [contacts, dealFormFields.contact_id, contactQuery]);
+
+  // Matches for the picker menu: filter the loaded page by name/email, capped
+  // so the dropdown stays short.
+  const contactMatches = useMemo(() => {
+    const q = contactQuery.trim().toLowerCase();
+    const base = q
+      ? contacts.filter(
+          (c) =>
+            (c.name ?? "").toLowerCase().includes(q) ||
+            (c.email ?? "").toLowerCase().includes(q),
+        )
+      : contacts;
+    return base.slice(0, 8);
+  }, [contacts, contactQuery]);
 
   const submitDealForm = useCallback(async () => {
     if (!dealFormMode) return;
@@ -328,19 +371,17 @@ export function PipelineBoard({ client, onOpenGreenlight, onLoadSample }: Pipeli
       setDealFormError("Amount must be a positive number.");
       return;
     }
+    const contact_id = dealFormFields.contact_id.trim() || null;
     setDealFormBusy(true);
     setDealFormError(null);
     try {
       if (dealFormMode === "create") {
-        const body: CreateDealBody = {
-          title,
-          amount,
-          contact_id: dealFormFields.contact_id || undefined,
-          company_id: dealFormFields.company_id || undefined,
-        };
+        const body: CreateDealBody = { title, amount, contact_id };
         await api.createDeal(body);
       } else {
-        const body: EditDealBody = { title, amount };
+        // EditDealBody is title/amount today; the API also accepts contact_id,
+        // so widen the body to carry the chosen (or cleared) contact through.
+        const body: EditDealBody & { contact_id?: string | null } = { title, amount, contact_id };
         await api.updateDeal(dealFormMode.id, body);
       }
       closeDealForm();
@@ -847,78 +888,128 @@ export function PipelineBoard({ client, onOpenGreenlight, onLoadSample }: Pipeli
               />
             </div>
 
-            {dealFormMode === "create" && (
-              <>
-                <div style={{ marginBottom: 14 }}>
-                  <label
-                    htmlFor="deal-form-contact"
-                    style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--ink-3, #8a8278)", marginBottom: 4 }}
-                  >
-                    Contact
-                  </label>
-                  <select
-                    id="deal-form-contact"
-                    data-testid="deal-form-contact"
-                    value={dealFormFields.contact_id}
-                    onChange={(e) => setDealFormFields((f) => ({ ...f, contact_id: e.target.value }))}
-                    disabled={dealFormBusy}
-                    style={{
-                      width: "100%",
-                      boxSizing: "border-box",
-                      borderRadius: 10,
-                      border: "1px solid var(--line, #e3ddd3)",
-                      padding: "9px 12px",
-                      fontSize: 13.5,
-                      fontFamily: "inherit",
-                      background: "var(--surface, #fff)",
-                      color: "var(--ink, #2a2622)",
-                    }}
-                  >
-                    <option value="">— No contact —</option>
-                    {pickerContacts.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name ?? "(unnamed)"}
-                        {c.company_name ? ` · ${c.company_name}` : ""}
-                      </option>
-                    ))}
-                  </select>
+            <div style={{ marginBottom: 14, position: "relative" }}>
+              <label
+                htmlFor="deal-form-contact"
+                style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--ink-3, #8a8278)", marginBottom: 4 }}
+              >
+                Contact
+              </label>
+              <input
+                id="deal-form-contact"
+                data-testid="deal-form-contact"
+                type="text"
+                role="combobox"
+                aria-expanded={contactMenuOpen}
+                aria-autocomplete="list"
+                autoComplete="off"
+                value={contactQuery}
+                onChange={(e) => {
+                  setContactQuery(e.target.value);
+                  setContactMenuOpen(true);
+                  // Editing the text clears any prior selection until one is picked.
+                  setDealFormFields((f) => ({ ...f, contact_id: "" }));
+                }}
+                onFocus={() => setContactMenuOpen(true)}
+                disabled={dealFormBusy}
+                placeholder={contactsLoaded ? "Search a contact by name or email…" : "Loading contacts…"}
+                style={{
+                  width: "100%",
+                  boxSizing: "border-box",
+                  borderRadius: 10,
+                  border: "1px solid var(--line, #e3ddd3)",
+                  padding: "9px 12px",
+                  fontSize: 13.5,
+                  fontFamily: "inherit",
+                  background: "var(--surface, #fff)",
+                  color: "var(--ink, #2a2622)",
+                }}
+              />
+              {dealFormFields.contact_id !== "" && (
+                <button
+                  type="button"
+                  data-testid="deal-form-contact-clear"
+                  onClick={() => {
+                    setDealFormFields((f) => ({ ...f, contact_id: "" }));
+                    setContactQuery("");
+                    setContactMenuOpen(false);
+                  }}
+                  aria-label="Clear contact"
+                  style={{
+                    position: "absolute",
+                    right: 8,
+                    top: 30,
+                    border: "none",
+                    background: "transparent",
+                    color: "var(--ink-3, #8a8278)",
+                    fontSize: 16,
+                    lineHeight: 1,
+                    cursor: "pointer",
+                    fontFamily: "inherit",
+                  }}
+                >
+                  ×
+                </button>
+              )}
+              {contactMenuOpen && contactMatches.length > 0 && (
+                <div
+                  role="listbox"
+                  data-testid="deal-form-contact-menu"
+                  style={{
+                    position: "absolute",
+                    left: 0,
+                    right: 0,
+                    top: "100%",
+                    marginTop: 4,
+                    zIndex: 2,
+                    maxHeight: 220,
+                    overflowY: "auto",
+                    background: "var(--surface, #fff)",
+                    border: "1px solid var(--line, #e3ddd3)",
+                    borderRadius: 10,
+                    boxShadow: "0 8px 28px rgba(20,16,12,.14)",
+                  }}
+                >
+                  {contactMatches.map((c) => (
+                    <button
+                      key={c.id}
+                      type="button"
+                      role="option"
+                      aria-selected={dealFormFields.contact_id === c.id}
+                      data-testid="deal-form-contact-option"
+                      data-contact-id={c.id}
+                      onClick={() => {
+                        setDealFormFields((f) => ({ ...f, contact_id: c.id }));
+                        setContactQuery(c.name ?? c.email ?? "Selected contact");
+                        setContactMenuOpen(false);
+                      }}
+                      style={{
+                        display: "block",
+                        width: "100%",
+                        textAlign: "left",
+                        padding: "8px 12px",
+                        border: "none",
+                        borderBottom: "1px solid var(--line-2, #efe9df)",
+                        background: "transparent",
+                        cursor: "pointer",
+                        fontFamily: "inherit",
+                      }}
+                    >
+                      <div style={{ fontSize: 13, fontWeight: 650, color: "var(--ink, #2a2622)" }}>
+                        {c.name ?? "Unnamed contact"}
+                      </div>
+                      {(c.email || c.company_name) && (
+                        <div style={{ fontSize: 12, color: "var(--ink-3, #8a8278)" }}>
+                          {c.email ?? ""}
+                          {c.email && c.company_name ? " · " : ""}
+                          {c.company_name ?? ""}
+                        </div>
+                      )}
+                    </button>
+                  ))}
                 </div>
-
-                <div style={{ marginBottom: 14 }}>
-                  <label
-                    htmlFor="deal-form-company"
-                    style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--ink-3, #8a8278)", marginBottom: 4 }}
-                  >
-                    Company
-                  </label>
-                  <select
-                    id="deal-form-company"
-                    data-testid="deal-form-company"
-                    value={dealFormFields.company_id}
-                    onChange={(e) => setDealFormFields((f) => ({ ...f, company_id: e.target.value }))}
-                    disabled={dealFormBusy}
-                    style={{
-                      width: "100%",
-                      boxSizing: "border-box",
-                      borderRadius: 10,
-                      border: "1px solid var(--line, #e3ddd3)",
-                      padding: "9px 12px",
-                      fontSize: 13.5,
-                      fontFamily: "inherit",
-                      background: "var(--surface, #fff)",
-                      color: "var(--ink, #2a2622)",
-                    }}
-                  >
-                    <option value="">— No company —</option>
-                    {pickerCompanies.map((co) => (
-                      <option key={co.id} value={co.id}>
-                        {co.name ?? "(unnamed)"}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </>
-            )}
+              )}
+            </div>
 
             {dealFormError && (
               <div

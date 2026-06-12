@@ -14,10 +14,9 @@
 //     the Pipeline board, where stage moves go through Greenlight).
 //   * A Companies toggle switches to GET /companies (contact + open-deal
 //     counts) with its own drawer (GET /companies/{id}: contacts + deals).
-//   * Direct writes via POST /contacts (create) and PATCH /contacts/{id}
-//     (edit) — the server applies RLS via SET LOCAL (not the Greenlight gate),
-//     matching the contacts_routes.py docstring. A company picker on the form
-//     is populated from GET /companies and bound to company_id.
+//   * READ-ONLY by design: no create/edit controls exist this cycle — CRM
+//     writes arrive with a later update_contact tool through the gate, so the
+//     UI promises nothing it can't keep.
 //   * A 404 from the list means the live API image predates these routes (the
 //     web can deploy ahead of the API): that renders a calm "rolling out"
 //     state with a refresh affordance — NOT an error wall.
@@ -41,12 +40,15 @@ import {
 } from "./client";
 import { Spinner } from "./Spinner";
 
-const { useState, useEffect, useCallback, useRef, useReducer } = React;
+const { useState, useEffect, useCallback, useRef, useReducer, useMemo } = React;
 
 // Mirrors api/contacts_routes.py MAX_Q_LEN — the input enforces it so typing
 // can never produce a 422.
 const MAX_Q_LEN = 200;
 const PAGE_SIZE = 50;
+// How many companies to pull into the form's company picker. The picker filters
+// this page client-side; company is optional, so a partial page is fine.
+const COMPANY_PICKER_LIMIT = 100;
 
 // Mirrors api/deals_routes.py STAGE_LABELS for the open-deal chips (display
 // only — unknown stages fall back to the raw value, never dropped).
@@ -209,8 +211,13 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: Cont
   const [formError, setFormError] = useState<string | null>(null);
   const [, forceListRefresh] = useReducer((n: number) => n + 1, 0);
 
-  // Company picker list loaded when the form opens (fail-soft: empty = only "— No company —").
-  const [pickerCompanies, setPickerCompanies] = useState<CompanyRow[]>([]);
+  // Company picker (typeahead) for the contact form. Companies load lazily when
+  // the form opens; the query is the visible text, the chosen id lives in the
+  // form fields. Company is optional — a failed load never blocks a save.
+  const [formCompanies, setFormCompanies] = useState<CompanyRow[]>([]);
+  const [formCompaniesLoaded, setFormCompaniesLoaded] = useState(false);
+  const [companyQuery, setCompanyQuery] = useState("");
+  const [companyMenuOpen, setCompanyMenuOpen] = useState(false);
 
   const loadPeople = useCallback(
     async (q: string, offset: number, append: boolean) => {
@@ -338,19 +345,26 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: Cont
     setDetailError(null);
   }, []);
 
-  const loadPickerCompanies = useCallback(() => {
-    void api.listCompanies({ limit: 200 }).then(
-      (r) => setPickerCompanies(r.companies),
-      () => setPickerCompanies([]),
-    );
-  }, [api]);
+  // Pull a page of companies the first time the form opens; company is optional,
+  // so a failed load just leaves the picker empty (never an error).
+  const loadCompaniesForPicker = useCallback(async () => {
+    if (formCompaniesLoaded) return;
+    try {
+      const res = await api.listCompanies({ limit: COMPANY_PICKER_LIMIT });
+      setFormCompanies(res.companies);
+      setFormCompaniesLoaded(true);
+    } catch {
+      // Company is optional — swallow and leave the picker empty.
+    }
+  }, [api, formCompaniesLoaded]);
 
   const openCreateForm = useCallback(() => {
     setFormMode("create");
     setFormFields(emptyForm());
     setFormError(null);
-    loadPickerCompanies();
-  }, [loadPickerCompanies]);
+    setCompanyQuery("");
+    setCompanyMenuOpen(false);
+  }, []);
 
   const openEditForm = useCallback((c: ContactRow) => {
     setFormMode({ kind: "edit", id: c.id });
@@ -361,14 +375,45 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: Cont
       company_id: c.company_id ?? "",
     });
     setFormError(null);
-    loadPickerCompanies();
-  }, [loadPickerCompanies]);
+    // Prefer the row's own company name; otherwise the picker effect resolves it.
+    setCompanyQuery(c.company_name ?? "");
+    setCompanyMenuOpen(false);
+  }, []);
 
   const closeForm = useCallback(() => {
     setFormMode(null);
     setFormError(null);
     setFormBusy(false);
+    setCompanyQuery("");
+    setCompanyMenuOpen(false);
   }, []);
+
+  // Lazy-load the companies page whenever the form is open.
+  useEffect(() => {
+    if (formMode !== null) void loadCompaniesForPicker();
+  }, [formMode, loadCompaniesForPicker]);
+
+  // When editing a contact that already has a company but no resolved name,
+  // fill the input once the page is available.
+  useEffect(() => {
+    if (!formFields.company_id || companyQuery) return;
+    const co = formCompanies.find((x) => x.id === formFields.company_id);
+    if (co) setCompanyQuery(co.name ?? co.domain ?? "Selected company");
+  }, [formCompanies, formFields.company_id, companyQuery]);
+
+  // Matches for the picker menu: filter the loaded page by name/domain, capped
+  // so the dropdown stays short.
+  const companyMatches = useMemo(() => {
+    const q = companyQuery.trim().toLowerCase();
+    const base = q
+      ? formCompanies.filter(
+          (co) =>
+            (co.name ?? "").toLowerCase().includes(q) ||
+            (co.domain ?? "").toLowerCase().includes(q),
+        )
+      : formCompanies;
+    return base.slice(0, 8);
+  }, [formCompanies, companyQuery]);
 
   const submitForm = useCallback(async () => {
     if (!formMode) return;
@@ -908,19 +953,31 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: Cont
               </div>
             ))}
 
-            <div style={{ marginBottom: 14 }}>
+            <div style={{ marginBottom: 14, position: "relative" }}>
               <label
                 htmlFor="contact-form-company"
                 style={{ display: "block", fontSize: 12, fontWeight: 600, ...muted, marginBottom: 4 }}
               >
                 Company
               </label>
-              <select
+              <input
                 id="contact-form-company"
                 data-testid="contact-form-company"
-                value={formFields.company_id}
-                onChange={(e) => setFormFields((f) => ({ ...f, company_id: e.target.value }))}
+                type="text"
+                role="combobox"
+                aria-expanded={companyMenuOpen}
+                aria-autocomplete="list"
+                autoComplete="off"
+                value={companyQuery}
+                onChange={(e) => {
+                  setCompanyQuery(e.target.value);
+                  setCompanyMenuOpen(true);
+                  // Editing the text clears any prior selection until one is picked.
+                  setFormFields((f) => ({ ...f, company_id: "" }));
+                }}
+                onFocus={() => setCompanyMenuOpen(true)}
                 disabled={formBusy}
+                placeholder={formCompaniesLoaded ? "Search a company by name or domain…" : "Loading companies…"}
                 style={{
                   width: "100%",
                   boxSizing: "border-box",
@@ -932,14 +989,87 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: Cont
                   background: "var(--surface, #fff)",
                   color: "var(--ink, #2a2622)",
                 }}
-              >
-                <option value="">— No company —</option>
-                {pickerCompanies.map((co) => (
-                  <option key={co.id} value={co.id}>
-                    {co.name ?? "(unnamed)"}
-                  </option>
-                ))}
-              </select>
+              />
+              {formFields.company_id !== "" && (
+                <button
+                  type="button"
+                  data-testid="contact-form-company-clear"
+                  onClick={() => {
+                    setFormFields((f) => ({ ...f, company_id: "" }));
+                    setCompanyQuery("");
+                    setCompanyMenuOpen(false);
+                  }}
+                  aria-label="Clear company"
+                  style={{
+                    position: "absolute",
+                    right: 8,
+                    top: 30,
+                    border: "none",
+                    background: "transparent",
+                    color: "var(--ink-3, #8a8278)",
+                    fontSize: 16,
+                    lineHeight: 1,
+                    cursor: "pointer",
+                    fontFamily: "inherit",
+                  }}
+                >
+                  ×
+                </button>
+              )}
+              {companyMenuOpen && companyMatches.length > 0 && (
+                <div
+                  role="listbox"
+                  data-testid="contact-form-company-menu"
+                  style={{
+                    position: "absolute",
+                    left: 0,
+                    right: 0,
+                    top: "100%",
+                    marginTop: 4,
+                    zIndex: 2,
+                    maxHeight: 220,
+                    overflowY: "auto",
+                    background: "var(--surface, #fff)",
+                    border: "1px solid var(--line, #e3ddd3)",
+                    borderRadius: 10,
+                    boxShadow: "0 8px 28px rgba(20,16,12,.14)",
+                  }}
+                >
+                  {companyMatches.map((co) => (
+                    <button
+                      key={co.id}
+                      type="button"
+                      role="option"
+                      aria-selected={formFields.company_id === co.id}
+                      data-testid="contact-form-company-option"
+                      data-company-id={co.id}
+                      onClick={() => {
+                        setFormFields((f) => ({ ...f, company_id: co.id }));
+                        setCompanyQuery(co.name ?? co.domain ?? "Selected company");
+                        setCompanyMenuOpen(false);
+                      }}
+                      style={{
+                        display: "block",
+                        width: "100%",
+                        textAlign: "left",
+                        padding: "8px 12px",
+                        border: "none",
+                        borderBottom: "1px solid var(--line-2, #efe9df)",
+                        background: "transparent",
+                        cursor: "pointer",
+                        fontFamily: "inherit",
+                      }}
+                    >
+                      <div style={{ fontSize: 13, fontWeight: 650, color: "var(--ink, #2a2622)" }}>
+                        {co.name ?? "Unnamed company"}
+                      </div>
+                      {co.domain && (
+                        <div style={{ fontSize: 12, ...muted }}>{co.domain}</div>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
 
             {formError && (

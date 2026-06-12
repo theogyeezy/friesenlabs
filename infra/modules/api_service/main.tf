@@ -101,6 +101,14 @@ variable "integrations_real" {
   type    = bool
   default = false
 }
+# REQ-012 step 6: the ingest-plane master switch ON THE API TASK — powers in-process
+# API-kicked syncs ("Sync now": async 202 + integration_sync_runs guard) and CSV-import
+# landing. REQ-004's old "no INGEST_* on the api task" stance was about IN-REQUEST syncs,
+# which no longer exist. Unset = honest 503 stubs (deploy invariance).
+variable "ingest_real" {
+  type    = bool
+  default = false
+}
 # Signup-plane PLAIN (non-secret) config: Stripe Hosted-Checkout price ids (price_..., public
 # identifiers, not secret-shaped) + redirect URLs, the Resend from-address, the verification-link
 # base, and the internal-bypass domain list. All read by shared/config.py at call time; safe ""
@@ -252,6 +260,10 @@ resource "aws_ecs_task_definition" "api" {
         var.cube_endpoint != "" ? [{ name = "CUBE_ENDPOINT", value = var.cube_endpoint }] : [],
         var.posthog_host != "" ? [{ name = "POSTHOG_HOST", value = var.posthog_host }] : [],
         var.integrations_real ? [{ name = "INTEGRATIONS_REAL_SECRETS", value = "1" }] : [],
+        # REQ-012 step 6: real sync-runner + csv-importer deps in the API process (the routes'
+        # async/202 path; in-request syncs are gone). Deliberate, separate flip from the
+        # secrets switch above.
+        var.ingest_real ? [{ name = "INGEST_REAL_STORES", value = "1" }] : [],
         # Signup-plane plain config + Cortex registry (see local.plain_env above) — sorted-by-name
         # map iteration keeps the rendered task def deterministic.
         [for k, v in local.plain_env : { name = k, value = v }]

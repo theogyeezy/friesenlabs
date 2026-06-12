@@ -80,14 +80,23 @@ test("checkout redirects the browser to Stripe, then resume polls status to acti
   await page.route("https://checkout.stripe.test/**", (route) =>
     route.fulfill({ contentType: "text/html", body: "<html><body>Stripe Checkout (stubbed)</body></html>" }),
   );
-  // The status poll: the first answer is "paid" (the signed webhook landed but
-  // provisioning is still running) — the flow must keep polling, not assume.
+  // The status poll. The first answer is the honest "paid" (the signed webhook
+  // landed but provisioning is still running); every poll after that stays
+  // non-terminal ("provisioning") until the test has OBSERVED the provisioning
+  // step and flips `releaseActive`, at which point a later poll reports "active".
+  //
+  // Holding the intermediate state open (instead of flipping to "active" on the
+  // very next, immediate poll tick) is what kills the flake: provisioning -> success
+  // used to race the DOM sampler — the app could reach "success" within a single
+  // route round-trip, before Playwright ever sampled "provisioning", timing out
+  // the assertion. The contract is unchanged: success is still only ever the
+  // server's word, reached via >= 2 polls, never the redirect's.
   let statusCalls = 0;
+  let releaseActive = false;
   await page.route((url) => url.pathname === `/signup/${ACCT}`, (route) => {
     statusCalls += 1;
-    route.fulfill({
-      json: { account_id: ACCT, state: statusCalls === 1 ? "paid" : "active", tenant_id: null },
-    });
+    const state = releaseActive ? "active" : statusCalls === 1 ? "paid" : "provisioning";
+    route.fulfill({ json: { account_id: ACCT, state, tenant_id: null } });
   });
 
   await walkToPlan(page);
@@ -102,8 +111,13 @@ test("checkout redirects the browser to Stripe, then resume polls status to acti
   const flow = page.getByTestId("signup-flow");
   await expect(flow).toBeVisible({ timeout: 15_000 });
 
-  // Resume: never "success" straight from the redirect — the flow polls.
+  // Resume: never "success" straight from the redirect — the flow polls. The
+  // stub holds the funnel in provisioning until we've observed that step, so
+  // this assertion can't lose the race to an instant "active" flip.
   await expect(flow).toHaveAttribute("data-step", "provisioning", { timeout: 15_000 });
+  // Provisioning observed — now let the next poll report the webhook-completed
+  // state, proving the flow advances on the server's word, not the redirect's.
+  releaseActive = true;
   await expect(flow).toHaveAttribute("data-step", "success", { timeout: 15_000 });
   await expect(page.getByTestId("step-success")).toContainText("You're all set");
   expect(statusCalls).toBeGreaterThanOrEqual(2);

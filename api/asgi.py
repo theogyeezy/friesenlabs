@@ -46,7 +46,7 @@ from api.control.types import Action
 from api.cortex_routes import CortexDeps
 from api.deals_routes import DealsDeps
 from api.sidecar_routes import SidecarDeps
-from api.knowledge_routes import KnowledgeDeps
+from api.knowledge_routes import KnowledgeDeps, build_doc_ingestor
 from api.pg_clients import PgControlSettingsStore, PgCrmClient, PgRagClient
 from api.limits import PlanResolver, TenantLimitsMiddleware
 from api.usage import PgCostRecorder, PgPlanLookup, PgUsageStore
@@ -64,6 +64,7 @@ from api.account_routes import AccountDeps
 from api.status_routes import StatusDeps
 from api.modules_routes import ModulesDeps
 from api.pg_settings import PgSettingsStore
+from api.settings_routes import SettingsDeps
 from api.routes_studio import StudioDeps, build_studio_deps
 from shared.config import (
     ENV_ANTHROPIC_API_KEY,
@@ -346,8 +347,10 @@ def build_app():
     # environment from the workspace store and binds a runtime to it; a tenant without a provisioned
     # environment resolves to None -> the honest record-only path. Gated on the agent plane being
     # configured (api_key + the DSN-backed workspace store); otherwise the store-only/inert default.
+    playbook_dispatcher = None  # in-process event producer (deals/contacts); None = inert
     if dsn and api_key and workspace_store is not None:
-        from agents.playbooks.store import PgPlaybookStore  # noqa: PLC0415 — lazy
+        from agents.playbooks.dispatch import BackgroundDispatcher, PlaybookDispatcher  # noqa: PLC0415 — lazy
+        from agents.playbooks.store import PgPlaybookRunStore, PgPlaybookStore  # noqa: PLC0415
         from agents.runtime import get_runtime  # noqa: PLC0415 — lazy
 
         def _studio_registrar_factory(tenant_id, _ws=workspace_store, _key=api_key):
@@ -358,8 +361,50 @@ def build_app():
             runtime = get_runtime({"runtime": "managed", "api_key": _key, "environment_id": env_id})
             return (runtime, env_id, row.get("vault_id"))
 
-        studio_deps = StudioDeps(store=PgPlaybookStore(dsn),
-                                 registrar_factory=_studio_registrar_factory)
+        playbook_store = PgPlaybookStore(dsn)
+        playbook_run_store = PgPlaybookRunStore(dsn)  # run history (audit P0-2; lazy pool)
+
+        # The in-process EVENT leg (audit P0-4): domain events (lead.created from POST /contacts,
+        # deal.created from POST /deals) fire the tenant's ACTIVE event-playbooks through the
+        # SAME runner seam the manual run route uses — per-tenant runtime resolution, persisted
+        # run history, draft-only through Greenlight. Unprovisioned tenants land an honest
+        # error record (never a crash — runner.run contains everything).
+        def _dispatch_run_playbook(tenant_id, playbook_id, event,
+                                   _factory=_studio_registrar_factory,
+                                   _store=playbook_store, _runs=playbook_run_store):
+            from agents.playbooks import runner as runner_mod  # noqa: PLC0415 — lazy
+
+            resolved = _factory(tenant_id)
+            if resolved is None:
+                record = runner_mod.RunRecord(
+                    playbook_id=str(playbook_id), tenant_id=str(tenant_id), status="error",
+                    trigger={"kind": event.kind, "name": event.name},
+                    error="tenant not provisioned (no environment_id)")
+                try:
+                    _runs.record(tenant_id, record.as_dict())
+                except Exception:  # noqa: BLE001 — history is best-effort
+                    pass
+                return record
+            runtime, env_id, vault_id = resolved
+            return runner_mod.run(runtime, _store, tenant_id, playbook_id, event,
+                                  environment_id=env_id, vault_id=vault_id,
+                                  run_store=_runs)
+
+        # Fire-and-forget: a user-facing create must never block on an agent run (an MA
+        # coordinator turn can take tens of seconds). The run's outcome lands in the
+        # persisted run history + Greenlight queue, never in the producer's request.
+        playbook_dispatcher = BackgroundDispatcher(
+            PlaybookDispatcher(playbook_store, _dispatch_run_playbook))
+        studio_deps = StudioDeps(
+            store=playbook_store,
+            run_store=playbook_run_store,
+            registrar_factory=_studio_registrar_factory,
+            # Dispatch honesty (audit P0-4): the schedule leg is live only when the owner flips
+            # the EventBridge rule AND stamps PLAYBOOK_DISPATCH_ENABLED=1 on the api task (the
+            # same go-live act — GO_LIVE_CHECKLIST); the event leg is live right here.
+            scheduling_enabled=os.environ.get("PLAYBOOK_DISPATCH_ENABLED") == "1",
+            events_enabled=True,
+        )
     else:
         studio_deps = build_studio_deps()
 
@@ -443,10 +488,13 @@ def build_app():
         billing=billing_deps,
         # /deals (the real Pipeline board) rides the SAME PgCrmClient instance the executor +
         # /chat tool clients use — one pool, one SET LOCAL discipline. crm is None when the
-        # DSN is unconfigured, so the routes answer their honest 503s.
-        deals=DealsDeps(crm=crm),
+        # DSN is unconfigured, so the routes answer their honest 503s. The dispatcher makes
+        # POST /deals fire deal.created event-playbooks (inert when None — guarded producer).
+        deals=DealsDeps(crm=crm, dispatcher=playbook_dispatcher),
         # /contacts + /companies (the real Contacts directory) — the same single PgCrmClient.
-        contacts=ContactsDeps(crm=crm),
+        # The dispatcher makes POST /contacts fire lead.created (the shipped
+        # lead_followup_drafter template's trigger — audit P0-4).
+        contacts=ContactsDeps(crm=crm, dispatcher=playbook_dispatcher),
         # /sidecar (the real agentic layer) — reads the SAME PgCrmClient and proposes Greenlight
         # drafts. crm is None when the DSN is unconfigured -> honest 503.
         sidecar=SidecarDeps(crm=crm),
@@ -465,7 +513,10 @@ def build_app():
         # /chat RAG tool use — one pool, one SET LOCAL discipline. The inventory is a plain
         # aggregate (no embedder); search embeds lazily via Titan (Bedrock, env-key-gated) and
         # degrades honestly. rag is None when the DSN is unconfigured -> honest 503.
-        knowledge=KnowledgeDeps(rag=rag),
+        # POST /knowledge/documents (customer corpus add, knowledge audit P0) is gated on the
+        # ingest plane's own INGEST_REAL_STORES switch — same posture as the CSV importer:
+        # unswitched = no ingestor = honest 503, never a quiet success into a throwaway store.
+        knowledge=KnowledgeDeps(rag=rag, ingest_document=build_doc_ingestor()),
         # GET /cortex/health (the #194 ml/health.py seam) rides the SAME env-built registry
         # run_model scores with, plus a PgPredictionLog over the shared crm_app DSN (per-op
         # SET LOCAL — RLS) for the live-AUC drift leg. Unconfigured pieces degrade honestly
@@ -483,7 +534,10 @@ def build_app():
         # GET /account/export (GDPR/portability egress) — the SAME crm/rag/saved_views instances
         # every other authed route rides. Inert (None stores) only when no DSN; with Aurora wired
         # the export is live. (account_delete is DELIBERATELY left to its inert default — a
-        # destructive teardown ships non-functional until an explicit owner wiring step.)
+        # destructive teardown ships non-functional until an explicit owner wiring step. At that
+        # step pass BOTH deleter=PgAccountDeleter(dsn) AND, when INTEGRATIONS_REAL_SECRETS is on,
+        # secret_writer=Boto3SecretWriter() — the erasure response then includes the connector-
+        # vault purge (uplift/{tenant}/{source} tokens must not outlive the account).)
         # Agent Studio with the per-tenant registrar wired (activate/run drive a real crew when the
         # tenant is provisioned; honest record-only otherwise) — see _studio_registrar_factory above.
         studio=studio_deps,
@@ -493,6 +547,10 @@ def build_app():
         # can read the enabled set; GET degrades to the default catalog if the column predates the
         # live migrate. (account_delete + settings stay inert by their own gates.)
         modules=ModulesDeps(store=PgSettingsStore(dsn), billing=module_billing) if dsn else ModulesDeps(),
+        # GET/PUT /account/settings — persisted workspace name + notification prefs. Wired LIVE
+        # (PgSettingsStore over tenant_settings, the SAME store ModulesDeps rides) so the panel
+        # stops answering its inert 503; the all-None SettingsDeps() default stands only with no DSN.
+        settings=SettingsDeps(store=PgSettingsStore(dsn)) if dsn else SettingsDeps(),
         # GET /public/status — per-subsystem readiness. The "api" component is always operational
         # (this endpoint answered); these probes report whether each subsystem is WIRED on this
         # deployment (the API process is up + its dep is configured), not a deep liveness ping —

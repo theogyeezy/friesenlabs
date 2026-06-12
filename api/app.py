@@ -25,7 +25,7 @@ from api.modules_routes import ModulesDeps
 from api.agents_routes import AgentsDeps
 from api.auth import JwtVerifier, TenantClaims, make_current_tenant
 from api.control.autonomy import AutonomyConfig
-from api.control.appliers import apply_approved_action
+from api.control.appliers import apply_approved_action, was_performed
 from api.control.gate import ActionGate, GateContext
 from api.control.greenlight import EditNotAllowed, Greenlight
 from api.control.killswitch import KillSwitch
@@ -301,7 +301,10 @@ def create_app(deps: ApiDeps) -> FastAPI:
         # Step 3 — the audit update. The CRM write HAS happened by now; a failure writing the
         # audit row must NEVER be recorded (or reported) as performed: false. Log loudly and
         # return the applied outcome with a warning instead of rewriting history.
-        applied_at = datetime.now(timezone.utc)
+        # applied_at marks a side effect that ACTUALLY happened — a record-only / no-op apply
+        # (performed: false, e.g. a draft-only send_email) carries None so it can never read as
+        # "sent", matching the applier-error path above.
+        applied_at = datetime.now(timezone.utc) if was_performed(apply_result) else None
         try:
             deps.greenlight.store.update(apply_tenant, approval_id, {
                 "applied_at": applied_at,

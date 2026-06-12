@@ -27,8 +27,10 @@ import {
   type DealStageGroup,
   type DecideBody,
   type DirectoryListParams,
+  type DeleteCredentialsResponse,
   type Integration,
   type IntegrationCredentialsBody,
+  type IntegrationSyncHistoryResponse,
   type IntegrationSyncResponse,
   type ListCompaniesResponse,
   type ListContactsResponse,
@@ -42,6 +44,7 @@ import {
   type SynthesizeViewBody,
   type SynthesizeViewResponse,
   type KnowledgeInventoryResponse,
+  type KnowledgeAddDocumentResponse,
   type KnowledgeSearchResponse,
   type CheckoutResponse,
   type SignupResponse,
@@ -566,6 +569,8 @@ function cannedChat(_message: string): ChatResponse {
     delegations: [],
     session_id: "mock-session",
     tenant_id: MOCK_TENANT,
+    grounding_status: "grounded",
+    retrieved_count: 2,
   };
 }
 
@@ -834,6 +839,12 @@ export class MockApi {
     return { query, results: results.map((r) => ({ ...r })), search_available: true, reason: null };
   }
 
+  addKnowledgeDocument(title: string, _content: string): KnowledgeAddDocumentResponse {
+    // Mirrors api/knowledge_routes.py: upload:<slug>-<hash8> under source='upload'.
+    const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "doc";
+    return { ref_id: `upload:${slug}-mock1234`, chunks: 1, source: "upload", title };
+  }
+
   runAction(body: ActionBody): ActionResponse {
     // Side-effecting actions route to Greenlight; non-side-effecting auto-run.
     if (body.side_effecting) {
@@ -1071,6 +1082,16 @@ export class MockApi {
     };
   }
 
+  deleteIntegrationCredentials(name: string): DeleteCredentialsResponse {
+    const rec = this.requireIntegration(name);
+    // Mirrors the API: idempotent — disconnecting an unconnected source is a
+    // 200 with deleted:false, never an error.
+    const deleted = this.integrationVault.delete(rec.name);
+    rec.connected = false;
+    rec.status = "not_connected";
+    return { name: rec.name, deleted, status: "not_connected" };
+  }
+
   kickIntegrationSync(name: string): IntegrationSyncResponse {
     const rec = this.requireIntegration(name);
     if (!this.integrationVault.has(rec.name)) {
@@ -1084,6 +1105,13 @@ export class MockApi {
       name: rec.name,
       result: { pulled: 4, landed_rows: 4, chunks: 9, embedded: 9, skipped: 0 },
     };
+  }
+
+  listIntegrationSyncs(name: string): IntegrationSyncHistoryResponse {
+    const rec = this.requireIntegration(name);
+    // The mock keeps no run history (kickIntegrationSync answers inline like a
+    // storeless deployment) — an honest empty list, mirroring a fresh tenant.
+    return { name: rec.name, runs: [] };
   }
 
   private requireIntegration(name: string): Integration {

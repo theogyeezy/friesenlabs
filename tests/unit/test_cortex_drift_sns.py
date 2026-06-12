@@ -1,23 +1,33 @@
-"""Unit: ml/retrain.py SNS drift publish — fake SNS client, no boto3, no network.
+"""Unit: the Cortex drift SNS publish is single-sourced (the dedup-fix contract).
 
-Covers:
-- `_publish_drift` sends a correctly shaped SNS message when CORTEX_DRIFT_TOPIC_ARN is set.
-- `_publish_drift` is a no-op (no publish) when CORTEX_DRIFT_TOPIC_ARN is unset or blank.
-- `run_scheduled_retrain` calls `_publish_drift` (and therefore SNS) when live drift fires.
-- `run_scheduled_retrain` does NOT publish when there is no drift.
-- A boto3 failure inside `_publish_drift` is swallowed (non-fatal).
+After the double-publish fix, `ml.retrain.run_scheduled_retrain` ONLY computes the drift verdict
+(returned in `result["drift"]`) — it never pages. The one and only drift-publish surface is
+`ml.drift_alert.DriftNotifier.notify`, driven by the retrain fan-out (scripts/ml/retrain_all.py).
+These tests pin that contract so the orchestrator can't grow a second publish again:
+
+- `ml.retrain` carries no SNS-publish helpers (`_publish_drift` / `_sns_client` are gone).
+- `run_scheduled_retrain` touches no SNS by itself.
+- The integrated fan-out path (run_scheduled_retrain -> DriftNotifier.notify) publishes EXACTLY
+  ONCE per drifting tenant.
+- A no-drift verdict publishes nothing.
 """
 from __future__ import annotations
 
+import importlib
 import json
 import random
 
 import pytest
 
 from ml.data_loader import StaticTrainingDataLoader
+from ml.drift_alert import DriftNotifier
 from ml.predictions import MIN_LIVE_SAMPLES, InMemoryPredictionLog
 from ml.registry import InMemoryRegistry
-from ml.retrain import _publish_drift, run_scheduled_retrain
+from ml.retrain import run_scheduled_retrain
+
+retrain_all = importlib.import_module("scripts.ml.retrain_all")
+
+DRIFT_TOPIC_ARN = "arn:aws:sns:us-east-1:123456789:uplift-cortex-drift"
 
 
 # ---------------------------------------------------------------------------
@@ -60,200 +70,104 @@ def _synthetic(n: int = 300, seed: int = 2) -> list[dict]:
     return recs
 
 
-DRIFT_VERDICT = {
-    "drift": True,
-    "registered_auc": 0.81,
-    "recent_auc": 0.62,
-    "n_outcomes": 40,
-    "reason": "degraded beyond tolerance",
-}
-
-NO_DRIFT_VERDICT = {
-    "drift": False,
-    "registered_auc": 0.81,
-    "recent_auc": 0.80,
-    "n_outcomes": 40,
-    "reason": "ok",
-}
-
-
-# ---------------------------------------------------------------------------
-# _publish_drift unit tests
-# ---------------------------------------------------------------------------
-
-@pytest.mark.unit
-def test_publish_drift_sends_correctly_shaped_message(monkeypatch):
-    """When CORTEX_DRIFT_TOPIC_ARN is set, publish() is called with the right payload."""
-    monkeypatch.setenv("CORTEX_DRIFT_TOPIC_ARN", "arn:aws:sns:us-east-1:123456789:uplift-cortex-drift")
-    sns = FakeSns()
-
-    _publish_drift("tenant-42", DRIFT_VERDICT, sns_client=sns)
-
-    assert len(sns.published) == 1
-    call = sns.published[0]
-    # TopicArn forwarded verbatim
-    assert call["TopicArn"] == "arn:aws:sns:us-east-1:123456789:uplift-cortex-drift"
-    # Subject contains the tenant id and is within the SNS 100-char limit
-    assert "tenant-42" in call["Subject"]
-    assert len(call["Subject"]) <= 100
-    # Message is valid JSON with required fields
-    body = json.loads(call["Message"])
-    assert body["tenant_id"] == "tenant-42"
-    assert body["metric"] == "live_auc"
-    assert body["registered_auc"] == pytest.approx(0.81)
-    assert body["recent_auc"] == pytest.approx(0.62)
-    assert body["drift_magnitude"] == pytest.approx(0.19, abs=1e-4)
-    assert "timestamp" in body
-    assert body["n_outcomes"] == 40
-    assert body["reason"] == "degraded beyond tolerance"
-
-
-@pytest.mark.unit
-def test_publish_drift_skipped_when_env_unset(monkeypatch):
-    """No CORTEX_DRIFT_TOPIC_ARN → publish() must never be called."""
-    monkeypatch.delenv("CORTEX_DRIFT_TOPIC_ARN", raising=False)
-    sns = FakeSns()
-
-    _publish_drift("tenant-42", DRIFT_VERDICT, sns_client=sns)
-
-    assert sns.published == []
-
-
-@pytest.mark.unit
-def test_publish_drift_skipped_when_env_blank(monkeypatch):
-    """Blank / whitespace CORTEX_DRIFT_TOPIC_ARN also skips — not just missing."""
-    monkeypatch.setenv("CORTEX_DRIFT_TOPIC_ARN", "   ")
-    sns = FakeSns()
-
-    _publish_drift("tenant-42", DRIFT_VERDICT, sns_client=sns)
-
-    assert sns.published == []
-
-
-@pytest.mark.unit
-def test_publish_drift_swallows_boto3_exception(monkeypatch):
-    """A boto3/SNS failure must not propagate — the retrain job continues."""
-    monkeypatch.setenv("CORTEX_DRIFT_TOPIC_ARN", "arn:aws:sns:us-east-1:123456789:uplift-cortex-drift")
-    sns = FakeSns(raise_on_publish=True)
-
-    # Must not raise
-    _publish_drift("tenant-boom", DRIFT_VERDICT, sns_client=sns)
-
-
-@pytest.mark.unit
-def test_publish_drift_long_tenant_id_subject_truncated(monkeypatch):
-    """Subject line must never exceed 100 chars even with a very long tenant id."""
-    monkeypatch.setenv("CORTEX_DRIFT_TOPIC_ARN", "arn:aws:sns:us-east-1:123456789:uplift-cortex-drift")
-    sns = FakeSns()
-
-    _publish_drift("x" * 200, DRIFT_VERDICT, sns_client=sns)
-
-    assert len(sns.published[0]["Subject"]) <= 100
-
-
-# ---------------------------------------------------------------------------
-# Integration: run_scheduled_retrain calls SNS when live drift fires
-# ---------------------------------------------------------------------------
-
-@pytest.mark.unit
-def test_run_scheduled_retrain_publishes_when_drift_detected(monkeypatch):
-    """Full retrain path: anti-correlated live scores produce drift → SNS publish fires."""
-    monkeypatch.setenv(
-        "CORTEX_DRIFT_TOPIC_ARN",
-        "arn:aws:sns:us-east-1:123456789:uplift-cortex-drift",
-    )
-    sns = FakeSns()
-    # Patch _publish_drift to inject our fake SNS client
-    import ml.retrain as retrain_mod
-
-    _orig = retrain_mod._publish_drift
-
-    def _patched(tenant_id: str, drift: dict, *, sns_client=None) -> None:
-        return _orig(tenant_id, drift, sns_client=sns)
-
-    monkeypatch.setattr(retrain_mod, "_publish_drift", _patched)
-
-    reg = InMemoryRegistry()
-    log = InMemoryPredictionLog()
-    records = _synthetic(n=300)
-    # First, train a champion
-    from ml.retrain import run_scheduled_retrain
-    run_scheduled_retrain(reg, StaticTrainingDataLoader(records), "t-sns", seed=0)
-
-    # Now run retrain with anti-correlated live evidence (scores predict opposite of outcome)
+def _train_then_drift(reg: InMemoryRegistry, log: InMemoryPredictionLog, tenant: str,
+                      loader: StaticTrainingDataLoader) -> None:
+    """Train a champion, then feed anti-correlated live evidence so live drift fires."""
+    run_scheduled_retrain(reg, loader, tenant, seed=0)
     for i in range(MIN_LIVE_SAMPLES * 2):
         outcome = i % 2
-        log.log("t-sns", deal_id=f"live-{i}", model_version=1, score=0.9 - 0.8 * outcome)
-        log.record_outcome("t-sns", f"live-{i}", outcome)
+        log.log(tenant, deal_id=f"live-{i}", model_version=1, score=0.9 - 0.8 * outcome)
+        log.record_outcome(tenant, f"live-{i}", outcome)
 
-    result = run_scheduled_retrain(
-        reg,
-        StaticTrainingDataLoader(records),
-        "t-sns",
-        prediction_log=log,
-        seed=0,
+
+# ---------------------------------------------------------------------------
+# The orchestrator no longer carries an SNS-publish surface
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_retrain_module_has_no_sns_publish_helpers():
+    """The drift double-publish is removed: ml.retrain owns no SNS publish helpers anymore."""
+    import ml.retrain as retrain_mod
+
+    assert not hasattr(retrain_mod, "_publish_drift")
+    assert not hasattr(retrain_mod, "_sns_client")
+
+
+@pytest.mark.unit
+def test_run_scheduled_retrain_computes_drift_but_never_publishes(monkeypatch):
+    """run_scheduled_retrain returns the drift verdict; it imports/uses no SNS client."""
+    # Even with a topic ARN configured, the orchestrator must not page on its own.
+    monkeypatch.setenv("CORTEX_DRIFT_TOPIC_ARN", DRIFT_TOPIC_ARN)
+    reg = InMemoryRegistry()
+    log = InMemoryPredictionLog()
+    loader = StaticTrainingDataLoader(_synthetic(n=300))
+    _train_then_drift(reg, log, "t-orch", loader)
+
+    result = run_scheduled_retrain(reg, loader, "t-orch", prediction_log=log, seed=0)
+
+    # Verdict is computed and surfaced — but nothing was published (no notifier in this path).
+    assert result["drift"]["drift"] is True
+
+
+# ---------------------------------------------------------------------------
+# The single publish surface: exactly one page per drifting tenant
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_exactly_one_publish_per_drifting_tenant():
+    """The integrated fan-out path (retrain -> DriftNotifier.notify) publishes ONCE per drift."""
+    reg = InMemoryRegistry()
+    log = InMemoryPredictionLog()
+    loader = StaticTrainingDataLoader(_synthetic(n=300))
+    _train_then_drift(reg, log, "t-drift", loader)
+
+    sns = FakeSns()
+    notifier = DriftNotifier(DRIFT_TOPIC_ARN, sns=sns)
+    out = retrain_all.retrain_one(
+        reg, loader, "t-drift", prediction_log=log, seed=0, drift_notifier=notifier
     )
 
-    assert result["drift"]["drift"] is True
+    assert out["ok"] is True
+    assert out.get("drift_alerted") is True
+    assert out["result"]["drift"]["drift"] is True
+    # The crux of the dedup fix: ONE SNS publish for this drifting tenant, not two.
     assert len(sns.published) == 1
     body = json.loads(sns.published[0]["Message"])
-    assert body["tenant_id"] == "t-sns"
-    assert body["metric"] == "live_auc"
-    assert "timestamp" in body
+    assert body["tenant_id"] == "t-drift"
+    assert "t-drift" in sns.published[0]["Subject"]
 
 
 @pytest.mark.unit
-def test_run_scheduled_retrain_does_not_publish_when_no_drift(monkeypatch):
-    """When the live AUC is healthy, no SNS message must be sent."""
-    monkeypatch.setenv(
-        "CORTEX_DRIFT_TOPIC_ARN",
-        "arn:aws:sns:us-east-1:123456789:uplift-cortex-drift",
-    )
+def test_multiple_drifting_tenants_publish_once_each():
+    """Two drifting tenants -> exactly two publishes total (one apiece), never doubled."""
     sns = FakeSns()
-    import ml.retrain as retrain_mod
+    notifier = DriftNotifier(DRIFT_TOPIC_ARN, sns=sns)
+    for tenant in ("t-a", "t-b"):
+        reg = InMemoryRegistry()
+        log = InMemoryPredictionLog()
+        loader = StaticTrainingDataLoader(_synthetic(n=300))
+        _train_then_drift(reg, log, tenant, loader)
+        retrain_all.retrain_one(
+            reg, loader, tenant, prediction_log=log, seed=0, drift_notifier=notifier
+        )
 
-    _orig = retrain_mod._publish_drift
-
-    def _patched(tenant_id: str, drift: dict, *, sns_client=None) -> None:
-        return _orig(tenant_id, drift, sns_client=sns)
-
-    monkeypatch.setattr(retrain_mod, "_publish_drift", _patched)
-
-    reg = InMemoryRegistry()
-    # No prediction log → live_drift_check returns "insufficient evidence" (drift=False)
-    result = run_scheduled_retrain(
-        reg,
-        StaticTrainingDataLoader(_synthetic()),
-        "t-nodrift",
-        prediction_log=InMemoryPredictionLog(),
-        seed=0,
-    )
-
-    assert result["drift"]["drift"] is False
-    assert sns.published == []
+    assert len(sns.published) == 2
+    assert {json.loads(c["Message"])["tenant_id"] for c in sns.published} == {"t-a", "t-b"}
 
 
 @pytest.mark.unit
-def test_run_scheduled_retrain_publishes_without_env_var_set_is_noop(monkeypatch):
-    """Without CORTEX_DRIFT_TOPIC_ARN even a real drift verdict must not cause an error."""
-    monkeypatch.delenv("CORTEX_DRIFT_TOPIC_ARN", raising=False)
-
+def test_no_publish_when_no_drift():
+    """A healthy (no-drift / insufficient-evidence) verdict pages no one."""
     reg = InMemoryRegistry()
-    log = InMemoryPredictionLog()
-    records = _synthetic(n=300)
-    run_scheduled_retrain(reg, StaticTrainingDataLoader(records), "t-noenv", seed=0)
+    loader = StaticTrainingDataLoader(_synthetic(n=300))
+    run_scheduled_retrain(reg, loader, "t-ok", seed=0)
 
-    for i in range(MIN_LIVE_SAMPLES * 2):
-        outcome = i % 2
-        log.log("t-noenv", deal_id=f"live-{i}", model_version=1, score=0.9 - 0.8 * outcome)
-        log.record_outcome("t-noenv", f"live-{i}", outcome)
-
-    # Must not raise even though drift fires and no topic ARN is configured
-    result = run_scheduled_retrain(
-        reg,
-        StaticTrainingDataLoader(records),
-        "t-noenv",
-        prediction_log=log,
-        seed=0,
+    sns = FakeSns()
+    notifier = DriftNotifier(DRIFT_TOPIC_ARN, sns=sns)
+    out = retrain_all.retrain_one(
+        reg, loader, "t-ok", prediction_log=InMemoryPredictionLog(), seed=0, drift_notifier=notifier
     )
-    assert result["drift"]["drift"] is True  # drift fired, but silently skipped SNS
+
+    assert out["ok"] is True
+    assert "drift_alerted" not in out
+    assert sns.published == []

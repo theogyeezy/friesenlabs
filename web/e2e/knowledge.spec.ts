@@ -263,6 +263,79 @@ test("503 from GET /knowledge -> calm knowledge-rollout panel; no error wall", a
   await page.getByTestId("knowledge-rollout-refresh").click();
   await expect(page.getByTestId("knowledge-source")).toHaveCount(3, { timeout: 15_000 });
   await expect(page.getByTestId("knowledge-rollout")).toHaveCount(0);
+// ---------------------------------------------------------------------------
+// Add-document path (knowledge audit P0): POST /knowledge/documents
+// ---------------------------------------------------------------------------
+
+const docsApi = (url: URL) => url.pathname === "/knowledge/documents";
+
+test("add document posts to /knowledge/documents and refreshes the inventory", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+
+  const UPLOADED_INVENTORY = {
+    sources: [{ source: "upload", document_count: 2, last_updated: "2026-06-11T10:00:00+00:00" }],
+    source_count: 1,
+    total_documents: 2,
+  };
+  let posted = false;
+  await page.route(inventoryApi, (route) =>
+    route.fulfill({ status: 200, json: posted ? UPLOADED_INVENTORY : EMPTY_INVENTORY }),
+  );
+  await page.route(docsApi, async (route) => {
+    posted = true;
+    const body = route.request().postDataJSON() as { title: string; content: string };
+    expect(body.title).toBe("Pricing policy");
+    expect(body.content).toContain("Discounts cap at 15%");
+    await route.fulfill({
+      status: 201,
+      json: { ref_id: "upload:pricing-policy-ab12cd34", chunks: 2, source: "upload", title: body.title },
+    });
+  });
+
+  await page.goto("/?view=knowledge");
+  await expect(page.getByTestId("knowledge-empty")).toBeVisible({ timeout: 15_000 });
+
+  await page.getByTestId("knowledge-add-toggle").click();
+  await page.getByTestId("knowledge-add-title").fill("Pricing policy");
+  await page.getByTestId("knowledge-add-content").fill("Discounts cap at 15% without approval.");
+  await page.getByTestId("knowledge-add-submit").click();
+
+  await expect(page.getByTestId("knowledge-add-note")).toContainText("2 sections indexed");
+  // The inventory refreshed and now shows the upload source — no more empty state.
+  await expect(page.getByTestId("knowledge-source")).toHaveCount(1);
+  await expect(page.getByTestId("knowledge-empty")).toHaveCount(0);
+
+  expect(errors, `page errors: ${errors.join("\n")}`).toHaveLength(0);
+});
+
+test("add document degrades honestly when uploads aren't switched on (503)", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+
+  await page.route(inventoryApi, (route) =>
+    route.fulfill({ status: 200, json: EMPTY_INVENTORY }),
+  );
+  await page.route(docsApi, (route) =>
+    route.fulfill({
+      status: 503,
+      json: { detail: "document upload not configured — the ingest plane (INGEST_REAL_STORES + a DSN) is not wired on this task" },
+    }),
+  );
+
+  await page.goto("/?view=knowledge");
+  await expect(page.getByTestId("knowledge-empty")).toBeVisible({ timeout: 15_000 });
+
+  await page.getByTestId("knowledge-add-toggle").click();
+  await page.getByTestId("knowledge-add-title").fill("Pricing policy");
+  await page.getByTestId("knowledge-add-content").fill("Discounts cap at 15%.");
+  await page.getByTestId("knowledge-add-submit").click();
+
+  // Honest copy: the doc did NOT land, uploads aren't enabled — never a fake success.
+  await expect(page.getByTestId("knowledge-add-unavailable")).toContainText("was not saved");
+  await expect(page.getByTestId("knowledge-add-note")).toHaveCount(0);
+  const text = await bodyText(page);
+  expect(text).not.toContain("INGEST_REAL_STORES"); // server detail never reaches the DOM
 
   expect(errors, `page errors: ${errors.join("\n")}`).toHaveLength(0);
 });

@@ -27,7 +27,6 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-import sys
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -154,6 +153,36 @@ class PlaybookDispatcher:
         return records
 
 
+class BackgroundDispatcher:
+    """Fire-and-forget wrapper for the in-process EVENT producers (POST /contacts,
+    POST /deals): a user-facing create must never block on an agent run — one MA
+    coordinator turn can take tens of seconds, far past request-timeout territory.
+
+    ``dispatch_event`` spawns a contained daemon thread and returns ``[]`` immediately;
+    the run's outcome is observable through the persisted run history (``playbook_runs``)
+    and the Greenlight queue, never through the producer's request. Failures are logged
+    and swallowed on the thread (the inner dispatcher already contains per-playbook
+    failures; this contains dispatcher-level ones)."""
+
+    def __init__(self, dispatcher: Any) -> None:
+        self._dispatcher = dispatcher
+
+    def dispatch_event(self, tenant_id: str, event_name: str,
+                       payload: dict | None = None) -> list:
+        import threading  # noqa: PLC0415 — stdlib, but keep module import surface minimal
+
+        def _run() -> None:
+            try:
+                self._dispatcher.dispatch_event(tenant_id, event_name, payload)
+            except Exception:  # noqa: BLE001 — a background run must die quietly, logged
+                log.exception("background event dispatch failed for %s (tenant scoped)",
+                              event_name)
+
+        threading.Thread(target=_run, daemon=True,
+                         name=f"playbook-event-{event_name}").start()
+        return []
+
+
 # --------------------------------------------------------------------------- #
 # CLI — the EventBridge schedule target. Real mode (ANTHROPIC_API_KEY + DSN)
 # wires PgPlaybookStore + a per-tenant Managed Agents runtime; offline runs
@@ -161,12 +190,72 @@ class PlaybookDispatcher:
 # --------------------------------------------------------------------------- #
 ENV_DISPATCH_TENANTS = "PLAYBOOK_DISPATCH_TENANTS"
 
+# Account states whose tenant is live enough to own (active) schedule playbooks. A row only gains
+# a tenant_id once the Provisioner mints it (Step 55), so PROVISIONING/ACTIVE are exactly the
+# already-tenanted, dispatchable rows; CREATED/…/PROVISIONING_FAILED carry no tenant_id and are
+# filtered out by the `tenant_id IS NOT NULL` guard regardless.
+_DISPATCHABLE_ACCOUNT_STATES = ("provisioning", "active")
 
-def _resolve_tenants(args: argparse.Namespace) -> list[str]:
+
+def discover_db_tenants(dsn: str | None) -> list[str]:
+    """Provisioned tenant_ids discovered from the RLS-EXEMPT `accounts` table (as crm_app).
+
+    WHY accounts, not playbooks: the dispatcher runs as crm_app (NOBYPASSRLS), so it cannot
+    enumerate the per-tenant `playbooks` table cross-tenant — FORCE'd RLS scopes a query to the
+    single `app.current_tenant` GUC, and with none set it returns zero rows. The `accounts` table
+    is the PRE-TENANT roster (deliberately RLS-exempt; crm_app may SELECT it — db/roles.sql), and
+    every provisioned tenant has a row carrying its tenant_id. We discover that roster here;
+    `dispatch_scheduled` then runs only each tenant's ACTIVE, due schedule playbooks (RLS-scoped
+    per tenant), so a discovered tenant with no such playbook is a harmless no-op. A NEW SIGNUP
+    appears here automatically the moment it is provisioned — no `PLAYBOOK_DISPATCH_TENANTS`
+    tfvar edit, which is the whole point of this change.
+
+    Inert + safe: no DSN -> []; any driver/query error is logged and yields [] (the caller still
+    has the static env list to fall back on — discovery never crashes a dispatch run).
+    """
+    if not dsn:
+        return []
+    try:
+        import psycopg2  # noqa: PLC0415 — guarded (import-safe module, mirrors _build_runner)
+        from psycopg2.extras import RealDictCursor  # noqa: PLC0415
+
+        conn = psycopg2.connect(dsn)
+        try:
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute(
+                "SELECT DISTINCT tenant_id FROM accounts "
+                "WHERE tenant_id IS NOT NULL AND status = ANY(%s)",
+                (list(_DISPATCHABLE_ACCOUNT_STATES),),
+            )
+            rows = cur.fetchall()
+            conn.commit()
+        finally:
+            conn.close()
+        return list(dict.fromkeys(str(r["tenant_id"]) for r in rows))
+    except Exception:  # noqa: BLE001 — discovery is best-effort; never crash the dispatch run
+        log.exception("DB tenant discovery failed — falling back to the static env list")
+        return []
+
+
+def _resolve_tenants(args: argparse.Namespace, *, dsn: str | None = None,
+                     discover: Callable[[str | None], list[str]] = discover_db_tenants
+                     ) -> list[str]:
+    """The tenants to dispatch this run.
+
+      * explicit ``--tenant`` args WIN (operator override / tests) — used verbatim, no discovery.
+      * otherwise the union of the static ``PLAYBOOK_DISPATCH_TENANTS`` env list (legacy/manual
+        override, still honored so nothing already-covered regresses) and the DB-discovered roster
+        (the new default — new signups picked up automatically). Deduped, order-stable.
+
+    ``discover`` is injected so tests exercise the precedence/union logic with a fake roster and
+    never touch a database; the default does the real RLS-exempt `accounts` read.
+    """
     if args.tenant:
         return list(dict.fromkeys(t.strip() for t in args.tenant if t.strip()))
     raw = os.environ.get(ENV_DISPATCH_TENANTS, "")
-    return list(dict.fromkeys(t.strip() for t in raw.split(",") if t.strip()))
+    env_tenants = [t.strip() for t in raw.split(",") if t.strip()]
+    db_tenants = discover(dsn)
+    return list(dict.fromkeys([*env_tenants, *db_tenants]))
 
 
 def _build_runner(dsn: str | None):
@@ -177,11 +266,12 @@ def _build_runner(dsn: str | None):
     api_key = os.environ.get(ENV_ANTHROPIC_API_KEY)
     if dsn and api_key:
         from agents.playbooks import runner as runner_mod  # noqa: PLC0415
-        from agents.playbooks.store import PgPlaybookStore  # noqa: PLC0415
+        from agents.playbooks.store import PgPlaybookRunStore, PgPlaybookStore  # noqa: PLC0415
         from agents.runtime import get_runtime  # noqa: PLC0415
         from agents.workspace_store import PgWorkspaceStore  # noqa: PLC0415
 
         store = PgPlaybookStore(dsn)
+        run_store = PgPlaybookRunStore(dsn)  # persist every scheduled-run digest (audit P0-2)
         workspaces = PgWorkspaceStore(dsn)
 
         def run_playbook(tenant_id: str, playbook_id: str, event: TriggerEvent) -> RunRecord:
@@ -194,7 +284,8 @@ def _build_runner(dsn: str | None):
             runtime = get_runtime({"runtime": "managed", "api_key": api_key,
                                    "environment_id": env_id})
             return runner_mod.run(runtime, store, tenant_id, playbook_id, event,
-                                  environment_id=env_id, vault_id=row.get("vault_id"))
+                                  environment_id=env_id, vault_id=row.get("vault_id"),
+                                  run_store=run_store)
 
         return store, run_playbook
 
@@ -235,9 +326,10 @@ def main(argv: list[str] | None = None) -> int:
     from shared.config import dsn_from_env  # noqa: PLC0415
 
     dsn = dsn_from_env()
-    tenants = _resolve_tenants(args)
+    tenants = _resolve_tenants(args, dsn=dsn)
     if not tenants:
-        log.warning("no tenants to dispatch (%s empty) — nothing to do", ENV_DISPATCH_TENANTS)
+        log.warning("no tenants to dispatch (DB discovery + %s both empty) — nothing to do",
+                    ENV_DISPATCH_TENANTS)
         return 0
 
     store, run_playbook = _build_runner(dsn)

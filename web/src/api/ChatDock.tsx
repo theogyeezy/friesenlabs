@@ -61,7 +61,20 @@ interface Message {
   error?: boolean;
   /** Balto result: the view this message opens. */
   view?: ViewAttachment;
+  /** Grounding observability: non-grounded statuses render an honest note under the answer. */
+  grounding?: string | null;
 }
+
+/** Honest copy for each non-grounded retrieval outcome — "grounded" renders citations instead. */
+const GROUNDING_NOTES: Record<string, string> = {
+  no_sources_found:
+    "No matching documents in your knowledge base — this answer isn't grounded in your docs. " +
+    "Add documents under Knowledge to ground answers.",
+  ungrounded:
+    "Your documents couldn't verify this — unverifiable claims were filtered out of the answer.",
+  unavailable:
+    "Knowledge grounding isn't connected yet, so this answer isn't grounded in your documents.",
+};
 
 interface OverlayState extends ViewAttachment {
   saving: boolean;
@@ -179,7 +192,11 @@ export function ChatDock({ client, analytics, embedded = false }: ChatDockProps)
       ph.capture("chat_message_sent", { embedded, length: body.length });
       try {
         const res = await api.chat(body);
-        setMsgs((m) => [...m, { who: "agent", text: res.answer, citations: res.citations }]);
+        setMsgs((m) => [
+          ...m,
+          { who: "agent", text: res.answer, citations: res.citations,
+            grounding: res.grounding_status ?? null },
+        ]);
         if (res.view_intent && res.view_request) {
           // The Balto status message is on screen while this runs (still `sending`).
           await runBalto(res.view_request);
@@ -337,6 +354,21 @@ export function ChatDock({ client, analytics, embedded = false }: ChatDockProps)
                     <div style={{ fontStyle: "italic" }}>{c.snippet}</div>
                   </div>
                 ))}
+              </div>
+            )}
+
+            {m.who === "agent" && !m.error && m.grounding && GROUNDING_NOTES[m.grounding] && (
+              <div
+                data-testid="grounding-note"
+                style={{
+                  marginTop: 8,
+                  fontSize: 12,
+                  color: "var(--ink-3, #8a8278)",
+                  borderLeft: "2px solid var(--line, #e3ddd3)",
+                  paddingLeft: 10,
+                }}
+              >
+                {GROUNDING_NOTES[m.grounding]}
               </div>
             )}
           </div>

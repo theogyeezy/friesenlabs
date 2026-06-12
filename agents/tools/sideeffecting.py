@@ -12,17 +12,32 @@ from .base import Policy, Tool, ToolContext
 
 class DraftEmail(Tool):
     name = "draft_email"
-    description = "Draft an outreach/follow-up email (no send)."
+    description = (
+        "Record an email draft you have written (no send). YOU author the complete, "
+        "personalized body and pass it in `body` — this tool stores it verbatim; it never "
+        "writes content for you."
+    )
     input_schema = {
         "type": "object",
-        "properties": {"to": {"type": "string"}, "subject": {"type": "string"}, "goal": {"type": "string"}},
-        "required": ["to", "goal"],
+        "properties": {
+            "to": {"type": "string"},
+            "subject": {"type": "string"},
+            "body": {
+                "type": "string",
+                "description": "The FULL email body, written by you — greeting to sign-off.",
+            },
+            "goal": {"type": "string", "description": "What this email is trying to achieve."},
+        },
+        "required": ["to", "body"],
     }
     policy = Policy.AUTO  # drafting is safe
 
-    def _execute(self, ctx: ToolContext, *, to: str, goal: str, subject: str = "") -> dict:
-        body = f"(draft) Re: {goal}"  # real impl asks the model; draft only, never sent
-        return {"to": to, "subject": subject or goal, "body": body}
+    def _execute(self, ctx: ToolContext, *, to: str, body: str, subject: str = "",
+                 goal: str = "") -> dict:
+        # The body is MODEL-AUTHORED (the calling agent IS the model) and returned verbatim —
+        # never a server-side placeholder (audit P0-1), never a nested model call (the worker
+        # carries no Anthropic key by design; shared/config.py key posture).
+        return {"to": to, "subject": subject or goal or "Draft", "body": body}
 
 
 class SendEmail(Tool):

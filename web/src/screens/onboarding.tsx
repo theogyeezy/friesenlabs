@@ -37,7 +37,7 @@ const PRODUCT_GUIDE = [
     ["network", "Cortex", "Private intelligence that sharpens with every decision"],
   ] },
   { group: "Connect & control", items: [
-    ["plug", "Switchboard", "Connect HubSpot, Gmail, Stripe and 18+ tools"],
+    ["plug", "Switchboard", "Connect HubSpot, Stripe, GoHighLevel or a CSV import"],
     ["layers", "Sidecar", "Put agents on top of the tools you already use"],
     ["shield", "Security", "Kill switch, guardrails and a full audit trail"],
   ] },

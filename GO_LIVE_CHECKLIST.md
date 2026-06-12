@@ -61,16 +61,21 @@ Until this is done, a real paid signup gets charged then parks `provisioning_fai
 - [ ] **Drift alerting (optional but recommended):** set `cortex_drift_alert_email = "you@friesenlabs.com"` to subscribe to the `uplift-cortex-drift` SNS topic (confirm the AWS subscription email), OR subscribe Slack/PagerDuty to the topic yourself. The retrain fan-out auto-publishes a positive live-drift verdict (`CORTEX_DRIFT_TOPIC_ARN` is already injected into the task). No email set = topic exists, no notifications.
 - [ ] _Model note (no action):_ the bake-off now trains a **gradient-boosted-trees** learner alongside logistic regression over a 9-feature vector and keeps the higher held-out-AUC model per tenant. No flag — it's automatic once retrain runs.
 
-## 6. Turn on ingest + connectors
+## 6. Turn on ingest + connectors (= release Switchboard — the full ordered runbook is REQ-012)
 
-- [ ] `ingest_schedule_enabled = true` + `ingest_tenants = "<tenant-id,...>"` (vault each tenant's per-source secret first).
-- [ ] `INTEGRATIONS_REAL_SECRETS` + `INGEST_REAL_STORES` switches for live connector connect/sync + CSV-import landing in the CRM tables.
-- [ ] Live per-connector `# VERIFY` pass against the real vendor APIs (HubSpot + Stripe self-confirmed in code; **GoHighLevel still needs a live verify** — no confirmed server-side incremental filter).
+- [ ] **Migrate first:** one-off `api.migrate` with a fresh image — adds the `integration_sync_runs` table + grants (async "Sync now", the single-runner guard, sync history / last-synced). Isolation gate after.
+- [ ] **IAM deltas:** api task `secretsmanager:DeleteSecret` on `uplift/*/{hubspot,stripe,gohighlevel}*` (disconnect + account-delete vault purge); ingest task `secretsmanager:ListSecrets` (the `auto` tenant discovery). Verify #235's connector-write widening is APPLIED.
+- [ ] `ingest_schedule_enabled = true` + `ingest_tenants = "auto"` — `auto` discovers the tenant set from the vaulted slots, so a customer who connects in the panel is auto-enrolled (no hand-list; a comma list still works). The rule syncs `--source hubspot`; add per-source runs when stripe/gohighlevel tenants exist.
+- [ ] `INTEGRATIONS_REAL_SECRETS` (flag `api_integrations_real`) + `INGEST_REAL_STORES` on the api task for live connector connect/disconnect/sync + CSV-import landing in the CRM tables. (In-request sync risk is gone — API kicks are 202 + background + guarded.)
+- [ ] Live per-connector `# VERIFY` pass against the real vendor APIs on the first connect (HubSpot + Stripe self-confirmed in code; **GoHighLevel still needs a live verify** — incremental filter AND the new connect-probe endpoint). Also verify put/create/describe/delete_secret shapes + the REQ-008 ARN-suffix match.
+- [ ] **Bill the module:** minted DONE (test mode): `stripe_module_price_ids = { STRIPE_PRICE_ID_MODULE_INTEGRATION = "price_1ThHLBRCMItYjxIJAUlF0E1q" }` — staged in the machine-local `prod.auto.tfvars` with the other Switchboard flips; rides the next deploy. (Re-mint in LIVE mode at the live-keys cutover.)
 
 ## 7. Turn on playbook automation
 
-- [ ] `playbook_dispatch_enabled = true` + `playbook_dispatch_tenants = "<tenant-id,...>"` → the EventBridge dispatcher fires scheduled playbooks (wired + disabled).
+- [ ] `playbook_dispatch_enabled = true` + `playbook_dispatch_tenants = "<tenant-id,...>"` → the EventBridge dispatcher fires scheduled playbooks (wired + disabled). **Same act: stamp `PLAYBOOK_DISPATCH_ENABLED=1` on the api task env** so the Studio stops bannering schedule playbooks as "trigger not enabled yet" (`GET /studio/playbooks` dispatch honesty — `feat/matt-agents-studio-p0s`).
 - [ ] (Studio live registrar: wired in `asgi.py` — activation/run register a real crew automatically once a tenant is provisioned with an MA environment; no flag.)
+- [x] Event triggers (`lead.created` from `POST /contacts`, `deal.created` from `POST /deals`) are live in-process once the agent plane is configured — no flag; fire-and-forget, draft-only, run history in `playbook_runs`. _(Needs the one-off DB migrate below first.)_
+- [ ] **One-off DB migrate** for `playbook_runs` + the `playbooks.ma_*` columns (`uplift-migrate-oneoff` task-def family, schema.sql + roles.sql are idempotent) — until then run history answers 503 and crew-reuse re-registers per run.
 
 ## 8. Knowledge corpus + chat citations
 

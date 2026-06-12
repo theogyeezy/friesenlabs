@@ -104,19 +104,21 @@ test("real mode: non-API routes render the honest 'isn't live yet' panel, not th
   await page.goto("/");
   await expect(page.getByTestId("dashboard-view")).toBeVisible({ timeout: 15_000 });
 
-  // Billing (an FLStore prototype screen in mock mode) -> ComingSoon panel.
-  // (Pipeline and Contacts are no longer here: they mount the API-wired
-  // PipelineBoard / ContactsDirectory in real mode — covered in
-  // pipeline.spec.ts / contacts.spec.ts.)
-  await page.locator(".nav-item", { hasText: "Billing" }).click();
+  // The never-built surfaces were PRUNED from the nav arrays in data.tsx, so
+  // they must not appear in the real-mode sidebar at all — no nav entry means
+  // no way to reach a prototype screen. (Billing/Calendar/Reputation/Templates/
+  // Email/Frontline used to render ComingSoon; now they're simply gone.)
+  for (const pruned of ["Billing", "Calendar", "Reputation", "Templates", "Email", "Frontline"]) {
+    await expect(page.locator(".nav-item", { hasText: pruned })).toHaveCount(0);
+  }
+
+  // Sell is still in the nav (gamification is on by default) but has no
+  // ApiClient-backed surface yet, so in real mode it must render the honest
+  // ComingSoon panel — never the FLStore prototype Sell screen with its fake
+  // streaks/leaderboard numbers.
+  await page.locator(".nav-item", { hasText: "Sell" }).click();
   await expect(page.getByTestId("coming-soon")).toBeVisible({ timeout: 15_000 });
   await expect(page.getByTestId("coming-soon")).toContainText("isn’t live yet");
-
-  // Templates -> ComingSoon panel (an FLStore prototype screen in mock mode).
-  // (Reports is no longer here: it mounts the API-wired ReportsView in real
-  // mode — the saved-views gallery + spec renderer — covered in reports.spec.ts.)
-  await page.locator(".nav-item", { hasText: "Templates" }).click();
-  await expect(page.getByTestId("coming-soon")).toBeVisible({ timeout: 15_000 });
 
   // Marketplace is LIVE in real mode now: the API-wired MarketplaceView (over
   // GET /studio/templates), NOT the FLStore prototype agent catalog and NOT a
@@ -153,6 +155,45 @@ test("chat shows 'Agents unavailable' on /chat 503 — never the raw API error",
   const text = await bodyText(page);
   expect(text).not.toMatch(/API \d+/);
   expect(text).not.toContain("agent runtime not configured");
+
+  expect(errors, `page errors: ${errors.join("\n")}`).toHaveLength(0);
+});
+
+test("chat surfaces an honest grounding note when the corpus has no matching documents", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+
+  // Grounding observability (knowledge audit P0): an empty-corpus answer must be
+  // distinguishable from a refusal — the turn carries grounding_status and the dock says so.
+  await page.route("**/chat", (route) =>
+    route.fulfill({
+      status: 200,
+      json: {
+        answer: "Acme looks healthy based on recent activity.",
+        citations: [],
+        pending_approvals: [],
+        slots: {},
+        needs_disambiguation: [],
+        delegations: [],
+        session_id: "s1",
+        tenant_id: "t1",
+        view_intent: false,
+        view_request: null,
+        grounding_status: "no_sources_found",
+        retrieved_count: 0,
+      },
+    }),
+  );
+
+  await page.goto("/?view=chat");
+  await expect(page.getByTestId("chat-dock")).toBeVisible({ timeout: 15_000 });
+
+  await page.getByTestId("chat-input").fill("How is Acme doing?");
+  await page.getByTestId("chat-send").click();
+
+  const reply = page.getByTestId("chat-msg-agent").last();
+  await expect(reply).toContainText("Acme looks healthy", { timeout: 15_000 });
+  await expect(page.getByTestId("grounding-note")).toContainText("knowledge base");
 
   expect(errors, `page errors: ${errors.join("\n")}`).toHaveLength(0);
 });

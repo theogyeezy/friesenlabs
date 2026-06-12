@@ -285,6 +285,12 @@ variable "api_integrations_real" {
   description = "Set INTEGRATIONS_REAL_SECRETS=1 on the API task."
 }
 
+variable "api_ingest_real" {
+  type        = bool
+  default     = false # REQ-012 step 6: flip with api_integrations_real for live "Sync now"/CSV import
+  description = "Set INGEST_REAL_STORES=1 on the API task (async API-kicked syncs + CSV-import landing)."
+}
+
 # --- Signup-plane plain (non-secret) config (api task env; shared/config.py names). ---
 # Stripe Price IDs are public identifiers (price_...), not secret-shaped; URLs/addresses/domain
 # lists likewise. "" = the env entry is omitted and the feature stays unconfigured.

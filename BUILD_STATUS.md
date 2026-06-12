@@ -549,6 +549,83 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   usable + safe; RAG-embed IAM gap closed live.
 
 ## Lane Matt (app code) — log
+- 2026-06-11 — **Agents & Studio audit P0s IMPLEMENTED (`feat/matt-agents-studio-p0s`):** all
+  four release blockers from the morning's audit, TDD throughout (red→green per chunk).
+  (1) `draft_email` now REQUIRES a model-authored `body` stored verbatim — the placeholder
+  `(draft) Re: <goal>` is dead; generation lives in the calling agent, not a nested model call
+  (the worker carries no Anthropic key by design). (2) Run history is real: append-only
+  `playbook_runs` (RLS-FORCEd, SELECT+INSERT only) + `PgPlaybookRunStore`; the runner persists
+  every terminal `RunRecord` (contained); `GET /studio/playbooks/{id}/runs`; StudioView gets
+  **Run now** + a runs panel with draft-only honesty copy ("N drafts wait in Greenlight.
+  Nothing was sent."). (3) The MA orphan leak is closed: `ma_coordinator_id`/`ma_agent_ids`/
+  `ma_registered_version` persisted at activate/first-run; runner + re-activate REUSE the crew
+  while the definition version matches (edits invalidate by construction); full ids never on
+  the wire (tails only); trace carries tails. (4) Starter playbooks are fireable: `POST
+  /contacts` emits `lead.created` (the #248 producer seam), and asgi now ACTUALLY wires the
+  dispatcher to deals+contacts (deal.created was wired-but-inert) behind a fire-and-forget
+  `BackgroundDispatcher` (a create never blocks on an agent run); `GET /studio/playbooks`
+  reports dispatch state and the Studio banners inert schedule/event playbooks. Hardened for
+  schema skew: pre-migrate deploys degrade (activate 200 unpersisted, runs route honest 503),
+  never 500. Tests: backend **1996 passed / 33 skipped** (new: draft_email, run store, runner
+  persistence+reuse, runs route, contacts producer, BackgroundDispatcher, schema-skew, and a
+  `playbook_runs` RLS+append-only proof for CI); web typecheck/build green + a new 6-test
+  `studio.spec.ts` (chromium-real) covering Run-now/runs/banner. **Live DB migrate for the new
+  table/columns: BLOCKED: Lane Nick** (GO_LIVE_CHECKLIST §7 updated — the schedule-leg flip now
+  includes `PLAYBOOK_DISPATCH_ENABLED=1` on the api task).
+- 2026-06-11 — **Knowledge audit P0 fixes (`feat/matt-knowledge-p0`, TDD):** the three release
+  blockers from the knowledge audit (PR #247) implemented. (1) **Customer corpus-add path:**
+  `POST /knowledge/documents` (claims-only tenancy, pydantic body, 422 bounds, honest 503 when
+  the ingest plane is unswitched, LOUD 503 on ingest failure — never a quiet no-op) over a new
+  `ingest/upload.py` seam (production chunker + embedder, `upload:<slug>-<hash8>#<seq>` refs,
+  ALL chunks embed before the first upsert so a mid-doc failure lands nothing); wired in asgi
+  behind `INGEST_REAL_STORES` (the CSV-importer posture); KnowledgeView add-document form +
+  honest empty-state rewrite (the false "fills in automatically" promise is gone) + 503 degrade
+  copy. (2) **Live citation refs fixed:** `conv/rag.py _normalize` now reads the live
+  PgRagClient `ref_id` key (was falling back to positional `doc:0` placeholders) and keeps the
+  hit's real source; live-shape regression tests pin it. (3) **Grounding observability:**
+  `Answer.status`/`retrieved_count` → `Turn.grounding_status`/`retrieved_count` on every /chat
+  turn (`grounded` / `no_sources_found` / `ungrounded` / `unavailable` / null-skipped), dropped
+  claims logged refs-only (never claim text), ChatDock renders honest notes for non-grounded
+  turns. Verified: full pytest exit 0 (29 DSN-gated skips) · web typecheck + mock/real builds ·
+  node units · knowledge.spec 9/9 (2 new) · realmode.spec 10/10 (1 new). Caveat learned: shared
+  Playwright ports (4173-5) can attach to ANOTHER session's stale preview server
+  (`reuseExistingServer`) — a foreign-bundle run produced false failures; rerun with free ports.
+- 2026-06-11 — **Agents & Studio customer-readiness audit (`feat/matt-agents-studio-audit`):**
+  4-pass read-audit (backend agent plane · web UI · tests/CI · data-layer+infra wiring), claims
+  cross-checked between passes; 252 tests green locally (202 unit + 50 integration, RLS-proof
+  skips run in CI). Verdict: safety sound (draft-only structural in `Tool.invoke`, trust rule
+  uniform, `playbooks` RLS/grants per house convention, real-mode web views genuinely API-wired,
+  live registrar real since #236) — automation NOT honest yet: `DraftEmail` returns a literal
+  `(draft) Re: <goal>` placeholder (Policy.AUTO → customer-visible), Studio has no Run-now
+  button or run history (`RunRecord` persisted nowhere), `PlaybookRunner.run()` re-creates the
+  MA crew every invocation (O(runs × roster) orphan leak, ids never persisted), and none of the
+  5 starter templates can ever fire (schedule leg owner-gated OFF, event leg unbuilt — zero
+  `dispatch_event` callers). 4 P0 / 8 P1 / 3 P2 filed in `TODO.md`; 4 stale Agent-Studio
+  site-audit bullets corrected (registrar/marketplace done by #236/#233). Full report:
+  `docs/audits/agents-studio-audit-2026-06-11.md`.
+- 2026-06-11 — **Switchboard release readiness (audit → build, `feat/matt-switchboard-audit`):**
+  audited the $29/mo `integration` module end-to-end (`docs/audits/switchboard-audit-2026-06-11.md`
+  — real code, NOT a Sidecar-style empty SKU; blockers were go-live wiring, marketing honesty, and
+  the connect→sync loop) then shipped the code side of every gap. **Backend:** new RLS-FORCEd
+  `integration_sync_runs` table (partial-unique single-runner guard) + `PgSyncRunStore`; POST sync
+  is now ASYNC (202 + background task, concurrent kick 409, 30-min stale-runner reap, exception
+  CLASS names only) with `GET /integrations/{name}/syncs` history + `last_sync` in the listing;
+  `DELETE /integrations/{name}/credentials` (idempotent disconnect; ForceDeleteWithoutRecovery so
+  reconnects never block; DeletedDate = not-connected); verify-on-connect probes (definitive 401/403
+  → 422 + nothing stored, inconclusive → stored `verified:null`); account-delete now purges the
+  `uplift/{tenant}/{source}` vault slots (honest `skipped_unconfigured` until the asgi wiring);
+  `INGEST_TENANTS=auto` — run_sync discovers the tenant set from vaulted slots (ListSecrets
+  names-only) so connecting auto-enrolls the nightly sync. **Web:** panel disconnect (inline
+  confirm), last-synced line, 202-sync polling; client+mock methods/types. **Honesty:** landing
+  "18+ tools"/fake-vendor carousel/"two-way sync & write-back"/"Keep Salesforce or Pipedrive"
+  rewritten to the real read-only 4-connector catalog (+ tour/onboarding/constellation + the mock
+  screen); stale HOTFIX comment reframed as the boot invariant; `shared/modules.py` docstring fixed
+  (no phantom modules.ts). **Verification:** pytest **1994 passed, 0 failed** (+27 new tests across
+  routes-v2/secret-writer/account-delete/run-sync-discovery), web typecheck + build green,
+  **16/16 integrations e2e** vs the real bundle (3 new: disconnect, last-synced, 202-poll). All
+  inert-safe behind the existing switches — the live release is exactly **REQ-012**
+  (migrate + DeleteSecret/ListSecrets IAM + flips + the module Price), runbook also folded into
+  `GO_LIVE_CHECKLIST.md` § 6.
 - 2026-06-11 — **Neural constellation hero (landing):** the hero is now a live, dependency-free
   canvas render of the real 11-product suite — Command Center at the heart, any-to-any transient
   signal routes, product-true activity cards, and a ~9s Security guardrail interception (shield +

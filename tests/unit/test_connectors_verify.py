@@ -89,7 +89,6 @@ class _GHL:
         _contact_pages = iter(contacts_pages or [])
         _opp_pages = iter(opps_pages or [])
         call_log: list[tuple[str, dict]] = []
-        captured_headers: list[dict] = []
 
         def fake_get(path: str, params: dict) -> dict:
             call_log.append((path, params))

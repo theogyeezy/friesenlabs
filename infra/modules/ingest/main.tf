@@ -84,6 +84,16 @@ resource "aws_iam_role_policy" "ingest_task" {
           Effect   = "Allow"
           Action   = ["bedrock:InvokeModel"]
           Resource = "arn:aws:bedrock:${var.region}::foundation-model/amazon.titan-embed-text-v2:0"
+        },
+        {
+          # REQ-012: INGEST_TENANTS="auto" derives the nightly sync set from the vaulted
+          # uplift/{tenant}/{source} slots (ingest/run_sync.py discover_tenants), so a tenant
+          # who connects via the API is auto-enrolled. ListSecrets is metadata-only (names,
+          # never values) and not resource-scopable — Resource must be "*"; the value reads
+          # above stay exactly slot-scoped.
+          Effect   = "Allow"
+          Action   = ["secretsmanager:ListSecrets"]
+          Resource = "*"
         }
       ],
       var.ingest_raw_bucket != "" ? [

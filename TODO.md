@@ -79,24 +79,24 @@ What remains is **owner-gated** (infra flips/seeding — see P0/P1 below), **web
   - Optionally expose a POST/PATCH on contacts_routes.py that proposes update_contact through the gate (parity with deals_routes move-stage) so the UI write path doesn't have to go through chat
 
 ### Connectors & ingest
-- [ ] **Integrations API (GET /integrations, POST credentials, POST sync) + IntegrationsPanel UI** — `partial`
-  - Flip api_integrations_real=1 (REQ-008) after a live # VERIFY of put/create/describe_secret shapes.
-  - Broaden the connector-write IAM resource (and the ingest read role) from uplift/*/hubspot* to uplift/*/{hubspot,gohighlevel,stripe}* so non-HubSpot connectors are actually connectable/syncable.
-  - Decide the API-kicked-sync story: either wire INGEST_REAL_STORES + DB_* onto the API task or make the panel's 'Sync now' point users at the scheduler; today it's a guaranteed 503.
-  - Special-case the csv card in IntegrationsPanel (or filter kind=file out) so it doesn't present a credential form that always 409s.
-- [ ] **CSV import backend (POST /integrations/csv/import + ingest/connectors/csv_import.py)** — `stub`
-  - Add a real csvImport(name,entity,file,mapping) method to ApiClient and a file-upload UI (drop zone + entity picker + mapping override) wired to POST /integrations/csv/import in real mode.
-  - Wire the importer dep on the API task (INGEST_REAL_STORES + DB_* + raw bucket) so the endpoint isn't a permanent 503, or document that CSV import only runs on the ingest task.
+- [ ] **Integrations API (GET /integrations, POST credentials, POST sync) + IntegrationsPanel UI** — `code-DONE; flips = REQ-012`
+  - Flip api_integrations_real=1 (REQ-008/REQ-012) after a live # VERIFY of put/create/describe/delete_secret shapes.
+  - ~~Broaden the connector-write IAM resource~~ DONE @#235 (`infra/modules/iam/main.tf:253`, all three sources; Lane Nick: verify APPLIED — REQ-012 step 4).
+  - ~~Decide the API-kicked-sync story~~ DECIDED + BUILT @feat/matt-switchboard-audit: syncs are async (202 + `integration_sync_runs` guard/history); wiring INGEST_REAL_STORES onto the api task is REQ-012 step 6 (recommended now that in-request syncs are gone).
+  - ~~Special-case the csv card in IntegrationsPanel~~ DONE @#228/#229 (file-kind renders the upload UI, no credential form).
+- [ ] **CSV import backend (POST /integrations/csv/import + ingest/connectors/csv_import.py)** — `code-DONE; flip = REQ-012 step 6`
+  - ~~Add a real csvImport method + file-upload UI~~ DONE @#228/#229 (entity picker + file input in IntegrationsPanel, e2e-covered).
+  - Wire the importer dep on the API task (INGEST_REAL_STORES + DB_* + raw bucket) so the endpoint isn't a permanent 503 — REQ-012 step 6.
   - Replace import-data.tsx's hardcoded FLStore.addDeal demo import with the real upload, or clearly scope it as mock-only.
 - [ ] **Knowledge corpus seed (scripts/demo/seed_knowledge.py + agents/knowledge_seed)** — `partial` _(verified real, sev medium)_
   - Run seed_knowledge.py as a one-off ECS task against the live demo tenant with INGEST_REAL_STORES=1 (Titan embedder) so /knowledge/search returns real hits and chat grounding has a positive citation.
-- [ ] **Sync connectors (HubSpot / GoHighLevel / Stripe) + run_sync pipeline** — `partial`
-  - Build a PgStructuredSink with ref->uuid resolution so synced + CSV rows land in the CRM tables, not only documents.
-  - Run a live VERIFY pass per connector (HubSpot CRM v3 datetime filter format, notes searchability, GHL v2 Version header + cursor params, Stripe param shapes) before any prod sync.
-  - Extend the connector secret IAM + ingest read role to gohighlevel/stripe slots.
-- [ ] **Ingest scheduler (nightly EventBridge -> Fargate run_sync --all)** — `not-wired` _(verified real, sev medium)_
-  - Populate ingest_tenants with the demo/first-customer tenant id(s), ensure their per-tenant HubSpot secret is vaulted, flip ingest_schedule_enabled=true, targeted apply, and verify a run lands documents (and ~0 on the next incremental run).
-  - Land the PgStructuredSink first if synced data is expected to show up in Pipeline/Contacts.
+- [ ] **Sync connectors (HubSpot / GoHighLevel / Stripe) + run_sync pipeline** — `code-DONE; live VERIFY open`
+  - ~~Build a PgStructuredSink~~ DONE @#222 (CRM structured sink; CSV + sync rows land in Pipeline/Contacts).
+  - Run a live VERIFY pass per connector (HubSpot CRM v3 datetime filter format, notes searchability, GHL v2 Version header + cursor params, Stripe param shapes) before any prod sync — rides REQ-012 step 5's first live connect.
+  - ~~Extend the connector secret IAM + ingest read role to gohighlevel/stripe slots~~ DONE @#235 (verify applied — REQ-012 step 4).
+- [ ] **Ingest scheduler (nightly EventBridge -> Fargate run_sync --all)** — `not-wired` _(flip = REQ-012 step 7)_
+  - Set `ingest_tenants = "auto"` (vault-slot discovery @feat/matt-switchboard-audit — no hand-list needed), flip ingest_schedule_enabled=true, targeted apply, and verify a run lands documents (and ~0 on the next incremental run). NOTE: the rule's command syncs `--source hubspot` only — add per-source runs when stripe/gohighlevel tenants connect.
+  - ~~Land the PgStructuredSink first~~ DONE @#222.
 
 ### Cortex / ML
 - [ ] **Cortex web UI (web/src/screens/cortex.tsx)** — `stub` _(verified real, sev medium)_
@@ -125,19 +125,19 @@ What remains is **owner-gated** (infra flips/seeding — see P0/P1 below), **web
   - Verify featurize() handles partial/missing record fields the agent might pass (edge cases)
 
 ### Agent Studio & workflows
-- [ ] **Agent Studio — activate / deactivate (live roster registration)** — `partial`
+- [x] **Agent Studio — activate / deactivate (live roster registration)** — `partial` **STALE→DONE 2026-06-11 (Matt audit): the registrar IS wired in prod since #236 (`api/asgi.py:344-364` StudioDeps registrar_factory → per-tenant MA env); the live-smoke clause is folded into the Agents & Studio audit section below.**
   - (gap) StudioDeps.registrar is hardcoded None everywhere in prod: build_studio_deps() (routes_studio.py:80-92) deliberately never wires a registrar, and api/asgi.py never passes one (grep for 'registrar' in asgi/agents returns nothing). So on the LIVE deployment activate ALWAYS returns registered:false with registration_reason='agent plane not configured...' — it only flips the DB status, never actually registers agents with Managed Agents. This is honest (UI says 'Active (record-only)') but means live activation is record-only, not a live crew.
   - (gap) Activation has no live-mode integration test against ManagedAgentsRuntime (activation.py docstring admits it 'only runs where the agent plane is deliberately configured'); only FakeRuntime coverage exists.
-- [ ] **Agent Studio — playbook trigger execution (the playbook actually RUNNING)** — `stub`
+- [ ] **Agent Studio — playbook trigger execution (the playbook actually RUNNING)** — `stub` **PARTIAL 2026-06-11 (Matt audit): manual Run-now endpoint built (#226) + live registrar (#236); the scheduled leg is authored-but-DISABLED (owner-gated) and the event leg is unbuilt — remaining work tracked in the Agents & Studio audit section below.**
   - Build a playbook runner: a manual 'Run now' endpoint that opens an MA session against the playbook's coordinator (behind agents/runtime.py), plus an EventBridge/scheduler leg for kind=schedule and an event-dispatch hook for kind=event.
   - Wire the activated coordinator into the live agent plane so its draft outputs land in Greenlight (the draft-only path already exists for /chat — reuse it).
-- [ ] **Agent Studio — registrar wiring to live Managed Agents** — `not-wired`
+- [x] **Agent Studio — registrar wiring to live Managed Agents** — `not-wired` **STALE→DONE 2026-06-11 (Matt audit): wired by #236 (`api/asgi.py:344-364`); the live activation smoke remains — folded into the Agents & Studio audit section below.**
   - In asgi.py, when the agent plane is configured (MA env id + org key present, the same gate signup uses), build a ManagedAgentsRuntime and pass it as StudioDeps.registrar so activate registers a real crew.
   - Add a live/integration smoke that activates a playbook against the real runtime seam and asserts registered:true + draft-only on a side-effecting tool.
 - [ ] **Workflows screen (GET /workflows — provisioning machine view)** — `partial`
   - Inject PROVISIONING_SFN_ARN on the API task and grant states:ListExecutions scoped to the machine ARN (REQ-009) to light up the live run feed.
   - If a real per-tenant workflow/automation builder is intended, it does not exist — only the provisioning-machine viewer does; that is a separate feature to build.
-- [ ] **Agent marketplace (agent-market) in real mode** — `stub`
+- [x] **Agent marketplace (agent-market) in real mode** — `stub` **STALE→DONE 2026-06-11 (Matt audit): built by #233 — `MarketplaceView` real-mode browse+hire over `/studio/templates` with honest 503 degrade. (404 parity nit tracked in the audit section below.)**
   - Either remove the Marketplace nav entry in real mode or build a real backend (a curated/template-backed agent catalog over the owned roster + a real create path) and a real-mode render branch.
   - If kept, at minimum render an honest 'rolling out' card in real mode rather than the generic ComingSoon, matching the Studio/Workflows rollout pattern.
 - [ ] **Mock-mode studio/workflow screens (screens/studio.tsx, screens/workflow.tsx)** — `not-wired`
@@ -187,6 +187,183 @@ What remains is **owner-gated** (infra flips/seeding — see P0/P1 below), **web
   - Verify Book/Email modal confirm()/send() actually await the POST /public/leads (or mailto fallback) and only show success on a real response, not optimistically.
 
 
+
+## Agents & Studio customer-readiness audit — TODOs (2026-06-11, Lane Matt)
+
+From a 4-pass audit (backend agent plane · web UI · tests/CI · data-layer+infra wiring), claims
+spot-checked against source; 252 tests green locally (202 unit + 50 integration; the 2 skips are
+the real-Postgres RLS proof, which runs in CI). Full report:
+`docs/audits/agents-studio-audit-2026-06-11.md`.
+**Verdict: safety is sound, automation is not yet honest** — draft-only is structural
+(`Tool.invoke`), trust rule + FORCE'd RLS + fresh-load grants all correct on `playbooks`, the
+real-mode web views (AgentsRoster/StudioView/MarketplaceView) are genuinely API-wired with no
+mock leakage, and as of #236 activate/run drive a real MA crew. But every email draft a customer
+sees is a placeholder string, no playbook ever fires without a human, the UI has no Run button or
+run history, and each run leaks MA resources. Already tracked elsewhere (not repeated): the
+owner-gated `playbook_dispatch_enabled` flip + FailedInvocations alarm (GO_LIVE_CHECKLIST.md);
+workspace-key-pool seeding.
+
+### P0 — before paying customers _(all four DONE 2026-06-11, `feat/matt-agents-studio-p0s` — live DB migrate for `playbook_runs` + the `ma_*` columns is `BLOCKED: Lane Nick`)_
+- [x] **Real email drafts** **DONE: `draft_email` now REQUIRES a model-authored `body` (the
+  calling agent writes it; stored verbatim, placeholder dead; no nested model call — the worker
+  carries no Anthropic key by design). Regression tests in `tests/unit/test_draft_email.py`.**
+  — `DraftEmail._execute` returns the literal placeholder
+  `(draft) Re: <goal>` (`agents/tools/sideeffecting.py:24`); it's `Policy.AUTO`, so nadia/echo
+  and the `lead_followup_drafter` template surface that canned string as the customer's actual
+  draft. Generate the body with a real model call (or route through the synthesizer); add a
+  regression test asserting the body isn't the placeholder.
+- [x] **"Run now" + run history in Studio** **DONE: `playbook_runs` table (append-only,
+  RLS-FORCEd) + `PgPlaybookRunStore`; the runner persists every terminal `RunRecord`
+  (contained); `GET /studio/playbooks/{id}/runs` + a Run-now button + runs panel in
+  `StudioView` with honest draft-only copy. Live migrate `BLOCKED: Lane Nick`.** — the backend
+  route exists
+  (`POST /studio/playbooks/{id}/run`, #226) but `StudioView.tsx` has no Run button and no runs
+  surface, so Activate is a dead end. Wire the button; persist `RunRecord` (today
+  `dispatch.main()` only logs it — no `playbook_runs` table exists) + a `GET .../runs` route +
+  a runs list in the UI. Migration authored Lane Matt; live apply `BLOCKED: Lane Nick`.
+- [x] **Stop re-creating the MA crew on every run** **DONE: `ma_coordinator_id`/`ma_agent_ids`/
+  `ma_registered_version` on `playbooks`; activate + first run persist the minted ids (full ids
+  never on the wire — tails only); runner + re-activate REUSE the crew while the definition
+  version matches (an edit invalidates by construction).** — `PlaybookRunner.run()` calls
+  `activate_playbook` unconditionally (`agents/playbooks/runner.py:221`), creating fresh MA
+  agents + a coordinator per invocation (manual click AND each future scheduler tick —
+  O(runs × roster) orphaned MA resources); the ids returned at activation are never persisted.
+  Add `ma_coordinator_id`/`ma_agent_ids` to `playbooks`, persist at activation, reuse in the
+  runner, clean up on deactivate.
+- [x] **Make the starter playbooks fireable** **DONE (code): `POST /contacts` emits
+  `lead.created` through the #248 producer seam; `api/asgi.py` now actually wires the
+  dispatcher to BOTH deals + contacts (deal.created was wired-but-inert) behind a
+  fire-and-forget `BackgroundDispatcher` (creates never block on an agent run); the Studio
+  banners inert schedule/event playbooks from the new `dispatch` state in
+  `GET /studio/playbooks`. The schedule leg stays owner-gated: flip `playbook_dispatch_enabled`
+  AND stamp `PLAYBOOK_DISPATCH_ENABLED=1` on the api task (GO_LIVE_CHECKLIST §7).** — none of
+  the 5 shipped templates ever runs
+  automatically: 4 are schedule-triggered (EventBridge leg applied-DISABLED + empty static
+  tenant list — the flip itself is owner-gated, tracked), 1 is event-triggered and the event
+  leg is UNBUILT, not gated — `dispatch_event` has zero production callers
+  (`agents/playbooks/dispatch.py:14`); `POST /public/leads` never emits `lead.created`. Wire
+  the producer; until the legs are live, show a "scheduling not yet enabled" banner in Studio
+  instead of presenting inert playbooks as Active.
+
+### P1 — soon after
+- [ ] **Tenant discovery for scheduled dispatch** — `PLAYBOOK_DISPATCH_TENANTS` is a
+  hand-maintained static tfvar (`infra/variables.tf:370-374`); every new signup needs a
+  terraform edit or their schedules silently never fire (exit 0). Discover tenants with
+  active schedule-playbooks from the DB instead.
+- [ ] **Server-side module gating for /studio + /agents** — gated by the $39/mo agents module
+  in the UI only (`shared/modules.py:40`); `api/routes_studio.py` never checks entitlements,
+  so a tenant with the module off can drive the API directly — billing leakage once Phase-2
+  module billing activates.
+- [ ] **vault_id is plumbed nowhere** — `PgWorkspaceStore.upsert` accepts it but
+  `tenant_workspaces` has no column and `AgentPlaneEnsure.ensure()` never returns one; every
+  session runs `vault_id=None`, so the workspace-vault isolation boundary from the tenancy
+  model is inactive. Wire it or document the deferral.
+- [ ] **Worker TOOLS / registry drift** — `UpdateContact`/`CreateActivity`/`CreateDeal` are
+  registered with live appliers but granted nowhere and unserved by `worker.TOOLS`
+  (`worker/worker.py:56-60`); a Studio-granted call would wedge the session. Grant+serve or
+  remove; consider deriving TOOLS from the registry. _(Also flagged by the Greenlight audit,
+  whose TODO backlog hasn't landed on main — filed here so it can't fall through.)_
+- [ ] **Approved sends read as real sends** — `send_email`/`issue_quote` appliers permanently
+  return `performed:false` "draft-only until provider go-live"
+  (`api/control/appliers.py:82-92`) while the UI toast implies delivery. Surface the
+  `performed` flag; don't offer Approve as if it delivers. _(Greenlight-audit provenance,
+  same as above.)_
+- [x] **StudioView Playwright spec** **MOSTLY DONE: `web/e2e/studio.spec.ts` (6 tests,
+  chromium-real) covers the library, Run-now result honesty, the runs panel + 503 degrade,
+  and the dispatch banner. The composer create→422→save flow is still uncovered — fold into
+  a follow-up.** — zero browser coverage for the flagship builder screen
+  (Marketplace + Agents both have specs); cover create→422→save→activate→deactivate.
+- [ ] **Schedule-dispatch integration test** — `python -m agents.playbooks.dispatch --schedule`
+  has never executed against a real `PgPlaybookStore` + runtime anywhere (unit fakes only;
+  the prod rule is DISABLED). Add a real-PG integration test of the schedule leg.
+- [x] **MarketplaceView 404 parity** **DONE by #248 (fleet wave): 404 now renders the
+  "rolling out" card with a refresh affordance.** — only 503 is special-cased
+  (`web/src/api/MarketplaceView.tsx:74`); a 404 shows a generic error instead of StudioView's
+  "rolling out" copy.
+
+### P2 — hygiene
+- [ ] Probe `playbooks` in the live isolation gate (`scripts/isolation_test.py` covers
+  documents+FK only; playbooks RLS is proven statically and in CI Postgres, never live).
+- [ ] A studio/agents smoke script under `scripts/smoke/`.
+- [ ] Mock-mode demo honesty (demo-only, fold into the deferred demo-honesty work):
+  `screens/agents.tsx` "Add tool"/"Get more skills…" are toast-only dead ends; paid skills'
+  "Get · $X" installs free with no payment path (`screens/studio.tsx:88`); unguarded
+  `await askClaude` (`screens/studio.tsx:218`); autonomy/status toggles are local-state-only.
+## Switchboard customer-readiness audit — TODOs (2026-06-11, Lane Matt)
+
+From a release-readiness audit of the `integration` module ($29/mo, gates `integrations`;
+`api/integrations_routes.py` + `ingest/connectors/*` + `IntegrationsPanel.tsx`). All claims
+spot-checked against source; 135 Switchboard tests green locally (3 RLS-proof skips need
+`UPLIFT_TEST_DB_URL`). Full report: `docs/audits/switchboard-audit-2026-06-11.md`.
+**Verdict: real, well-built code (NOT a Sidecar-style empty SKU) — but not customer-ready.**
+The trust rule, secrets hygiene, honest-503 posture, registry parity, and the real-mode panel
+are all verified correct. The blockers are go-live wiring, marketing honesty, and the
+connect→sync product loop. Items already tracked under "Connectors & ingest" (live VERIFY
+pass, scheduler enablement) are cross-referenced, not duplicated.
+
+**Release build SHIPPED (2026-06-11, this branch):** every code-side item below is done —
+disconnect (DELETE + panel confirm), async 202 syncs over a new RLS-FORCEd
+`integration_sync_runs` table (partial-unique single-runner guard, 30-min stale-reap, history
+endpoint, last-synced line), `INGEST_TENANTS=auto` vault-slot discovery (connect→sync loop),
+verify-on-connect probes, account-delete connector-vault purge, honest landing copy. Backend
+1994 pass / web typecheck+build green / 16 integrations e2e pass (3 new). **What remains is
+exactly REQ-012** (`infra/REQUESTS.md`): migrate + two IAM deltas + the flips + the module
+Price — Lane Nick / owner.
+
+### P0 — before paying customers
+- [ ] **Prod is 100% dark while the SKU is sellable** — `infra/prod.auto.tfvars` carries none
+  of: `api_integrations_real` (credentials POST → 503, all statuses "unknown"), `INGEST_*` on
+  the API task (sync + CSV import → 503), `ingest_schedule_enabled`/`ingest_tenants` (nightly
+  rule DISABLED), `module_prices` → `STRIPE_PRICE_ID_MODULE_INTEGRATION` (the $29 is never
+  billed). A tenant can enable Switchboard in Settings today and every button 503s.
+  _(BLOCKED: Lane Nick — the full ordered go-live is REQ-012 incl. the live
+  put/create/describe/delete_secret + probe-endpoint # VERIFYs on first connect.)_
+- [x] **Fix the Switchboard marketing overclaims** — DONE @this branch: "18+ tools" → the real
+  four named outright; carousel = the real four + two explicitly "Planned" pills; "Keep
+  HubSpot, Salesforce, or Pipedrive" → "Keep HubSpot, or bring your data in by CSV"; "Two-way
+  sync & write-back" reframed as the read-only trust feature across landing/landing-demos/
+  landing-constellation/tour/onboarding (+ the mock screen's same overclaim). _(The
+  demo-prototype `data.tsx` catalog still lists Salesforce/Slack/QuickBooks — mock-mode-only,
+  part of the deferred demo-honesty work.)_
+- [x] **Close the connect→sync loop** — DONE @this branch: `INGEST_TENANTS=auto` makes
+  `run_sync --all` DISCOVER the tenant set from the vaulted `uplift/{tenant}/{source}` slots
+  (ListSecrets names-only, paginated, deletion-scheduled skipped; `ingest/run_sync.py
+  discover_tenants`). Connecting via the API now auto-enrolls the tenant in the nightly sync.
+  _(Needs REQ-012 step 3 IAM + step 7 flips to act live.)_
+- [x] **Make API-kicked sync asynchronous + race-safe** — DONE @this branch: with the new
+  `integration_sync_runs` store wired, `POST .../sync` opens a `running` row and answers 202;
+  a FastAPI background task finishes it (metrics on success, exception CLASS name on failure);
+  the partial-unique index is the single-runner guard (concurrent kick → 409) with a 30-min
+  stale-runner reap; the panel polls `GET /integrations/{name}/syncs` to settle. Storeless
+  deployments keep the legacy inline 200 (tests unchanged).
+
+### P1 — product completeness
+- [x] **Disconnect/revoke** — DONE @this branch: `DELETE /integrations/{name}/credentials`
+  (idempotent; ForceDeleteWithoutRecovery so a reconnect is never blocked by a deletion
+  window; `secret_exists` now treats DeletedDate as not-connected) + panel inline-confirm
+  Disconnect. _(IAM: REQ-012 step 2.)_
+- [x] **Account-delete must purge connector secrets** — DONE @this branch: the route purges
+  every `uplift/{tenant}/{source}` slot after the PG teardown and reports
+  `connector_secrets: {purged, failed, status}` honestly (`skipped_unconfigured` without the
+  writer). Wired at the same deliberate asgi step as the deleter (see the asgi comment).
+- [x] **Sync history / "last synced"** — DONE @this branch: `integration_sync_runs` +
+  `PgSyncRunStore` (latest per source in GET /integrations → the panel's last-synced line;
+  `GET /integrations/{name}/syncs` history). Scheduled runs don't write history yet — the
+  table carries `triggered_by='schedule'` for that follow-up.
+- [x] **Verify-on-connect** — DONE @this branch: best-effort probe before vaulting (HubSpot/
+  GHL/Stripe one-item list calls; definitive 401/403 → 422 + nothing stored; inconclusive →
+  stored with `verified:null`, never a fake true). OAuth stays the longer-term replacement
+  for paste-a-token.
+
+### P2 — hygiene / staleness (small, code-only)
+- [x] Stale HOTFIX comment in `api/integrations_routes.py` — DONE @this branch (reframed as
+  the deliberate BOOT INVARIANT; the image-fileset regression test stays).
+- [x] `shared/modules.py` docstring — DONE @this branch (no `web/src/modules.ts` mirror is
+  promised anymore; the web gate is documented as runtime-driven via GET /account/modules).
+- [x] Sweep the stale "Connectors & ingest" sub-bullets above — annotated in place: IAM
+  broadening shipped (#235), csv-card special-casing + `csvImport` client method + upload UI
+  shipped (#228/#229), PgStructuredSink shipped (#222). _(Lane Nick: REQ-012 step 4 covers
+  refreshing the stale REQ-008 status note + confirming the widened policy is APPLIED live.)_
 
 ## FLEETAGENT session follow-ups (2026-06-11)
 

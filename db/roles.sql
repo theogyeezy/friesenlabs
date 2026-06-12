@@ -89,6 +89,12 @@ REVOKE DELETE ON tenant_workspaces, tenant_settings FROM crm_app;
 -- DELETE is deliberate: playbooks are tenant-authored definitions (not audit trail) and the
 -- Studio exposes delete; RLS's WITH CHECK/USING scopes every row either way.
 GRANT SELECT, INSERT, UPDATE, DELETE ON playbooks TO crm_app;
+-- playbook_runs (Agent Studio run history — RLS-FORCEd tenant table; see schema.sql): strictly
+-- append-only like traces — the runner INSERTs one digest per run, the Studio SELECTs history.
+-- No UPDATE, no DELETE: run history is the tenant's audit evidence of what the automation did.
+-- EXPLICIT grant for the same fresh-load reason as every tenant table above.
+GRANT SELECT, INSERT ON playbook_runs TO crm_app;
+REVOKE UPDATE, DELETE ON playbook_runs FROM crm_app;
 -- ---------------------------------------------------------------------------
 -- Cortex prediction log (predictions — RLS-FORCEd tenant table; see schema.sql): score-time
 -- INSERTs + the outcome-backfill UPDATE (retrain job) + SELECT for live-AUC drift. EXPLICIT
@@ -153,3 +159,18 @@ GRANT SELECT, INSERT ON cost_events TO crm_app;
 -- a grant-history live DB to this design.
 REVOKE DELETE ON usage_counters FROM crm_app;
 REVOKE UPDATE, DELETE ON cost_events FROM crm_app;
+
+-- ---------------------------------------------------------------------------
+-- integration_sync_runs — connector sync-run history + single-runner guard (RLS-FORCEd tenant
+-- table; see schema.sql). EXPLICIT grants for the same fresh-load reason as the blocks above:
+-- schema.sql creates the table BEFORE roles.sql's ALTER DEFAULT PRIVILEGES runs, so crm_app has
+-- ZERO privileges on it until these lines land — without them "Sync now" permission-denies.
+--   The API INSERTs the 'running' row (the partial-unique concurrency guard), the background
+--   task UPDATEs it to its terminal status, and GET /integrations SELECTs the latest row per
+--   source ("last synced"). NO DELETE: run history is the sync audit trail, like traces.
+-- Cross-lane note (REQ-012): per the CONTRIBUTING two-lane contract this GRANT is mirrored here
+-- so the static grant gate + the integration DB harness stay green; Lane Nick reviews it on the
+-- live api.migrate run.
+-- ---------------------------------------------------------------------------
+GRANT SELECT, INSERT, UPDATE ON integration_sync_runs TO crm_app;
+REVOKE DELETE ON integration_sync_runs FROM crm_app;

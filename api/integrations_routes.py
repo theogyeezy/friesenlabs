@@ -1,17 +1,24 @@
 """Authed per-tenant integrations endpoints — the api half of TODO INT/P2
 ("Build the real integrations/connect UI + backend"; the web screen rides a later cycle).
 
-Four endpoints, all bound to the VERIFIED JWT claims (THE TRUST RULE — tenant never from a
+Six endpoints, all bound to the VERIFIED JWT claims (THE TRUST RULE — tenant never from a
 header or the request body):
 
-  GET  /integrations                       known connectors (hubspot|csv|gohighlevel|stripe)
-                                           + this tenant's per-connector status
-  POST /integrations/{name}/credentials    store the tenant's token in the per-tenant vault slot
+  GET    /integrations                     known connectors (hubspot|csv|gohighlevel|stripe)
+                                           + this tenant's per-connector status + last_sync
+  POST   /integrations/{name}/credentials  probe (verify-on-connect, best-effort) then store
+                                           the tenant's token in the per-tenant vault slot
                                            (uplift/{tenant_id}/{source}) via the injected
                                            SecretWriter — the token is never logged or echoed
-  POST /integrations/{name}/sync           kick one incremental `sync_tenant` run for THAT
-                                           tenant via the injected runner (sync connectors only)
-  POST /integrations/csv/import            multipart CSV import (contacts|companies|deals, 5MB
+  DELETE /integrations/{name}/credentials  disconnect: remove the vault slot (idempotent)
+  POST   /integrations/{name}/sync         kick one incremental `sync_tenant` run for THAT
+                                           tenant via the injected runner (sync connectors
+                                           only). With a SyncRunStore wired this is ASYNC:
+                                           202 + a `running` run row a background task
+                                           finishes; a concurrent kick answers 409 (the
+                                           partial-unique single-runner guard).
+  GET    /integrations/{name}/syncs        recent sync-run history (newest first)
+  POST   /integrations/csv/import          multipart CSV import (contacts|companies|deals, 5MB
                                            cap, mapping auto-detect + override) through the
                                            tenant-scoped ingest path via the injected importer
 
@@ -34,7 +41,9 @@ import os
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol, runtime_checkable
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import (BackgroundTasks, Depends, FastAPI, File, Form, HTTPException,
+                     UploadFile)
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from api.auth import TenantClaims
@@ -43,13 +52,15 @@ from shared.config import ENV_INTEGRATIONS_REAL_SECRETS
 log = logging.getLogger("api.integrations")
 
 # --------------------------------------------------------------------------- #
-# HOTFIX (post-#67 adversarial review): the production API image (api/Dockerfile)
-# does NOT bundle ingest/, so a top-level `from ingest...` import here crash-looped
-# the deployed container at boot (ModuleNotFoundError — invisible to pytest, which
-# runs from the repo root where ingest/ exists). The two tiny helpers this module
-# needs are inlined below as exact mirrors of ingest.connectors.base; every other
-# ingest dependency is imported lazily behind try/except ImportError so the API
-# stays honest-unconfigured when the package is absent from the image fileset.
+# BOOT INVARIANT (born as the post-#67 HOTFIX): this module must import — and the
+# API must boot — WITHOUT the ingest/ package present. api/Dockerfile DOES bundle
+# ingest/ today (it is lazy-imported for syncs + RAG embed), but the invariant is
+# kept deliberate and regression-pinned (tests/unit/test_integrations_image_fileset.py)
+# so a future image-slimming pass can never crash-loop the container at boot the
+# way #67's top-level `from ingest...` import did. Hence: the two tiny helpers
+# below are inlined mirrors of ingest.connectors.base, and every other ingest
+# dependency is imported lazily behind try/except ImportError so the API stays
+# honest-unconfigured when the package is absent from the image fileset.
 # Keep these in sync with ingest/connectors/base.py (single-screen helpers).
 # --------------------------------------------------------------------------- #
 _PER_TENANT_SECRET_TEMPLATE = "uplift/{tenant_id}/{source}"
@@ -137,17 +148,20 @@ MAX_CSV_IMPORT_BYTES = 5 * 1024 * 1024
 # --------------------------------------------------------------------------- #
 @runtime_checkable
 class SecretWriter(Protocol):
-    """Writes/inspects a tenant's vaulted credential by reference name.
+    """Writes/inspects/removes a tenant's vaulted credential by reference name.
 
     The WRITE counterpart of ingest.connectors.base.SecretProvider (read-only).
     `put_secret` stores the raw value untouched (a vault must not mutate the
     secret); `secret_exists` answers connection status without ever reading the
-    value back.
+    value back; `delete_secret` removes the slot (disconnect / account teardown)
+    and reports whether anything existed to remove.
     """
 
     def put_secret(self, ref: str, value: str) -> None: ...
 
     def secret_exists(self, ref: str) -> bool: ...
+
+    def delete_secret(self, ref: str) -> bool: ...
 
 
 class Boto3SecretWriter:
@@ -194,7 +208,26 @@ class Boto3SecretWriter:
     def secret_exists(self, ref: str) -> bool:
         client = self._sm()
         try:
-            client.describe_secret(SecretId=ref)
+            desc = client.describe_secret(SecretId=ref)
+        except Exception as exc:  # noqa: BLE001 — narrowed immediately below
+            if self._is_not_found(exc):
+                return False
+            raise
+        # A secret scheduled for deletion still answers DescribeSecret (with a
+        # DeletedDate) until the deletion completes — that slot is NOT connected.
+        if isinstance(desc, dict) and desc.get("DeletedDate") is not None:
+            return False
+        return True
+
+    def delete_secret(self, ref: str) -> bool:
+        """Remove the slot immediately (ForceDeleteWithoutRecovery): the value is the
+        TENANT'S OWN token which they can re-paste, so a recovery window buys nothing —
+        while a window-scheduled deletion would block a reconnect (put_secret_value on a
+        deletion-scheduled secret fails) for up to 30 days. Returns False when nothing
+        existed (idempotent disconnect)."""
+        client = self._sm()
+        try:
+            client.delete_secret(SecretId=ref, ForceDeleteWithoutRecovery=True)
         except Exception as exc:  # noqa: BLE001 — narrowed immediately below
             if self._is_not_found(exc):
                 return False
@@ -220,6 +253,15 @@ class IntegrationsDeps:
     # unconfigured -> POST /integrations/csv/import answers 503 (a CSV "import"
     # into throwaway in-memory stores would be a fake success).
     csv_importer: Callable[[str, str, bytes, dict | None], Any] | None = None
+    # api.pg_sync_runs.SyncRunStore — sync-run history + the single-runner guard.
+    # Present -> POST .../sync is ASYNC (202 + a run row a background task
+    # finishes; concurrent kicks 409) and GET /integrations carries last_sync.
+    # None -> the legacy inline-sync path (tests / no DB configured).
+    sync_runs: Any | None = None
+    # (source, token) -> True (provider accepted) | False (provider REJECTED:
+    # a definitive 401/403) | None (could not verify: network/unknown shape).
+    # None dep = no probing — credentials are stored unverified, like before.
+    token_prober: Callable[[str, str], bool | None] | None = None
 
 
 def _real_secrets_mode() -> bool:
@@ -312,13 +354,87 @@ def _build_csv_importer() -> Callable[[str, str, bytes, dict | None], Any] | Non
     return run
 
 
+def _build_sync_run_store() -> Any | None:
+    """PgSyncRunStore when the API task has a DB DSN (the same dsn_from_env the other
+    Pg stores ride) — sync history is plain tenant-table persistence, no extra switch.
+    No DSN (tests / local) = None = the legacy inline-sync path."""
+    try:
+        from api.pg_clients import dsn_from_env  # noqa: PLC0415 — lazy: no psycopg2 at import
+    except ImportError:
+        return None
+    dsn = dsn_from_env()
+    if not dsn:
+        return None
+    from api.pg_sync_runs import PgSyncRunStore  # noqa: PLC0415
+
+    return PgSyncRunStore(dsn)
+
+
+# --------------------------------------------------------------------------- #
+# Verify-on-connect probes — ONE cheap authenticated read per provider, so a
+# typo'd/revoked token is caught at connect time instead of at the first sync.
+# Endpoint + auth shapes mirror the ingest REST clients (hubspot.py /
+# gohighlevel.py / stripe_data.py).
+# Fail-posture: ONLY a definitive 401/403 from the provider rejects the token
+# (False -> 422, nothing stored). Any other outcome — network error, 5xx, an
+# unexpected 404 — is "could not verify" (None): the token is STORED and the
+# response says verified=null, because refusing to connect during a provider
+# outage would be a worse lie than admitting we couldn't check.
+# --------------------------------------------------------------------------- #
+_PROBES: dict[str, dict[str, Any]] = {
+    # GET one contact — the cheapest scoped read a private-app token must hold.
+    "hubspot": {"url": "https://api.hubapi.com/crm/v3/objects/contacts?limit=1",
+                "headers": {}},
+    # GHL v2 requires the API Version header on every call (gohighlevel.py).
+    # # VERIFY on first live connect: that this endpoint 200s for a plain
+    # location ("sub-account") token with contacts.readonly scope.
+    "gohighlevel": {"url": "https://services.leadconnectorhq.com/contacts/?limit=1",
+                    "headers": {"Version": "2021-07-28"}},
+    # One customer — works for restricted keys with the read scopes we need.
+    "stripe": {"url": "https://api.stripe.com/v1/customers?limit=1",
+               "headers": {}},
+}
+
+_PROBE_TIMEOUT_SECONDS = 8
+
+
+def probe_token(source: str, token: str) -> bool | None:
+    """The default token_prober (stdlib urllib, lazy — same zero-dependency stance
+    as HubSpotRestClient). NEVER logs or re-raises with the token in scope."""
+    spec = _PROBES.get(source)
+    if spec is None:
+        return None
+    import urllib.error  # noqa: PLC0415 — lazy: no network machinery at import
+    import urllib.request  # noqa: PLC0415
+
+    req = urllib.request.Request(spec["url"], method="GET")
+    req.add_header("Authorization", f"Bearer {token}")
+    for k, v in spec["headers"].items():
+        req.add_header(k, v)
+    try:
+        with urllib.request.urlopen(req, timeout=_PROBE_TIMEOUT_SECONDS):
+            return True
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            return False  # the provider DEFINITIVELY rejected this token
+        log.warning("integrations: %s probe inconclusive (HTTP %s)", source, exc.code)
+        return None
+    except Exception as exc:  # noqa: BLE001 — network/DNS/timeout: inconclusive, never fatal
+        log.warning("integrations: %s probe inconclusive (%s)", source, type(exc).__name__)
+        return None
+
+
 def build_integrations_deps() -> IntegrationsDeps:
-    """Env-built deps: real writer only under INTEGRATIONS_REAL_SECRETS; real
-    runner/importer only under the ingest plane's own INGEST_REAL_STORES.
-    All-unset = all-None = every endpoint honest about being unconfigured."""
-    writer = Boto3SecretWriter() if _real_secrets_mode() else None
+    """Env-built deps: real writer + token probe only under INTEGRATIONS_REAL_SECRETS;
+    real runner/importer only under the ingest plane's own INGEST_REAL_STORES; the
+    sync-run store whenever the task has a DB DSN. All-unset = all-None = every
+    endpoint honest about being unconfigured."""
+    real_secrets = _real_secrets_mode()
+    writer = Boto3SecretWriter() if real_secrets else None
     return IntegrationsDeps(secret_writer=writer, sync_runner=_build_sync_runner(),
-                            csv_importer=_build_csv_importer())
+                            csv_importer=_build_csv_importer(),
+                            sync_runs=_build_sync_run_store(),
+                            token_prober=probe_token if real_secrets else None)
 
 
 # --------------------------------------------------------------------------- #
@@ -356,6 +472,13 @@ def mount_integrations(app: FastAPI, deps: IntegrationsDeps, current_tenant) -> 
     @app.get("/integrations")
     def list_integrations(claims: TenantClaims = Depends(current_tenant)):
         secrets_configured = deps.secret_writer is not None
+        # Per-source latest run ("last synced") — one query, never 500s the listing.
+        last_runs: dict[str, dict] = {}
+        if deps.sync_runs is not None:
+            try:
+                last_runs = deps.sync_runs.latest(claims.tenant_id)  # claims ONLY
+            except Exception as exc:  # noqa: BLE001 — history is auxiliary to the listing
+                log.warning("integrations: last-sync lookup failed (%s)", type(exc).__name__)
         items = []
         for name, meta in KNOWN_INTEGRATIONS.items():
             connected: bool | None = None
@@ -382,12 +505,15 @@ def mount_integrations(app: FastAPI, deps: IntegrationsDeps, current_tenant) -> 
                 "experimental": meta["experimental"],
                 "connected": connected,           # null = honestly unknown / not applicable
                 "status": status,
+                # null = no run recorded (or history not configured) — never invented.
+                "last_sync": last_runs.get(meta["source"]) if meta["kind"] == "sync" else None,
             })
         return {
             "integrations": items,
             "secrets_configured": secrets_configured,
             "sync_configured": deps.sync_runner is not None,
             "csv_import_configured": deps.csv_importer is not None,
+            "sync_history_configured": deps.sync_runs is not None,
         }
 
     @app.post("/integrations/{name}/credentials")
@@ -407,6 +533,18 @@ def mount_integrations(app: FastAPI, deps: IntegrationsDeps, current_tenant) -> 
             ))
         if not body.token or not body.token.strip():
             raise HTTPException(status_code=422, detail="token must be non-empty")
+        # Verify-on-connect (best-effort): a DEFINITIVE provider rejection (401/403)
+        # stops a dead token from being vaulted as "connected" — it would otherwise
+        # fail silently at the first sync. Inconclusive probes (network, 5xx, no
+        # prober wired) store anyway and answer verified=null, never a fake true.
+        verified: bool | None = None
+        if deps.token_prober is not None:
+            verified = deps.token_prober(meta["source"], body.token)
+            if verified is False:
+                raise HTTPException(status_code=422, detail=(
+                    f"{meta['label']} rejected this token (unauthorized) — nothing was "
+                    "stored. Check the token's value and scopes, then connect again."
+                ))
         # THE TRUST RULE: the vault slot is derived from the VERIFIED claim only —
         # a tenant id smuggled in the body is ignored by construction.
         ref = _tenant_secret_ref(claims.tenant_id, meta["source"])
@@ -417,10 +555,36 @@ def mount_integrations(app: FastAPI, deps: IntegrationsDeps, current_tenant) -> 
             log.error("integrations: secret write failed for %s (%s)", ref, type(exc).__name__)
             raise HTTPException(status_code=502, detail="secret store write failed")
         # The token is NEVER echoed back; only the slot name + status.
-        return {"name": name, "secret_ref": ref, "stored": True, "status": "connected"}
+        return {"name": name, "secret_ref": ref, "stored": True, "status": "connected",
+                "verified": verified}
+
+    @app.delete("/integrations/{name}/credentials")
+    def delete_credentials(name: str, claims: TenantClaims = Depends(current_tenant)):
+        """Disconnect: remove the tenant's vault slot. Idempotent — disconnecting an
+        unconnected source answers deleted=false, not an error. Run history is kept
+        (it is the sync audit trail); a reconnect simply starts a new history."""
+        meta = _known_or_404(name)
+        if meta["kind"] == "file":
+            raise HTTPException(status_code=409, detail=(
+                f"{name} takes no credentials — there is nothing to disconnect"
+            ))
+        if deps.secret_writer is None:
+            raise HTTPException(status_code=503, detail=(
+                "secret storage not configured — set "
+                f"{ENV_INTEGRATIONS_REAL_SECRETS} (REQ-006) to enable the vault writer"
+            ))
+        # THE TRUST RULE: the slot comes from the VERIFIED claim only.
+        ref = _tenant_secret_ref(claims.tenant_id, meta["source"])
+        try:
+            deleted = bool(deps.secret_writer.delete_secret(ref))
+        except Exception as exc:  # noqa: BLE001 — surface as 502; NEVER log the message
+            log.error("integrations: secret delete failed for %s (%s)", ref, type(exc).__name__)
+            raise HTTPException(status_code=502, detail="secret store delete failed")
+        return {"name": name, "deleted": deleted, "status": "not_connected"}
 
     @app.post("/integrations/{name}/sync")
-    def kick_sync(name: str, claims: TenantClaims = Depends(current_tenant)):
+    def kick_sync(name: str, background: BackgroundTasks,
+                  claims: TenantClaims = Depends(current_tenant)):
         meta = _known_or_404(name)
         if meta["kind"] == "file":
             # csv is push-style: nothing to pull — point at the import endpoint.
@@ -457,13 +621,67 @@ def mount_integrations(app: FastAPI, deps: IntegrationsDeps, current_tenant) -> 
                 f"connect {name} first — no per-tenant credential is vaulted; "
                 "API-triggered syncs never use the shared fallback token"
             ))
+        if deps.sync_runs is None:
+            # Legacy INLINE path (no run store wired — tests / no DB): run in-request.
+            try:
+                res = deps.sync_runner(claims.tenant_id, name)  # tenant from the VERIFIED claim only
+            except Exception as exc:  # noqa: BLE001 — surface as 502, generic detail
+                log.error("integrations: sync failed for tenant %s/%s (%s)",
+                          claims.tenant_id, name, type(exc).__name__)
+                raise HTTPException(status_code=502, detail="sync failed")
+            return {"name": name, "result": _result_dict(res)}
+
+        # ASYNC path: open a `running` run row (the partial-unique index makes this the
+        # single-runner guard), hand the actual sync to a background task, answer 202
+        # immediately. A first HubSpot pull can take minutes (per-chunk embedding) —
+        # far beyond any sane request budget.
+        run = deps.sync_runs.start(claims.tenant_id, meta["source"], triggered_by="api")
+        if run is None:
+            raise HTTPException(status_code=409, detail=(
+                f"a {name} sync is already running for this workspace — it will appear "
+                "in the sync history when it finishes"
+            ))
+
+        tenant_id = claims.tenant_id  # bind OUTSIDE the task: the claim, never request state
+
+        def _run_in_background() -> None:
+            try:
+                res = deps.sync_runner(tenant_id, name)
+            except Exception as exc:  # noqa: BLE001 — terminal status, class name only
+                log.error("integrations: background sync failed for tenant %s/%s (%s)",
+                          tenant_id, name, type(exc).__name__)
+                deps.sync_runs.finish(tenant_id, run["id"], status="failed",
+                                      error=type(exc).__name__)
+                return
+            metrics = _result_dict(res)
+            deps.sync_runs.finish(tenant_id, run["id"], status="succeeded",
+                                  metrics={k: metrics.get(k) for k in
+                                           ("pulled", "landed_rows", "chunks",
+                                            "embedded", "skipped")})
+
+        background.add_task(_run_in_background)
+        return JSONResponse(status_code=202, content={"name": name, "run": run})
+
+    @app.get("/integrations/{name}/syncs")
+    def list_syncs(name: str, claims: TenantClaims = Depends(current_tenant)):
+        """Recent sync-run history for one connector (newest first). Honest 503 when
+        no run store is wired — history is never invented."""
+        meta = _known_or_404(name)
+        if meta["kind"] == "file":
+            raise HTTPException(status_code=409, detail=(
+                f"{name} is not a pull-sync source — it has no sync history"
+            ))
+        if deps.sync_runs is None:
+            raise HTTPException(status_code=503, detail=(
+                "sync history not configured — the API task has no database wired"
+            ))
         try:
-            res = deps.sync_runner(claims.tenant_id, name)  # tenant from the VERIFIED claim only
+            runs = deps.sync_runs.list_runs(claims.tenant_id, meta["source"])  # claims ONLY
         except Exception as exc:  # noqa: BLE001 — surface as 502, generic detail
-            log.error("integrations: sync failed for tenant %s/%s (%s)",
+            log.error("integrations: sync-history read failed for tenant %s/%s (%s)",
                       claims.tenant_id, name, type(exc).__name__)
-            raise HTTPException(status_code=502, detail="sync failed")
-        return {"name": name, "result": _result_dict(res)}
+            raise HTTPException(status_code=502, detail="sync history read failed")
+        return {"name": name, "runs": runs}
 
     @app.post("/integrations/csv/import")
     async def csv_import(

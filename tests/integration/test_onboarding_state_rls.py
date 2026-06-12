@@ -16,7 +16,6 @@ Proves:
 """
 import json
 import os
-import tempfile
 import urllib.parse as up
 import uuid
 

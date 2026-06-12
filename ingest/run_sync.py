@@ -18,11 +18,20 @@ everywhere is "unset" = offline stubs):
                        deliberately set on the ingest task. Unset = in-memory
                        stores + stub embedder + stub secrets/source client:
                        runnable anywhere, touches nothing.
-  INGEST_TENANTS       comma-separated tenant ids consumed by --all. NOTE: these
-                       are operator-configured schedule INPUTS (which tenants to
+  INGEST_TENANTS       consumed by --all: either a comma-separated tenant-id list,
+                       or the sentinel "auto" — DISCOVER the tenant set from the
+                       per-tenant vault slots (Secrets Manager ListSecrets over the
+                       uplift/{tenant}/{source} namespace; real mode only). "auto"
+                       closes the connect->sync loop: a tenant who vaults a
+                       credential through POST /integrations/{name}/credentials is
+                       enrolled in the nightly sync with NO operator edit. NOTE:
+                       either way these are schedule INPUTS (which tenants to
                        sync), not an identity seam — RLS scoping rides each
                        store's SET LOCAL bind per tenant, exactly as it does for
-                       an id passed via --tenant.
+                       an id passed via --tenant. (IAM: "auto" needs
+                       secretsmanager:ListSecrets on the ingest task role —
+                       REQ-012; list APIs are metadata-only and not
+                       resource-scopable.)
   INGEST_RAW_BUCKET    S3 raw-lake bucket (real mode only; unset = raw landing
                        skipped via the in-memory sink, with a warning).
   UPLIFT_DB_URL / DB_* the crm_app DSN (real mode only; via dsn_from_env()).
@@ -56,7 +65,6 @@ from .pipeline import (
     InMemoryCursorStore,
     InMemoryDocumentStore,
     InMemoryRawSink,
-    InMemoryStructuredSink,
     PgCursorStore,
     PgDocumentStore,
     SyncResult,
@@ -194,11 +202,55 @@ def build_connector(tenant_id: str, *, source: str = "hubspot", raw_sink=None):
     )
 
 
+#: Vault-slot namespace (ingest.connectors.base.tenant_secret_ref): uplift/{tenant}/{source}.
+_VAULT_PREFIX = "uplift/"
+
+
+def discover_tenants(source: str, *, client=None) -> list[str]:
+    """The INGEST_TENANTS="auto" path: tenant ids that have a vaulted credential for
+    `source`, discovered by LISTING the uplift/{tenant}/{source} namespace (names only —
+    no secret value is ever fetched here). The vault is the source of truth for
+    "connected", so connecting via the API auto-enrolls a tenant in the schedule.
+    Slots scheduled for deletion (a disconnect mid-window) are skipped."""
+    if client is None:
+        import boto3  # noqa: PLC0415 — lazy: real mode only
+
+        client = boto3.client("secretsmanager",
+                              region_name=os.environ.get("AWS_REGION", "us-east-1"))
+    tenants: list[str] = []
+    kwargs: dict = {"Filters": [{"Key": "name", "Values": [_VAULT_PREFIX]}],
+                    "MaxResults": 100}
+    while True:
+        page = client.list_secrets(**kwargs)
+        for entry in page.get("SecretList", []):
+            if entry.get("DeletedDate") is not None:
+                continue
+            parts = (entry.get("Name") or "").split("/")
+            # exactly uplift/{tenant}/{source} — anything else in the namespace
+            # (e.g. uplift/env-id, uplift/demo-user) is not a connector slot.
+            if len(parts) == 3 and parts[0] == "uplift" and parts[1] and parts[2] == source:
+                tenants.append(parts[1])
+        token = page.get("NextToken")
+        if not token:
+            break
+        kwargs["NextToken"] = token
+    return sorted(dict.fromkeys(tenants))
+
+
 def resolve_tenants(args: argparse.Namespace) -> list[str]:
-    """Tenant ids to sync: explicit --tenant flags, or INGEST_TENANTS for --all."""
+    """Tenant ids to sync: explicit --tenant flags, or INGEST_TENANTS for --all
+    (a comma list, or "auto" = vault-slot discovery — see discover_tenants)."""
     if args.tenant:
         return list(dict.fromkeys(t.strip() for t in args.tenant if t.strip()))
-    raw = os.environ.get(ENV_INGEST_TENANTS, "")
+    raw = os.environ.get(ENV_INGEST_TENANTS, "").strip()
+    if raw.lower() == "auto":
+        if not real_mode():
+            # Offline stubs have no vault to list — honest empty, same posture as
+            # an unset INGEST_TENANTS (main() logs "nothing to do" and exits 0).
+            log.warning("%s=auto needs %s (no vault to discover from offline)",
+                        ENV_INGEST_TENANTS, ENV_INGEST_REAL_STORES)
+            return []
+        return discover_tenants(args.source)
     return list(dict.fromkeys(t.strip() for t in raw.split(",") if t.strip()))
 
 

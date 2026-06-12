@@ -345,9 +345,9 @@ function CommandDemo() {
 }
 
 /* ---------- Integration Hub demo: connect tools, agents sync ---------- */
-const INTG_DEMO = [["HubSpot", "#ff7a59", "H"], ["Gmail", "#ea4335", "G"], ["Stripe", "#635bff", "S"], ["Slack", "#4a154b", "S"], ["Calendar", "#4285f4", "C"], ["QuickBooks", "#2ca01c", "Q"]];
+const INTG_DEMO = [["HubSpot", "#ff7a59", "H"], ["Stripe", "#635bff", "S"], ["GoHighLevel", "#188bf6", "G"], ["CSV Import", "#5f6b7a", "C"], ["Gmail", "#ea4335", "G", true], ["Slack", "#4a154b", "S", true]];
 function IntegrationDemo() {
-  const [conn, setConn] = useState({ HubSpot: true, Gmail: true });
+  const [conn, setConn] = useState({ HubSpot: true, Stripe: true });
   const [busy, setBusy] = useState(null);
   const connect = (n) => { if (conn[n] || busy) return; setBusy(n); setTimeout(() => { setBusy(null); setConn((c) => ({ ...c, [n]: true })); }, 1100); };
   const count = Object.values(conn).filter(Boolean).length;
@@ -356,17 +356,18 @@ function IntegrationDemo() {
       <div className="fox-head">
         <div style={{ flex: 1 }}>
           <b style={{ fontSize: 15, fontWeight: 720, display: "flex", alignItems: "center", gap: 8 }}>Switchboard <span className="live-dot" style={{ width: 6, height: 6 }} /></b>
-          <p style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 2 }}>{count} connected · your agents read & write to each</p>
+          <p style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 2 }}>{count} connected · read-only, nothing writes back</p>
         </div>
       </div>
       <div style={{ flex: 1, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, alignContent: "start" }}>
-        {INTG_DEMO.map(([n, c, l]) => {
+        {INTG_DEMO.map(([n, c, l, planned]) => {
           const on = conn[n], loading = busy === n;
           return (
-            <div key={n} style={{ background: "var(--surface)", border: "1px solid " + (on ? "var(--green)" : "var(--line)"), borderRadius: "var(--r-md)", padding: 13, display: "flex", alignItems: "center", gap: 10, boxShadow: "var(--shadow-sm)", transition: "border-color .2s" }}>
+            <div key={n} style={{ background: "var(--surface)", border: "1px solid " + (on ? "var(--green)" : "var(--line)"), borderRadius: "var(--r-md)", padding: 13, display: "flex", alignItems: "center", gap: 10, boxShadow: "var(--shadow-sm)", transition: "border-color .2s", opacity: planned ? 0.55 : 1 }}>
               <div style={{ width: 32, height: 32, borderRadius: 9, background: c, color: "#fff", display: "grid", placeItems: "center", fontWeight: 800, fontFamily: "var(--mono)", flexShrink: 0 }}>{l}</div>
               <b style={{ fontSize: 13, flex: 1 }}>{n}</b>
-              {on ? <span className="chip green" style={{ height: 22 }}><Icon name="check" size={11} sw={2.6} />Synced</span>
+              {planned ? <span style={{ fontSize: 10.5, fontWeight: 700, color: "var(--ink-4)", border: "1px solid var(--line)", borderRadius: 99, padding: "2px 8px", flexShrink: 0 }}>Planned</span>
+                : on ? <span className="chip green" style={{ height: 22 }}><Icon name="check" size={11} sw={2.6} />Synced</span>
                 : <button className={"btn btn-sm " + (loading ? "btn-soft" : "btn-primary")} style={{ height: 28 }} onClick={() => connect(n)}>{loading ? <><Icon name="refresh" size={12} className="spin" />…</> : "Connect"}</button>}
             </div>
           );

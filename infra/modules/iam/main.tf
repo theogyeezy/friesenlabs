@@ -248,6 +248,12 @@ resource "aws_iam_role_policy" "api_task_connector_write" {
         "secretsmanager:PutSecretValue",
         "secretsmanager:CreateSecret",
         "secretsmanager:DescribeSecret",
+        # REQ-012: DeleteSecret powers DELETE /integrations/{name}/credentials (disconnect,
+        # ForceDeleteWithoutRecovery) + the account-delete connector-vault purge; GetSecretValue
+        # powers in-process API-kicked syncs (the connector's authenticate() reads the TENANT'S
+        # OWN slot; async 202 runs, single-runner-guarded — api/integrations_routes.py).
+        "secretsmanager:DeleteSecret",
+        "secretsmanager:GetSecretValue",
       ]
       # The connector vault slot is uplift/{tenant_id}/{source}; cover ALL supported sync
       # connectors, not just hubspot (Stripe + GoHighLevel were AccessDenied before this).

@@ -16,8 +16,11 @@ uncited claim is never returned as grounded.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Protocol
+
+log = logging.getLogger("conv.rag")
 
 
 # --------------------------------------------------------------------------- clients (injected)
@@ -67,13 +70,27 @@ class Answer:
     answer: str
     citations: list[Citation] = field(default_factory=list)
     dropped: list[dict] = field(default_factory=list)   # uncited claims that did not make the answer
+    retrieved_count: int = 0   # chunks retrieval returned — the corpus-vs-refusal evidence
 
     def as_dict(self) -> dict:
         return {
             "answer": self.answer,
             "citations": [c.as_dict() for c in self.citations],
             "dropped": list(self.dropped),
+            "grounding_status": self.status,
+            "retrieved_count": self.retrieved_count,
         }
+
+    @property
+    def status(self) -> str:
+        """The observable grounding outcome (knowledge audit P0): a customer must be able to
+        tell "your corpus is empty" from "nothing survived grounding" from "grounded".
+        - no_sources_found: retrieval ran and returned ZERO chunks (empty/unmatched corpus);
+        - grounded: at least one claim is backed by a real retrieved source_ref;
+        - ungrounded: chunks were retrieved but no claim could be grounded (all dropped)."""
+        if self.retrieved_count == 0:
+            return "no_sources_found"
+        return "grounded" if any(c.source_ref for c in self.citations) else "ungrounded"
 
     @property
     def grounded(self) -> bool:
@@ -102,9 +119,13 @@ def _retrieve(ctx: RagContext, question: str) -> list[dict]:
 
 
 def _normalize(hit: dict, *, default_ref: str, source: str) -> dict:
-    ref = str(hit.get("ref") or hit.get("id") or default_ref)
+    # `ref_id` is the LIVE PgRagClient.search key (api/pg_clients.py) — missing it meant every
+    # live citation fell back to the positional placeholder (knowledge audit P0, 2026-06-11).
+    ref = str(hit.get("ref") or hit.get("ref_id") or hit.get("id") or default_ref)
     snippet = str(hit.get("snippet") or hit.get("text") or hit.get("content") or "")
-    return {"ref": ref, "snippet": snippet, "source": source, "raw": hit}
+    # Keep the hit's own source (e.g. 'upload', 'hubspot') when it has one; `source` is only the
+    # retrieval-bucket fallback ('rag' / 'crm').
+    return {"ref": ref, "snippet": snippet, "source": str(hit.get("source") or source), "raw": hit}
 
 
 # --------------------------------------------------------------------------- citation assembly
@@ -181,6 +202,13 @@ def answer(question: str, ctx: RagContext) -> Answer:
 
     claims = result.get("claims", [])
     citations, dropped = assemble_citations(claims, chunks, flag_uncited=ctx.flag_uncited)
+    if dropped:
+        # Observability for the hallucination filter — refs + count ONLY, never the claim text
+        # (it can carry tenant data into logs).
+        log.warning(
+            "rag: dropped %d uncited claim(s) (tenant=%s, proposed_refs=%s, retrieved=%d)",
+            len(dropped), ctx.tenant_id, [d.get("proposed_refs") for d in dropped], len(chunks),
+        )
 
     # The answer text is built from the GROUNDED claims only (those with a valid source_ref), so a
     # dropped/unsupported claim never appears in the prose either.
@@ -192,4 +220,4 @@ def answer(question: str, ctx: RagContext) -> Answer:
     if text is None:
         text = " ".join(ordered) if ordered else "I don't have grounded sources to answer that."
 
-    return Answer(answer=text, citations=citations, dropped=dropped)
+    return Answer(answer=text, citations=citations, dropped=dropped, retrieved_count=len(chunks))

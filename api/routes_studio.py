@@ -36,6 +36,7 @@ roster/registry imports are lazy (the agents_routes pattern).
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any
 
@@ -43,6 +44,8 @@ from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
 
 from api.auth import TenantClaims
+
+log = logging.getLogger("api.routes_studio")
 
 _UNCONFIGURED_DETAIL = (
     "studio not configured — no crm_app DSN on this task (DB_*/UPLIFT_DB_URL unset); "
@@ -55,6 +58,15 @@ _NO_REGISTRAR_REASON = (
 
 # Display tail for registered Managed Agents ids — the api/agents_routes.py contract.
 ID_TAIL_LEN = 6
+
+# The app route-id the Studio surface lives under (shared.modules: the "agents" module gates the
+# "studio" route). A tenant whose enabled-module set doesn't surface this route is not entitled to
+# /studio/* and gets an honest 403 (not a 404 — the surface exists, the tenant just hasn't bought it).
+STUDIO_ROUTE_ID = "studio"
+_NOT_ENTITLED_DETAIL = (
+    "the Agents module is not enabled for this workspace — enable it in Settings → Your suite "
+    "to use Agent Studio"
+)
 
 
 def _id_tail(value: Any) -> str | None:
@@ -81,21 +93,45 @@ class StudioDeps:
     # environment from the workspace store and binds a runtime to it, so activate/run register a
     # real crew instead of being record-only. None (the default) -> falls back to `registrar`.
     registrar_factory: Any | None = None
+    # PlaybookRunStore-shaped (agents/playbooks/store.py). None -> the runs route answers an
+    # honest 503 and run-now history is not persisted (audit P0-2).
+    run_store: Any | None = None
+    # Trigger-dispatch honesty (audit P0-4): what THIS deployment actually fires. The Studio UI
+    # banners schedule/event playbooks as "not yet live" when these are False — activated
+    # playbooks must never read as live automation that silently isn't.
+    #   scheduling_enabled — the EventBridge dispatch leg is on (owner flips
+    #     playbook_dispatch_enabled in infra AND sets PLAYBOOK_DISPATCH_ENABLED=1 on the api task).
+    #   events_enabled — in-process domain-event producers are wired (api/asgi.py sets this
+    #     alongside the dispatcher it hands to deals/contacts routes).
+    scheduling_enabled: bool = False
+    events_enabled: bool = False
+    # Per-tenant module entitlement reader (PgSettingsStore-shaped: get_modules(tenant_id) ->
+    # list[str] | None). The Studio surface belongs to the "agents" module (shared.modules), so a
+    # tenant that has turned that module OFF must not reach /studio/* — the server enforces the
+    # entitlement here, not just the web nav gate. None (the default) -> enforcement is INERT: a
+    # task without the store wired can't know the entitlement, so it degrades OPEN (mirrors the web
+    # gate's degrade-open on a 503/404 and the inert-default contract) — never a false 403. Wiring
+    # the real PgSettingsStore lives in api/asgi.py (noted for the boss; not edited here).
+    modules_store: Any | None = None
 
 
 def build_studio_deps() -> StudioDeps:
-    """Env-built default: the Pg store rides ONLY the crm_app DSN gate every live sibling uses
+    """Env-built default: the Pg stores ride ONLY the crm_app DSN gate every live sibling uses
     (shared.config.dsn_from_env); no DSN -> the honest all-None stub. The registrar is left
     None — live Managed Agents registration is wired deliberately, never as an import side
     effect (CLAUDE.md hard constraint #4: MA is beta, all calls behind runtime.py)."""
+    import os  # noqa: PLC0415
+
     from shared.config import dsn_from_env  # noqa: PLC0415 — lazy, keeps import cheap
 
+    scheduling = os.environ.get("PLAYBOOK_DISPATCH_ENABLED") == "1"
     dsn = dsn_from_env()
     if not dsn:
-        return StudioDeps()
-    from agents.playbooks.store import PgPlaybookStore  # noqa: PLC0415
+        return StudioDeps(scheduling_enabled=scheduling)
+    from agents.playbooks.store import PgPlaybookRunStore, PgPlaybookStore  # noqa: PLC0415
 
-    return StudioDeps(store=PgPlaybookStore(dsn))
+    return StudioDeps(store=PgPlaybookStore(dsn), run_store=PgPlaybookRunStore(dsn),
+                      scheduling_enabled=scheduling)
 
 
 # --- request bodies (NONE carry tenant_id — the trust rule forbids it) ---
@@ -107,6 +143,36 @@ def _require_store(deps: StudioDeps) -> Any:
     if deps.store is None:
         raise HTTPException(status_code=503, detail=_UNCONFIGURED_DETAIL)
     return deps.store
+
+
+def _require_module_entitlement(deps: StudioDeps, tenant_id: str) -> None:
+    """Server-side module-entitlement guard for /studio/* (the audit's honest-403): refuse when the
+    tenant's enabled-module set doesn't surface the Studio route. Mirrors shared.modules.enabled_routes
+    exactly (the same normalization the web gate consumes via GET /account/modules) so the server can
+    never drift open from what the catalog says.
+
+    Degrade-OPEN, never falsely closed:
+      * no modules_store wired on this task -> can't know the entitlement -> allow (the inert-default
+        contract; the web gate likewise degrades open on a 503/404). Real enforcement turns on when
+        api/asgi.py passes the PgSettingsStore (noted in the PR for the boss).
+      * a store read failure (e.g. the enabled_modules column predates the live migrate) -> allow +
+        log, exactly like modules_routes' resilient GET — a transient store error must never lock a
+        paying tenant out of a surface they own.
+    A tenant with a row that genuinely omits the module -> honest 403.
+    """
+    store = getattr(deps, "modules_store", None)
+    if store is None:
+        return
+    from shared.modules import default_enabled, enabled_routes, normalize_enabled  # noqa: PLC0415
+
+    try:
+        stored = store.get_modules(tenant_id)
+    except Exception:  # noqa: BLE001 — resilient like modules_routes' GET: never hard-fail on a read
+        log.warning("studio: module-entitlement read failed; allowing (degrade-open)", exc_info=True)
+        return
+    enabled = default_enabled() if stored is None else normalize_enabled(stored)
+    if STUDIO_ROUTE_ID not in enabled_routes(enabled):
+        raise HTTPException(status_code=403, detail=_NOT_ENTITLED_DETAIL)
 
 
 def _resolve_registrar(deps: StudioDeps, tenant_id: str):
@@ -130,16 +196,44 @@ def _validate_or_422(definition: dict) -> None:
         raise HTTPException(status_code=422, detail=str(e))
 
 
+# Internal/operator columns that never reach the wire: tenant_id (the trust rule) and the
+# FULL Managed Agents ids persisted for registration reuse (the agents_routes truncation
+# contract — only 6-char display tails ever leave the API).
+_WIRE_DROP = ("tenant_id", "ma_coordinator_id", "ma_agent_ids", "ma_registered_version")
+
+
+def _has_fresh_registration(row: dict) -> bool:
+    """A persisted MA registration is usable iff it matches the CURRENT definition version
+    (update_definition bumps version, so an edit invalidates it by construction)."""
+    return bool(row.get("ma_coordinator_id")) and \
+        row.get("ma_registered_version") == row.get("version")
+
+
 def _serialize(row: dict, claims: TenantClaims) -> dict:
     """One playbook row for the wire. Defense in depth: a row whose tenant_id isn't the
     verified request tenant fails loud (a silent leak must never propagate); the internal
-    tenant_id is then dropped from the body."""
+    tenant_id + full MA ids are then dropped from the body."""
     if str(row["tenant_id"]) != str(claims.tenant_id):
         raise HTTPException(status_code=500, detail="tenant isolation violation")
-    out = {k: v for k, v in row.items() if k != "tenant_id"}
+    out = {k: v for k, v in row.items() if k not in _WIRE_DROP}
+    out["ma_registered"] = _has_fresh_registration(row)
     for ts in ("created_at", "updated_at"):
         if out.get(ts) is not None and not isinstance(out[ts], str):
             out[ts] = out[ts].isoformat()
+    return out
+
+
+def _serialize_run(row: dict, claims: TenantClaims) -> dict:
+    """One playbook_runs row for the wire — same loud cross-tenant guard; tenant ids dropped
+    from BOTH the row and the embedded digest (the digest is the runner's as_dict, which
+    carries the tenant for internal correlation)."""
+    if str(row["tenant_id"]) != str(claims.tenant_id):
+        raise HTTPException(status_code=500, detail="tenant isolation violation")
+    out = {k: v for k, v in row.items() if k != "tenant_id"}
+    if isinstance(out.get("record"), dict):
+        out["record"] = {k: v for k, v in out["record"].items() if k != "tenant_id"}
+    if out.get("created_at") is not None and not isinstance(out["created_at"], str):
+        out["created_at"] = out["created_at"].isoformat()
     return out
 
 
@@ -147,8 +241,14 @@ def mount_studio(app: FastAPI, deps: StudioDeps, current_tenant) -> None:
     """Mount the /studio routes on `app`, authed via `current_tenant` (the same verified-claims
     dependency every other authed route uses)."""
 
+    def entitled_tenant(claims: TenantClaims = Depends(current_tenant)) -> TenantClaims:
+        """Auth (verified claims) + the module-entitlement guard in one dependency, so EVERY
+        /studio/* route enforces the "agents" module without each handler repeating the check."""
+        _require_module_entitlement(deps, claims.tenant_id)
+        return claims
+
     @app.get("/studio/templates")
-    def list_studio_templates(claims: TenantClaims = Depends(current_tenant)):
+    def list_studio_templates(claims: TenantClaims = Depends(entitled_tenant)):
         # Committed JSON, identical for every tenant — but still authed (the Studio is an
         # app surface, not a public one). No store required.
         from agents.playbooks.templates import list_templates  # noqa: PLC0415 — lazy
@@ -156,20 +256,28 @@ def mount_studio(app: FastAPI, deps: StudioDeps, current_tenant) -> None:
         return {"templates": list_templates()}
 
     @app.get("/studio/playbooks")
-    def list_playbooks(claims: TenantClaims = Depends(current_tenant)):
+    def list_playbooks(claims: TenantClaims = Depends(entitled_tenant)):
         store = _require_store(deps)
         rows = store.list(claims.tenant_id)
-        return {"playbooks": [_serialize(r, claims) for r in rows]}
+        return {
+            "playbooks": [_serialize(r, claims) for r in rows],
+            # Trigger-dispatch honesty (audit P0-4): the UI banners schedule/event playbooks
+            # when the corresponding leg isn't live on this deployment.
+            "dispatch": {
+                "scheduling_enabled": bool(getattr(deps, "scheduling_enabled", False)),
+                "events_enabled": bool(getattr(deps, "events_enabled", False)),
+            },
+        }
 
     @app.post("/studio/playbooks", status_code=201)
-    def create_playbook(body: PlaybookBody, claims: TenantClaims = Depends(current_tenant)):
+    def create_playbook(body: PlaybookBody, claims: TenantClaims = Depends(entitled_tenant)):
         store = _require_store(deps)
         _validate_or_422(body.definition)
         row = store.create(claims.tenant_id, body.definition, created_by=claims.sub)
         return _serialize(row, claims)
 
     @app.get("/studio/playbooks/{playbook_id}")
-    def get_playbook(playbook_id: str, claims: TenantClaims = Depends(current_tenant)):
+    def get_playbook(playbook_id: str, claims: TenantClaims = Depends(entitled_tenant)):
         store = _require_store(deps)
         row = store.get(claims.tenant_id, playbook_id)
         if row is None:
@@ -179,7 +287,7 @@ def mount_studio(app: FastAPI, deps: StudioDeps, current_tenant) -> None:
 
     @app.put("/studio/playbooks/{playbook_id}")
     def update_playbook(playbook_id: str, body: PlaybookBody,
-                        claims: TenantClaims = Depends(current_tenant)):
+                        claims: TenantClaims = Depends(entitled_tenant)):
         store = _require_store(deps)
         row = store.get(claims.tenant_id, playbook_id)
         if row is None:
@@ -195,7 +303,7 @@ def mount_studio(app: FastAPI, deps: StudioDeps, current_tenant) -> None:
         return _serialize(updated, claims)
 
     @app.delete("/studio/playbooks/{playbook_id}")
-    def delete_playbook(playbook_id: str, claims: TenantClaims = Depends(current_tenant)):
+    def delete_playbook(playbook_id: str, claims: TenantClaims = Depends(entitled_tenant)):
         store = _require_store(deps)
         row = store.get(claims.tenant_id, playbook_id)
         if row is None:
@@ -207,7 +315,7 @@ def mount_studio(app: FastAPI, deps: StudioDeps, current_tenant) -> None:
         return {"deleted": True, "id": str(playbook_id)}
 
     @app.post("/studio/templates/{template_id}/instantiate", status_code=201)
-    def instantiate_template(template_id: str, claims: TenantClaims = Depends(current_tenant)):
+    def instantiate_template(template_id: str, claims: TenantClaims = Depends(entitled_tenant)):
         store = _require_store(deps)
         from agents.playbooks.templates import get_template  # noqa: PLC0415 — lazy
 
@@ -222,7 +330,7 @@ def mount_studio(app: FastAPI, deps: StudioDeps, current_tenant) -> None:
         return _serialize(row, claims)
 
     @app.post("/studio/playbooks/{playbook_id}/activate")
-    def activate_playbook_route(playbook_id: str, claims: TenantClaims = Depends(current_tenant)):
+    def activate_playbook_route(playbook_id: str, claims: TenantClaims = Depends(entitled_tenant)):
         store = _require_store(deps)
         row = store.get(claims.tenant_id, playbook_id)
         if row is None:
@@ -233,7 +341,16 @@ def mount_studio(app: FastAPI, deps: StudioDeps, current_tenant) -> None:
 
         registration: dict | None = None
         resolved = _resolve_registrar(deps, claims.tenant_id)
-        if resolved is not None:
+        if resolved is not None and _has_fresh_registration(row):
+            # The crew for THIS definition version already exists (audit P0-3): reuse it —
+            # re-activating an unchanged playbook must never mint new MA agents.
+            registration = {
+                "agents": [e["agent"] for e in row["definition"].get("roster", [])],
+                "agent_id_tails": [_id_tail(a) for a in (row.get("ma_agent_ids") or [])],
+                "coordinator_id_tail": _id_tail(row.get("ma_coordinator_id")),
+                "reused": True,
+            }
+        elif resolved is not None:
             from agents.playbooks.activation import activate_playbook  # noqa: PLC0415 — lazy
 
             runtime = resolved[0]
@@ -241,6 +358,21 @@ def mount_studio(app: FastAPI, deps: StudioDeps, current_tenant) -> None:
             # persisted Managed Agents environment). Tools come from the trusted registry, so
             # side-effecting members stay ALWAYS_ASK (Greenlight drafts) regardless of the JSON.
             result = activate_playbook(runtime, claims.tenant_id, row["definition"])
+            # Persist the FULL minted ids on the row (audit P0-3) so run/reactivate reuse the
+            # crew instead of leaking a fresh one per invocation. hasattr-guarded for older
+            # store fakes; CONTAINED for schema skew (api deployed before the ma_* migrate):
+            # persistence is an optimization — its failure must never fail a working activate.
+            if hasattr(store, "set_registration"):
+                try:
+                    store.set_registration(
+                        claims.tenant_id, playbook_id,
+                        coordinator_id=result["coordinator_id"],
+                        agent_ids=result["agent_ids"],
+                        version=row.get("version"),
+                    )
+                except Exception:  # noqa: BLE001 — degrade to per-run registration, logged
+                    log.warning("registration persistence failed (pre-migrate schema?); "
+                                "activation proceeds unpersisted", exc_info=True)
             registration = {
                 "agents": result["agents"],
                 # TRUNCATED for display — full Managed Agents ids never leave the API.
@@ -260,7 +392,7 @@ def mount_studio(app: FastAPI, deps: StudioDeps, current_tenant) -> None:
         return out
 
     @app.post("/studio/playbooks/{playbook_id}/deactivate")
-    def deactivate_playbook_route(playbook_id: str, claims: TenantClaims = Depends(current_tenant)):
+    def deactivate_playbook_route(playbook_id: str, claims: TenantClaims = Depends(entitled_tenant)):
         store = _require_store(deps)
         row = store.get(claims.tenant_id, playbook_id)
         if row is None:
@@ -271,7 +403,7 @@ def mount_studio(app: FastAPI, deps: StudioDeps, current_tenant) -> None:
         return _serialize(updated, claims)
 
     @app.post("/studio/playbooks/{playbook_id}/run")
-    def run_playbook_route(playbook_id: str, claims: TenantClaims = Depends(current_tenant)):
+    def run_playbook_route(playbook_id: str, claims: TenantClaims = Depends(entitled_tenant)):
         """Manual 'Run now' trigger for an active playbook.
 
         Tenant comes ONLY from the verified claim (THE TRUST RULE). The runner routes every
@@ -301,6 +433,7 @@ def mount_studio(app: FastAPI, deps: StudioDeps, current_tenant) -> None:
             record = _run_playbook(
                 runtime, store, claims.tenant_id, playbook_id, event,
                 environment_id=environment_id, vault_id=vault_id,
+                run_store=deps.run_store,  # persist the digest as tenant history (audit P0-2)
             )
             # Serialize the RunRecord. Use as_dict() if present (the public API); draft actions
             # surface as status "pending" — correct, NOT "sent". Never fabricate a run result.
@@ -318,3 +451,28 @@ def mount_studio(app: FastAPI, deps: StudioDeps, current_tenant) -> None:
             out["ran"] = False
             out["run_reason"] = _NO_REGISTRAR_REASON
             return out
+
+    @app.get("/studio/playbooks/{playbook_id}/runs")
+    def list_playbook_runs(playbook_id: str, limit: int = 50,
+                           claims: TenantClaims = Depends(entitled_tenant)):
+        """Run history for one playbook (audit P0-2) — newest first, bounded. The rows are the
+        runner-persisted RunRecord digests: status, trigger, surfaced draft proposals. Tenant
+        from the verified claim only; absent and another tenant's playbook are the same 404."""
+        if not 1 <= limit <= 200:
+            raise HTTPException(status_code=422, detail="limit must be between 1 and 200")
+        store = _require_store(deps)
+        row = store.get(claims.tenant_id, playbook_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="no such playbook")
+        if deps.run_store is None:
+            raise HTTPException(status_code=503, detail=(
+                "run history not configured on this task — runs execute but their digests "
+                "are not persisted here"))
+        try:
+            rows = deps.run_store.list(claims.tenant_id, playbook_id, limit=limit)
+        except Exception:  # noqa: BLE001 — pre-migrate schema (no playbook_runs yet) -> honest 503
+            log.warning("run-history read failed (pre-migrate schema?)", exc_info=True)
+            raise HTTPException(status_code=503, detail=(
+                "run history unavailable — the playbook_runs migration hasn't been applied "
+                "on this deployment yet"))
+        return {"runs": [_serialize_run(r, claims) for r in rows]}
