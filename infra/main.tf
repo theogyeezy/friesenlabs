@@ -171,7 +171,7 @@ module "api_service" {
   ingest_real                    = var.api_ingest_real
   # Schedule-leg honesty: same root flag that enables the EventBridge dispatcher below, so the
   # Studio's "scheduling enabled" state can never disagree with the rule it describes.
-  playbook_dispatch_enabled      = var.playbook_dispatch_enabled
+  playbook_dispatch_enabled = var.playbook_dispatch_enabled
   # Signup-plane plain config (shared/config.py names; "" = entry omitted, deploy invariant).
   stripe_price_id_starter        = var.stripe_price_id_starter
   stripe_price_id_team           = var.stripe_price_id_team
