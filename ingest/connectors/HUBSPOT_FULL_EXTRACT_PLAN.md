@@ -104,9 +104,13 @@ fix): `python -m api.migrate` loads `schema.sql` idempotently. Additive only.
   `::jsonb`, per-row SAVEPOINT isolation, crm_app non-owner. Accepts Record dataclass OR dict.
   6 unit tests (SET LOCAL first, upsert shape/jsonb/GUC/on-conflict, both input types, empty,
   missing-keys reported, savepoint rollback); ruff clean. DONE.
-- [ ] 6. **Wire the connector**: `HubSpotConnector` yields full records → `PgCrmRecordsSink`
-  + still derives typed contacts/companies/deals rows for the existing UI. Keep the vector
-  embedding of text (exclude `_media_refs`). Unit/integration test the end-to-end land.
+- [x] 6. **Wire the connector** — `HubSpotFullConnector.sync(tenant_id, since, object_types)`
+  orchestrates discover-objects → per-type discover-properties → paged `list_records` →
+  `PgCrmRecordsSink.upsert_records`, with per-object-type try/except (one bad type logged by
+  TYPE only — no PII — and SKIPPED so "pull everything" never dies on one type). ADDITIVE: the
+  existing typed contacts/companies/deals + vector-embedding path is untouched; this lands
+  full-fidelity `crm_records` alongside it. 4 unit tests (lands per type, skips failing type,
+  honors override, forwards since+associations); full `pytest tests/unit` green; ruff clean. DONE.
 - [ ] 7. **Registry + run_sync**: ensure `ingest/connectors/registry.py` + `run_sync.py`
   drive the new pull. Backwards-compatible (no breaking the other connectors).
 - [ ] 8. **Full test pass**: `pytest tests/unit -q` green; `python -c` imports; no media/Files

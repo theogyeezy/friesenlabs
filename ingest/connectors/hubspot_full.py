@@ -13,10 +13,32 @@ Files API is NEVER called. Built incrementally per HUBSPOT_FULL_EXTRACT_PLAN.md:
 """
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+log = logging.getLogger("ingest.connectors.hubspot_full")
 
 HUBSPOT_API_BASE = "https://api.hubapi.com"
+
+# Which associations to request inline per object type (List API). Conservative core links;
+# unsupported targets would 400 the call, so a type's pull is wrapped to fall back gracefully.
+# VERIFY against live association labels on first run.
+_ASSOCIATIONS: dict[str, tuple[str, ...]] = {
+    "contacts": ("companies", "deals"),
+    "companies": ("contacts", "deals"),
+    "deals": ("contacts", "companies", "line_items"),
+    "tickets": ("contacts", "companies"),
+    "calls": ("contacts", "companies", "deals"),
+    "emails": ("contacts", "companies", "deals"),
+    "meetings": ("contacts", "companies", "deals"),
+    "notes": ("contacts", "companies", "deals"),
+    "tasks": ("contacts", "companies", "deals"),
+}
+
+
+def _assoc_for(object_type: str) -> tuple[str, ...]:
+    return _ASSOCIATIONS.get(object_type, ())
 
 # Property type/fieldType markers meaning "this value points at a binary file" — we keep the
 # reference (URL/id) as text but NEVER download the bytes (the no-media-blobs guardrail).
@@ -233,3 +255,51 @@ class HubSpotFullClient:
             after = (page.get("paging", {}).get("next") or {}).get("after")
             if not after:
                 return
+
+
+@dataclass
+class FullSyncResult:
+    """Outcome of one full extract: total records pulled + landed, the per-object-type landed
+    counts, and how many object types failed (skipped, not fatal)."""
+
+    pulled: int = 0
+    landed: int = 0
+    by_type: dict[str, int] = field(default_factory=dict)
+    failed_types: list[str] = field(default_factory=list)
+
+
+class HubSpotFullConnector:
+    """Drives the full extract: for every object type (discovered or supplied), discover ALL its
+    properties, pull every record (all properties + associations, media as refs only), and UPSERT
+    into ``crm_records`` via :class:`ingest.sinks.PgCrmRecordsSink`. ROBUST: one object type that
+    fails (bad scope, a 400 on an odd custom object) is logged by TYPE only — never the message,
+    so no token/PII leaks — and SKIPPED so the rest of the extract still lands.
+
+    The ``client`` must already carry the tenant's token (``set_token``); the ``sink`` is bound to
+    the same tenant via its own ``SET LOCAL``. Additive: the existing typed contacts/companies/deals
+    + vector-embedding path is untouched — this lands the full-fidelity ``crm_records`` alongside it.
+    """
+
+    def __init__(self, client: HubSpotFullClient, sink) -> None:
+        self._client = client
+        self._sink = sink
+
+    def sync(self, tenant_id: str, *, since: int | str | None = None,
+             object_types: tuple[str, ...] | None = None) -> FullSyncResult:
+        types = object_types if object_types is not None else self._client.discover_object_types()
+        result = FullSyncResult()
+        for object_type in types:
+            try:
+                prop_set = self._client.discover_properties(object_type)
+                records = list(self._client.list_records(
+                    object_type, prop_set, since=since, associated_types=_assoc_for(object_type)))
+            except Exception as exc:  # noqa: BLE001 — one bad object type must not kill the extract; type only (no PII)
+                log.warning("hubspot full: object_type %s pull failed (%s) — skipped",
+                            object_type, type(exc).__name__)
+                result.failed_types.append(object_type)
+                continue
+            result.pulled += len(records)
+            landed = self._sink.upsert_records(tenant_id, records)
+            result.landed += landed
+            result.by_type[object_type] = landed
+        return result

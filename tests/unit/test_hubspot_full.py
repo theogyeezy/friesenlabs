@@ -4,10 +4,16 @@ No network: every test injects a fake ``_get`` so the HTTP layer is never exerci
 assert the discovery/pull LOGIC (all properties listed, media flagged URL-only, etc.).
 """
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
-from ingest.connectors.hubspot_full import HubSpotFullClient, PropertySet
+from ingest.connectors.hubspot_full import (
+    HubSpotFullClient,
+    HubSpotFullConnector,
+    PropertySet,
+    Record,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -162,3 +168,90 @@ def test_list_records_flattens_associations():
     ps = PropertySet(names=(), media=frozenset())
     rec = next(iter(c.list_records("contacts", ps, since=None)))
     assert rec.associations == {"companies": ["100", "200"]}
+
+
+# --- connector orchestration (item 6) ------------------------------------ #
+class _FakeClient:
+    def __init__(self, types, props, records):
+        self._types = types
+        self._props = props        # {object_type: PropertySet}
+        self._records = records     # {object_type: [Record,...] | Exception}
+        self.calls = []             # (object_type, since, associated_types)
+        self.discover_called = False
+
+    def discover_object_types(self):
+        self.discover_called = True
+        return self._types
+
+    def discover_properties(self, object_type):
+        return self._props.get(object_type, PropertySet((), frozenset()))
+
+    def list_records(self, object_type, prop_set, *, since=None, associated_types=()):
+        self.calls.append((object_type, since, associated_types))
+        recs = self._records.get(object_type, [])
+        if isinstance(recs, Exception):
+            raise recs
+        return iter(recs)
+
+
+class _FakeSink:
+    def __init__(self):
+        self.batches = []
+        self.last_report = SimpleNamespace(errors=[])
+
+    def upsert_records(self, tenant_id, records):
+        recs = list(records)
+        self.batches.append((tenant_id, recs))
+        self.last_report = SimpleNamespace(errors=[])
+        return len(recs)
+
+
+def _props(*names):
+    return PropertySet(tuple(names), frozenset())
+
+
+def test_full_connector_lands_each_object_type():
+    client = _FakeClient(
+        ("contacts", "deals"),
+        {"contacts": _props("email"), "deals": _props("dealname")},
+        {"contacts": [Record("contacts", "1", {}, {}, None)],
+         "deals": [Record("deals", "2", {}, {}, None)]},
+    )
+    sink = _FakeSink()
+    res = HubSpotFullConnector(client, sink).sync("tenant-A")
+    assert res.pulled == 2 and res.landed == 2
+    assert res.by_type == {"contacts": 1, "deals": 1}
+    assert res.failed_types == []
+    assert all(t == "tenant-A" for t, _ in sink.batches)  # every batch tenant-scoped
+
+
+def test_full_connector_skips_a_failing_object_type():
+    client = _FakeClient(
+        ("contacts", "weird_custom"),
+        {"contacts": _props("email")},
+        {"contacts": [Record("contacts", "1", {}, {}, None)],
+         "weird_custom": RuntimeError("400 bad association")},
+    )
+    res = HubSpotFullConnector(client, _FakeSink()).sync("t")
+    assert res.by_type == {"contacts": 1}          # good type still lands
+    assert res.failed_types == ["weird_custom"]    # bad type skipped, not fatal
+    assert res.landed == 1
+
+
+def test_full_connector_honors_object_types_override():
+    client = _FakeClient(
+        ("SHOULD_NOT_BE_USED",),
+        {"contacts": _props()},
+        {"contacts": [Record("contacts", "1", {}, {}, None)]},
+    )
+    res = HubSpotFullConnector(client, _FakeSink()).sync("t", object_types=("contacts",))
+    assert res.by_type == {"contacts": 1}
+    assert client.discover_called is False         # discovery skipped when types supplied
+
+
+def test_full_connector_forwards_since_and_associations():
+    client = _FakeClient(("contacts",), {"contacts": _props()}, {"contacts": []})
+    HubSpotFullConnector(client, _FakeSink()).sync("t", since="1700000000000")
+    object_type, since, assoc = client.calls[0]
+    assert since == "1700000000000"                # incremental cursor forwarded
+    assert "companies" in assoc and "deals" in assoc  # core associations requested
