@@ -23,6 +23,7 @@
 import React from "react";
 import {
   ApiClient,
+  ApiError,
   buildViewDataLoader,
   defaultClient,
   friendlyErrorMessage,
@@ -223,12 +224,14 @@ function Composer({
   error,
   onCancel,
   onCreate,
+  onAskAgents,
 }: {
   availableViews: SavedViewRow[];
   saving: boolean;
   error: string | null;
   onCancel: () => void;
   onCreate: (name: string, viewIds: string[]) => void;
+  onAskAgents?: () => void;
 }) {
   const [name, setName] = useState("");
   const [picked, setPicked] = useState<string[]>([]);
@@ -265,10 +268,34 @@ function Composer({
         Views to include ({picked.length} picked)
       </div>
       {availableViews.length === 0 ? (
-        <p data-testid="composer-no-views" style={{ ...muted, fontSize: 13, lineHeight: 1.5 }}>
-          No saved views yet. Ask your agents for a metric or chart first — dashboards are built
-          from saved views.
-        </p>
+        <div data-testid="composer-no-views">
+          <p style={{ ...muted, fontSize: 13, lineHeight: 1.5 }}>
+            No saved views yet. Ask your agents for a metric or chart first — dashboards are built
+            from saved views.
+          </p>
+          {onAskAgents && (
+            <button
+              type="button"
+              data-testid="composer-no-views-cta"
+              onClick={() => { onCancel(); onAskAgents(); }}
+              style={{
+                marginTop: 10,
+                appearance: "none",
+                border: "1px solid var(--line, #e3ddd3)",
+                borderRadius: 10,
+                padding: "9px 16px",
+                fontSize: 13,
+                fontWeight: 700,
+                fontFamily: "inherit",
+                cursor: "pointer",
+                background: "#fff",
+                color: "var(--ink, #2a2622)",
+              }}
+            >
+              Ask your agents
+            </button>
+          )}
+        </div>
       ) : (
         <div style={{ display: "grid", gap: 6 }}>
           {availableViews.map((v) => (
@@ -326,9 +353,14 @@ function Composer({
 
 export interface DashboardsViewProps {
   client?: ApiClient;
+  /** First-run: shell passes a handler that loads the demo fixture into this
+   *  tenant. Without it the empty states stay explanatory-only (no CTA). */
+  onLoadSample?: () => void | Promise<void>;
+  /** Shell callback to open the chat/agent panel ("Ask your agents"). */
+  onAskAgents?: () => void;
 }
 
-export function DashboardsView({ client }: DashboardsViewProps) {
+export function DashboardsView({ client, onLoadSample, onAskAgents }: DashboardsViewProps) {
   const api = client ?? defaultClient();
   // The loader for a referenced view before its data resolves (and for mock
   // builds, the whole time): the offline fixture in mock, empty in real.
@@ -338,6 +370,20 @@ export function DashboardsView({ client }: DashboardsViewProps) {
   const [availableViews, setAvailableViews] = useState<SavedViewRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [listError, setListError] = useState<string | null>(null);
+  // True when GET /dashboards returned 404: the API image predates this route.
+  // Renders a calm rollout note (not a red error wall).
+  const [rollout, setRollout] = useState(false);
+  const [loadingSample, setLoadingSample] = useState(false);
+
+  const runLoadSample = useCallback(async () => {
+    if (loadingSample || !onLoadSample) return;
+    setLoadingSample(true);
+    try {
+      await onLoadSample();
+    } finally {
+      setLoadingSample(false);
+    }
+  }, [loadingSample, onLoadSample]);
 
   const [composing, setComposing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -352,12 +398,19 @@ export function DashboardsView({ client }: DashboardsViewProps) {
   const loadList = useCallback(async () => {
     setLoading(true);
     setListError(null);
+    setRollout(false);
     try {
       const [dashes, views] = await Promise.all([api.listDashboards(), api.listViews()]);
       setDashboards(dashes);
       setAvailableViews(views);
     } catch (e) {
-      setListError(friendlyErrorMessage(e, "Couldn't load your dashboards. Please try again."));
+      // A 404 means the live API image predates the dashboards route (the web
+      // can deploy ahead of the API): show a calm rollout note, not a red wall.
+      if (e instanceof ApiError && e.status === 404) {
+        setRollout(true);
+      } else {
+        setListError(friendlyErrorMessage(e, "Couldn't load your dashboards. Please try again."));
+      }
     } finally {
       setLoading(false);
     }
@@ -477,12 +530,31 @@ export function DashboardsView({ client }: DashboardsViewProps) {
                 error={composeError}
                 onCancel={() => setComposing(false)}
                 onCreate={(name, viewIds) => void createDashboard(name, viewIds)}
+                onAskAgents={onAskAgents}
               />
             </div>
           )}
 
           {loading && <Spinner testid="dashboards-loading" label="Loading dashboards..." />}
           {openLoading && <Spinner testid="dashboard-opening" label="Opening dashboard..." />}
+
+          {/* The live API image may predate /dashboards: a calm rollout note, not an error wall. */}
+          {rollout && (
+            <div data-testid="dashboards-rollout" style={{ ...card, color: "var(--ink, #2a2622)", fontSize: 13.5 }}>
+              <div style={{ fontWeight: 700, marginBottom: 4 }}>Dashboards API is rolling out</div>
+              <p style={{ ...muted, lineHeight: 1.5 }}>
+                Your deployment doesn&rsquo;t serve the dashboards endpoint yet &mdash; refresh after
+                the next API deploy. Nothing is wrong with your data.
+              </p>
+              <button
+                data-testid="dashboards-rollout-refresh"
+                onClick={() => void loadList()}
+                style={{ ...ghostBtn, marginTop: 10 }}
+              >
+                Refresh
+              </button>
+            </div>
+          )}
 
           {!loading && listError && (
             <ErrorCard
@@ -493,17 +565,42 @@ export function DashboardsView({ client }: DashboardsViewProps) {
             />
           )}
 
-          {!loading && !listError && dashboards.length === 0 && !composing && (
+          {!loading && !listError && !rollout && dashboards.length === 0 && !composing && (
             <div data-testid="dashboards-empty" style={{ ...card, textAlign: "center", padding: "26px 24px" }}>
               <div style={{ fontSize: 15, fontWeight: 700 }}>No dashboards yet</div>
               <p style={{ ...muted, fontSize: 13, marginTop: 6, lineHeight: 1.5 }}>
                 A dashboard is a named set of your saved views, arranged on a grid. Create one to
                 pin the numbers your team checks every morning.
               </p>
+              {onLoadSample && (
+                <button
+                  type="button"
+                  data-testid="dashboards-empty-load-sample"
+                  onClick={() => void runLoadSample()}
+                  disabled={loadingSample}
+                  aria-busy={loadingSample}
+                  style={{
+                    marginTop: 16,
+                    appearance: "none",
+                    border: "1px solid transparent",
+                    borderRadius: 10,
+                    padding: "9px 16px",
+                    fontSize: 13,
+                    fontWeight: 700,
+                    fontFamily: "inherit",
+                    cursor: loadingSample ? "default" : "pointer",
+                    background: "var(--accent, #b4593b)",
+                    color: "var(--accent-ink-on, #fff)",
+                    opacity: loadingSample ? 0.7 : 1,
+                  }}
+                >
+                  {loadingSample ? "Loading…" : "Load sample data"}
+                </button>
+              )}
             </div>
           )}
 
-          {!loading && !listError && dashboards.length > 0 && (
+          {!loading && !listError && !rollout && dashboards.length > 0 && (
             <div
               data-testid="dashboards-gallery"
               style={{
