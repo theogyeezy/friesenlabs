@@ -76,8 +76,12 @@ jobs:
             --query 'tasks[0].taskArn' --output text)
           echo "migrate task: $TASK"
           aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$TASK"
+          # Read the APP container's exit code BY NAME — describe-tasks returns containers in
+          # ARBITRARY order, and this task def carries an aws-otel-collector sidecar (exit 0):
+          # containers[0] read the sidecar and false-greened a failed run (proven 2026-06-12 —
+          # a tracebacked seed one-off reported "exit 0" while the api container exited 1).
           CODE=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK" \
-            --query 'tasks[0].containers[0].exitCode' --output text)
+            --query "tasks[0].containers[?name=='$CONTAINER'] | [0].exitCode" --output text)
           GROUP=$(awk '{print $1}' logmeta.txt); PREFIX=$(awk '{print $2}' logmeta.txt)
           ID=${TASK##*/}
           echo "--- migrate log tail ---"
@@ -103,8 +107,9 @@ jobs:
             --query 'tasks[0].taskArn' --output text)
           echo "isolation task: $TASK"
           aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$TASK"
+          # By-name read — same sidecar false-green hazard as the migrate step above.
           CODE=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK" \
-            --query 'tasks[0].containers[0].exitCode' --output text)
+            --query "tasks[0].containers[?name=='$CONTAINER'] | [0].exitCode" --output text)
           GROUP=$(awk '{print $1}' logmeta.txt); PREFIX=$(awk '{print $2}' logmeta.txt)
           ID=${TASK##*/}
           echo "--- isolation log tail ---"

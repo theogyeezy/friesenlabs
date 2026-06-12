@@ -558,11 +558,15 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   TWO bugs found by the run: (1) `scripts/demo/seed_knowledge.py` + `load_demo_tenant.py` had
   no repo-root `sys.path` bootstrap (script execution puts `scripts/demo` on the path →
   `ModuleNotFoundError: ingest` in the image; worked around with `PYTHONPATH=/app`, FIXED this
-  PR + parametrized subprocess regression tests). (2) OBSERVED + UNRESOLVED: the failed first
-  task reported container **exitCode 0 despite the traceback** — if reproducible, the
-  migrate-workflow's `[ "$CODE" = "0" ]` gates could false-green; worth a look before the next
-  schema migrate. Docs de-staled in the same PR (TODO seed items checked with evidence;
-  CLAUDE/README demo-seed notes updated).
+  PR + parametrized subprocess regression tests). (2) ~~OBSERVED + UNRESOLVED~~ **ROOT-CAUSED
+  + FIXED (follow-up PR):** the task def carries an `aws-otel-collector` sidecar and
+  `describe-tasks` returns containers in ARBITRARY order — `containers[0].exitCode` read the
+  sidecar's 0 while the `api` container exited 1 (proven by re-describing the failed task:
+  otel=0 listed first, api=1). `migrate.yml` had the SAME read in both gates → false-green
+  risk on a failed migrate/isolation run; both now query by container name
+  (`containers[?name=='$CONTAINER']`). The seed + retrieval-verify runs were re-checked
+  by-name: api exited 0 for real on both. Docs de-staled in the same PR (TODO seed items
+  checked with evidence; CLAUDE/README demo-seed notes updated).
 - 2026-06-11 — **Security-audit remediation batch (P0/P1/P2 from the release-readiness audit):**
   compliance floor moved INTO `Greenlight.propose` (worker/sidecar/playbook paths covered;
   unknown-action fail-closed; violations stored denied) + post-edit re-validation before the CAS
