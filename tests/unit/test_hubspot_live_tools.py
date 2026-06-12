@@ -115,3 +115,47 @@ def test_tenant_hubspot_client_returns_token_set_client_when_connected():
     client = tenant_hubspot_client("tenant-A", PastedToken())
     assert isinstance(client, HubSpotFullClient)
     assert client._token == "pasted-bearer-xyz"  # token threaded from the vault
+
+
+# --- end-to-end through the executor + roster grant (item 12) ------------- #
+def test_executor_dispatches_live_hubspot_tool_for_the_bound_tenant():
+    from api import asgi
+    from api.control.types import Action
+
+    seen = []
+
+    class FakeHS:
+        def search_live(self, object_type, *, q=None, limit=10):
+            return [Record(object_type, "1", {"email": "a@x.com"}, {}, "t1")]
+
+    def resolver(tenant_id):
+        seen.append(tenant_id)
+        return FakeHS()
+
+    executor = asgi.make_executor(hubspot_resolver=resolver)
+    out = executor(Action(name="hubspot_search", tenant_id="tenant-A",
+                          payload={"object_type": "contacts", "query": "acme"}))
+    assert out["status"] == "ok"
+    assert out["result"]["count"] == 1 and out["result"]["records"][0]["id"] == "1"
+    assert seen == ["tenant-A"]  # resolver invoked with the action's BOUND tenant (trust rule)
+
+
+def test_executor_hubspot_tool_degrades_when_not_connected_or_unwired():
+    from api import asgi
+    from api.control.types import Action
+
+    # resolver returns None (tenant not connected)
+    ex1 = asgi.make_executor(hubspot_resolver=lambda _tid: None)
+    out1 = ex1(Action(name="hubspot_search", tenant_id="t", payload={"object_type": "contacts"}))
+    assert out1["result"]["status"] == "not_connected"
+    # no resolver wired at all (additive default) — still honest, never crashes
+    ex2 = asgi.make_executor()
+    out2 = ex2(Action(name="hubspot_search", tenant_id="t", payload={"object_type": "contacts"}))
+    assert out2["result"]["status"] == "not_connected"
+
+
+def test_scout_roster_grants_the_live_hubspot_tools():
+    from agents.roster import SCOUT
+
+    for name in ("hubspot_search", "hubspot_properties", "hubspot_object_types"):
+        assert name in SCOUT.tools  # exposed to the research specialist

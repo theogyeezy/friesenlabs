@@ -146,8 +146,13 @@ Build after the extract core (items 1–9) is green.
   in real mode. Tools stay `Policy.AUTO` (read-only auto-run); writes remain ALWAYS_ASK/Greenlight.
   4 wiring tests (lazy-resolve-once, registry membership, resolver none/connected); full
   `pytest tests/unit` = **2196 passed**; ruff clean. DONE.
-- [ ] 12. **Expose in chat/Studio**: agents can call "ask HubSpot live"; surface results with
-  citations. Honest empty/error states. Test the end-to-end tool-call path (mocked).
+- [x] 12. **Exposed to the agent roster** — granted `hubspot_search` / `hubspot_properties` /
+  `hubspot_object_types` to the **Scout** research specialist (system prompt updated: "look up LIVE
+  HubSpot records … if not connected, say so honestly"). End-to-end tested through `make_executor`:
+  a `hubspot_search` Action → registry resolve → lazy per-tenant client → tool → records, with the
+  resolver invoked for the action's BOUND tenant (trust rule); honest `not_connected` when the
+  resolver returns None or is unwired. 3 e2e/roster tests; full `pytest tests/unit` = **2199 passed**;
+  ruff clean. DONE. **Both paths complete** — Path A (extract, PR #340) + Path B (live MCP tools).
 
 ## Follow-on (separate, NOT this loop)
 - Phase 4 — agent field-mapping: an agent reads discovered schema + sample `crm_records` →
