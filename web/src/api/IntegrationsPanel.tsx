@@ -11,8 +11,21 @@
 // refresh affordance — NOT a red error wall. Non-404 errors keep the existing
 // red error + retry.
 //
-// Connect flow (sync-kind connectors): a masked token input POSTs to
-// /integrations/{name}/credentials. The token is write-only — held transiently
+// Connect flow (sync-kind connectors) — two honest paths:
+//   1. "Connect with {Provider}" (OAuth): a full-page browser redirect to
+//      GET /integrations/{name}/oauth/start. The provider handles login +
+//      consent and redirects back to /oauth/callback, which lands the credential
+//      in the vault; the existing connection-status display then reflects
+//      "Connected" with no special client handling. This path shows only when the
+//      connector advertises OAuth — feature-detected from the integrations list
+//      (an optional `oauth_available` flag); until the API ships that flag, only
+//      "hubspot" is treated as OAuth-capable (graceful degrade). The pattern is
+//      generic, so stripe/gohighlevel/pipedrive reuse it the moment the flag
+//      turns on for them. A connector without OAuth simply shows path 2 — never a
+//      broken button.
+//   2. "Advanced: paste an API key instead" (fallback): a masked token input
+//      POSTs to /integrations/{name}/credentials. The token is write-only — held
+//      transiently
 // in component state, sent in the request body (token ONLY, never a tenant_id:
 // THE TRUST RULE), never logged, never echoed back into the DOM, and cleared as
 // soon as the request settles successfully. Per-status copy mirrors the API
@@ -185,6 +198,54 @@ function lastSyncLine(run: SyncRun): string {
       return `Last sync${when ? ` (${when})` : ""} was interrupted before finishing.`;
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// OAuth ("Connect with login") path — generic across providers, gated by a
+// per-connector feature flag so a connector without OAuth never shows a broken
+// button.
+// ---------------------------------------------------------------------------
+
+// Nice display names for the "Connect with {Provider}" button; falls back to the
+// connector's own label for any provider not listed here.
+const OAUTH_PROVIDER_LABEL: Record<string, string> = {
+  hubspot: "HubSpot",
+  stripe: "Stripe",
+  gohighlevel: "GoHighLevel",
+  pipedrive: "Pipedrive",
+};
+
+// Feature-detect whether a connector offers the browser-OAuth path. The API may
+// add an `oauth_available` boolean to each integration in the list response;
+// until it does, only "hubspot" is known to support it (graceful degrade). This
+// reads the optional field without widening the shared client type, keeping this
+// file disjoint from client.ts.
+function oauthAvailable(item: Integration): boolean {
+  const flag = (item as { oauth_available?: unknown }).oauth_available;
+  if (typeof flag === "boolean") return flag;
+  return item.name === "hubspot";
+}
+
+function oauthProviderLabel(item: Integration): string {
+  return OAUTH_PROVIDER_LABEL[item.name] ?? item.label;
+}
+
+// Resolve the API base URL the same way the shared client does (build-time env),
+// so a full-page OAuth redirect targets the live API origin. Kept local to this
+// panel to avoid reaching into client.ts.
+function apiBaseURL(): string {
+  const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {};
+  return (env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
+}
+
+// Send the browser to the provider's authorize page (full-page redirect). The
+// provider handles login + consent, then redirects back to the app via
+// /integrations/{name}/oauth/callback — the connection-status display reflects
+// "Connected" on return with no special handling here.
+function startOAuth(item: Integration): void {
+  window.location.assign(
+    `${apiBaseURL()}/integrations/${encodeURIComponent(item.name)}/oauth/start`,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -876,19 +937,51 @@ export function IntegrationsPanel({ client }: IntegrationsPanelProps) {
                   </div>
                 </div>
               ) : (
-                <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
-                  <button
-                    data-testid="int-connect-btn"
-                    disabled={isBusy}
-                    onClick={() => {
-                      setMsg(item.name, null);
-                      setConnectOpen((o) => ({ ...o, [item.name]: true }));
+                <div style={{ marginTop: 14 }}>
+                  {/* Not connected + OAuth-capable: lead with the one-click login
+                      path; the paste-key form becomes a quiet "Advanced" fallback. */}
+                  {item.status !== "connected" && oauthAvailable(item) && (
+                    <button
+                      data-testid="int-oauth-btn"
+                      data-provider={item.name}
+                      disabled={isBusy}
+                      onClick={() => startOAuth(item)}
+                      style={primaryBtn}
+                    >
+                      Connect with {oauthProviderLabel(item)}
+                    </button>
+                  )}
+                  <div
+                    style={{
+                      display: "flex",
+                      gap: 8,
+                      marginTop: item.status !== "connected" && oauthAvailable(item) ? 10 : 0,
+                      flexWrap: "wrap",
+                      alignItems: "center",
                     }}
-                    style={item.status === "connected" ? ghostNeutralBtn : primaryBtn}
                   >
-                    {item.status === "connected" ? "Replace token" : "Connect"}
-                  </button>
-                  {item.status === "connected" && (
+                    <button
+                      data-testid="int-connect-btn"
+                      disabled={isBusy}
+                      onClick={() => {
+                        setMsg(item.name, null);
+                        setConnectOpen((o) => ({ ...o, [item.name]: true }));
+                      }}
+                      style={
+                        item.status === "connected"
+                          ? ghostNeutralBtn
+                          : oauthAvailable(item)
+                            ? linkBtn
+                            : primaryBtn
+                      }
+                    >
+                      {item.status === "connected"
+                        ? "Replace token"
+                        : oauthAvailable(item)
+                          ? "Advanced: paste an API key instead"
+                          : "Connect"}
+                    </button>
+                    {item.status === "connected" && (
                     <button
                       data-testid="int-sync-btn"
                       disabled={isBusy || !!watching[item.name]}
@@ -911,6 +1004,7 @@ export function IntegrationsPanel({ client }: IntegrationsPanelProps) {
                       Disconnect
                     </button>
                   )}
+                  </div>
                 </div>
               )}
             </div>
@@ -945,6 +1039,20 @@ const ghostBtn: React.CSSProperties = {
 const ghostNeutralBtn: React.CSSProperties = {
   ...ghostBtn,
   color: "var(--ink, #2a2622)",
+};
+
+// Quiet, link-style affordance for the "Advanced: paste an API key instead"
+// fallback shown beneath the primary "Connect with {Provider}" OAuth button.
+const linkBtn: React.CSSProperties = {
+  padding: "6px 0",
+  border: "none",
+  background: "transparent",
+  color: "var(--ink-3, #8a8278)",
+  fontSize: 13,
+  fontWeight: 600,
+  cursor: "pointer",
+  textDecoration: "underline",
+  textUnderlineOffset: 3,
 };
 
 export default IntegrationsPanel;
