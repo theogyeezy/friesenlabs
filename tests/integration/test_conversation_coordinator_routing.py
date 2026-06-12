@@ -81,7 +81,10 @@ def test_unserved_side_effecting_tool_surfaces_untouched_never_invoked():
     assert analytics.list("tenant-A", type=EventType.TOOL_CALL) == []
     assert analytics.list("tenant-A", type=EventType.APPROVAL) == []
     assert turn.delegations == ["nadia"]
-    assert turn.answer == "Prepared an action for your approval."
+    # Unserved call = in-flight turn under the async contract (settled=False, the client
+    # continues) — the old "Prepared an action" copy claimed a draft that had not landed.
+    assert turn.settled is False
+    assert turn.answer == ""
 
 
 @pytest.mark.integration

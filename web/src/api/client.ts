@@ -141,6 +141,9 @@ export interface ChatResponse {
    * null/undefined when retrieval was deliberately skipped (action/Balto turns). */
   grounding_status?: "grounded" | "no_sources_found" | "ungrounded" | "unavailable" | null;
   retrieved_count?: number | null;
+  /** Async turn contract: false while delegation/tool round-trips are still in flight —
+   * keep the spinner and call continueChat() until settled. Absent (old API) = settled. */
+  settled?: boolean;
 }
 
 /** Body for POST /views/synthesize — the NL ask Balto builds a view for. No tenant_id. */
@@ -1582,6 +1585,15 @@ export class ApiClient {
       return (await this.mockApi()).chat(message);
     }
     return this.request<ChatResponse>("POST", "/chat", { message });
+  }
+
+  /** POST /chat/continue: re-drain the in-flight turn (async turn contract) — call while a
+   * ChatResponse carries settled === false; no message body, nothing new is sent. */
+  async continueChat(): Promise<ChatResponse> {
+    if (this.mock) {
+      return (await this.mockApi()).continueChat();
+    }
+    return this.request<ChatResponse>("POST", "/chat/continue");
   }
 
   /**

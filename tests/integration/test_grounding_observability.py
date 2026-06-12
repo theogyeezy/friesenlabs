@@ -107,3 +107,62 @@ def test_facade_knowledge_turn_without_rag_reports_unavailable():
     turn = convo.send("How is the Acme account doing?")
     assert turn.grounding_status == "unavailable"
     assert turn.retrieved_count is None
+
+
+# --------------------------------------------------------------------------- async turn contract
+# (2026-06-12): a delegation-heavy turn can't settle inside one HTTP request under the 60s
+# edge ceiling — send returns `settled: false`, and continue_turn() re-drains the SAME session
+# (no new user message) until the turn settles; grounding runs against the ORIGINAL question.
+
+class StubContinuableRuntime(StubManagedRuntime):
+    def __init__(self, first: dict, continued: dict):
+        super().__init__(first)
+        self.continued = dict(continued)
+        self.continues = 0
+
+    def continue_drain(self, session):
+        self.continues += 1
+        return {"session_id": session.id, "tenant_id": session.tenant_id, **self.continued}
+
+
+_UNSETTLED = {"answer": "Routing this to Scout.", "delegations": ["scout"],
+              "pending_approvals": [{"status": "pending", "reason": "requires_action"}]}
+_FINAL = {"answer": "AEs can approve up to 10% on their own.", "delegations": [],
+          "pending_approvals": []}
+
+
+@pytest.mark.integration
+def test_unsettled_turn_reports_settled_false():
+    rt = StubContinuableRuntime(_UNSETTLED, _FINAL)
+    turn = _convo(rt, rag=_rag_a()).send("What can an AE approve?")
+    assert turn.settled is False
+    assert turn.as_dict()["settled"] is False
+    # An unsettled turn never claims grounding (the answer is not final).
+    assert turn.citations == []
+
+
+@pytest.mark.integration
+def test_continue_turn_settles_and_grounds_against_the_original_question():
+    rt = StubContinuableRuntime(_UNSETTLED, _FINAL)
+    rag = FakeRag({"tenant-A": [{"ref_id": "demo:kb:pricing#0", "source": "upload",
+                                 "content": "AEs approve up to 10%.", "score": 0.9}]})
+    convo = _convo(rt, rag=rag)
+    first = convo.send("What can an AE approve?")
+    assert first.settled is False
+
+    final = convo.continue_turn()
+    assert rt.continues == 1
+    assert final.settled is True
+    assert "AEs can approve up to 10%" in final.answer
+    assert final.grounding_status == "grounded"
+    assert [c["source_ref"] for c in final.citations] == ["demo:kb:pricing#0"]
+
+
+@pytest.mark.integration
+def test_routed_approval_only_pending_is_settled():
+    routed = {"answer": "", "delegations": [],
+              "pending_approvals": [{"status": "pending_approval", "tool_name": "send_email",
+                                     "proposal": {"to": "x"}}]}
+    rt = StubContinuableRuntime(routed, _FINAL)
+    turn = _convo(rt, rag=_rag_a()).send("email the lead")
+    assert turn.settled is True  # an approval is a legitimate stop, not an in-flight turn

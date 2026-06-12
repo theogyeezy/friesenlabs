@@ -770,6 +770,15 @@ export class MockApi {
     return cannedChat(message);
   }
 
+  continueChat(): ChatResponse {
+    // The mock settles every turn in one round — a continue finds nothing in flight.
+    return {
+      answer: "", citations: [], pending_approvals: [], slots: {},
+      needs_disambiguation: [], delegations: [], session_id: "mock-session",
+      tenant_id: MOCK_TENANT, settled: true,
+    };
+  }
+
   // Balto view synthesis — deterministic mirror of POST /views/synthesize.
   synthesizeView(body: SynthesizeViewBody): SynthesizeViewResponse {
     const request = (body.request ?? "").trim();

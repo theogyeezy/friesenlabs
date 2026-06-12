@@ -125,7 +125,11 @@ def test_action_turns_skip_retrieval_entirely():
     assert rag.calls == []  # no needless vector search + synthesizer call on approval turns
     assert turn.citations == []
     assert turn.pending_approvals
-    assert turn.answer == "Prepared an action for your approval."
+    # The surfaced call is UNSERVED (no routed `tool_name`) — under the async turn contract
+    # that is an in-flight turn, not a prepared approval: settled=False, the client continues,
+    # and the old "Prepared an action" copy (which claimed a draft that hadn't landed) is gone.
+    assert turn.settled is False
+    assert turn.answer == ""
 
 
 @pytest.mark.integration
