@@ -126,7 +126,7 @@ def mount_account_delete(app: FastAPI, deps: AccountDeleteDeps, current_tenant) 
 # no slot). Mirrored as a static tuple for the same boot-invariant reason that
 # module mirrors its own registry; tests/unit/test_connector_registry.py pins
 # registry<->mirror parity so this can't silently miss a new connector.
-_CONNECTOR_SOURCES: tuple[str, ...] = ("hubspot", "gohighlevel", "stripe")
+_CONNECTOR_SOURCES: tuple[str, ...] = ("hubspot", "gohighlevel", "stripe", "microsoft")
 
 
 def _purge_connector_secrets(deps: AccountDeleteDeps, tenant_id: str) -> dict:
