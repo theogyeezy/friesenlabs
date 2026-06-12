@@ -23,13 +23,14 @@ from agents.playbooks import STATUS_DRAFT, VALID_STATUSES
 
 class PlaybookStore(Protocol):
     def create(self, tenant_id: str, definition: dict, *, template_id: str | None = None,
-               created_by: str | None = None) -> dict: ...
+               created_by: str | None = None, vault_id: str | None = None) -> dict: ...
     def get(self, tenant_id: str, playbook_id: str) -> dict | None: ...
     def list(self, tenant_id: str) -> list[dict]: ...
     def update_definition(self, tenant_id: str, playbook_id: str, definition: dict) -> dict | None: ...
     def set_status(self, tenant_id: str, playbook_id: str, status: str) -> dict | None: ...
     def set_registration(self, tenant_id: str, playbook_id: str, *, coordinator_id: str | None,
                          agent_ids: list[str] | None, version: int | None) -> dict | None: ...
+    def set_vault_id(self, tenant_id: str, playbook_id: str, vault_id: str | None) -> dict | None: ...
     def delete(self, tenant_id: str, playbook_id: str) -> bool: ...
 
 
@@ -58,7 +59,8 @@ class InMemoryPlaybookStore:
     def _now() -> datetime:
         return datetime.now(timezone.utc)
 
-    def create(self, tenant_id, definition, *, template_id=None, created_by=None) -> dict:
+    def create(self, tenant_id, definition, *, template_id=None, created_by=None,
+               vault_id=None) -> dict:
         row = {
             "id": str(uuid.uuid4()),
             "tenant_id": str(tenant_id),
@@ -71,6 +73,7 @@ class InMemoryPlaybookStore:
             "ma_coordinator_id": None,
             "ma_agent_ids": None,
             "ma_registered_version": None,
+            "vault_id": vault_id,
             "created_at": self._now(),
             "updated_at": self._now(),
         }
@@ -117,6 +120,14 @@ class InMemoryPlaybookStore:
         row["ma_coordinator_id"] = coordinator_id
         row["ma_agent_ids"] = list(agent_ids) if agent_ids is not None else None
         row["ma_registered_version"] = version
+        row["updated_at"] = self._now()
+        return copy.deepcopy(row)
+
+    def set_vault_id(self, tenant_id, playbook_id, vault_id) -> dict | None:
+        row = self._own(tenant_id, playbook_id)
+        if row is None:
+            return None
+        row["vault_id"] = vault_id
         row["updated_at"] = self._now()
         return copy.deepcopy(row)
 
@@ -241,13 +252,14 @@ class PgPlaybookStore:
         except (ValueError, AttributeError, TypeError):
             return None
 
-    def create(self, tenant_id, definition, *, template_id=None, created_by=None) -> dict:
+    def create(self, tenant_id, definition, *, template_id=None, created_by=None,
+               vault_id=None) -> dict:
         with self._tx(tenant_id) as cur:
             cur.execute(
-                "INSERT INTO playbooks (tenant_id, name, definition, template_id, created_by) "
-                "VALUES (%s,%s,%s,%s,%s) RETURNING *",
+                "INSERT INTO playbooks (tenant_id, name, definition, template_id, created_by, "
+                "vault_id) VALUES (%s,%s,%s,%s,%s,%s) RETURNING *",
                 (str(tenant_id), definition.get("name", ""), self._Json(definition),
-                 template_id, created_by),
+                 template_id, created_by, vault_id),
             )
             return self._row(cur.fetchone())
 
@@ -299,6 +311,17 @@ class PgPlaybookStore:
                 (coordinator_id,
                  self._Json(list(agent_ids)) if agent_ids is not None else None,
                  version, pid),
+            )
+            return self._row(cur.fetchone())
+
+    def set_vault_id(self, tenant_id, playbook_id, vault_id) -> dict | None:
+        pid = self._uuid_or_none(playbook_id)
+        if pid is None:
+            return None
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "UPDATE playbooks SET vault_id = %s, updated_at = now() WHERE id = %s RETURNING *",
+                (vault_id, pid),
             )
             return self._row(cur.fetchone())
 
