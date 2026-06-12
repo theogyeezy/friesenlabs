@@ -162,6 +162,9 @@ class ManagedAgentsRuntime(AgentRuntime):
         # `events.list` replays the FULL session log, so dedupe must span turns on this instance
         # (one runtime per conversation in prod — bounded by the conversation's lifetime).
         self._seen_event_ids: dict[str, set[str]] = {}
+        # Sessions RESUMED from a persisted id whose dedupe ledger hasn't been primed yet —
+        # a fresh process knows nothing of what the dead one already delivered (see _drain).
+        self._resumed_unprimed: set[str] = set()
         # SETTLE (the agentic-turn fix, 2026-06-12): how long one turn may keep draining past a
         # `requires_action` idle while the worker serves the open calls. Wall-clock from the
         # start of send_message; on exhaustion the turn fails closed exactly as before. The
@@ -380,6 +383,21 @@ class ManagedAgentsRuntime(AgentRuntime):
             metadata={"tenant_id": tenant_id, "vault_id": vault_id},
         )
 
+    def resume_session(self, session_id, coordinator_id, tenant_id,
+                       vault_id=None, environment_id=None) -> Session:
+        """Re-attach to a PERSISTED MA session (deploy-roll survival, 2026-06-12) — constructs
+        the local handle only, no network. The session may be dead server-side: the drain's
+        terminated handling + the cache's rebuild path cover that (and clear the stale id).
+        The dedupe ledger is primed lazily on first use so reconnect-replays never fold prior
+        turns into a new digest while /chat/continue still recovers the in-flight tail."""
+        self._session_ids.add(session_id)
+        self._resumed_unprimed.add(session_id)
+        return Session(
+            id=session_id, tenant_id=tenant_id, coordinator_id=coordinator_id,
+            metadata={"tenant_id": tenant_id, "environment_id": environment_id,
+                      "vault_id": vault_id},
+        )
+
     def send_message(self, session, message) -> dict:
         return self._drain(session, message)
 
@@ -454,6 +472,24 @@ class ManagedAgentsRuntime(AgentRuntime):
         turn_start = self._clock()  # settle budget anchor (see the requires_action branch)
         last_stop: str | None = None  # the most recent idle's stop reason (settle observability)
         seen = self._seen_event_ids.setdefault(session.id, set())
+        if session.id in self._resumed_unprimed:
+            # PRIME the resumed ledger (one events.list): a fresh process must not re-deliver
+            # history. A new SEND marks EVERYTHING so far as seen (it is prior-turn material);
+            # a CONTINUE marks everything through the LAST user.message — the tail after it is
+            # exactly the in-flight turn the dead process never surfaced.
+            self._resumed_unprimed.discard(session.id)
+            history = list(client.beta.sessions.events.list(
+                session_id=session.id, extra_headers=self._beta_headers()))
+            if message is not None:
+                cutoff = len(history)
+            else:
+                marks = [i for i, e in enumerate(history)
+                         if getattr(e, "type", None) == "user.message"]
+                cutoff = (marks[-1] + 1) if marks else 0
+            for e in history[:cutoff]:
+                eid = getattr(e, "id", None)
+                if eid is not None:
+                    seen.add(eid)
 
         def _accumulate_usage(event) -> None:
             nonlocal usage_in, usage_out, usage_model
@@ -710,6 +746,11 @@ class FakeRuntime(AgentRuntime):
             "delegations": [self.agents[a].name for a in roster if a in self.agents],
             "answer": f"[fake] handled: {message}",
         }
+
+    def resume_session(self, session_id, coordinator_id, tenant_id,
+                       vault_id=None, environment_id=None) -> Session:
+        return Session(id=session_id, tenant_id=tenant_id, coordinator_id=coordinator_id,
+                       metadata={"tenant_id": tenant_id, "environment_id": environment_id})
 
     def continue_drain(self, session) -> dict:
         # The fake settles every turn in one round — a continue finds nothing in flight.

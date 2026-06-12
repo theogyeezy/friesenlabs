@@ -186,6 +186,11 @@ def make_conversation_factory(
             # Tier-0 fast lane (conv/router.py): knowledge-shaped asks answer directly from
             # the grounded RAG path in seconds — crew-biased, deterministic, offline.
             router=HeuristicRouter(),
+            # SESSION PERSISTENCE (2026-06-12): resume the tenant's persisted MA session so a
+            # deploy roll can't kill in-flight turns or history; new ids persist back, dead
+            # ones clear via the cache's forget hook. Best-effort by contract.
+            persisted_session_id=row.get("session_id"),
+            persist_session=(lambda sid, _t=tenant_id: workspace_store.set_session_id(_t, sid)),
             spec_generator=spec_generator,  # default ctx.extra['generate_spec'] for build_view
             greenlight=greenlight,
             cost_recorder=cost_recorder,    # per-turn Anthropic token usage -> cost_events

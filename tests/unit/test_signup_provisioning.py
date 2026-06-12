@@ -456,6 +456,7 @@ def test_provisioning_upserts_workspace_ids_after_agent_plane_ensure():
         "workspace_id": "ws_1",
         "environment_id": "env-tenant-a1",
         "coordinator_id": "coord-tenant-a1",
+        "session_id": None,
     }
 
 
