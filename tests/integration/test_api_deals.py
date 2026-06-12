@@ -300,6 +300,28 @@ def test_move_stage_lands_exactly_one_proposal_and_never_touches_deals():
 
 
 @pytest.mark.integration
+def test_move_stage_close_reason_rides_the_gated_change_only_when_closing():
+    reader = FakeDealsReader()
+    client, store, _ = _client(DealsDeps(crm=reader))
+    # Closing WITH a reason -> close_reason rides the same gated change (set atomically with stage).
+    r = client.post(f"/deals/{DEAL_A1}/move-stage",
+                    json={"to_stage": "closed_won", "reason": "Budget approved"}, headers=H)
+    assert r.status_code == 200
+    assert store.inserts[-1]["proposed_action"]["changes"] == {"stage": "closed_won", "close_reason": "Budget approved"}
+
+
+@pytest.mark.integration
+def test_move_stage_reason_ignored_on_non_closing_move():
+    reader = FakeDealsReader()
+    client, store, _ = _client(DealsDeps(crm=reader))
+    # A reason on a NON-closed move is dropped — close_reason is only for closed stages.
+    r = client.post(f"/deals/{DEAL_A1}/move-stage",
+                    json={"to_stage": "proposal", "reason": "nope"}, headers=H)
+    assert r.status_code == 200
+    assert store.inserts[-1]["proposed_action"]["changes"] == {"stage": "proposal"}
+
+
+@pytest.mark.integration
 def test_move_stage_smuggled_tenant_ignored():
     reader = FakeDealsReader()
     client, store, _ = _client(DealsDeps(crm=reader))

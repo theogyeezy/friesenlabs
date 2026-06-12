@@ -221,6 +221,8 @@ export interface ListDealsResponse {
 export interface DealDetail extends DealCard {
   contact_name?: string | null;
   contact_email?: string | null;
+  /** The won/lost reason captured when this deal was closed (null until closed with a reason). */
+  close_reason?: string | null;
 }
 
 export interface DealActivity {
@@ -238,6 +240,8 @@ export interface DealDetailResponse {
 /** Body for POST /deals/{id}/move-stage. Note: carries no tenant_id. */
 export interface MoveStageBody {
   to_stage: string;
+  /** Optional won/lost reason — only persisted when to_stage is a closed stage. */
+  reason?: string | null;
 }
 
 /**

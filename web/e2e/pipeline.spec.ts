@@ -475,3 +475,27 @@ test("board search sends ?q= and the archived toggle sends ?archived=1 + restore
   await page.getByTestId("restore-deal-btn").click();
   await expect(async () => { expect(restorePath).toContain("/unarchive"); }).toPass({ timeout: 5_000 });
 });
+
+
+test("closing a deal shows a reason input and sends it with the gated move", async ({ page }) => {
+  let moveBody: Record<string, unknown> | null = null;
+  await page.route((url) => url.pathname === "/deals", (r) => r.fulfill({ json: board([DEAL_A]) }));
+  await page.route("**/deals/*/move-stage", async (route) => {
+    moveBody = route.request().postDataJSON() as Record<string, unknown>;
+    await route.fulfill({ json: QUEUED });
+  });
+  await page.route((url) => /^\/deals\/[^/]+$/.test(url.pathname), (r) => r.fulfill({ json: DETAIL_A }));
+
+  await page.goto("/?view=pipeline");
+  await page.locator(`[data-deal-id="${DEAL_A.id}"]`).click();
+  await expect(page.getByTestId("deal-drawer")).toBeVisible({ timeout: 15_000 });
+  // No reason field until a closed stage is chosen.
+  await expect(page.getByTestId("move-reason-input")).toHaveCount(0);
+  await page.getByTestId("move-select").selectOption("closed_won");
+  await expect(page.getByTestId("move-reason-input")).toBeVisible();
+  await page.getByTestId("move-reason-input").fill("Budget approved");
+  await page.getByTestId("move-queue-btn").click();
+  await expect(async () => { expect(moveBody).not.toBeNull(); }).toPass({ timeout: 5_000 });
+  expect(moveBody).toEqual({ to_stage: "closed_won", reason: "Budget approved" });
+  expect(moveBody).not.toHaveProperty("tenant_id");
+});

@@ -771,6 +771,11 @@ ALTER TABLE tenant_settings ADD COLUMN IF NOT EXISTS enabled_modules jsonb NOT N
 ALTER TABLE deals     ADD COLUMN IF NOT EXISTS archived_at timestamptz;
 ALTER TABLE contacts  ADD COLUMN IF NOT EXISTS archived_at timestamptz;
 ALTER TABLE companies ADD COLUMN IF NOT EXISTS archived_at timestamptz;
+
+-- deals.close_reason — the won/lost reason captured when a deal is moved to closed_won/closed_lost
+-- (rides the gated move-stage change so it's set atomically with the stage on approval). NULL until
+-- a deal closes with a reason. Feeds win/loss analysis (and Cortex down the line).
+ALTER TABLE deals ADD COLUMN IF NOT EXISTS close_reason text;
 CREATE INDEX IF NOT EXISTS idx_deals_active     ON deals     (tenant_id) WHERE archived_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_contacts_active  ON contacts  (tenant_id) WHERE archived_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_companies_active ON companies (tenant_id) WHERE archived_at IS NULL;

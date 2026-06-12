@@ -144,6 +144,8 @@ def _normalize_deal_row(row: dict) -> dict:
         out["contact_name"] = row.get("contact_name")
     if "contact_email" in row:
         out["contact_email"] = row.get("contact_email")
+    if "close_reason" in row:
+        out["close_reason"] = row.get("close_reason")
     return out
 
 
@@ -550,7 +552,7 @@ class PgCrmClient(_PgTenantClient):
         with self._tx(tenant_id) as cur:
             cur.execute(
                 "SELECT d.id, d.tenant_id, d.title, d.stage, d.amount, d.currency, "
-                "d.company_id, d.contact_id, d.created_at, c.name AS company_name, "
+                "d.company_id, d.contact_id, d.created_at, d.close_reason, c.name AS company_name, "
                 "p.name AS contact_name, p.email AS contact_email "
                 "FROM deals d LEFT JOIN companies c ON c.id = d.company_id "
                 "LEFT JOIN contacts p ON p.id = d.contact_id "
@@ -759,7 +761,8 @@ class PgCrmClient(_PgTenantClient):
     # exists + belongs to the tenant first, so a bad id is a clean 404, not an FK 500). Stage stays
     # OUT of this allow-list on purpose — stage moves must go through Greenlight (POST move-stage).
     _DEAL_UPDATE_COLUMNS = {"stage": "stage", "amount": "amount", "name": "title",
-                            "company_id": "company_id", "contact_id": "contact_id"}
+                            "company_id": "company_id", "contact_id": "contact_id",
+                            "close_reason": "close_reason"}
     _CONTACT_UPDATE_COLUMNS = {"name": "name", "email": "email", "phone": "phone",
                                "company_id": "company_id"}
     _COMPANY_UPDATE_COLUMNS = {"name": "name", "domain": "domain"}

@@ -201,6 +201,7 @@ export function PipelineBoard({ client, onOpenGreenlight, onLoadSample }: Pipeli
 
   // Move-stage control state.
   const [moveTo, setMoveTo] = useState("");
+  const [moveReason, setMoveReason] = useState(""); // won/lost reason (only for closed stages)
   const [moveBusy, setMoveBusy] = useState(false);
   const [moveError, setMoveError] = useState<string | null>(null);
   // Moves we queued this session, keyed by deal id — shown as "awaiting
@@ -301,7 +302,11 @@ export function PipelineBoard({ client, onOpenGreenlight, onLoadSample }: Pipeli
     setMoveBusy(true);
     setMoveError(null);
     try {
-      const res = await api.moveDealStage(detail.deal.id, { to_stage: moveTo });
+      const closing = moveTo === "closed_won" || moveTo === "closed_lost";
+      const res = await api.moveDealStage(detail.deal.id, {
+        to_stage: moveTo,
+        reason: closing && moveReason.trim() ? moveReason.trim() : undefined,
+      });
       // HONEST: {queued} means a human still has to approve. The board keeps
       // the deal in its CURRENT stage; we only record the pending intent.
       setQueued((q) => ({
@@ -310,13 +315,14 @@ export function PipelineBoard({ client, onOpenGreenlight, onLoadSample }: Pipeli
       }));
       setToast(res);
       setMoveTo("");
+      setMoveReason("");
       window.setTimeout(() => setToast(null), 6000);
     } catch (e) {
       setMoveError(moveErrorMessage(e));
     } finally {
       setMoveBusy(false);
     }
-  }, [api, detail, moveTo]);
+  }, [api, detail, moveTo, moveReason]);
 
   // Pull a page of contacts the first time a form opens; the contact field is
   // optional, so a failed load just leaves the picker empty (never an error).
@@ -779,6 +785,12 @@ export function PipelineBoard({ client, onOpenGreenlight, onLoadSample }: Pipeli
                   {detail.deal.company_name ?? "No company"}
                   {detail.deal.contact_name ? ` · ${detail.deal.contact_name}` : ""}
                 </div>
+                {detail.deal.close_reason && (
+                  <div data-testid="deal-close-reason" style={{ fontSize: 13, marginTop: 8, padding: "8px 12px", borderRadius: 9, background: "var(--accent-soft, #f4f1ea)", color: "var(--ink, #2a2622)" }}>
+                    <b style={{ fontWeight: 700 }}>{detail.deal.stage === "closed_won" ? "Won: " : "Lost: "}</b>
+                    {detail.deal.close_reason}
+                  </div>
+                )}
 
                 <div style={{ display: "flex", gap: 10, margin: "14px 0 4px", flexWrap: "wrap" }}>
                   {/* The CURRENT stage — stays put until a Greenlight approval lands. */}
@@ -866,6 +878,15 @@ export function PipelineBoard({ client, onOpenGreenlight, onLoadSample }: Pipeli
                     {moveBusy ? "Queueing..." : "Queue move"}
                   </button>
                 </div>
+                {(moveTo === "closed_won" || moveTo === "closed_lost") && (
+                  <input
+                    data-testid="move-reason-input"
+                    value={moveReason}
+                    onChange={(e) => setMoveReason(e.target.value)}
+                    placeholder={moveTo === "closed_won" ? "Why did it close won? (optional)" : "Why was it lost? (optional)"}
+                    style={{ width: "100%", boxSizing: "border-box", marginTop: 8, padding: "8px 10px", borderRadius: 9, border: "1px solid var(--line, #e3ddd3)", fontSize: 13, fontFamily: "inherit" }}
+                  />
+                )}
                 {moveError && (
                   <div
                     data-testid="move-error"
