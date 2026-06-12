@@ -15,10 +15,19 @@ v2 response shapes, not a certified integration. The real REST client
 endpoint/param it touches is flagged `# VERIFY` — confirm against a live
 GoHighLevel location before first prod run.
 
-Credential format: the vaulted secret value is EITHER a bare API token, OR a
-JSON object `{"token": "...", "location_id": "..."}` (GHL API v2 scopes most
-list endpoints to a location). Read sync only: this connector never writes
-back to GoHighLevel (draft-only invariant).
+Credential format: the vaulted secret value is ONE of three shapes, detected at
+`authenticate()`:
+  1. An OAuth envelope (the "connect with login" path) — JSON with
+     `token_type:"oauth"`, an access_token/refresh_token, and (from the
+     LeadConnector token response) the chosen `location_id`/`company_id`. An
+     expired access token is refreshed (grant_type=refresh_token) and, when a
+     SecretWriter is wired, the new envelope is written back to the vault slot.
+  2. A legacy JSON object `{"token": "...", "location_id": "..."}` (pasted token +
+     explicit location).
+  3. A bare API token string.
+GHL API v2 scopes most list endpoints to a location, so the location_id is carried
+through to the source client. Read sync only: this connector never writes back to
+GoHighLevel (draft-only invariant); the only write is the vault refresh above.
 
 Normalizes GHL objects to the db/schema.sql shapes:
   contacts      -> contacts   (name/email/phone, ref_id = GHL contact id)
@@ -60,9 +69,15 @@ class GoHighLevelConnector(Connector):
 
     source = "gohighlevel"
 
-    def __init__(self, tenant_id, *, client: GoHighLevelClient, **kwargs) -> None:
+    def __init__(self, tenant_id, *, client: GoHighLevelClient,
+                 secret_writer=None, **kwargs) -> None:
         super().__init__(tenant_id, **kwargs)
         self._client = client
+        # Optional write seam (oauth.SecretWriter — any object with put_secret):
+        # when present, a refreshed OAuth access token is persisted back to the
+        # vault slot so the next sync starts fresh. Absent (the pasted-key path) =
+        # no write-back; a refreshed token is still used for THIS run.
+        self._secret_writer = secret_writer
 
     # -- auth ------------------------------------------------------------ #
     def authenticate(self) -> None:
@@ -91,7 +106,11 @@ class GoHighLevelConnector(Connector):
             raise MissingTenantCredentialError(
                 self.tenant_id, self.source, ref, "empty value"
             )
-        token, location_id = self._parse_credential(raw)
+        # The vault slot holds an OAuth envelope ("connect with login"), a legacy
+        # JSON {"token", "location_id"}, or a bare token. _resolve_credential tells
+        # them apart and (for an expired OAuth envelope) refreshes. NEVER logs the
+        # resolved value.
+        token, location_id = self._resolve_credential(raw, ref)
         if not token:
             raise MissingTenantCredentialError(
                 self.tenant_id, self.source, ref, "credential JSON has no token"
@@ -105,6 +124,74 @@ class GoHighLevelConnector(Connector):
         if callable(set_location) and location_id:
             set_location(location_id)
         self._authed = True
+
+    # -- OAuth-aware credential resolution -------------------------------- #
+    def _resolve_credential(self, raw: str, ref: str) -> tuple[str, str | None]:
+        """Turn the vaulted secret value into (bearer_token, location_id) for this run.
+
+        OAuth envelope -> use its access_token (refreshing first, and writing the new
+        envelope back when a writer is wired, if it's at/near expiry); the location_id
+        rides the envelope (preserved across refresh — the LeadConnector refresh grant
+        may not re-echo it). Anything else falls through to the legacy bare-token /
+        {"token","location_id"} path unchanged (back-compat). NEVER logs a token value.
+        """
+        from .oauth import (  # noqa: PLC0415 — local import keeps base import-light
+            get_provider,
+            is_expired,
+            oauth_secret_value,
+            parse_oauth_secret,
+            refresh_access_token,
+        )
+
+        secret = parse_oauth_secret(raw)
+        if secret is None:
+            return self._parse_credential(raw)  # legacy bare token / JSON — unchanged
+
+        location_id = secret.get("location_id")
+        if not is_expired(secret):
+            return secret["access_token"], location_id
+
+        provider = get_provider(self.source)
+        if provider is None:  # defensive — gohighlevel is registered
+            return secret["access_token"], location_id
+        # Resolve the app's client credentials (refs, not values) via the reader.
+        try:
+            client_id = self._secrets.get_secret(provider.client_id_ref)
+            client_secret = self._secrets.get_secret(provider.client_secret_ref)
+        except SecretNotFoundError as exc:
+            # Can't refresh without the app creds — fail honestly (reconnect), never
+            # ride a known-expired access token into a silent 401 mid-sync.
+            log.error(
+                "ingest auth failed: event=oauth_refresh_unconfigured tenant_id=%s "
+                "source=%s reason=client_creds_not_provisioned", self.tenant_id, self.source,
+            )
+            raise MissingTenantCredentialError(
+                self.tenant_id, self.source, ref,
+                "OAuth token expired and app client credentials are not provisioned",
+            ) from exc
+        # Refresh (HTTP via oauth.post_form — the test seam). Any failure propagates
+        # untouched; it carries no token material.
+        new = refresh_access_token(
+            provider, refresh_token=secret["refresh_token"],
+            client_id=client_id, client_secret=client_secret,
+        )
+        # The refresh response may omit the location/company — preserve the stored one.
+        new_location = new.get("location_id") or location_id
+        new_company = new.get("company_id") or secret.get("company_id")
+        log.info("ingest oauth: refreshed access token tenant_id=%s source=%s",
+                 self.tenant_id, self.source)
+        if self._secret_writer is not None:
+            self._secret_writer.put_secret(
+                ref,
+                oauth_secret_value(
+                    access_token=new["access_token"],
+                    refresh_token=new["refresh_token"],
+                    expires_at=new["expires_at"],
+                    location_id=new_location,
+                    company_id=new_company,
+                ),
+            )
+        return new["access_token"], new_location
 
     @staticmethod
     def _parse_credential(raw: str) -> tuple[str, str | None]:
