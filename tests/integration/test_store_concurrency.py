@@ -87,7 +87,11 @@ def test_approvals_no_cross_tenant_leak_under_concurrency(app_dsn):
         # then lists ITS OWN pending and asserts it never sees the other tenant's rows.
         me, other = (a, b) if i % 2 == 0 else (b, a)
         rec = gl.propose(tenant_id=me, action="send_email", agent="nadia", reasoning=f"r{i}",
-                         value_at_stake=float(i), payload={"to": f"x{i}@y.com"})
+                         value_at_stake=float(i),
+                         # has_unsubscribe satisfies the Greenlight compliance floor — without
+                         # it every proposal lands DENIED and list_pending is empty (this test
+                         # is about RLS under concurrency, not compliance).
+                         payload={"to": f"x{i}@y.com", "has_unsubscribe": True})
         # The freshly-proposed row must come back scoped to me, with my tenant_id.
         got = gl.list_pending(me)
         leaked = [r for r in got if str(r["tenant_id"]) != me]
