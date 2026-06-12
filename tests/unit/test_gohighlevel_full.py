@@ -1,0 +1,151 @@
+"""Unit tests for the GoHighLevel full-extract client (ingest/connectors/gohighlevel_full.py).
+
+No network: most tests inject a fake ``_get``; the 429-backoff + Version-header tests monkeypatch
+``urllib.request.urlopen`` (with an injected no-op sleep) so the retry path runs without sleeping.
+"""
+import urllib.error
+
+import pytest
+
+from ingest.connectors.gohighlevel_full import GoHighLevelFullClient, _normalize
+
+pytestmark = pytest.mark.unit
+
+
+class _Resp:
+    def __init__(self, body: str):
+        self._b = body.encode()
+
+    def read(self):
+        return self._b
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _client():
+    c = GoHighLevelFullClient(sleep=lambda _s: None)
+    c.set_credentials("test-token", "loc-1")
+    return c
+
+
+# --- normalize ----------------------------------------------------------- #
+def test_normalize_flattens_customfields_flags_media_and_associations():
+    raw = {
+        "id": "9", "firstName": "Ada", "headshotUrl": "https://x/p.png",
+        "customFields": [{"id": "cf1", "value": "vip"}, {"id": "cf2", "value": "https://x/intro.mp4"}],
+        "associations": [{"objectKey": "company", "recordId": "100"}],
+        "dateUpdated": "2026-06-01T00:00:00Z",
+    }
+    rec = _normalize("contacts", raw)
+    assert rec.source_ref_id == "9"
+    assert rec.properties["firstName"] == "Ada"
+    assert rec.properties["cf_cf1"] == "vip"
+    assert rec.properties["cf_cf2"] == "https://x/intro.mp4"  # media URL kept verbatim
+    assert set(rec.properties["_media_refs"]) == {"headshotUrl", "cf_cf2"}  # flagged, not fetched
+    assert rec.associations == {"company": ["100"]}
+    assert rec.updated_at == "2026-06-01T00:00:00Z"
+
+
+# --- pagination (startAfter / startAfterId) ------------------------------ #
+def test_list_records_paginates_via_startafter_cursor():
+    c = _client()
+    pages = [
+        {"contacts": [{"id": "1", "dateUpdated": "u1"}], "meta": {"startAfter": "100", "startAfterId": "1"}},
+        {"contacts": [{"id": "2", "dateUpdated": "u2"}], "meta": {}},
+    ]
+    seen = []
+
+    def fake_get(path, params=None, *, version=None):
+        seen.append(params)
+        return pages[0] if (params or {}).get("startAfter") is None else pages[1]
+
+    c._get = fake_get  # type: ignore[assignment]
+    recs = list(c.list_records("contacts", location_id="loc-1"))
+    assert [r.source_ref_id for r in recs] == ["1", "2"]
+    assert seen[0]["locationId"] == "loc-1"          # location-scoped
+    assert seen[1]["startAfter"] == "100" and seen[1]["startAfterId"] == "1"  # cursors threaded from meta
+
+
+def test_list_records_incremental_seeds_startafter_with_epoch_millis():
+    c = _client()
+    captured = {}
+
+    def fake_get(path, params=None, *, version=None):
+        captured.update(params or {})
+        return {"contacts": [], "meta": {}}
+
+    c._get = fake_get  # type: ignore[assignment]
+    list(c.list_records("contacts", location_id="loc-1", since="2026-06-01T00:00:00Z"))
+    assert captured["startAfter"].isdigit()  # epoch-millis seed, not ISO
+
+
+# --- 429 backoff + Version header (real _get, mocked urlopen) ------------- #
+def test_get_retries_on_429_then_succeeds(monkeypatch):
+    c = _client()
+    calls = {"n": 0}
+
+    def fake_urlopen(req, timeout=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise urllib.error.HTTPError(req.full_url, 429, "rate", {"Retry-After": "0"}, None)
+        return _Resp('{"contacts": [], "meta": {}}')
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    out = c._get("/contacts/", {"locationId": "loc-1"}, version="2021-07-28")
+    assert out == {"contacts": [], "meta": {}}
+    assert calls["n"] == 2  # retried once after the 429
+
+
+def test_get_sends_per_resource_version_header(monkeypatch):
+    c = _client()
+    seen = {}
+
+    def fake_urlopen(req, timeout=None):
+        seen["version"] = req.get_header("Version")
+        seen["auth"] = req.get_header("Authorization")
+        return _Resp('{"x": 1}')
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    c._get("/conversations/", {"locationId": "loc-1"}, version="2021-04-15")
+    assert seen["version"] == "2021-04-15"            # per-resource Version pinned
+    assert seen["auth"] == "Bearer test-token"
+
+
+def test_get_requires_a_token():
+    c = GoHighLevelFullClient()  # no credentials
+    with pytest.raises(RuntimeError, match="no token"):
+        c._get("/contacts/")
+
+
+# --- object discovery ---------------------------------------------------- #
+def test_discover_object_types_unions_standard_and_custom():
+    c = _client()
+    c._get = lambda path, params=None, *, version=None: {"objects": [{"key": "custom_pet"}]}  # type: ignore[assignment]
+    types = c.discover_object_types()
+    assert "contacts" in types and "opportunities" in types and "conversations" in types
+    assert "custom_pet" in types
+    assert len(types) == len(set(types))
+
+
+def test_discover_object_types_tolerates_schema_failure():
+    c = _client()
+
+    def boom(*a, **k):
+        raise RuntimeError("no custom-objects scope")
+
+    c._get = boom  # type: ignore[assignment]
+    types = c.discover_object_types()
+    assert "contacts" in types and "custom_pet" not in types  # standard set, no crash
+
+
+# --- bounded live search ------------------------------------------------- #
+def test_search_live_returns_bounded_records():
+    c = _client()
+    c._get = lambda path, params=None, *, version=None: {  # type: ignore[assignment]
+        "contacts": [{"id": "1", "firstName": "Ada"}]}
+    recs = c.search_live("contacts", q="ada", location_id="loc-1")
+    assert len(recs) == 1 and recs[0].properties["firstName"] == "Ada"

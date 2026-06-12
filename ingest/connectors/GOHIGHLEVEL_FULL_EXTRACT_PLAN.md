@@ -51,14 +51,15 @@ merges (the crm_records migration is shared — no second migration).
   uniform `startAfter`/`startAfterId` pagination, contacts endpoint+Version, the full object list incl.
   custom objects + associations, custom-fields shapes, rate limits). Remaining unknowns are a SHORT
   `# VERIFY` list (vs the old connector's blanket guess) for item 2 to encode as a per-resource map.
-- [ ] 2. **`GoHighLevelFullClient`** (`ingest/connectors/gohighlevel_full.py`): `_get` with the
-  per-resource `Version` header + **429/Retry-After backoff**; `discover_object_types()` (standard
-  list ∪ custom objects); `discover_fields(object_type)` (ALL fields incl. custom, flag file/media);
-  `list_records(object_type, *, since, location_id)` — `startAfter` pagination, incremental on the
-  per-object updated field, media-as-refs, normalize to the `crm_records` Record shape (object_type,
-  source_ref_id, properties incl. flattened customFields, associations, updated_at);
-  `search_live(object_type, *, q, limit)` (bounded, for the live tools). Unit tests w/ mocked
-  responses (pagination, version header, 429 retry, media-ref-only, customFields flatten).
+- [x] 2. **`GoHighLevelFullClient`** (`ingest/connectors/gohighlevel_full.py`) — DONE. `_get` pins the
+  per-resource `Version` header + does **429/Retry-After backoff** (`_MAX_RETRIES=5`, injectable sleep);
+  `discover_object_types()` (standard ∪ custom from the Object-Schema API, tolerant of failure);
+  `discover_fields()`; `list_records()` paginates via `startAfter`/`startAfterId` (cursors from
+  `meta.*`), seeds incremental with epoch-millis, reuses `hubspot_full.Record`; `_normalize` flattens
+  inline `customFields` → `cf_<id>`, flags media values URL-only (`_media_refs`, never fetched),
+  pulls `associations`; `search_live()` bounded. Reuses the source-agnostic `Record`. 9 unit tests
+  (pagination, epoch-millis seed, 429 retry, Version header, token-required, discovery×2, normalize,
+  search); ruff clean. Remaining non-contacts paths/versions stay `# VERIFY`. DONE.
 - [ ] 3. **`GoHighLevelFullConnector`** + sink wiring: reuse `PgCrmRecordsSink(source='gohighlevel')`;
   `sync(tenant_id, *, since, location_id, object_types)` per-object-type ROBUST (skip a bad type,
   log by exception TYPE only — no PII). Unit tests (lands per type, skips failing type).
