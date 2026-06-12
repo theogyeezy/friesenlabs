@@ -401,6 +401,73 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: Cont
     if (co) setCompanyQuery(co.name ?? co.domain ?? "Selected company");
   }, [formCompanies, formFields.company_id, companyQuery]);
 
+  // ---- Company create/edit (a parallel form; the contact form is untouched) ----
+  const [companyMode, setCompanyMode] = useState<"create" | { kind: "edit"; id: string } | null>(null);
+  const [companyFields, setCompanyFields] = useState<{ name: string; domain: string }>({ name: "", domain: "" });
+  const [companyBusy, setCompanyBusy] = useState(false);
+  const [companyFormError, setCompanyFormError] = useState<string | null>(null);
+
+  const openCompanyCreate = useCallback(() => {
+    setCompanyMode("create");
+    setCompanyFields({ name: "", domain: "" });
+    setCompanyFormError(null);
+  }, []);
+  const openCompanyEdit = useCallback((co: { id: string; name: string | null; domain: string | null }) => {
+    setCompanyMode({ kind: "edit", id: co.id });
+    setCompanyFields({ name: co.name ?? "", domain: co.domain ?? "" });
+    setCompanyFormError(null);
+  }, []);
+  const closeCompanyForm = useCallback(() => {
+    setCompanyMode(null); setCompanyBusy(false); setCompanyFormError(null);
+  }, []);
+
+  const submitCompanyForm = useCallback(async () => {
+    if (!companyMode) return;
+    const name = companyFields.name.trim();
+    if (!name) { setCompanyFormError("Name is required."); return; }
+    setCompanyBusy(true); setCompanyFormError(null);
+    try {
+      if (companyMode === "create") {
+        await api.createCompany({ name, domain: companyFields.domain.trim() || undefined });
+      } else {
+        await api.editCompany(companyMode.id, { name, domain: companyFields.domain.trim() });
+        if (drawer?.kind === "company" && drawer.id === companyMode.id) void openCompany(companyMode.id);
+      }
+      closeCompanyForm();
+      forceListRefresh();
+      if (tab === "companies") void loadCompanies(query.trim(), 0, false);
+    } catch (e) {
+      setCompanyFormError(friendlyErrorMessage(e, "Couldn't save the company. Please try again."));
+    } finally { setCompanyBusy(false); }
+  }, [api, companyMode, companyFields, drawer, openCompany, closeCompanyForm, forceListRefresh, tab, loadCompanies, query]);
+
+  // ---- Log a note on the open contact (direct write; refreshes the activity list) ----
+  const [noteText, setNoteText] = useState("");
+  const [noteBusy, setNoteBusy] = useState(false);
+  const logNote = useCallback(async (contactId: string) => {
+    const body = noteText.trim();
+    if (!body) return;
+    setNoteBusy(true);
+    try {
+      await api.logActivity("contacts", contactId, { kind: "note", body });
+      setNoteText("");
+      void openContact(contactId);
+    } catch { /* keep the text so the user can retry */ } finally { setNoteBusy(false); }
+  }, [api, noteText, openContact]);
+
+  // ---- Archive (soft) an entity, then close the drawer + refresh the list ----
+  const [archiveBusy, setArchiveBusy] = useState(false);
+  const archive = useCallback(async (entity: "contacts" | "companies", id: string) => {
+    setArchiveBusy(true);
+    try {
+      await api.setArchived(entity, id, true);
+      closeDrawer();
+      forceListRefresh();
+      if (entity === "contacts") void loadPeople(query.trim(), 0, false);
+      else void loadCompanies(query.trim(), 0, false);
+    } catch { /* the list reload surfaces the true state */ } finally { setArchiveBusy(false); }
+  }, [api, closeDrawer, forceListRefresh, loadPeople, loadCompanies, query]);
+
   // Matches for the picker menu: filter the loaded page by name/domain, capped
   // so the dropdown stays short.
   const companyMatches = useMemo(() => {
@@ -591,6 +658,26 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: Cont
               }}
             >
               + Add contact
+            </button>
+          )}
+          {tab === "companies" && (
+            <button
+              data-testid="add-company-btn"
+              onClick={openCompanyCreate}
+              style={{
+                padding: "9px 16px",
+                borderRadius: 10,
+                border: "none",
+                background: "var(--accent, #2a2622)",
+                color: "#fff",
+                fontSize: 13.5,
+                fontWeight: 700,
+                cursor: "pointer",
+                fontFamily: "inherit",
+                marginTop: 4,
+              }}
+            >
+              + Add company
             </button>
           )}
         </div>
@@ -798,13 +885,23 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: Cont
                   <h2 data-testid="drawer-title" style={{ fontSize: 20, fontWeight: 760, letterSpacing: "-.02em", margin: 0 }}>
                     {contactDetail.contact.name ?? "Unnamed contact"}
                   </h2>
-                  <button
-                    data-testid="edit-contact-btn"
-                    onClick={() => openEditForm(contactDetail.contact)}
-                    style={{ ...ghostBtn, padding: "5px 12px", fontSize: 12.5, flexShrink: 0 }}
-                  >
-                    Edit
-                  </button>
+                  <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                    <button
+                      data-testid="edit-contact-btn"
+                      onClick={() => openEditForm(contactDetail.contact)}
+                      style={{ ...ghostBtn, padding: "5px 12px", fontSize: 12.5 }}
+                    >
+                      Edit
+                    </button>
+                    <button
+                      data-testid="archive-contact-btn"
+                      disabled={archiveBusy}
+                      onClick={() => void archive("contacts", contactDetail.contact.id)}
+                      style={{ ...ghostBtn, padding: "5px 12px", fontSize: 12.5, opacity: archiveBusy ? 0.6 : 1 }}
+                    >
+                      Archive
+                    </button>
+                  </div>
                 </div>
                 <div style={{ fontSize: 13, ...muted }}>
                   {contactDetail.contact.company_name ?? "No company"}
@@ -856,15 +953,54 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: Cont
                     </div>
                   ))
                 )}
+
+                {/* Log a note/call directly on this contact (direct write, not an agent send). */}
+                <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                  <input
+                    data-testid="note-input"
+                    value={noteText}
+                    onChange={(e) => setNoteText(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") void logNote(contactDetail.contact.id); }}
+                    placeholder="Log a note or call…"
+                    style={{ flex: 1, padding: "8px 10px", borderRadius: 8, border: "1px solid var(--line, #e3ddd3)", fontSize: 13, fontFamily: "inherit" }}
+                  />
+                  <button
+                    data-testid="note-submit"
+                    disabled={noteBusy || !noteText.trim()}
+                    onClick={() => void logNote(contactDetail.contact.id)}
+                    style={{ ...ghostBtn, padding: "8px 14px", fontSize: 13, opacity: noteBusy || !noteText.trim() ? 0.6 : 1 }}
+                  >
+                    {noteBusy ? "Logging…" : "Log"}
+                  </button>
+                </div>
               </>
             )}
 
             {/* ------------------------------------------------ company detail */}
             {drawer.kind === "company" && companyDetail !== null && (
               <>
-                <h2 data-testid="drawer-title" style={{ fontSize: 20, fontWeight: 760, letterSpacing: "-.02em", margin: "0 0 6px" }}>
-                  {companyDetail.company.name ?? "Unnamed company"}
-                </h2>
+                <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, marginBottom: 4 }}>
+                  <h2 data-testid="drawer-title" style={{ fontSize: 20, fontWeight: 760, letterSpacing: "-.02em", margin: 0 }}>
+                    {companyDetail.company.name ?? "Unnamed company"}
+                  </h2>
+                  <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                    <button
+                      data-testid="edit-company-btn"
+                      onClick={() => openCompanyEdit(companyDetail.company)}
+                      style={{ ...ghostBtn, padding: "5px 12px", fontSize: 12.5 }}
+                    >
+                      Edit
+                    </button>
+                    <button
+                      data-testid="archive-company-btn"
+                      disabled={archiveBusy}
+                      onClick={() => void archive("companies", companyDetail.company.id)}
+                      style={{ ...ghostBtn, padding: "5px 12px", fontSize: 12.5, opacity: archiveBusy ? 0.6 : 1 }}
+                    >
+                      Archive
+                    </button>
+                  </div>
+                </div>
                 {companyDetail.company.domain && (
                   <div style={{ fontSize: 13, ...muted }}>{companyDetail.company.domain}</div>
                 )}
@@ -1107,6 +1243,66 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: Cont
                 }}
               >
                 {formBusy ? "Saving…" : formMode === "create" ? "Add contact" : "Save changes"}
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* ----------------------------------------------------------------- company create/edit modal */}
+      {companyMode !== null && (
+        <>
+          <div
+            data-testid="company-form-scrim"
+            onClick={closeCompanyForm}
+            style={{ position: "fixed", inset: 0, background: "rgba(20, 16, 12, .28)", zIndex: 60 }}
+          />
+          <div
+            data-testid="company-form"
+            role="dialog"
+            aria-label={companyMode === "create" ? "Add company" : "Edit company"}
+            style={{
+              position: "fixed", top: "50%", left: "50%", transform: "translate(-50%, -50%)",
+              width: "min(420px, calc(100vw - 32px))", background: "var(--surface, #fff)",
+              border: "1px solid var(--line, #e3ddd3)", borderRadius: 16, padding: 22, zIndex: 61,
+              boxShadow: "0 24px 60px rgba(20,16,12,.22)",
+            }}
+          >
+            <h2 style={{ fontSize: 18, fontWeight: 760, margin: "0 0 14px" }}>
+              {companyMode === "create" ? "Add company" : "Edit company"}
+            </h2>
+            <label style={{ display: "block", fontSize: 12.5, fontWeight: 600, ...muted, marginBottom: 4 }}>Name</label>
+            <input
+              data-testid="company-form-name"
+              value={companyFields.name}
+              onChange={(e) => setCompanyFields((f) => ({ ...f, name: e.target.value }))}
+              placeholder="Company name"
+              style={{ width: "100%", padding: "9px 11px", borderRadius: 9, border: "1px solid var(--line, #e3ddd3)", fontSize: 14, fontFamily: "inherit", marginBottom: 12 }}
+            />
+            <label style={{ display: "block", fontSize: 12.5, fontWeight: 600, ...muted, marginBottom: 4 }}>Domain</label>
+            <input
+              data-testid="company-form-domain"
+              value={companyFields.domain}
+              onChange={(e) => setCompanyFields((f) => ({ ...f, domain: e.target.value }))}
+              placeholder="acme.com"
+              style={{ width: "100%", padding: "9px 11px", borderRadius: 9, border: "1px solid var(--line, #e3ddd3)", fontSize: 14, fontFamily: "inherit" }}
+            />
+            {companyFormError && (
+              <div data-testid="company-form-error" style={{ color: "var(--rose, #b4413b)", fontSize: 13, marginTop: 10 }}>{companyFormError}</div>
+            )}
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 18 }}>
+              <button data-testid="company-form-cancel" onClick={closeCompanyForm} style={{ ...ghostBtn, padding: "9px 16px", fontSize: 13.5 }}>Cancel</button>
+              <button
+                data-testid="company-form-submit"
+                disabled={companyBusy || !companyFields.name.trim()}
+                onClick={() => void submitCompanyForm()}
+                style={{
+                  padding: "9px 16px", borderRadius: 10, border: "none", background: "var(--accent, #2a2622)",
+                  color: "#fff", fontSize: 13.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+                  opacity: companyBusy || !companyFields.name.trim() ? 0.6 : 1,
+                }}
+              >
+                {companyBusy ? "Saving…" : companyMode === "create" ? "Add company" : "Save changes"}
               </button>
             </div>
           </div>

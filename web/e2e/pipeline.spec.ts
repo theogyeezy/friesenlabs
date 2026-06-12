@@ -366,3 +366,78 @@ test("Cortex score: no champion (503) renders NOTHING — honest degradation, no
 
   expect(errors, `page errors: ${errors.join("\n")}`).toHaveLength(0);
 });
+
+
+// ===========================================================================
+// Deal archive + note + company re-link (the CRM build)
+// ===========================================================================
+
+test("archive a deal posts to /deals/{id}/archive and closes the drawer", async ({ page }) => {
+  let archivePath = "";
+  await page.route("**/deals", (r) => r.fulfill({ json: board([DEAL_A]) }));
+  await page.route("**/deals/*/archive", async (route) => {
+    archivePath = new URL(route.request().url()).pathname;
+    await route.fulfill({ json: { id: DEAL_A.id, archived: true, archived_at: "now" } });
+  });
+  await page.route("**/deals/*", (route) => {
+    if (route.request().url().includes("/archive")) return route.fallback();
+    return route.fulfill({ json: DETAIL_A });
+  });
+
+  await page.goto("/?view=pipeline");
+  await page.locator(`[data-deal-id="${DEAL_A.id}"]`).click();
+  await expect(page.getByTestId("archive-deal-btn")).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId("archive-deal-btn").click();
+  await expect(async () => { expect(archivePath).toContain("/archive"); }).toPass({ timeout: 5_000 });
+  expect(archivePath).toBe(`/deals/${DEAL_A.id}/archive`);
+});
+
+test("log a note on a deal posts to /deals/{id}/activities", async ({ page }) => {
+  let noteBody: Record<string, unknown> | null = null;
+  await page.route("**/deals", (r) => r.fulfill({ json: board([DEAL_A]) }));
+  await page.route("**/deals/*/activities", async (route) => {
+    noteBody = route.request().postDataJSON() as Record<string, unknown>;
+    await route.fulfill({ status: 201, json: { activity: { id: "a1", kind: "note", body: "Sent quote", occurred_at: null } } });
+  });
+  await page.route("**/deals/*", (route) => {
+    const u = route.request().url();
+    if (u.includes("/activities") || u.includes("/archive")) return route.fallback();
+    return route.fulfill({ json: DETAIL_A });
+  });
+
+  await page.goto("/?view=pipeline");
+  await page.locator(`[data-deal-id="${DEAL_A.id}"]`).click();
+  await page.getByTestId("deal-note-input").fill("Sent quote");
+  await page.getByTestId("deal-note-submit").click();
+  await expect(async () => { expect(noteBody).not.toBeNull(); }).toPass({ timeout: 5_000 });
+  expect(noteBody).toEqual({ kind: "note", body: "Sent quote" });
+});
+
+test("re-link a deal's company via the edit form patches company_id", async ({ page }) => {
+  let patchBody: Record<string, unknown> | null = null;
+  await page.route("**/deals", (r) => r.fulfill({ json: board([DEAL_A]) }));
+  await page.route("**/companies?*", (r) => r.fulfill({
+    json: { companies: [{ id: "co-9", name: "Northwind", domain: null }], has_more: false, count: 1, limit: 200, offset: 0, q: null },
+  }));
+  await page.route("**/contacts?*", (r) => r.fulfill({
+    json: { contacts: [], has_more: false, count: 0, limit: 100, offset: 0, q: null },
+  }));
+  await page.route(`**/deals/${DEAL_A.id}`, async (route) => {
+    if (route.request().method() === "PATCH") {
+      patchBody = route.request().postDataJSON() as Record<string, unknown>;
+      return route.fulfill({ json: { id: DEAL_A.id, updated: patchBody } });
+    }
+    return route.fulfill({ json: DETAIL_A });
+  });
+
+  await page.goto("/?view=pipeline");
+  await page.locator(`[data-deal-id="${DEAL_A.id}"]`).click();
+  await page.getByTestId("edit-deal-btn").click();
+  await expect(page.getByTestId("deal-form-company")).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId("deal-form-company").selectOption("co-9");
+  await page.getByTestId("deal-form-submit").click();
+
+  await expect(async () => { expect(patchBody).not.toBeNull(); }).toPass({ timeout: 5_000 });
+  expect(patchBody!.company_id).toBe("co-9");
+  expect(patchBody).not.toHaveProperty("tenant_id");
+});

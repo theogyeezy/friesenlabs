@@ -147,10 +147,11 @@ interface DealFormFields {
   title: string;
   amount: string; // string so the input is editable; converted to number on submit
   contact_id: string; // "" when no contact is attached
+  company_id: string; // "" when no company is attached
 }
 
 function emptyDealForm(): DealFormFields {
-  return { title: "", amount: "", contact_id: "" };
+  return { title: "", amount: "", contact_id: "", company_id: "" };
 }
 
 // How many contacts to pull into the picker. The form filters this page
@@ -338,6 +339,7 @@ export function PipelineBoard({ client, onOpenGreenlight, onLoadSample }: Pipeli
       title: d.title ?? "",
       amount: d.amount !== null && d.amount !== undefined ? String(d.amount) : "",
       contact_id: d.contact_id ?? "",
+      company_id: d.company_id ?? "",
     });
     setDealFormError(null);
     // The display name is resolved once the picker page loads (see effect below).
@@ -394,16 +396,21 @@ export function PipelineBoard({ client, onOpenGreenlight, onLoadSample }: Pipeli
       return;
     }
     const contact_id = dealFormFields.contact_id.trim() || null;
+    const company_id = dealFormFields.company_id.trim() || null;
     setDealFormBusy(true);
     setDealFormError(null);
     try {
       if (dealFormMode === "create") {
-        const body: CreateDealBody = { title, amount, contact_id };
+        const body: CreateDealBody = { title, amount, contact_id, company_id };
         await api.createDeal(body);
       } else {
-        // EditDealBody is title/amount today; the API also accepts contact_id,
-        // so widen the body to carry the chosen (or cleared) contact through.
-        const body: EditDealBody & { contact_id?: string | null } = { title, amount, contact_id };
+        // Edit carries the (re-linked or cleared) contact + company through; on edit an empty
+        // string clears the link server-side (-> NULL).
+        const body: EditDealBody = {
+          title, amount,
+          contact_id: dealFormFields.contact_id.trim(),  // "" clears the link
+          company_id: dealFormFields.company_id.trim(),
+        };
         await api.updateDeal(dealFormMode.id, body);
       }
       closeDealForm();
@@ -414,6 +421,42 @@ export function PipelineBoard({ client, onOpenGreenlight, onLoadSample }: Pipeli
       setDealFormBusy(false);
     }
   }, [api, dealFormMode, dealFormFields, closeDealForm, load]);
+
+  // ---- Company picker for the deal form (simple select; company is optional) ----
+  const [dealCompanies, setDealCompanies] = useState<{ id: string; name: string | null }[]>([]);
+  const [dealCompaniesLoaded, setDealCompaniesLoaded] = useState(false);
+  useEffect(() => {
+    if (dealFormMode === null || dealCompaniesLoaded) return;
+    void api.listCompanies({ limit: 200 }).then(
+      (r) => { setDealCompanies(r.companies); setDealCompaniesLoaded(true); },
+      () => { /* company is optional — leave the select empty */ },
+    );
+  }, [dealFormMode, dealCompaniesLoaded, api]);
+
+  // ---- Log a note on the open deal (direct write; refreshes the drawer) ----
+  const [dealNote, setDealNote] = useState("");
+  const [dealNoteBusy, setDealNoteBusy] = useState(false);
+  const logDealNote = useCallback(async (dealId: string) => {
+    const body = dealNote.trim();
+    if (!body) return;
+    setDealNoteBusy(true);
+    try {
+      await api.logActivity("deals", dealId, { kind: "note", body });
+      setDealNote("");
+      setDetail(await api.getDeal(dealId)); // refresh the activity list in place
+    } catch { /* keep the text for a retry */ } finally { setDealNoteBusy(false); }
+  }, [api, dealNote]);
+
+  // ---- Archive (soft) the open deal, then close the drawer + reload the board ----
+  const [dealArchiveBusy, setDealArchiveBusy] = useState(false);
+  const archiveDeal = useCallback(async (dealId: string) => {
+    setDealArchiveBusy(true);
+    try {
+      await api.setArchived("deals", dealId, true);
+      closeDrawer();
+      void load();
+    } catch { /* the board reload reflects the true state */ } finally { setDealArchiveBusy(false); }
+  }, [api, closeDrawer, load]);
 
   // Stage options for the move control: every stage the board knows about,
   // minus the deal's current one. Labels come from the server's groups.
@@ -652,13 +695,23 @@ export function PipelineBoard({ client, onOpenGreenlight, onLoadSample }: Pipeli
                   <h2 data-testid="drawer-title" style={{ fontSize: 20, fontWeight: 760, letterSpacing: "-.02em", margin: 0 }}>
                     {detail.deal.title ?? "Untitled deal"}
                   </h2>
-                  <button
-                    data-testid="edit-deal-btn"
-                    onClick={() => openEditDealForm(detail.deal)}
-                    style={{ ...ghostBtn, padding: "5px 12px", fontSize: 12.5, flexShrink: 0 }}
-                  >
-                    Edit
-                  </button>
+                  <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                    <button
+                      data-testid="edit-deal-btn"
+                      onClick={() => openEditDealForm(detail.deal)}
+                      style={{ ...ghostBtn, padding: "5px 12px", fontSize: 12.5 }}
+                    >
+                      Edit
+                    </button>
+                    <button
+                      data-testid="archive-deal-btn"
+                      disabled={dealArchiveBusy}
+                      onClick={() => void archiveDeal(detail.deal.id)}
+                      style={{ ...ghostBtn, padding: "5px 12px", fontSize: 12.5, opacity: dealArchiveBusy ? 0.6 : 1 }}
+                    >
+                      Archive
+                    </button>
+                  </div>
                 </div>
                 <div style={{ fontSize: 13, color: "var(--ink-3, #8a8278)" }}>
                   {detail.deal.company_name ?? "No company"}
@@ -787,6 +840,26 @@ export function PipelineBoard({ client, onOpenGreenlight, onLoadSample }: Pipeli
                     </div>
                   ))
                 )}
+
+                {/* Log a note/call on this deal (direct write, not an agent send). */}
+                <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                  <input
+                    data-testid="deal-note-input"
+                    value={dealNote}
+                    onChange={(e) => setDealNote(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") void logDealNote(detail.deal.id); }}
+                    placeholder="Log a note or call…"
+                    style={{ flex: 1, padding: "8px 10px", borderRadius: 8, border: "1px solid var(--line, #e3ddd3)", fontSize: 13, fontFamily: "inherit" }}
+                  />
+                  <button
+                    data-testid="deal-note-submit"
+                    disabled={dealNoteBusy || !dealNote.trim()}
+                    onClick={() => void logDealNote(detail.deal.id)}
+                    style={{ ...ghostBtn, padding: "8px 14px", fontSize: 13, opacity: dealNoteBusy || !dealNote.trim() ? 0.6 : 1 }}
+                  >
+                    {dealNoteBusy ? "Logging…" : "Log"}
+                  </button>
+                </div>
               </>
             )}
           </div>
@@ -1051,6 +1124,38 @@ export function PipelineBoard({ client, onOpenGreenlight, onLoadSample }: Pipeli
                   ))}
                 </div>
               )}
+            </div>
+
+            <div style={{ marginBottom: 14 }}>
+              <label
+                htmlFor="deal-form-company"
+                style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--ink-3, #8a8278)", marginBottom: 4 }}
+              >
+                Company
+              </label>
+              <select
+                id="deal-form-company"
+                data-testid="deal-form-company"
+                value={dealFormFields.company_id}
+                disabled={dealFormBusy}
+                onChange={(e) => setDealFormFields((f) => ({ ...f, company_id: e.target.value }))}
+                style={{
+                  width: "100%",
+                  boxSizing: "border-box",
+                  borderRadius: 10,
+                  border: "1px solid var(--line, #e3ddd3)",
+                  padding: "9px 12px",
+                  fontSize: 13.5,
+                  fontFamily: "inherit",
+                  background: "var(--surface, #fff)",
+                  color: "var(--ink, #2a2622)",
+                }}
+              >
+                <option value="">— No company —</option>
+                {dealCompanies.map((co) => (
+                  <option key={co.id} value={co.id}>{co.name ?? "Unnamed company"}</option>
+                ))}
+              </select>
             </div>
 
             {dealFormError && (

@@ -392,6 +392,42 @@ export interface CreateDealBody {
 export interface EditDealBody {
   title?: string | null;
   amount?: number | null;
+  // Re-link the deal: a uuid sets the link (validated for existence), an empty string clears it.
+  contact_id?: string | null;
+  company_id?: string | null;
+}
+
+/** Body for POST /companies. */
+export interface CreateCompanyBody {
+  name: string;
+  domain?: string | null;
+}
+/** Body for PATCH /companies/{id}. */
+export interface EditCompanyBody {
+  name?: string | null;
+  domain?: string | null;
+}
+export interface CreateCompanyResponse {
+  company: { id: string; name: string | null; domain: string | null };
+}
+export interface EditCompanyResponse {
+  id: string;
+  updated: Record<string, unknown>;
+  company?: { id: string; name: string | null; domain: string | null };
+}
+/** Body for POST /{entity}/{id}/activities — log a note/call/email. */
+export interface LogActivityBody {
+  kind?: string;
+  body: string;
+}
+export interface LogActivityResponse {
+  activity: { id: string; kind: string; body: string; occurred_at: string | null };
+}
+/** Response from POST /{entity}/{id}/archive | /unarchive. */
+export interface ArchiveResponse {
+  id: string;
+  archived: boolean;
+  archived_at: string | null;
 }
 
 /** Response from POST /deals (201). */
@@ -1745,6 +1781,32 @@ export class ApiClient {
       `/deals/${encodeURIComponent(dealId)}`,
       body,
     );
+  }
+
+  /** POST /companies: create a company {name, domain?}. */
+  async createCompany(body: CreateCompanyBody): Promise<CreateCompanyResponse> {
+    if (this.mock) return { company: { id: "co-mock", name: body.name, domain: body.domain ?? null } };
+    return this.request<CreateCompanyResponse>("POST", "/companies", body);
+  }
+
+  /** PATCH /companies/{id}: edit name/domain. */
+  async editCompany(companyId: string, body: EditCompanyBody): Promise<EditCompanyResponse> {
+    if (this.mock) return { id: companyId, updated: body as Record<string, unknown> };
+    return this.request<EditCompanyResponse>("PATCH", `/companies/${encodeURIComponent(companyId)}`, body);
+  }
+
+  /** POST /contacts/{id}/activities or /deals/{id}/activities: log a note/call/email.
+   * Direct user write (not an agent send) — never routed through Greenlight. */
+  async logActivity(entity: "contacts" | "deals", id: string, body: LogActivityBody): Promise<LogActivityResponse> {
+    if (this.mock) return { activity: { id: "act-mock", kind: body.kind ?? "note", body: body.body, occurred_at: null } };
+    return this.request<LogActivityResponse>("POST", `/${entity}/${encodeURIComponent(id)}/activities`, body);
+  }
+
+  /** POST /{entity}/{id}/archive | /unarchive: soft-archive (reversible) a CRM entity. */
+  async setArchived(entity: "deals" | "contacts" | "companies", id: string, archived: boolean): Promise<ArchiveResponse> {
+    if (this.mock) return { id, archived, archived_at: archived ? new Date().toISOString() : null };
+    const verb = archived ? "archive" : "unarchive";
+    return this.request<ArchiveResponse>("POST", `/${entity}/${encodeURIComponent(id)}/${verb}`);
   }
 
   // --- agent crew (authed, read-only) ------------------------------------------
