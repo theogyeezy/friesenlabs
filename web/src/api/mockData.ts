@@ -39,6 +39,9 @@ import {
   type ListTasksParams,
   type ListTasksResponse,
   type TaskRow,
+  type ListDuplicatesResponse,
+  type MergeBody,
+  type MergeResult,
   type MoveStageBody,
   type MoveStageResponse,
   type SaveViewBody,
@@ -927,6 +930,47 @@ export class MockApi {
       };
     });
     return { stages, total: this.deals.length, stage_order: [...STAGE_ORDER] };
+  }
+
+  // --- dedupe / merge ----------------------------------------------------------
+
+  findDuplicates(entity: "contacts" | "companies"): ListDuplicatesResponse {
+    if (entity === "companies") {
+      const dups = this.companies.filter((c) => c.id !== "co-mock").slice(0, 2);
+      if (dups.length < 2) return { clusters: [], count: 0 };
+      return {
+        clusters: [{
+          key: `domain:${dups[0].domain ?? "example.com"}`,
+          reason: "domain",
+          members: dups.map((c) => ({ ...c })),
+        }],
+        count: 1,
+      };
+    }
+    const dups = this.contacts.slice(0, 2);
+    if (dups.length < 2) return { clusters: [], count: 0 };
+    return {
+      clusters: [{
+        key: `email:${dups[0].email ?? "dupe@example.com"}`,
+        reason: "email",
+        members: dups.map((c) => ({ ...c })),
+      }],
+      count: 1,
+    };
+  }
+
+  merge(entity: "contacts" | "companies", body: MergeBody): MergeResult {
+    if (body.winner_id === body.loser_id) {
+      throw new ApiError(422, "winner and loser must be different");
+    }
+    if (entity === "companies") {
+      this.companies = this.companies.filter((c) => c.id !== body.loser_id);
+      const winner = this.companies.find((c) => c.id === body.winner_id) ?? null;
+      return { winner: winner ? { ...winner } : null, loser_id: body.loser_id, repointed: { contacts: 2, deals: 1 } };
+    }
+    this.contacts = this.contacts.filter((c) => c.id !== body.loser_id);
+    const winner = this.contacts.find((c) => c.id === body.winner_id) ?? null;
+    return { winner: winner ? { ...winner } : null, loser_id: body.loser_id, repointed: { deals: 1, activities: 2, tasks: 0 } };
   }
 
   // --- tasks / reminders -------------------------------------------------------

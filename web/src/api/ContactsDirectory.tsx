@@ -39,6 +39,7 @@ import {
   type EditContactBody,
 } from "./client";
 import { Spinner } from "./Spinner";
+import MergeDuplicates from "./MergeDuplicates";
 
 const { useState, useEffect, useCallback, useRef, useReducer, useMemo } = React;
 
@@ -175,6 +176,7 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: Cont
   const [tab, setTab] = useState<Tab>("people");
   const [query, setQuery] = useState("");
   const [loadingSample, setLoadingSample] = useState(false);
+  const [showMerge, setShowMerge] = useState(false);
 
   const runLoadSample = useCallback(async () => {
     if (loadingSample || !onLoadSample) return;
@@ -712,6 +714,29 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: Cont
       data-testid="contacts-directory"
       style={{ maxWidth: 860, margin: "0 auto", padding: "32px 24px", fontFamily: "system-ui, sans-serif" }}
     >
+      {showMerge && (
+        <div
+          data-testid="merge-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Find and merge duplicates"
+          style={{
+            position: "fixed", inset: 0, zIndex: 50,
+            background: "rgba(20,16,12,.32)",
+            display: "flex", alignItems: "flex-start", justifyContent: "center",
+            padding: "48px 16px", overflowY: "auto",
+          }}
+          onClick={(e) => { if (e.target === e.currentTarget) setShowMerge(false); }}
+        >
+          <div style={{ background: "var(--surface, #fff)", borderRadius: 16, padding: "22px 24px", width: "100%", maxWidth: 660, boxShadow: "0 12px 40px rgba(20,16,12,.18)" }}>
+            <MergeDuplicates
+              client={client}
+              onMerged={reload}
+              onClose={() => setShowMerge(false)}
+            />
+          </div>
+        </div>
+      )}
       <div style={{ marginBottom: 18 }}>
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
           <div>
@@ -719,6 +744,24 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: Cont
               Uplift CRM
             </div>
             <h1 style={{ fontSize: 26, fontWeight: 760, letterSpacing: "-.02em", margin: "6px 0 4px" }}>Contacts</h1>
+            <button
+              data-testid="find-duplicates-btn"
+              onClick={() => setShowMerge(true)}
+              style={{
+                marginTop: 2,
+                padding: "4px 10px",
+                borderRadius: 8,
+                border: "1px solid var(--line, #e3ddd3)",
+                background: "transparent",
+                color: "var(--ink-2, #6b6358)",
+                fontSize: 12.5,
+                fontWeight: 600,
+                cursor: "pointer",
+                fontFamily: "inherit",
+              }}
+            >
+              Find duplicates
+            </button>
           </div>
           {tab === "people" && (
             <button

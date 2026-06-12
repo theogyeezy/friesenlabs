@@ -444,6 +444,31 @@ export interface CreateDealResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Dedupe / merge (CRM-depth #16) — mirror api/contacts_routes.py shapes.
+// A cluster is a group of >=2 likely-duplicate rows sharing a match signal
+// (email/domain = strong, name = weak). Merging re-points the loser's
+// deals/activities/tasks and soft-archives it. No tenant_id anywhere.
+// ---------------------------------------------------------------------------
+export interface DuplicateCluster {
+  key: string;
+  reason: string; // "email" | "name" | "domain"
+  members: Array<Record<string, unknown> & { id: string; name: string | null }>;
+}
+export interface ListDuplicatesResponse {
+  clusters: DuplicateCluster[];
+  count: number;
+}
+export interface MergeBody {
+  winner_id: string;
+  loser_id: string;
+}
+export interface MergeResult {
+  winner: (Record<string, unknown> & { id: string; name: string | null }) | null;
+  loser_id: string;
+  repointed: Record<string, number>;
+}
+
+// ---------------------------------------------------------------------------
 // Tasks / reminders (CRM-depth #14) — mirror api/tasks_routes.py shapes.
 // No tenant_id anywhere — the server derives it from the verified claim.
 // ---------------------------------------------------------------------------
@@ -1876,6 +1901,25 @@ export class ApiClient {
     if (this.mock) return { id, archived, archived_at: archived ? new Date().toISOString() : null };
     const verb = archived ? "archive" : "unarchive";
     return this.request<ArchiveResponse>("POST", `/${entity}/${encodeURIComponent(id)}/${verb}`);
+  }
+
+  // --- dedupe / merge (authed; direct user write, never Greenlight) ------------
+
+  /** GET /contacts/duplicates | /companies/duplicates: clusters of likely-duplicate rows. */
+  async findDuplicates(entity: "contacts" | "companies"): Promise<ListDuplicatesResponse> {
+    if (this.mock) {
+      return (await this.mockApi()).findDuplicates(entity);
+    }
+    return this.request<ListDuplicatesResponse>("GET", `/${entity}/duplicates`);
+  }
+
+  /** POST /contacts/merge | /companies/merge: merge the loser into the winner. Body carries the
+   * two entity ids ONLY (no tenant_id — the trust rule). Returns the kept winner + repoint counts. */
+  async merge(entity: "contacts" | "companies", body: MergeBody): Promise<MergeResult> {
+    if (this.mock) {
+      return (await this.mockApi()).merge(entity, body);
+    }
+    return this.request<MergeResult>("POST", `/${entity}/merge`, body);
   }
 
   // --- tasks / reminders (authed; direct user write, never Greenlight) ---------

@@ -1125,6 +1125,154 @@ class PgCrmClient(_PgTenantClient):
             row = _dict_one(cur)
         return _normalize_task_row(row)
 
+    # ----------------------------------------------------------------- dedupe / merge
+    # Find likely-duplicate contacts/companies and merge a loser INTO a winner: re-point the
+    # loser's deals/activities/tasks, backfill the winner's empty fields, then soft-archive the
+    # loser (reversible — never a hard delete). All in ONE tenant-scoped transaction so a partial
+    # merge can never strand rows pointing at an archived loser. Identifiers are bound params and
+    # the tables are fixed; RLS (SET LOCAL) scopes every read + write to the verified tenant.
+
+    def find_duplicate_contacts(self, *, tenant_id: str, limit: int = DEFAULT_CRM_LIMIT) -> list[dict]:
+        """Cluster active contacts that look like duplicates: an exact (case-insensitive) email
+        match is the strong signal; failing an email, an exact normalized-name match. Returns
+        clusters of >=2, strongest signal first. RLS-scoped; the grouping is computed in SQL via a
+        derived dup_key so identifiers never come from input."""
+        n = _clamp_limit(limit, DEFAULT_CRM_LIMIT)
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "SELECT id, tenant_id, name, email, phone, company_id, created_at, "
+                "CASE WHEN nullif(btrim(lower(email)), '') IS NOT NULL "
+                "     THEN 'email:' || btrim(lower(email)) "
+                "     WHEN nullif(btrim(lower(name)), '') IS NOT NULL "
+                "     THEN 'name:' || btrim(lower(name)) "
+                "     ELSE NULL END AS dup_key "
+                "FROM contacts WHERE archived_at IS NULL "
+                "ORDER BY created_at ASC"
+            )
+            rows = _dict_rows(cur)
+        return self._cluster_dups(rows, n, _normalize_contact_row)
+
+    def find_duplicate_companies(self, *, tenant_id: str, limit: int = DEFAULT_CRM_LIMIT) -> list[dict]:
+        """Cluster active companies that look like duplicates: an exact (case-insensitive) domain
+        match is the strong signal; failing a domain, an exact normalized-name match. Returns
+        clusters of >=2, strongest signal first. RLS-scoped."""
+        n = _clamp_limit(limit, DEFAULT_CRM_LIMIT)
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "SELECT id, tenant_id, name, domain, created_at, "
+                "CASE WHEN nullif(btrim(lower(domain)), '') IS NOT NULL "
+                "     THEN 'domain:' || btrim(lower(domain)) "
+                "     WHEN nullif(btrim(lower(name)), '') IS NOT NULL "
+                "     THEN 'name:' || btrim(lower(name)) "
+                "     ELSE NULL END AS dup_key "
+                "FROM companies WHERE archived_at IS NULL "
+                "ORDER BY created_at ASC"
+            )
+            rows = _dict_rows(cur)
+        return self._cluster_dups(rows, n, _normalize_company_row)
+
+    @staticmethod
+    def _cluster_dups(rows: list[dict], limit: int, normalize) -> list[dict]:
+        """Group rows by their SQL-computed dup_key (NULL key = no signal, skipped), keep clusters
+        of >=2, and tag each with the match reason (the key's prefix). Email/domain clusters sort
+        before name clusters (stronger signal). The oldest member is suggested as the merge winner
+        (it carries the most history); the route leaves the final pick to the user."""
+        from collections import OrderedDict  # noqa: PLC0415 — local, import-safe
+        groups: "OrderedDict[str, list[dict]]" = OrderedDict()
+        for r in rows:
+            key = r.get("dup_key")
+            if not key:
+                continue
+            groups.setdefault(key, []).append(r)
+        clusters = []
+        for key, members in groups.items():
+            if len(members) < 2:
+                continue
+            reason = key.split(":", 1)[0]
+            clusters.append({
+                "key": key,
+                "reason": reason,
+                "members": [normalize(m) for m in members],
+            })
+        # Strong signal (email/domain) first, then larger clusters.
+        strong = {"email", "domain"}
+        clusters.sort(key=lambda c: (0 if c["reason"] in strong else 1, -len(c["members"])))
+        return clusters[:limit]
+
+    def _merge_entity(self, *, tenant_id: str, table: str, winner_id: str, loser_id: str,
+                      backfill_cols: tuple[str, ...], repoint: tuple[tuple[str, str], ...],
+                      normalize, select_sql: str) -> dict:
+        """Shared merge core. `repoint` is a tuple of (child_table, fk_column) whose loser-pointing
+        rows are moved to the winner; `backfill_cols` are winner columns filled from the loser when
+        the winner's value is NULL. The loser is soft-archived last. One transaction. Raises
+        ValueError (-> route 404/422) on a missing/visible-only row or a winner==loser request."""
+        if str(winner_id) == str(loser_id):
+            raise ValueError("winner and loser must be different rows")
+        repointed: dict[str, int] = {}
+        with self._tx(tenant_id) as cur:
+            # Both rows must be visible (RLS) and active — a merge into/from an archived or
+            # cross-tenant row is a clean 404, never an opaque FK error.
+            cur.execute(
+                f"SELECT id FROM {table} WHERE id = ANY(%s) AND archived_at IS NULL",
+                ([str(winner_id), str(loser_id)],),
+            )
+            seen = {_as_str(r.get("id")) for r in _dict_rows(cur)}
+            if str(winner_id) not in seen or str(loser_id) not in seen:
+                raise ValueError(f"{table[:-1]} not found or not visible")
+            # Re-point each child FK from loser -> winner.
+            for child, col in repoint:
+                cur.execute(
+                    f"UPDATE {child} SET {col} = %s WHERE {col} = %s",
+                    (str(winner_id), str(loser_id)),
+                )
+                repointed[child] = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+            # Backfill the winner's NULL columns from the loser (winner's own values win).
+            if backfill_cols:
+                set_sql = ", ".join(f"{c} = COALESCE(w.{c}, l.{c})" for c in backfill_cols)
+                cur.execute(
+                    f"UPDATE {table} w SET {set_sql} FROM {table} l "
+                    f"WHERE w.id = %s AND l.id = %s",
+                    (str(winner_id), str(loser_id)),
+                )
+            # Soft-archive the loser (reversible; the merge is undoable by unarchiving + re-pointing).
+            cur.execute(
+                f"UPDATE {table} SET archived_at = now() WHERE id = %s",
+                (str(loser_id),),
+            )
+            cur.execute(select_sql, (str(winner_id),))
+            winner = _dict_one(cur)
+        return {
+            "winner": normalize(winner) if winner else None,
+            "loser_id": str(loser_id),
+            "repointed": repointed,
+        }
+
+    def merge_contacts(self, *, tenant_id: str, winner_id: str, loser_id: str) -> dict:
+        """Merge the loser contact into the winner: re-point the loser's deals, activities, and
+        tasks, backfill the winner's empty email/phone/company, then soft-archive the loser."""
+        return self._merge_entity(
+            tenant_id=tenant_id, table="contacts", winner_id=winner_id, loser_id=loser_id,
+            backfill_cols=("email", "phone", "company_id"),
+            repoint=(("deals", "contact_id"), ("activities", "contact_id"), ("tasks", "contact_id")),
+            normalize=_normalize_contact_row,
+            select_sql=(
+                "SELECT c.id, c.tenant_id, c.name, c.email, c.phone, c.company_id, c.created_at, "
+                "(SELECT name FROM companies co WHERE co.id = c.company_id) AS company_name "
+                "FROM contacts c WHERE c.id = %s"
+            ),
+        )
+
+    def merge_companies(self, *, tenant_id: str, winner_id: str, loser_id: str) -> dict:
+        """Merge the loser company into the winner: re-point the loser's contacts and deals,
+        backfill the winner's empty domain, then soft-archive the loser."""
+        return self._merge_entity(
+            tenant_id=tenant_id, table="companies", winner_id=winner_id, loser_id=loser_id,
+            backfill_cols=("domain",),
+            repoint=(("contacts", "company_id"), ("deals", "company_id")),
+            normalize=_normalize_company_row,
+            select_sql="SELECT id, tenant_id, name, domain, created_at FROM companies WHERE id = %s",
+        )
+
     def insert_deal(self, *, tenant_id: str, company_id: str, name: str,
                     stage: str, amount: float | int | None,
                     contact_id: str | None = None) -> dict:

@@ -590,3 +590,109 @@ def test_count_open_tasks_filtered_aggregate(monkeypatch):
     assert "FROM tasks WHERE archived_at IS NULL" in count_sql
     assert "FILTER (WHERE done_at IS NULL)" in count_sql
     assert out == {"open_count": 3, "overdue_count": 1}
+
+
+# --------------------------------------------------------------------------- #
+# dedupe / merge (CRM-depth #16)
+# --------------------------------------------------------------------------- #
+@pytest.mark.unit
+def test_cluster_dups_groups_by_key_strong_signal_first():
+    from api.pg_clients import _normalize_contact_row
+    rows = [
+        {"id": "1", "tenant_id": "T", "name": "Dana", "email": "d@x.com", "dup_key": "email:d@x.com"},
+        {"id": "2", "tenant_id": "T", "name": "Dana W", "email": "d@x.com", "dup_key": "email:d@x.com"},
+        {"id": "3", "tenant_id": "T", "name": "Acme", "email": None, "dup_key": "name:acme"},
+        {"id": "4", "tenant_id": "T", "name": "Acme", "email": None, "dup_key": "name:acme"},
+        {"id": "5", "tenant_id": "T", "name": "Solo", "email": None, "dup_key": "name:solo"},
+        {"id": "6", "tenant_id": "T", "name": None, "email": None, "dup_key": None},  # no signal
+    ]
+    clusters = PgCrmClient._cluster_dups(rows, 50, _normalize_contact_row)
+    # two clusters (email + name); the singleton + the keyless row are dropped
+    assert len(clusters) == 2
+    # strong signal (email) sorts first
+    assert clusters[0]["reason"] == "email"
+    assert {m["id"] for m in clusters[0]["members"]} == {"1", "2"}
+    assert clusters[1]["reason"] == "name"
+    # tenant_id is preserved on members for the route to strip (defense in depth)
+    assert all("tenant_id" in m for m in clusters[0]["members"])
+
+
+@pytest.mark.unit
+def test_merge_contacts_repoints_backfills_and_archives(monkeypatch):
+    # The visibility SELECT returns BOTH ids; the winner read-back returns a row.
+    class MergeCursor(FakeCursor):
+        def __init__(self, log):
+            super().__init__(log)
+            self.rowcount = 1
+        def fetchall(self):
+            # only the visibility SELECT calls fetchall — return both ids visible
+            return [{"id": "win"}, {"id": "lose"}]
+        def fetchone(self):
+            return {"id": "win", "tenant_id": "T1", "name": "Dana", "email": "d@x.com",
+                    "phone": None, "company_id": None, "company_name": None, "created_at": None}
+
+    class MergeConn(FakeConn):
+        def cursor(self, cursor_factory=None):
+            return MergeCursor(self.log)
+
+    class MergePool(FakePool):
+        def __init__(self):
+            self.log = []
+            self._conn = MergeConn(self.log)
+            self.put = 0
+
+    pool = MergePool()
+    _patch_pool(monkeypatch, pool)
+    crm = PgCrmClient("postgresql://crm_app@h/db")
+    out = crm.merge_contacts(tenant_id="T1", winner_id="win", loser_id="lose")
+
+    sql = _sql(pool)
+    assert sql[0].startswith("SET LOCAL app.current_tenant")
+    joined = " ".join(sql)
+    # re-points all three child FKs from loser -> winner
+    assert "UPDATE deals SET contact_id = %s WHERE contact_id = %s" in joined
+    assert "UPDATE activities SET contact_id = %s WHERE contact_id = %s" in joined
+    assert "UPDATE tasks SET contact_id = %s WHERE contact_id = %s" in joined
+    # backfills the winner's NULL columns from the loser
+    assert "UPDATE contacts w SET email = COALESCE(w.email, l.email)" in joined
+    # soft-archives the loser (never a DELETE)
+    assert "UPDATE contacts SET archived_at = now() WHERE id = %s" in joined
+    assert "DELETE" not in joined
+    assert out["loser_id"] == "lose"
+    assert out["winner"]["id"] == "win"
+    assert out["repointed"] == {"deals": 1, "activities": 1, "tasks": 1}
+
+
+@pytest.mark.unit
+def test_merge_same_id_raises():
+    crm = PgCrmClient.__new__(PgCrmClient)
+    with pytest.raises(ValueError):
+        crm._merge_entity(tenant_id="T", table="contacts", winner_id="x", loser_id="x",
+                          backfill_cols=(), repoint=(), normalize=lambda r: r, select_sql="SELECT 1")
+
+
+@pytest.mark.unit
+def test_merge_missing_row_raises(monkeypatch):
+    # Visibility SELECT returns only ONE id -> not both visible -> ValueError(not found).
+    class OneVisibleCursor(FakeCursor):
+        def __init__(self, log):
+            super().__init__(log)
+            self.rowcount = 0
+        def fetchall(self):
+            return [{"id": "win"}]  # loser not visible
+
+    class OneVisibleConn(FakeConn):
+        def cursor(self, cursor_factory=None):
+            return OneVisibleCursor(self.log)
+
+    class OneVisiblePool(FakePool):
+        def __init__(self):
+            self.log = []
+            self._conn = OneVisibleConn(self.log)
+            self.put = 0
+
+    pool = OneVisiblePool()
+    _patch_pool(monkeypatch, pool)
+    crm = PgCrmClient("postgresql://crm_app@h/db")
+    with pytest.raises(ValueError, match="not found"):
+        crm.merge_contacts(tenant_id="T1", winner_id="win", loser_id="lose")

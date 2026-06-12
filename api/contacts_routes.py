@@ -176,6 +176,13 @@ class CreateActivityBody(BaseModel):
     body: str
 
 
+class MergeBody(BaseModel):
+    """Merge the LOSER entity into the WINNER (the kept row). THE TRUST RULE: no tenant_id — both
+    ids are entity ids the server resolves under the verified claim."""
+    winner_id: str
+    loser_id: str
+
+
 def mount_contacts(app: FastAPI, deps: ContactsDeps, current_tenant) -> None:
     """Mount the /contacts + /companies routes on `app`, authed via `current_tenant` (the same
     verified-claims dependency every other authed route uses)."""
@@ -200,6 +207,36 @@ def mount_contacts(app: FastAPI, deps: ContactsDeps, current_tenant) -> None:
             "offset": off,
             "q": term,
         }
+
+    # Declared BEFORE /contacts/{contact_id} so the literal path wins the match (FastAPI is
+    # first-match; otherwise "duplicates" would bind as a contact_id and 404).
+    @app.get("/contacts/duplicates")
+    def contact_duplicates(claims: TenantClaims = Depends(current_tenant)):
+        crm = _require_reader(deps)
+        clusters = crm.find_duplicate_contacts(tenant_id=claims.tenant_id)
+        # Defense in depth: strip tenant_id from every member row, fail loud on a leak.
+        safe = [
+            {**c, "members": _checked_rows(c["members"], claims.tenant_id)}
+            for c in clusters
+        ]
+        return {"clusters": safe, "count": len(safe)}
+
+    @app.post("/contacts/merge")
+    def merge_contacts(body: MergeBody, claims: TenantClaims = Depends(current_tenant)):
+        crm = _require_reader(deps)
+        winner = _valid_id_or_404(body.winner_id, kind="contact")
+        loser = _valid_id_or_404(body.loser_id, kind="contact")
+        if winner == loser:
+            raise HTTPException(status_code=422, detail="winner and loser must be different contacts")
+        try:
+            result = crm.merge_contacts(tenant_id=claims.tenant_id, winner_id=winner, loser_id=loser)
+        except ValueError as exc:
+            if "not found" in str(exc):
+                raise HTTPException(status_code=404, detail="no such contact")
+            raise HTTPException(status_code=422, detail=str(exc))
+        if result.get("winner"):
+            result["winner"] = _checked_rows([result["winner"]], claims.tenant_id)[0]
+        return result
 
     @app.get("/contacts/{contact_id}")
     def get_contact(contact_id: str, claims: TenantClaims = Depends(current_tenant)):
@@ -303,6 +340,34 @@ def mount_contacts(app: FastAPI, deps: ContactsDeps, current_tenant) -> None:
             "offset": off,
             "q": term,
         }
+
+    # Declared BEFORE /companies/{company_id} so the literal path wins the match.
+    @app.get("/companies/duplicates")
+    def company_duplicates(claims: TenantClaims = Depends(current_tenant)):
+        crm = _require_reader(deps)
+        clusters = crm.find_duplicate_companies(tenant_id=claims.tenant_id)
+        safe = [
+            {**c, "members": _checked_rows(c["members"], claims.tenant_id)}
+            for c in clusters
+        ]
+        return {"clusters": safe, "count": len(safe)}
+
+    @app.post("/companies/merge")
+    def merge_companies(body: MergeBody, claims: TenantClaims = Depends(current_tenant)):
+        crm = _require_reader(deps)
+        winner = _valid_id_or_404(body.winner_id, kind="company")
+        loser = _valid_id_or_404(body.loser_id, kind="company")
+        if winner == loser:
+            raise HTTPException(status_code=422, detail="winner and loser must be different companies")
+        try:
+            result = crm.merge_companies(tenant_id=claims.tenant_id, winner_id=winner, loser_id=loser)
+        except ValueError as exc:
+            if "not found" in str(exc):
+                raise HTTPException(status_code=404, detail="no such company")
+            raise HTTPException(status_code=422, detail=str(exc))
+        if result.get("winner"):
+            result["winner"] = _checked_rows([result["winner"]], claims.tenant_id)[0]
+        return result
 
     @app.get("/companies/{company_id}")
     def get_company(company_id: str, claims: TenantClaims = Depends(current_tenant)):
