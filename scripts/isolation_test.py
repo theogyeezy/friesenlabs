@@ -99,6 +99,30 @@ def main() -> int:
             if cur.rowcount != 0:
                 failures.append("tenant A could UPDATE tenant B's rows — RLS NOT enforced")
 
+            # approvals — the Greenlight queue (audit P0: this gate previously never probed it).
+            # A cross-tenant approval READ leaks a draft's contents; a cross-tenant DECIDE would
+            # let tenant A approve tenant B's side-effecting action. Both must come back empty.
+            cur.execute("SET app.current_tenant = %s", (tenant_b,))
+            cur.execute(
+                "INSERT INTO approvals (tenant_id, proposed_action, agent, reasoning, status) "
+                "VALUES (%s, '{\"action\":\"send_email\",\"body\":\"b-draft\"}'::jsonb, "
+                "'nadia', 'isolation probe', 'pending') RETURNING id",
+                (tenant_b,),
+            )
+            approval_b = cur.fetchone()[0]
+            cur.execute("SET app.current_tenant = %s", (tenant_a,))
+            cur.execute("SELECT 1 FROM approvals WHERE id = %s", (approval_b,))
+            if cur.fetchone() is not None:
+                failures.append("tenant A read tenant B's approval — RLS NOT enforced on approvals")
+            cur.execute(
+                "UPDATE approvals SET status='approved' WHERE id = %s AND status='pending'",
+                (approval_b,),
+            )
+            if cur.rowcount != 0:
+                failures.append(
+                    "tenant A decided tenant B's approval — RLS NOT enforced on approvals UPDATE"
+                )
+
             # Tenant-scoped referential integrity. FK validation bypasses RLS (it runs as the
             # table owner), so without the composite (tenant_id, id) FKs a tenant could attach
             # child rows to ANOTHER tenant's parent. Probe both directions:

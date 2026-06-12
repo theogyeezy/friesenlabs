@@ -144,6 +144,23 @@ function App() {
     await defaultClient().loadSampleData();
     setSampleReloadKey((k) => k + 1);
   }, []);
+  // Real-mode pending-approvals badge (Greenlight audit P0: drafts must be discoverable
+  // without opening the queue). Polls the tenant's total_pending each minute via the
+  // limit=1 page — the count rides the response, never the full queue. Any failure
+  // (404/503/network) shows no badge rather than a stale or fake number.
+  const [realPendingCount, setRealPendingCount] = useState(null);
+  useEffect(() => {
+    if (!realMode) return;
+    let live = true;
+    const tick = () => {
+      defaultClient().listApprovals({ limit: 1 })
+        .then((r) => { if (live) setRealPendingCount(r.total_pending ?? null); })
+        .catch(() => { if (live) setRealPendingCount(null); });
+    };
+    tick();
+    const t = window.setInterval(tick, 60_000);
+    return () => { live = false; window.clearInterval(t); };
+  }, [realMode]);
   // Load this tenant's enabled modules (real mode only) so the app shows ONLY the
   // surfaces they've chosen. Any failure (503/404/network) leaves enabledRoutes
   // null → show-all, so the gate can never strand a tenant out of their workspace.
@@ -315,9 +332,10 @@ function App() {
         {navMain.length > 0 && <div className="nav-section-label">Workspace</div>}
         <nav className="nav">
           {navMain.map((n) => {
-            // In real mode the FLStore pending count is prototype data, not the
-            // tenant's queue — show no badge rather than a fake number.
-            const badge = n.id === "approvals" ? (realMode ? null : pendingCount || null) : realMode ? null : n.badge;
+            // The approvals badge: the REAL tenant queue count in real mode (polled above;
+            // null on any failure = no badge, never a fake number); the FLStore prototype
+            // count in mock mode. Other prototype badges stay mock-only.
+            const badge = n.id === "approvals" ? ((realMode ? realPendingCount : pendingCount) || null) : realMode ? null : n.badge;
             return (
               <button key={n.id} className={"nav-item" + (route === n.id ? " active" : "")} onClick={() => navTo(n.id)}>
                 <span className="nav-ico"><Icon name={n.icon} size={18} /></span>

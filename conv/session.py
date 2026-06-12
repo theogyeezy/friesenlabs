@@ -14,6 +14,13 @@ requests per tenant, so a frozen construction-time date would silently rot date 
 A turn returns a structured result:
   {answer, citations, pending_approvals, slots, delegations, session_id, tenant_id}
 
+KILL SWITCH (decided, Greenlight audit P1): the pause is enforced at the API boundary —
+POST /chat answers 409 while the tenant (or global) switch is engaged, on EVERY runtime —
+and again at approval-execute (api/app.py decide_approval). This layer deliberately carries
+no pause check of its own: a Conversation constructed outside the API (tests, scripts) stays
+draft-only regardless (the Phase 4 base-class guarantee routes every side effect to
+Greenlight), so the switch's job — no real execution while paused — holds without it.
+
 Routing (TODO AI/P1 resolved — coordinator-driven on real runtimes):
   - FakeRuntime ONLY (explicitly gated): the offline regex facade —
       * a *knowledge* question -> agentic RAG with citations (conv.rag.answer).
