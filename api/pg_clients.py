@@ -369,6 +369,12 @@ class EmbedderUnavailable(RuntimeError):
     behaves exactly as before."""
 
 
+class PageOrganizeUnavailable(RuntimeError):
+    """A page-organization WRITE hit a database where the knowledge_pages migration hasn't
+    run (42P01) — typed so the route answers honest 'organizing is rolling out' copy, never
+    a 500. Reads degrade quietly instead (list_page_meta -> None: a flat pages list)."""
+
+
 class PgRagClient(_PgTenantClient):
     """pgvector cosine search over `documents` (tenant-scoped via RLS).
 
@@ -543,6 +549,104 @@ class PgRagClient(_PgTenantClient):
                 (_UPLOAD_SOURCE, ref_prefix, like),
             )
             return cur.rowcount or 0
+
+    # ------------------------------------------------------------------ page organization
+    # Hierarchy + manual order over `knowledge_pages` (db/schema.sql) — page-level metadata
+    # keyed by ref prefix; an ABSENT row means "top level, default order". Every method
+    # tolerates the table not existing yet (the web/API can deploy ahead of the MIGRATION):
+    # reads answer None, the location write raises the typed PageOrganizeUnavailable — the
+    # route turns that into honest copy, never a 500.
+
+    @staticmethod
+    def _organize_missing(exc: Exception) -> bool:
+        """True when the failure is `relation does not exist` (42P01) — the knowledge_pages
+        migration hasn't run on this database yet. pgcode is read as an attribute so this
+        module still never imports psycopg2 at import time."""
+        return getattr(exc, "pgcode", None) == "42P01"
+
+    def list_page_meta(self, *, tenant_id: str) -> dict[str, dict] | None:
+        """All of the tenant's page-organization rows keyed by ref prefix — or None when the
+        table hasn't been migrated yet (callers render the honest flat list)."""
+        try:
+            with self._tx(tenant_id) as cur:
+                cur.execute("SELECT ref_prefix, parent_ref, sort_order FROM knowledge_pages")
+                rows = _dict_rows(cur)
+        except Exception as exc:  # noqa: BLE001 — only the missing-table case is special
+            if self._organize_missing(exc):
+                return None
+            raise
+        return {
+            str(r["ref_prefix"]): {
+                "parent_ref": r.get("parent_ref"),
+                "sort_order": float(r.get("sort_order") or 0),
+            }
+            for r in rows
+        }
+
+    def set_page_location(self, *, tenant_id: str, ref_prefix: str,
+                          parent_ref: str | None, sort_order: float) -> None:
+        """Upsert one page's location (parent + order) in one tenant-scoped transaction."""
+        try:
+            with self._tx(tenant_id) as cur:
+                cur.execute(
+                    "INSERT INTO knowledge_pages (tenant_id, ref_prefix, parent_ref, sort_order) "
+                    "VALUES (%s, %s, %s, %s) "
+                    "ON CONFLICT (tenant_id, ref_prefix) DO UPDATE SET "
+                    "parent_ref = EXCLUDED.parent_ref, sort_order = EXCLUDED.sort_order, "
+                    "updated_at = now()",
+                    (str(tenant_id), ref_prefix, parent_ref, sort_order),
+                )
+        except Exception as exc:  # noqa: BLE001
+            if self._organize_missing(exc):
+                raise PageOrganizeUnavailable(str(exc)) from exc
+            raise
+
+    def migrate_page_ref(self, *, tenant_id: str, old_ref: str, new_ref: str) -> None:
+        """An edit moved a page to a NEW ref namespace (content hash changed): carry its
+        location row to the new key and re-point its children — one transaction, so the tree
+        never half-moves. Absent table = nothing to carry (quietly fine: organization simply
+        doesn't exist yet)."""
+        try:
+            with self._tx(tenant_id) as cur:
+                cur.execute(
+                    "UPDATE knowledge_pages SET ref_prefix = %s, updated_at = now() "
+                    "WHERE ref_prefix = %s",
+                    (new_ref, old_ref),
+                )
+                cur.execute(
+                    "UPDATE knowledge_pages SET parent_ref = %s, updated_at = now() "
+                    "WHERE parent_ref = %s",
+                    (new_ref, old_ref),
+                )
+        except Exception as exc:  # noqa: BLE001
+            if self._organize_missing(exc):
+                return
+            raise
+
+    def delete_page_meta(self, *, tenant_id: str, ref_prefix: str) -> None:
+        """A page was deleted: its children move up to ITS parent (never orphaned under a
+        ghost), then its own row goes — one transaction. Absent table = nothing to clean."""
+        try:
+            with self._tx(tenant_id) as cur:
+                cur.execute(
+                    "SELECT parent_ref FROM knowledge_pages WHERE ref_prefix = %s",
+                    (ref_prefix,),
+                )
+                row = cur.fetchone()
+                grandparent = row[0] if row else None
+                cur.execute(
+                    "UPDATE knowledge_pages SET parent_ref = %s, updated_at = now() "
+                    "WHERE parent_ref = %s",
+                    (grandparent, ref_prefix),
+                )
+                cur.execute(
+                    "DELETE FROM knowledge_pages WHERE ref_prefix = %s",
+                    (ref_prefix,),
+                )
+        except Exception as exc:  # noqa: BLE001
+            if self._organize_missing(exc):
+                return
+            raise
 
 
 # Allow-listed CRM tables + their filterable columns (identifiers are NEVER taken from input

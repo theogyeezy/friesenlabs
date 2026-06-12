@@ -64,7 +64,9 @@ class FakeRag:
 
     def __init__(self, inventory=None, hits=None, search_error: Exception | None = None,
                  docs=None, doc_map=None, delete_rows=None,
-                 delete_error: Exception | None = None):
+                 delete_error: Exception | None = None,
+                 page_meta=None, organize_available: bool = True,
+                 location_error: Exception | None = None):
         self._inventory = list(inventory or [])
         self._hits = list(hits or [])
         self._search_error = search_error
@@ -72,6 +74,11 @@ class FakeRag:
         self._doc_map = dict(doc_map or {})
         self._delete_rows = dict(delete_rows or {})
         self._delete_error = delete_error
+        # page organization: dict ref -> {parent_ref, sort_order}; organize_available=False
+        # simulates the un-migrated database (list_page_meta -> None, writes raise typed).
+        self.page_meta = dict(page_meta or {})
+        self._organize_available = organize_available
+        self._location_error = location_error
         self.calls: list[tuple] = []
 
     def list_document_inventory(self, *, tenant_id: str):
@@ -98,6 +105,37 @@ class FakeRag:
         if self._delete_error is not None:
             raise self._delete_error
         return self._delete_rows.get(ref_prefix, 0)
+
+    def list_page_meta(self, *, tenant_id: str):
+        self.calls.append(("list_page_meta", tenant_id))
+        if not self._organize_available:
+            return None
+        return {k: dict(v) for k, v in self.page_meta.items()}
+
+    def set_page_location(self, *, tenant_id: str, ref_prefix: str, parent_ref, sort_order):
+        self.calls.append(("set_page_location", tenant_id, ref_prefix, parent_ref, sort_order))
+        if self._location_error is not None:
+            raise self._location_error
+        from api.pg_clients import PageOrganizeUnavailable
+        if not self._organize_available:
+            raise PageOrganizeUnavailable("relation knowledge_pages does not exist")
+        self.page_meta[ref_prefix] = {"parent_ref": parent_ref, "sort_order": sort_order}
+
+    def migrate_page_ref(self, *, tenant_id: str, old_ref: str, new_ref: str):
+        self.calls.append(("migrate_page_ref", tenant_id, old_ref, new_ref))
+        if old_ref in self.page_meta:
+            self.page_meta[new_ref] = self.page_meta.pop(old_ref)
+        for m in self.page_meta.values():
+            if m.get("parent_ref") == old_ref:
+                m["parent_ref"] = new_ref
+
+    def delete_page_meta(self, *, tenant_id: str, ref_prefix: str):
+        self.calls.append(("delete_page_meta", tenant_id, ref_prefix))
+        gone = self.page_meta.pop(ref_prefix, None)
+        grandparent = (gone or {}).get("parent_ref")
+        for m in self.page_meta.values():
+            if m.get("parent_ref") == ref_prefix:
+                m["parent_ref"] = grandparent
 
 
 def _inventory():
@@ -537,23 +575,27 @@ def test_list_documents_shapes_titles_and_previews():
     body = r.json()
     assert body["total"] == 2
     fresh, legacy = body["documents"]
-    # The raw head parses into an exact title + a collapsed, bounded preview.
+    # The raw head parses into an exact title + a collapsed, bounded preview; never-organized
+    # pages carry the top-level defaults (no meta row).
     assert fresh == {"ref_id": REF_B, "title": "Onboarding SOP",
                      "preview": "Day one: badge, laptop, intro call.",
                      "chunks": 3, "editable": True,
                      "created_at": "2026-06-12T10:30:00+00:00",
-                     "updated_at": "2026-06-12T10:30:00+00:00"}
+                     "updated_at": "2026-06-12T10:30:00+00:00",
+                     "parent_ref": None, "sort_order": 0.0}
+    assert body["organize_available"] is True
     # A legacy upload de-slugs its ref for a title and lists read-only — never invented text.
     assert legacy["ref_id"] == REF_LEGACY
     assert legacy["title"] == "Old playbook"
     assert legacy["preview"] == ""
     assert legacy["editable"] is False
-    assert rag.calls == [("list_uploaded_documents", "A")]
+    assert rag.calls == [("list_uploaded_documents", "A"), ("list_page_meta", "A")]
 
 
 def test_list_documents_empty_and_unconfigured_and_auth():
     assert _client(KnowledgeDeps(rag=FakeRag())).get(
-        "/knowledge/documents", headers=H).json() == {"documents": [], "total": 0}
+        "/knowledge/documents", headers=H).json() == {
+            "documents": [], "total": 0, "organize_available": True}
     assert _client(KnowledgeDeps()).get(
         "/knowledge/documents", headers=H).status_code == 503
     assert _client(KnowledgeDeps(rag=FakeRag())).get(
@@ -639,7 +681,8 @@ def test_update_document_new_namespace_lands_then_cleans_old():
     # Ingest ran under the claims tenant; the OLD namespace was deleted AFTER the new landed.
     assert ing.calls == [("A", "Pricing Policy", "Discounts cap at 20% now.")]
     assert rag.calls == [("get_uploaded_document", "A", REF_A),
-                         ("delete_uploaded_document", "A", REF_A)]
+                         ("delete_uploaded_document", "A", REF_A),
+                         ("migrate_page_ref", "A", REF_A, REF_NEW)]
 
 
 def test_update_document_same_namespace_skips_delete():
@@ -689,7 +732,8 @@ def test_delete_document_removes_namespace():
     r = _client(KnowledgeDeps(rag=rag)).delete(f"/knowledge/documents/{REF_A}", headers=H)
     assert r.status_code == 200, r.text
     assert r.json() == {"ref_id": REF_A, "deleted": True, "rows_removed": 3}
-    assert rag.calls == [("delete_uploaded_document", "A", REF_A)]
+    assert rag.calls == [("delete_uploaded_document", "A", REF_A),
+                         ("delete_page_meta", "A", REF_A)]
 
 
 def test_delete_document_404_when_nothing_existed():
@@ -707,3 +751,123 @@ def test_delete_document_bad_ref_422_and_auth_and_unconfigured():
     assert client.delete(f"/knowledge/documents/{REF_A}").status_code == 401
     assert _client(KnowledgeDeps()).delete(
         f"/knowledge/documents/{REF_A}", headers=H).status_code == 503
+
+
+# --------------------------------------------------------------------------- #
+# Page organization — PATCH /knowledge/documents/{ref}/location + meta lifecycle
+# --------------------------------------------------------------------------- #
+def _tree_docs():
+    """Three pages, newest-first like the SQL list: B (child of A), C, A."""
+    return [
+        {"ref_id": REF_B, "raw_head": "B\n\nbody", "chunk_count": 1,
+         "created_at": _T2, "updated_at": _T2},
+        {"ref_id": "upload:c-page-cc00cc00", "raw_head": "C\n\nbody", "chunk_count": 1,
+         "created_at": _T1, "updated_at": _T2},
+        {"ref_id": REF_A, "raw_head": "A\n\nbody", "chunk_count": 1,
+         "created_at": _T1, "updated_at": _T1},
+    ]
+
+
+def test_list_carries_page_meta_and_flags_unmigrated_db():
+    meta = {REF_B: {"parent_ref": REF_A, "sort_order": 2.0}}
+    body = _client(KnowledgeDeps(rag=FakeRag(docs=_tree_docs(), page_meta=meta))).get(
+        "/knowledge/documents", headers=H).json()
+    by_ref = {d["ref_id"]: d for d in body["documents"]}
+    assert by_ref[REF_B]["parent_ref"] == REF_A and by_ref[REF_B]["sort_order"] == 2.0
+    assert by_ref[REF_A]["parent_ref"] is None
+    assert body["organize_available"] is True
+    # Un-migrated database: the SAME honest flat list, organize_available false — never a 500.
+    flat = _client(KnowledgeDeps(rag=FakeRag(docs=_tree_docs(), organize_available=False))).get(
+        "/knowledge/documents", headers=H).json()
+    assert flat["organize_available"] is False
+    assert all(d["parent_ref"] is None for d in flat["documents"])
+
+
+def test_location_reparent_and_back_to_top():
+    rag = FakeRag(docs=_tree_docs())
+    client = _client(KnowledgeDeps(rag=rag))
+    r = client.patch(f"/knowledge/documents/{REF_B}/location", headers=H,
+                     json={"parent_ref": REF_A, "tenant_id": "EVIL"})  # smuggled key ignored
+    assert r.status_code == 200, r.text
+    assert r.json()["parent_ref"] == REF_A
+    assert rag.page_meta[REF_B]["parent_ref"] == REF_A
+    # Back to top level: parent_ref null is a VALUE, not an omission.
+    r2 = client.patch(f"/knowledge/documents/{REF_B}/location", headers=H,
+                      json={"parent_ref": None})
+    assert r2.status_code == 200
+    assert rag.page_meta[REF_B]["parent_ref"] is None
+
+
+def test_location_refuses_cycles_unknown_parents_and_bad_ops():
+    meta = {REF_B: {"parent_ref": REF_A, "sort_order": 1.0}}  # B is already A's child
+    rag = FakeRag(docs=_tree_docs(), page_meta=meta)
+    client = _client(KnowledgeDeps(rag=rag))
+    # Self-parent and descendant-parent are cycles.
+    assert client.patch(f"/knowledge/documents/{REF_A}/location", headers=H,
+                        json={"parent_ref": REF_A}).status_code == 422
+    assert client.patch(f"/knowledge/documents/{REF_A}/location", headers=H,
+                        json={"parent_ref": REF_B}).status_code == 422
+    # Unknown parent / unknown page / both-or-neither operations.
+    assert client.patch(f"/knowledge/documents/{REF_A}/location", headers=H,
+                        json={"parent_ref": REF_NEW}).status_code == 422
+    assert client.patch(f"/knowledge/documents/{REF_NEW}/location", headers=H,
+                        json={"parent_ref": None}).status_code == 404
+    assert client.patch(f"/knowledge/documents/{REF_A}/location", headers=H,
+                        json={}).status_code == 422
+    assert client.patch(f"/knowledge/documents/{REF_A}/location", headers=H,
+                        json={"parent_ref": None, "move": "up"}).status_code == 422
+    assert client.patch(f"/knowledge/documents/{REF_A}/location", headers=H,
+                        json={"move": "sideways"}).status_code == 422
+    # The cycle/validation refusals never wrote anything.
+    assert not any(c[0] == "set_page_location" for c in rag.calls)
+
+
+def test_location_move_materializes_order_and_swaps():
+    # Three top-level pages, no meta yet: effective order = the list order (B, C, A).
+    rag = FakeRag(docs=_tree_docs())
+    client = _client(KnowledgeDeps(rag=rag))
+    r = client.patch("/knowledge/documents/upload:c-page-cc00cc00/location", headers=H,
+                     json={"move": "up"})
+    assert r.status_code == 200, r.text
+    # The whole sibling group materialized integer orders with C and B swapped: C=0, B=1, A=2.
+    assert rag.page_meta["upload:c-page-cc00cc00"]["sort_order"] == 0.0
+    assert rag.page_meta[REF_B]["sort_order"] == 1.0
+    assert rag.page_meta[REF_A]["sort_order"] == 2.0
+    # Moving the top page up is an honest no-op (no error, nothing rewritten).
+    before = dict(rag.page_meta)
+    assert client.patch("/knowledge/documents/upload:c-page-cc00cc00/location", headers=H,
+                        json={"move": "up"}).status_code == 200
+    assert rag.page_meta == before
+
+
+def test_location_unmigrated_db_answers_honest_503():
+    rag = FakeRag(docs=_tree_docs(), organize_available=False)
+    r = _client(KnowledgeDeps(rag=rag)).patch(
+        f"/knowledge/documents/{REF_A}/location", headers=H, json={"parent_ref": None})
+    assert r.status_code == 503
+    assert "rolling out" in r.json()["detail"]
+
+
+def test_edit_carries_location_to_the_new_ref():
+    meta = {REF_A: {"parent_ref": None, "sort_order": 1.0},
+            REF_B: {"parent_ref": REF_A, "sort_order": 0.0}}  # B sits under A
+    rag = FakeRag(doc_map=_doc_map(), delete_rows={REF_A: 3},
+                  docs=_tree_docs(), page_meta=meta)
+    ing = FakeEditIngestor(ref_id=REF_NEW)
+    client = _client(KnowledgeDeps(rag=rag, ingest_document=ing))
+    r = client.put(f"/knowledge/documents/{REF_A}", headers=H,
+                   json={"title": "A", "content": "new body"})
+    assert r.status_code == 200, r.text
+    # A's location row moved to the new ref; B's parent pointer followed.
+    assert REF_A not in rag.page_meta and REF_NEW in rag.page_meta
+    assert rag.page_meta[REF_B]["parent_ref"] == REF_NEW
+
+
+def test_delete_reparents_children_to_grandparent():
+    meta = {REF_A: {"parent_ref": None, "sort_order": 0.0},
+            REF_B: {"parent_ref": REF_A, "sort_order": 0.0}}
+    rag = FakeRag(delete_rows={REF_A: 3}, page_meta=meta)
+    client = _client(KnowledgeDeps(rag=rag))
+    assert client.delete(f"/knowledge/documents/{REF_A}", headers=H).status_code == 200
+    assert REF_A not in rag.page_meta
+    assert rag.page_meta[REF_B]["parent_ref"] is None  # up to A's (top-level) parent
