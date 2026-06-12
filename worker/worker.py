@@ -31,18 +31,10 @@ import logging
 import os
 from typing import Any, Callable
 
+from agents.coordinator import COORDINATOR
+from agents.roster import ROSTER
+from agents.tools import registry as tool_registry
 from agents.tools.base import Tool, ToolContext
-from agents.tools.build_view import BuildView
-from agents.tools.readonly import QueryCube, ReadCrm, SearchRag
-from agents.tools.run_model import RunModel
-from agents.tools.sideeffecting import (
-    CreateActivity,
-    CreateDeal,
-    DraftEmail,
-    IssueQuote,
-    UpdateContact,
-    UpdateDeal,
-)
 from shared.config import (
     ENV_ANTHROPIC_API_KEY,
     ENV_CLOUDWATCH_METRICS,
@@ -69,11 +61,17 @@ log = logging.getLogger(__name__)
 # registered-but-unserved. send_email stays the deliberate exception: it's registered ONLY so the
 # action gate can classify it side-effecting; no agent grants it and the real send is the
 # post-approval api/control path, so the worker must NOT serve it.
-TOOLS = [
-    SearchRag(), QueryCube(), ReadCrm(), RunModel(), BuildView(),  # read-only (AUTO)
-    DraftEmail(),                                                  # draft (AUTO)
-    UpdateDeal(), UpdateContact(), CreateActivity(), CreateDeal(), IssueQuote(),  # ALWAYS_ASK -> Greenlight
-]
+#
+# The list is BUILT from the grants through that trusted registry — parity by construction, never
+# by hand-curation discipline (a new grant is served automatically; a grant naming no registry
+# tool fails at import, not live).
+def build_tools(specs) -> list[Tool]:
+    """The served tool instances for `specs` — one per granted name, registry-resolved."""
+    names = sorted({name for spec in specs for name in spec.tools})
+    return [tool_registry.resolve(name) for name in names]
+
+
+TOOLS = build_tools([*ROSTER, COORDINATOR])
 
 # Brief Option A: a fixed 30s emit interval — two emits per alarm period (60s), so a single
 # dropped PutMetricData can never trip the worker_absent alarm on its own.

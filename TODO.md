@@ -364,6 +364,79 @@ Price — Lane Nick / owner.
   broadening shipped (#235), csv-card special-casing + `csvImport` client method + upload UI
   shipped (#228/#229), PgStructuredSink shipped (#222). _(Lane Nick: REQ-012 step 4 covers
   refreshing the stale REQ-008 status note + confirming the widened policy is APPLIED live.)_
+## Greenlight customer-readiness audit — TODOs (2026-06-11, Lane Matt)
+
+From a 4-pass audit (backend core · agent-plane integration · web UI · persistence+tests),
+claims spot-checked against source. Full report: `docs/audits/greenlight-audit-2026-06-11.md`.
+**Verdict: the core is sound** — draft-only guarantee is structural (`Tool.invoke` base class),
+decide is race-free/idempotent, RLS FORCE'd on approvals+traces, kill switch + dial persisted and
+multi-instance visible. The gaps below are the operational shell a paying customer hits.
+
+**ALL DONE (2026-06-11, this branch — `docs/audits/greenlight-audit-2026-06-11.md` § "Hardening implemented"):** expiry (lazy, `GREENLIGHT_TTL_HOURS` default 7d) · paginated
+`GET /approvals` + `total_pending` · partial pending index (live apply rides the next migrate —
+`BLOCKED: Lane Nick`) · isolation-gate approvals probe · `/chat` kill-switch 409 (decided: API
+boundary, covers both runtimes; documented in `conv/session.py`) · honest draft-only toast+log ·
+stale-decided UX + status-named errors · queue 404 degrade · real badge + polling + refresh ·
+structured payload panel · deny reasons · worker TOOLS derived from grants · tz-aware quiet
+hours + block logging · applier audit linkage · pool/dial-cache tests. The two P2 "document"
+items are documented postures (audit doc § "Documented postures"), not code.
+
+### P0 — before paying customers
+- [x] **Approval expiry** — schema names an `expired` status (`db/schema.sql:99`) but nothing
+  implements it: add `expires_at` (default e.g. created_at + 7d), reject expired in `decide()`,
+  and surface expired state in the UI — or formally document a no-auto-expiry policy. Today a
+  stale approval is approvable forever.
+- [x] **Paginate `GET /approvals`** (`api/app.py:234-236`) — returns the bare unbounded
+  `list_pending` list; add limit+cursor (reuse the traces keyset pattern), default 100.
+- [x] **Index `approvals (tenant_id, status, created_at)`** — no index exists on `approvals`;
+  `list_pending` scans. Author migration (Lane Matt); live apply is `BLOCKED: Lane Nick`.
+- [x] **Approvals discoverability in real mode** — nav badge is demo-only
+  (`web/src/app.tsx:300` `realMode ? null : pendingCount`) and `GreenlightQueue` loads once on
+  mount (no polling/refresh). Show a real pending count + poll (30–60s) + a refresh button;
+  otherwise drafts sit invisible forever.
+- [x] **Show what's being approved** — draft text falls back to `""` when `proposed_action`
+  lacks `body|note|message|...` (`web/src/api/GreenlightQueue.tsx:24-30`) and no recipient/deal
+  context renders. Add a structured read-only view of the proposed_action payload to the card.
+- [x] **Isolation gate: probe `approvals`** — `scripts/isolation_test.py` never touches the
+  approvals table (documents+FK only; traces covered in `test_control_rls.py`). Add a
+  cross-tenant approval read/decide probe.
+
+### P1 — soon after
+- [x] **Kill switch on the chat path** — no kill-switch check in `conv/session.py` or
+  `agents/runtime_selfhosted.py` (grep-verified). MA proposals queuing during a pause is
+  defensible (execution is gated at approve) — document it; the self-hosted (HIPAA-fallback)
+  tool loop running with zero pause check is not — add the check in `Conversation.send`.
+- [x] **Stop draft-only reading as a real send** — appliers return `performed:false`
+  ("draft-only until provider go-live", `api/control/appliers.py:17,91-92`) but the UI toast
+  says "Approved and sent" and the server logs nothing. Surface the `performed` flag in the
+  toast/card, log record-only outcomes, consider a `draft_only` marker at proposal time.
+- [x] **Already-decided UX** — a 400 "not pending" (another user won) shows the generic
+  "didn't go through" and the stale item stays listed; detect, explain, refresh. _(A reported
+  "optimistic removal without rollback" bug was a false positive — removal is post-success.)_
+- [x] **`GreenlightQueue` 404 degrade parity** — give it the same "not yet enabled"
+  feature-detection SecurityControls has (`web/src/api/SecurityControls.tsx`) instead of a
+  generic error.
+- [x] **Registry/roster drift** — `worker.TOOLS` is hand-curated (`worker/worker.py:56-60`);
+  `UpdateContact`/`CreateActivity`/`CreateDeal` are registered with live appliers but granted
+  nowhere and unserved. Grant+serve or remove; consider deriving TOOLS from the registry so the
+  parity test isn't the only guard.
+- [x] **Applier failure handling** — record more than `e.__class__.__name__`
+  (`api/app.py:~281`): add `logger.exception`, consider bounded retry for transient CRM errors,
+  and make "not pending" errors state the actual status.
+- [x] **Deny reason** — real UI hardcodes "Declined by reviewer."
+  (`web/src/api/GreenlightQueue.tsx`); add an optional reason field (the demo prototype's
+  picker never shipped) so agents can learn from rejections.
+- [x] **Compliance depth** — quiet hours hardcoded 21:00–08:00 trusting payload-supplied
+  `local_hour` (no tenant timezone source); compliance blocks aren't logged.
+
+### P2 — hygiene
+- [x] Document (or role-gate later) that any tenant member can approve anything and flip the
+  tenant kill switch/dial — v1 "every authed user is admin" is a deliberate posture, say so.
+- [x] Retention/archival policy for decided approvals (append-forever today).
+- [x] Test gaps: pool-exhaustion retry (`api/control/greenlight.py:115-130`), dial TTL-cache
+  read-your-own-write, e2e deny flow, e2e double-decide/stale-approval.
+- [x] Thread `approval_id`/`decided_by` into the applier signature for downstream audit/Cortex
+  feedback tie-in.
 
 ## FLEETAGENT session follow-ups (2026-06-11)
 

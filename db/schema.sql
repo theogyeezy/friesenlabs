@@ -469,6 +469,19 @@ CREATE POLICY tenant_isolation ON tenant_settings
 ALTER TABLE approvals ADD COLUMN IF NOT EXISTS applied_at timestamptz;
 ALTER TABLE approvals ADD COLUMN IF NOT EXISTS apply_result jsonb;
 
+-- approvals.expires_at — approval TTL (appended per the Matt-append rule; Greenlight audit P0).
+-- propose() stamps now() + GREENLIGHT_TTL_HOURS (default 7 days). Expiry is LAZY: an expired row
+-- drops out of pending reads/counts and a decide() on it flips status to 'expired' and refuses —
+-- a stale draft must never fire late. NULL (legacy rows / TTL disabled) never expires.
+ALTER TABLE approvals ADD COLUMN IF NOT EXISTS expires_at timestamptz;
+
+-- The pending-queue index (Greenlight audit P0): GET /approvals pages by (created_at, id) keyset
+-- within the verified tenant; without this every queue load scans the whole table. Partial on
+-- pending — decided/expired rows leave the index, so it stays small as history accumulates.
+CREATE INDEX IF NOT EXISTS approvals_tenant_pending_idx
+    ON approvals (tenant_id, created_at, id)
+    WHERE status = 'pending';
+
 -- ---------------------------------------------------------------------------
 -- workspace_keys — pre-minted Anthropic workspace-key POOL (appended per the Matt-append rule;
 -- issue #152: the Admin API's key-create endpoint 405s — keys are Console-only — so provisioning

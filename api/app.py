@@ -27,7 +27,7 @@ from api.auth import JwtVerifier, TenantClaims, make_current_tenant
 from api.control.autonomy import AutonomyConfig
 from api.control.appliers import apply_approved_action, was_performed
 from api.control.gate import ActionGate, GateContext
-from api.control.greenlight import EditNotAllowed, Greenlight
+from api.control.greenlight import DEFAULT_APPROVALS_LIMIT, EditNotAllowed, Greenlight
 from api.control.killswitch import KillSwitch
 from api.control.traces import InMemoryTraceStore, TraceStore
 from api.control.types import Action
@@ -238,8 +238,20 @@ def create_app(deps: ApiDeps) -> FastAPI:
         return {"email": claims.email, "tenant_id": claims.tenant_id, "name": None}
 
     @app.get("/approvals")
-    def list_approvals(claims: TenantClaims = Depends(current_tenant)):
-        return {"approvals": deps.greenlight.list_pending(claims.tenant_id)}
+    def list_approvals(limit: int = DEFAULT_APPROVALS_LIMIT, cursor: str | None = None,
+                       claims: TenantClaims = Depends(current_tenant)):
+        """One bounded page of the pending queue (keyset cursor, traces-style) + the tenant's
+        total pending count — the count feeds the web nav badge without fetching the queue."""
+        try:
+            rows, next_cursor = deps.greenlight.page_pending(
+                claims.tenant_id, limit=limit, cursor=cursor)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="invalid cursor")
+        return {
+            "approvals": rows,
+            "cursor": next_cursor,
+            "total_pending": deps.greenlight.count_pending(claims.tenant_id),
+        }
 
     @app.post("/approvals/{approval_id}/decide")
     def decide_approval(approval_id: str, body: DecideBody, claims: TenantClaims = Depends(current_tenant)):
@@ -282,9 +294,13 @@ def create_app(deps: ApiDeps) -> FastAPI:
         # happen (or cannot be trusted to have happened), recorded honestly as performed: false.
         try:
             apply_result = apply_approved_action(
-                deps.crm, apply_tenant, dict(decided["proposed_action"])
+                deps.crm, apply_tenant, dict(decided["proposed_action"]),
+                approval_id=approval_id, decided_by=claims.sub,
             )
         except Exception as e:  # noqa: BLE001 - response records type only, never internals
+            # The full traceback goes to the logs (the response stays internals-free) so an
+            # operator can diagnose a failed apply without guessing from a class name.
+            logger.exception("approval %s: applier failed", approval_id)
             failure = {"performed": False, "error": e.__class__.__name__}
             try:
                 deps.greenlight.store.update(apply_tenant, approval_id, {"apply_result": failure})
@@ -297,6 +313,16 @@ def create_app(deps: ApiDeps) -> FastAPI:
                 out["warning"] = "audit write failed; apply_result not persisted"
                 return out
             return deps.greenlight.store.get(claims.tenant_id, approval_id)
+
+        # Record-only honesty: an approved draft that performed nothing real must never read as
+        # a sent action — log it so compliance/audit reviews see the distinction server-side
+        # (the response already carries performed: false for the UI to surface).
+        if not apply_result.get("performed"):
+            logger.info(
+                "approval %s: %s approved but performed nothing real (%s)", approval_id,
+                decided["proposed_action"].get("action"),
+                apply_result.get("reason") or "applier reported performed=false",
+            )
 
         # Step 3 — the audit update. The CRM write HAS happened by now; a failure writing the
         # audit row must NEVER be recorded (or reported) as performed: false. Log loudly and
@@ -435,6 +461,12 @@ def create_app(deps: ApiDeps) -> FastAPI:
 
     @app.post("/chat")
     def chat(body: ChatBody, claims: TenantClaims = Depends(current_tenant)):
+        # Kill switch gates the WHOLE turn, on every runtime, at the API boundary (Greenlight
+        # audit P1): the self-hosted (HIPAA-fallback) runtime's tool loop has no pause check of
+        # its own, and on Managed Agents a paused tenant shouldn't keep queueing proposals from
+        # chat either. Approval EXECUTION is separately gated in decide_approval above.
+        if deps.killswitch.is_paused(claims.tenant_id):
+            raise HTTPException(status_code=409, detail="kill switch engaged — agents are paused")
         convo = deps.conversation_factory(claims.tenant_id)
         if convo is None:  # conversation backend not wired (e.g. agent runtime needs creds) — fail clean
             raise HTTPException(status_code=503, detail="chat backend not configured")
