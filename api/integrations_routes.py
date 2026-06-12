@@ -148,6 +148,16 @@ KNOWN_INTEGRATIONS: dict[str, dict[str, Any]] = {
         "kind": "sync",
         "experimental": False,
     },
+    "microsoft": {
+        "label": "Microsoft 365",
+        "category": "CRM & Marketing",
+        "description": "EXPERIMENTAL: sync mail, calendar and contacts from Microsoft 365 "
+                       "(Outlook/Exchange) via Microsoft Graph delta queries "
+                       "(read-only — Uplift never writes back).",
+        "source": "microsoft",
+        "kind": "sync",
+        "experimental": True,
+    },
 }
 
 # 5MB upload cap for POST /integrations/csv/import (mirrored in
@@ -418,6 +428,11 @@ _PROBES: dict[str, dict[str, Any]] = {
     # One customer — works for restricted keys with the read scopes we need.
     "stripe": {"url": "https://api.stripe.com/v1/customers?limit=1",
                "headers": {}},
+    # The signed-in user's profile — the cheapest Graph read a token with the
+    # User.Read scope must hold (microsoft.py). Probes a bare access token; the
+    # OAuth callback stores a refreshable envelope and skips this verify path.
+    "microsoft": {"url": "https://graph.microsoft.com/v1.0/me",
+                  "headers": {}},
 }
 
 _PROBE_TIMEOUT_SECONDS = 8

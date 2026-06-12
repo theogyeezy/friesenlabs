@@ -1,4 +1,4 @@
-"""OAuth "connect with login" helpers for connectors — HubSpot + GoHighLevel.
+"""OAuth "connect with login" helpers for connectors — HubSpot + GoHighLevel + Microsoft 365.
 
 This is the small, dependency-free core of the OAuth flow. It changes only WHAT
 fills a tenant's vault slot (`uplift/{tenant_id}/{source}`): instead of a pasted
@@ -158,6 +158,34 @@ PROVIDERS: dict[str, OAuthProvider] = {
         # `user_type=Location` selects a location-scoped token (vs Company).
         # # VERIFY on first live connect against the LeadConnector token endpoint.
         token_extra=(("user_type", "Location"),),
+    ),
+    "microsoft": OAuthProvider(
+        name="microsoft",
+        # The MULTI-TENANT (`/common`) v2.0 endpoints: any work/school (Azure AD)
+        # OR personal Microsoft account can consent, and the resulting token is
+        # scoped to whichever tenant the user signed in from. (A single-tenant app
+        # would pin one Azure AD tenant in the path; `/common` keeps Uplift's app
+        # usable by every customer's M365 tenant.)
+        authorize_url="https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+        token_url="https://login.microsoftonline.com/common/oauth2/v2.0/token",
+        # Read-only Microsoft Graph scopes for what the connector pulls — mail,
+        # calendar, contacts, and the signed-in user's profile. `offline_access` is
+        # REQUIRED for Graph to return a refresh_token (without it the token set is
+        # access-only and the connector cannot refresh). Read-only by design —
+        # Uplift never writes back to M365.
+        scopes=(
+            "Mail.Read",
+            "Calendars.Read",
+            "Contacts.Read",
+            "offline_access",
+            "User.Read",
+        ),
+        client_id_ref="uplift/oauth/microsoft/client_id",
+        client_secret_ref="uplift/oauth/microsoft/client_secret",
+        # Microsoft Identity Platform supports (and recommends) PKCE on the
+        # authorization-code grant even for confidential clients — we send the
+        # S256 challenge at /authorize and the verifier at the token exchange.
+        pkce=True,
     ),
 }
 

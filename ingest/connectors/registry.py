@@ -1,5 +1,5 @@
 """Connector registry — ONE place that knows every source the ingestion plane
-speaks: hubspot | csv | gohighlevel | stripe.
+speaks: hubspot | csv | gohighlevel | stripe | microsoft.
 
 Two consumers:
   * ingest/run_sync.py builds sync connectors by name (`build_connector(name,
@@ -24,6 +24,7 @@ from typing import Any, Callable
 from .base import Connector
 from .gohighlevel import GoHighLevelConnector
 from .hubspot import HubSpotConnector
+from .microsoft import MicrosoftConnector
 from .salesforce import SalesforceConnector
 from .stripe_data import StripeDataConnector
 
@@ -37,6 +38,18 @@ class _EmptyListClient:
         if name.startswith("list_"):
             return lambda *a, **k: []
         raise AttributeError(name)
+
+
+class _EmptyDeltaClient:
+    """Offline stub for delta-query connectors (microsoft) — every delta returns
+    no items and an empty deltaLink, so a dry run exercises the full sync path
+    with zero records and zero network."""
+
+    def set_token(self, token: str) -> None:  # connector calls this in authenticate()
+        pass
+
+    def delta(self, resource: str, delta_link):
+        return [], ""
 
 
 def _real_hubspot_client():
@@ -61,6 +74,12 @@ def _real_stripe_client():
     from .stripe_data import StripeRestClient  # noqa: PLC0415 — lazy
 
     return StripeRestClient()
+
+
+def _real_microsoft_client():
+    from .microsoft import MicrosoftGraphRestClient  # noqa: PLC0415 — lazy
+
+    return MicrosoftGraphRestClient()
 
 
 @dataclass(frozen=True)
@@ -138,6 +157,21 @@ REGISTRY: dict[str, ConnectorSpec] = {
         kind="sync",
         connector_cls=StripeDataConnector,
         real_client_factory=_real_stripe_client,
+    ),
+    "microsoft": ConnectorSpec(
+        name="microsoft",
+        label="Microsoft 365",
+        category="CRM & Marketing",
+        description=(
+            "EXPERIMENTAL: sync mail, calendar and contacts from Microsoft 365 "
+            "(Outlook/Exchange) via Microsoft Graph delta queries "
+            "(read-only — Uplift never writes back)."
+        ),
+        kind="sync",
+        experimental=True,
+        connector_cls=MicrosoftConnector,
+        real_client_factory=_real_microsoft_client,
+        stub_client_factory=_EmptyDeltaClient,
     ),
 }
 
