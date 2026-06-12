@@ -164,7 +164,9 @@ def test_send_email_approval_is_record_only_and_touches_no_sender_or_crm():
         "performed": False,
         "reason": "draft-only until provider go-live",
     }
-    assert r.json()["applied_at"] is not None
+    # A record-only (draft-only) send performed NOTHING, so it carries no applied_at — it must
+    # never read as "sent at <time>" (same honest shape as the applier-error path).
+    assert r.json()["applied_at"] is None
 
 
 @pytest.mark.integration

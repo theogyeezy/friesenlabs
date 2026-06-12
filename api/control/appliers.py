@@ -99,3 +99,13 @@ def apply_approved_action(crm: Any, tenant_id: str, payload: dict) -> ApplyResul
     if applier is None:
         raise ValueError(f"no applier registered for action {action!r}")
     return applier(crm, tenant_id, payload)
+
+
+def was_performed(result: ApplyResult) -> bool:
+    """True ONLY when the applier actually mutated an external system.
+
+    The honesty signal is the result's explicit `performed` flag — never the mere presence of an
+    apply_result. Record-only actions (send_email / issue_quote, draft-only until provider go-live)
+    and no-op updates return performed=False; callers MUST treat those as NOT sent/applied (e.g.
+    must not stamp an `applied_at` on them), so an approved draft can never read as "sent"."""
+    return bool(result.get("performed"))
