@@ -138,9 +138,14 @@ Build after the extract core (items 1–9) is green.
   blobs (URL refs only). Write actions deferred (ALWAYS_ASK/Greenlight). 5 unit tests (specs/AUTO,
   object types, media flag, search arg-threading, not-connected); 204 agent/tool tests still green;
   ruff clean. DONE.
-- [ ] 11. **Wire into the agent plane** as a per-tenant tool source (token injected from the vault
-  per session; THE TRUST RULE — tenant from the JWT, never the request). Read tools auto-run;
-  write tools route through the `api/control` Greenlight gate. Test the per-tenant isolation.
+- [x] 11. **Wired into the agent plane** — the 3 live tools registered in `agents/tools/registry.py`
+  `_TOOL_CLASSES`; `tenant_hubspot_client(tenant_id, secrets)` resolves the per-tenant vault token
+  (reusing connector auth; None when not connected). `api/asgi.make_executor` gained an additive
+  `hubspot_resolver` and injects a LAZY per-tenant client into the `ToolContext` (tenant from the
+  verified binding — THE TRUST RULE; no vault read unless a HubSpot tool runs); `build_app` wires it
+  in real mode. Tools stay `Policy.AUTO` (read-only auto-run); writes remain ALWAYS_ASK/Greenlight.
+  4 wiring tests (lazy-resolve-once, registry membership, resolver none/connected); full
+  `pytest tests/unit` = **2196 passed**; ruff clean. DONE.
 - [ ] 12. **Expose in chat/Studio**: agents can call "ask HubSpot live"; surface results with
   citations. Honest empty/error states. Test the end-to-end tool-call path (mocked).
 

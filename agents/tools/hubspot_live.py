@@ -14,6 +14,14 @@ from .base import Policy, Tool, ToolContext
 _NOT_CONNECTED = "not_connected"
 
 
+def _client(ctx: ToolContext):
+    """Resolve the tenant's HubSpot client off the context. `ctx.hubspot` may be the client itself
+    OR a zero-arg callable (lazy resolver) so a request that never calls a HubSpot tool pays no
+    vault read. Returns None when HubSpot isn't connected (the tools then degrade honestly)."""
+    hs = ctx.hubspot
+    return hs() if callable(hs) else hs
+
+
 def _records_json(records) -> list[dict]:
     return [
         {"id": r.source_ref_id, "properties": r.properties, "associations": r.associations}
@@ -28,9 +36,10 @@ class HubSpotObjectTypes(Tool):
     policy = Policy.AUTO
 
     def _execute(self, ctx: ToolContext, **_kw) -> dict:
-        if ctx.hubspot is None:
+        hs = _client(ctx)
+        if hs is None:
             return {"object_types": [], "status": _NOT_CONNECTED}
-        return {"object_types": list(ctx.hubspot.discover_object_types())}
+        return {"object_types": list(hs.discover_object_types())}
 
 
 class HubSpotProperties(Tool):
@@ -44,9 +53,10 @@ class HubSpotProperties(Tool):
     policy = Policy.AUTO
 
     def _execute(self, ctx: ToolContext, *, object_type: str) -> dict:
-        if ctx.hubspot is None:
+        hs = _client(ctx)
+        if hs is None:
             return {"object_type": object_type, "properties": [], "status": _NOT_CONNECTED}
-        ps = ctx.hubspot.discover_properties(object_type)
+        ps = hs.discover_properties(object_type)
         return {"object_type": object_type, "properties": list(ps.names), "media": sorted(ps.media)}
 
 
@@ -69,9 +79,10 @@ class HubSpotSearch(Tool):
 
     def _execute(self, ctx: ToolContext, *, object_type: str, query: str | None = None,
                  limit: int = 10) -> dict:
-        if ctx.hubspot is None:
+        hs = _client(ctx)
+        if hs is None:
             return {"object_type": object_type, "records": [], "status": _NOT_CONNECTED}
-        records = ctx.hubspot.search_live(object_type, q=query, limit=limit)
+        records = hs.search_live(object_type, q=query, limit=limit)
         return {"object_type": object_type, "count": len(records), "records": _records_json(records)}
 
 

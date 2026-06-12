@@ -71,3 +71,47 @@ def test_tools_degrade_honestly_when_not_connected():
     assert HubSpotSearch().invoke(_ctx(None), object_type="contacts")["result"]["status"] == "not_connected"
     assert HubSpotObjectTypes().invoke(_ctx(None))["result"]["status"] == "not_connected"
     assert HubSpotProperties().invoke(_ctx(None), object_type="deals")["result"]["status"] == "not_connected"
+
+
+def test_tool_resolves_lazy_callable_client_once_on_invoke():
+    calls = []
+
+    def resolver():               # ctx.hubspot may be a lazy zero-arg resolver
+        calls.append(1)
+        return FakeHubSpot()
+
+    out = HubSpotSearch().invoke(_ctx(resolver), object_type="contacts")
+    assert out["result"]["count"] == 1
+    assert calls == [1]           # resolved exactly once, only when the tool ran
+
+
+# --- registry + per-tenant resolver wiring (item 11) --------------------- #
+def test_registry_includes_the_live_hubspot_tools():
+    from agents.tools.registry import TOOL_REGISTRY
+
+    for name in ("hubspot_object_types", "hubspot_properties", "hubspot_search"):
+        assert name in TOOL_REGISTRY
+        assert TOOL_REGISTRY[name].policy is Policy.AUTO  # read-only, never Greenlight
+
+
+def test_tenant_hubspot_client_is_none_when_not_connected():
+    from agents.tools.registry import tenant_hubspot_client
+
+    class NoCreds:
+        def get_secret(self, ref):
+            raise KeyError("no vaulted credential")
+
+    assert tenant_hubspot_client("tenant-A", NoCreds()) is None  # honest not-connected
+
+
+def test_tenant_hubspot_client_returns_token_set_client_when_connected():
+    from agents.tools.registry import tenant_hubspot_client
+    from ingest.connectors.hubspot_full import HubSpotFullClient
+
+    class PastedToken:
+        def get_secret(self, ref):
+            return "pasted-bearer-xyz"  # a bare pasted token
+
+    client = tenant_hubspot_client("tenant-A", PastedToken())
+    assert isinstance(client, HubSpotFullClient)
+    assert client._token == "pasted-bearer-xyz"  # token threaded from the vault
