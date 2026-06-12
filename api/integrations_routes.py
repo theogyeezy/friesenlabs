@@ -874,13 +874,25 @@ def mount_integrations(app: FastAPI, deps: IntegrationsDeps, current_tenant) -> 
             log.error("integrations: oauth client_id read failed for %s (%s)",
                       name, type(exc).__name__)
             raise HTTPException(status_code=502, detail="oauth credential read failed")
-        # Signed state = HMAC(tenant_id + nonce + issued_at). The nonce is fresh
-        # entropy; the signature is the CSRF + tenant binding the callback trusts.
+        # PKCE (providers that require it, e.g. GoHighLevel): generate a
+        # verifier+challenge, send ONLY the S256 challenge to the provider, and
+        # carry the verifier (signed) inside the state so the unauthenticated
+        # callback can present it at the token exchange. Non-PKCE providers
+        # (HubSpot) skip this entirely — state shape is unchanged.
+        code_verifier: str | None = None
+        code_challenge: str | None = None
+        if provider.pkce:
+            code_verifier, code_challenge = oauth.generate_pkce_pair()
+        # Signed state = HMAC(tenant_id + nonce + issued_at [+ code_verifier]). The
+        # nonce is fresh entropy; the signature is the CSRF + tenant binding the
+        # callback trusts.
         state = oauth.sign_state(claims.tenant_id, cfg.state_secret,
-                                 nonce=_csrf_secrets.token_urlsafe(16))
+                                 nonce=_csrf_secrets.token_urlsafe(16),
+                                 code_verifier=code_verifier)
         authorize_url = oauth.build_authorize_url(
             provider, client_id=client_id,
             redirect_uri=cfg.redirect_uri(name), state=state,
+            code_challenge=code_challenge,
         )
         return {"name": name, "authorize_url": authorize_url}
 
@@ -899,14 +911,17 @@ def mount_integrations(app: FastAPI, deps: IntegrationsDeps, current_tenant) -> 
                 url=_oauth_return(cfg, name, ok=False, reason="denied"), status_code=302)
         if not code or not state:
             raise HTTPException(status_code=400, detail="missing code or state")
-        # Verify the signed state -> recover the tenant_id. A tampered or expired
-        # state is a hard 403: we will NOT act on an unsigned/forged tenant.
+        # Verify the signed state -> recover the tenant_id (+ the PKCE verifier for
+        # providers that use it). A tampered or expired state is a hard 403: we will
+        # NOT act on an unsigned/forged tenant.
         try:
-            tenant_id = oauth.verify_state(state, cfg.state_secret)
+            state_payload = oauth.verify_state_payload(state, cfg.state_secret)
         except oauth.StateError as exc:
             log.warning("integrations: oauth callback rejected state for %s (%s)",
                         name, type(exc).__name__)
             raise HTTPException(status_code=403, detail="invalid or expired state")
+        tenant_id = state_payload["t"]
+        code_verifier = state_payload.get("cv")  # None for non-PKCE providers
         try:
             client_id = deps.secret_reader.get_secret(provider.client_id_ref)
             client_secret = deps.secret_reader.get_secret(provider.client_secret_ref)
@@ -923,6 +938,7 @@ def mount_integrations(app: FastAPI, deps: IntegrationsDeps, current_tenant) -> 
             tokens = oauth.exchange_code(
                 provider, code=code, redirect_uri=cfg.redirect_uri(name),
                 client_id=client_id, client_secret=client_secret,
+                code_verifier=code_verifier,
             )
         except Exception as exc:  # noqa: BLE001 — TokenExchangeError carries no token material
             log.error("integrations: oauth token exchange failed for tenant %s/%s (%s)",
@@ -933,10 +949,15 @@ def mount_integrations(app: FastAPI, deps: IntegrationsDeps, current_tenant) -> 
         # THE TRUST RULE: the vault slot is derived from the state-recovered (and
         # thus WE-signed) tenant_id, never from any browser-supplied value.
         ref = _tenant_secret_ref(tenant_id, KNOWN_INTEGRATIONS[name]["source"])
+        # GoHighLevel returns the chosen location/company on the token response;
+        # persist them so the connector can make location-level calls. Providers
+        # that don't (HubSpot) pass None and the envelope is unchanged.
         value = oauth.oauth_secret_value(
             access_token=tokens["access_token"],
             refresh_token=tokens["refresh_token"],
             expires_at=tokens["expires_at"],
+            location_id=tokens.get("location_id"),
+            company_id=tokens.get("company_id"),
         )
         try:
             deps.secret_writer.put_secret(ref, value)
