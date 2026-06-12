@@ -72,9 +72,18 @@ class FakeDealsReader:
             ],
         }
 
-    def list_deals_board(self, *, tenant_id, limit=500):
+    def list_deals_board(self, *, tenant_id, limit=500, q=None, archived_only=False):
         self.calls.append(("list", tenant_id))
-        return [dict(r) for r in self.rows.get(tenant_id, [])]
+        rows = [dict(r) for r in self.rows.get(tenant_id, [])]
+        # The fake has no archived rows seeded, so the archived view is honestly empty.
+        if archived_only:
+            return []
+        if q:
+            term = q.lower()
+            rows = [r for r in rows
+                    if term in (r.get("title") or "").lower()
+                    or term in (r.get("company_name") or "").lower()]
+        return rows
 
     def get_deal_board(self, *, tenant_id, deal_id):
         self.calls.append(("get", tenant_id, deal_id))
@@ -216,7 +225,7 @@ def test_list_unknown_stage_grouped_into_appended_column_never_dropped():
 @pytest.mark.integration
 def test_list_tenant_mismatch_fails_loud_500():
     class LeakyReader(FakeDealsReader):
-        def list_deals_board(self, *, tenant_id, limit=500):
+        def list_deals_board(self, *, tenant_id, limit=500, q=None, archived_only=False):
             return [dict(r) for r in self.rows["B"]]  # simulated RLS failure
 
     client, _, _ = _client(DealsDeps(crm=LeakyReader()))
@@ -297,6 +306,28 @@ def test_move_stage_lands_exactly_one_proposal_and_never_touches_deals():
     # The proposal is visible in THIS app's Greenlight queue (one shared queue).
     pending = client.get("/approvals", headers=H).json()["approvals"]
     assert len(pending) == 1 and pending[0]["proposed_action"]["action"] == "update_deal"
+
+
+@pytest.mark.integration
+def test_move_stage_close_reason_rides_the_gated_change_only_when_closing():
+    reader = FakeDealsReader()
+    client, store, _ = _client(DealsDeps(crm=reader))
+    # Closing WITH a reason -> close_reason rides the same gated change (set atomically with stage).
+    r = client.post(f"/deals/{DEAL_A1}/move-stage",
+                    json={"to_stage": "closed_won", "reason": "Budget approved"}, headers=H)
+    assert r.status_code == 200
+    assert store.inserts[-1]["proposed_action"]["changes"] == {"stage": "closed_won", "close_reason": "Budget approved"}
+
+
+@pytest.mark.integration
+def test_move_stage_reason_ignored_on_non_closing_move():
+    reader = FakeDealsReader()
+    client, store, _ = _client(DealsDeps(crm=reader))
+    # A reason on a NON-closed move is dropped — close_reason is only for closed stages.
+    r = client.post(f"/deals/{DEAL_A1}/move-stage",
+                    json={"to_stage": "proposal", "reason": "nope"}, headers=H)
+    assert r.status_code == 200
+    assert store.inserts[-1]["proposed_action"]["changes"] == {"stage": "proposal"}
 
 
 @pytest.mark.integration

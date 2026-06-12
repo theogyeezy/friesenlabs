@@ -224,6 +224,8 @@ export interface ListDealsResponse {
 export interface DealDetail extends DealCard {
   contact_name?: string | null;
   contact_email?: string | null;
+  /** The won/lost reason captured when this deal was closed (null until closed with a reason). */
+  close_reason?: string | null;
 }
 
 export interface DealActivity {
@@ -241,6 +243,8 @@ export interface DealDetailResponse {
 /** Body for POST /deals/{id}/move-stage. Note: carries no tenant_id. */
 export interface MoveStageBody {
   to_stage: string;
+  /** Optional won/lost reason — only persisted when to_stage is a closed stage. */
+  reason?: string | null;
 }
 
 /**
@@ -310,6 +314,8 @@ export interface CompanyDeal {
 export interface ContactDetailResponse {
   contact: ContactRow;
   activities: ContactActivity[];
+  /** Deals this contact is directly attached to (deals.contact_id). */
+  contact_deals?: CompanyDeal[];
   /** The contact's company's open deals — links toward the Pipeline board. */
   company_deals: CompanyDeal[];
 }
@@ -345,6 +351,8 @@ export interface DirectoryListParams {
   q?: string;
   limit?: number;
   offset?: number;
+  /** When true, list the ARCHIVED rows (archived_at IS NOT NULL) — the "Show archived" view. */
+  archived?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -436,6 +444,87 @@ export interface ArchiveResponse {
 /** Response from POST /deals (201). */
 export interface CreateDealResponse {
   deal: { id: string; name: string | null; stage: string; amount: number | null };
+}
+
+// ---------------------------------------------------------------------------
+// Dedupe / merge (CRM-depth #16) — mirror api/contacts_routes.py shapes.
+// A cluster is a group of >=2 likely-duplicate rows sharing a match signal
+// (email/domain = strong, name = weak). Merging re-points the loser's
+// deals/activities/tasks and soft-archives it. No tenant_id anywhere.
+// ---------------------------------------------------------------------------
+export interface DuplicateCluster {
+  key: string;
+  reason: string; // "email" | "name" | "domain"
+  members: Array<Record<string, unknown> & { id: string; name: string | null }>;
+}
+export interface ListDuplicatesResponse {
+  clusters: DuplicateCluster[];
+  count: number;
+}
+export interface MergeBody {
+  winner_id: string;
+  loser_id: string;
+}
+export interface MergeResult {
+  winner: (Record<string, unknown> & { id: string; name: string | null }) | null;
+  loser_id: string;
+  repointed: Record<string, number>;
+}
+
+// ---------------------------------------------------------------------------
+// Tasks / reminders (CRM-depth #14) — mirror api/tasks_routes.py shapes.
+// No tenant_id anywhere — the server derives it from the verified claim.
+// ---------------------------------------------------------------------------
+export interface TaskRow {
+  id: string;
+  title: string;
+  due_at: string | null;
+  done_at: string | null;
+  done: boolean;
+  overdue: boolean | null;
+  archived_at: string | null;
+  contact_id: string | null;
+  deal_id: string | null;
+  contact_name: string | null;
+  deal_title: string | null;
+  created_by: string | null;
+  created_at: string | null;
+}
+export type TaskScope = "open" | "overdue" | "done" | "all" | "archived";
+export interface ListTasksParams {
+  scope?: TaskScope;
+  contact_id?: string;
+  deal_id?: string;
+  limit?: number;
+  offset?: number;
+}
+export interface ListTasksResponse {
+  tasks: TaskRow[];
+  count: number;
+  has_more: boolean;
+  limit: number;
+  offset: number;
+  scope: TaskScope;
+  open_count: number;
+  overdue_count: number;
+}
+export interface CreateTaskBody {
+  title: string;
+  due_at?: string | null;
+  contact_id?: string | null;
+  deal_id?: string | null;
+}
+export interface EditTaskBody {
+  title?: string | null;
+  due_at?: string | null;
+}
+export interface TaskResponse {
+  task: TaskRow;
+}
+export interface EditTaskResponse {
+  id: string;
+  updated: Record<string, unknown>;
+  task: TaskRow;
 }
 
 /** Response from PATCH /deals/{id}. */
@@ -1630,11 +1719,15 @@ export class ApiClient {
   // --- deals / pipeline (authed) ----------------------------------------------
 
   /** GET /deals: the board — deals grouped into ordered stage columns. */
-  async listDeals(): Promise<ListDealsResponse> {
+  async listDeals(params: { q?: string; archived?: boolean } = {}): Promise<ListDealsResponse> {
     if (this.mock) {
       return (await this.mockApi()).listDeals();
     }
-    return this.request<ListDealsResponse>("GET", "/deals");
+    const qs = new URLSearchParams();
+    if (params.q) qs.set("q", params.q);
+    if (params.archived) qs.set("archived", "1");
+    const s = qs.toString();
+    return this.request<ListDealsResponse>("GET", `/deals${s ? `?${s}` : ""}`);
   }
 
   /** GET /deals/{id}: one deal + its recent activities (the detail drawer). */
@@ -1673,6 +1766,7 @@ export class ApiClient {
     if (params.q !== undefined && params.q !== "") qs.set("q", params.q);
     if (params.limit !== undefined) qs.set("limit", String(params.limit));
     if (params.offset !== undefined) qs.set("offset", String(params.offset));
+    if (params.archived) qs.set("archived", "1");
     const s = qs.toString();
     return s ? `?${s}` : "";
   }
@@ -1819,6 +1913,91 @@ export class ApiClient {
     if (this.mock) return { id, archived, archived_at: archived ? new Date().toISOString() : null };
     const verb = archived ? "archive" : "unarchive";
     return this.request<ArchiveResponse>("POST", `/${entity}/${encodeURIComponent(id)}/${verb}`);
+  }
+
+  // --- dedupe / merge (authed; direct user write, never Greenlight) ------------
+
+  /** GET /contacts/duplicates | /companies/duplicates: clusters of likely-duplicate rows. */
+  async findDuplicates(entity: "contacts" | "companies"): Promise<ListDuplicatesResponse> {
+    if (this.mock) {
+      return (await this.mockApi()).findDuplicates(entity);
+    }
+    return this.request<ListDuplicatesResponse>("GET", `/${entity}/duplicates`);
+  }
+
+  /** POST /contacts/merge | /companies/merge: merge the loser into the winner. Body carries the
+   * two entity ids ONLY (no tenant_id — the trust rule). Returns the kept winner + repoint counts. */
+  async merge(entity: "contacts" | "companies", body: MergeBody): Promise<MergeResult> {
+    if (this.mock) {
+      return (await this.mockApi()).merge(entity, body);
+    }
+    return this.request<MergeResult>("POST", `/${entity}/merge`, body);
+  }
+
+  // --- tasks / reminders (authed; direct user write, never Greenlight) ---------
+
+  /** GET /tasks: the tenant's tasks for a scope (open/overdue/done/all/archived),
+   * optionally narrowed to one contact or deal. open_count/overdue_count ride along
+   * for the nav badge. */
+  async listTasks(params: ListTasksParams = {}): Promise<ListTasksResponse> {
+    if (this.mock) {
+      return (await this.mockApi()).listTasks(params);
+    }
+    const qs = new URLSearchParams();
+    if (params.scope) qs.set("scope", params.scope);
+    if (params.contact_id) qs.set("contact_id", params.contact_id);
+    if (params.deal_id) qs.set("deal_id", params.deal_id);
+    if (params.limit !== undefined) qs.set("limit", String(params.limit));
+    if (params.offset !== undefined) qs.set("offset", String(params.offset));
+    const s = qs.toString();
+    return this.request<ListTasksResponse>("GET", `/tasks${s ? `?${s}` : ""}`);
+  }
+
+  /** POST /tasks: create a follow-up task. Body carries title + optional due date and
+   * contact/deal links ONLY (no tenant_id — the trust rule). Returns 201 + the task. */
+  async createTask(body: CreateTaskBody): Promise<TaskResponse> {
+    if (this.mock) {
+      return {
+        task: {
+          id: `mock-task-${Date.now()}`, title: body.title, due_at: body.due_at ?? null,
+          done_at: null, done: false, overdue: false, archived_at: null,
+          contact_id: body.contact_id ?? null, deal_id: body.deal_id ?? null,
+          contact_name: null, deal_title: null, created_by: null, created_at: null,
+        },
+      };
+    }
+    return this.request<TaskResponse>("POST", "/tasks", body);
+  }
+
+  /** PATCH /tasks/{id}: edit title and/or due date (a blank due_at clears it). */
+  async updateTask(taskId: string, body: EditTaskBody): Promise<EditTaskResponse> {
+    if (this.mock) {
+      return { id: taskId, updated: body as Record<string, unknown>,
+               task: { id: taskId, title: body.title ?? "", due_at: body.due_at ?? null,
+                       done_at: null, done: false, overdue: false, archived_at: null,
+                       contact_id: null, deal_id: null, contact_name: null, deal_title: null,
+                       created_by: null, created_at: null } };
+    }
+    return this.request<EditTaskResponse>("PATCH", `/tasks/${encodeURIComponent(taskId)}`, body);
+  }
+
+  /** POST /tasks/{id}/complete | /reopen: flip the task's done state. */
+  async setTaskDone(taskId: string, done: boolean): Promise<TaskResponse> {
+    if (this.mock) {
+      return { task: { id: taskId, title: "", due_at: null,
+                       done_at: done ? new Date().toISOString() : null, done,
+                       overdue: false, archived_at: null, contact_id: null, deal_id: null,
+                       contact_name: null, deal_title: null, created_by: null, created_at: null } };
+    }
+    const verb = done ? "complete" : "reopen";
+    return this.request<TaskResponse>("POST", `/tasks/${encodeURIComponent(taskId)}/${verb}`);
+  }
+
+  /** POST /tasks/{id}/archive | /unarchive: soft-archive (reversible) a task. */
+  async setTaskArchived(taskId: string, archived: boolean): Promise<ArchiveResponse> {
+    if (this.mock) return { id: taskId, archived, archived_at: archived ? new Date().toISOString() : null };
+    const verb = archived ? "archive" : "unarchive";
+    return this.request<ArchiveResponse>("POST", `/tasks/${encodeURIComponent(taskId)}/${verb}`);
   }
 
   // --- agent crew (authed, read-only) ------------------------------------------

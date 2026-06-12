@@ -20,6 +20,7 @@ import ChatDock from "./api/ChatDock";
 import IntegrationsPanel from "./api/IntegrationsPanel";
 import PipelineBoard from "./api/PipelineBoard";
 import ContactsDirectory from "./api/ContactsDirectory";
+import TasksView from "./api/TasksView";
 import AgentsRoster from "./api/AgentsRoster";
 import StudioView from "./api/StudioView";
 import WorkflowsView from "./api/WorkflowsView";
@@ -562,7 +563,10 @@ function App() {
               {/* Contacts is LIVE in real mode: RLS-scoped directory from
                   GET /contacts + /companies, read-only; open deals link to
                   the Pipeline board. */}
-              {route === "contacts" && <ContactsDirectory key={sampleReloadKey} onOpenPipeline={() => navTo("crm")} onLoadSample={loadSampleData} />}
+              {route === "contacts" && <ContactsDirectory key={sampleReloadKey} onOpenPipeline={() => navTo("crm")} onLoadSample={loadSampleData} onOpenImport={() => navTo("integrations")} />}
+              {/* Tasks is LIVE in real mode: RLS-scoped reminders from GET /tasks;
+                  create/complete/edit/archive are direct user writes (never Greenlight). */}
+              {route === "tasks" && <TasksView key={sampleReloadKey} onLoadSample={loadSampleData} />}
               {/* Agents is LIVE in real mode: the tenant's crew from GET /agents
                   (owned roster + trusted tool policies + truncated provisioned
                   ids) — never the FLStore prototype console. */}
@@ -653,7 +657,7 @@ function App() {
                   <AccountDataControls />
                 </div>
               )}
-              {route !== "dashboard" && route !== "crm" && route !== "contacts" && route !== "agents" && route !== "studio" && route !== "workflows" && route !== "reports" && route !== "dashboards" && route !== "knowledge" && route !== "approvals" && route !== "integrations" && route !== "sidecar" && route !== "sell" && route !== "security" && route !== "settings" && route !== "cortex" && route !== "marketplace" && (
+              {route !== "dashboard" && route !== "crm" && route !== "contacts" && route !== "tasks" && route !== "agents" && route !== "studio" && route !== "workflows" && route !== "reports" && route !== "dashboards" && route !== "knowledge" && route !== "approvals" && route !== "integrations" && route !== "sidecar" && route !== "sell" && route !== "security" && route !== "settings" && route !== "cortex" && route !== "marketplace" && (
                 <ComingSoon title={meta.h1} icon={navIconFor(route)} />
               )}
             </>
@@ -663,6 +667,7 @@ function App() {
               {route === "dashboard" && <Dashboard agents={agents} onNavigate={navTo} />}
               {route === "crm" && <CRM agents={agents} onOpen={setDeal} onNavigate={navTo} />}
               {route === "contacts" && <Contacts agents={agents} onNavigate={navTo} onOpenDeal={setDeal} />}
+              {route === "tasks" && <TasksView />}
               {route === "billing" && <Billing agents={agents} onNavigate={navTo} />}
               {route === "calendar" && <Calendar agents={agents} onNavigate={navTo} />}
               {route === "reviews" && <Reviews agents={agents} onNavigate={navTo} />}

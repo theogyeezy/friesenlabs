@@ -144,6 +144,8 @@ def _normalize_deal_row(row: dict) -> dict:
         out["contact_name"] = row.get("contact_name")
     if "contact_email" in row:
         out["contact_email"] = row.get("contact_email")
+    if "close_reason" in row:
+        out["close_reason"] = row.get("close_reason")
     return out
 
 
@@ -234,6 +236,32 @@ def _normalize_activity_write_row(row: dict) -> dict:
         "kind": row.get("kind"),
         "body": row.get("body"),
         "occurred_at": _as_iso(row.get("occurred_at")),
+    }
+
+
+def _normalize_task_row(row: dict) -> dict:
+    """One CRM task row → API JSON. `done`/`overdue` are derived booleans so the client never
+    re-implements the open/overdue/done logic; `overdue` is computed in SQL (due_at < now() AND
+    not done) when present, else falls back to None. `contact_name`/`deal_title` are the optional
+    LEFT-JOINed display labels (None when unlinked or not selected)."""
+    done_at = _as_iso(row.get("done_at"))
+    return {
+        "id": _as_str(row.get("id")),
+        # tenant_id rides along so the route's defense-in-depth check (the _checked_rows pattern)
+        # can fail-loud on any cross-tenant leak before stripping it from the payload.
+        "tenant_id": _as_str(row.get("tenant_id")),
+        "title": row.get("title"),
+        "due_at": _as_iso(row.get("due_at")),
+        "done_at": done_at,
+        "done": done_at is not None,
+        "overdue": bool(row.get("overdue")) if row.get("overdue") is not None else None,
+        "archived_at": _as_iso(row.get("archived_at")),
+        "contact_id": _as_str(row.get("contact_id")),
+        "deal_id": _as_str(row.get("deal_id")),
+        "contact_name": row.get("contact_name"),
+        "deal_title": row.get("deal_title"),
+        "created_by": row.get("created_by"),
+        "created_at": _as_iso(row.get("created_at")),
     }
 
 
@@ -516,21 +544,32 @@ class PgCrmClient(_PgTenantClient):
     # tenant_isolation policies on deals/companies/contacts/activities scope BOTH sides of every
     # join inside the per-op `SET LOCAL` transaction.
 
-    def list_deals_board(self, *, tenant_id: str, limit: int = MAX_LIMIT) -> list[dict]:
+    def list_deals_board(self, *, tenant_id: str, limit: int = MAX_LIMIT,
+                         archived_only: bool = False, q: str | None = None) -> list[dict]:
         """All board rows for the tenant: deal columns + the joined company name.
 
         Ordered newest-first; the route does the stage grouping/ordering (presentation concern).
+        `archived_only=True` flips the filter to the ARCHIVED deals (the "Show archived" view).
+        `q` (optional) is a contains-match over the deal title or its company's name.
         """
         n = _clamp_limit(limit, MAX_LIMIT)
+        arch = "d.archived_at IS NOT NULL" if archived_only else "d.archived_at IS NULL"
+        base = (
+            "SELECT d.id, d.tenant_id, d.title, d.stage, d.amount, d.currency, "
+            "d.company_id, d.contact_id, d.created_at, c.name AS company_name "
+            "FROM deals d LEFT JOIN companies c ON c.id = d.company_id "
+            f"WHERE {arch} "
+        )
+        tail = "ORDER BY d.created_at DESC LIMIT %s"
         with self._tx(tenant_id) as cur:
-            cur.execute(
-                "SELECT d.id, d.tenant_id, d.title, d.stage, d.amount, d.currency, "
-                "d.company_id, d.contact_id, d.created_at, c.name AS company_name "
-                "FROM deals d LEFT JOIN companies c ON c.id = d.company_id "
-                "WHERE d.archived_at IS NULL "  # archived deals drop off the board
-                "ORDER BY d.created_at DESC LIMIT %s",
-                (n,),
-            )
+            if q:
+                pat = _escape_ilike(q)
+                cur.execute(
+                    base + "AND (d.title ILIKE %s ESCAPE '\\' OR c.name ILIKE %s ESCAPE '\\') " + tail,
+                    (pat, pat, n),
+                )
+            else:
+                cur.execute(base + tail, (n,))
             return [_normalize_deal_row(r) for r in _dict_rows(cur)]
 
     def get_deal_board(self, *, tenant_id: str, deal_id: str) -> dict | None:
@@ -539,7 +578,7 @@ class PgCrmClient(_PgTenantClient):
         with self._tx(tenant_id) as cur:
             cur.execute(
                 "SELECT d.id, d.tenant_id, d.title, d.stage, d.amount, d.currency, "
-                "d.company_id, d.contact_id, d.created_at, c.name AS company_name, "
+                "d.company_id, d.contact_id, d.created_at, d.close_reason, c.name AS company_name, "
                 "p.name AS contact_name, p.email AS contact_email "
                 "FROM deals d LEFT JOIN companies c ON c.id = d.company_id "
                 "LEFT JOIN contacts p ON p.id = d.contact_id "
@@ -580,11 +619,14 @@ class PgCrmClient(_PgTenantClient):
     # the open-deal predicates are hand-written SQL, never input.
 
     def list_contacts_directory(self, *, tenant_id: str, q: str | None = None,
-                                limit: int = DEFAULT_CRM_LIMIT, offset: int = 0) -> list[dict]:
+                                limit: int = DEFAULT_CRM_LIMIT, offset: int = 0,
+                                archived_only: bool = False) -> list[dict]:
         """Directory page of contacts: contact columns + the joined company name + the
-        newest activity timestamp. `q` (optional) is a contains-match over name/email."""
+        newest activity timestamp. `q` (optional) is a contains-match over name/email.
+        `archived_only=True` returns the ARCHIVED contacts (the "Show archived" view)."""
         n = _clamp_limit(limit, DEFAULT_CRM_LIMIT)
         off = _clamp_offset(offset)
+        arch = "c.archived_at IS NOT NULL" if archived_only else "c.archived_at IS NULL"
         base = (
             "SELECT c.id, c.tenant_id, c.name, c.email, c.phone, c.company_id, c.created_at, "
             "co.name AS company_name, "
@@ -597,12 +639,12 @@ class PgCrmClient(_PgTenantClient):
             if q:
                 pat = _escape_ilike(q)
                 cur.execute(
-                    base + "WHERE c.archived_at IS NULL "
+                    base + f"WHERE {arch} "
                     "AND (c.name ILIKE %s ESCAPE '\\' OR c.email ILIKE %s ESCAPE '\\') " + tail,
                     (pat, pat, n, off),
                 )
             else:
-                cur.execute(base + "WHERE c.archived_at IS NULL " + tail, (n, off))
+                cur.execute(base + f"WHERE {arch} " + tail, (n, off))
             return [_normalize_contact_row(r) for r in _dict_rows(cur)]
 
     def get_contact_directory(self, *, tenant_id: str, contact_id: str) -> dict | None:
@@ -642,6 +684,22 @@ class PgCrmClient(_PgTenantClient):
             for r in rows
         ]
 
+    def list_contact_deals(self, *, tenant_id: str, contact_id: str,
+                           limit: int = DEFAULT_CRM_LIMIT) -> list[dict]:
+        """Deals this contact is directly attached to (deals.contact_id), newest first — distinct
+        from the contact's company's deals. Excludes archived. RLS-scoped."""
+        n = _clamp_limit(limit, DEFAULT_CRM_LIMIT)
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "SELECT d.id, d.tenant_id, d.title, d.stage, d.amount, d.currency, "
+                "d.company_id, d.contact_id, d.created_at, c.name AS company_name "
+                "FROM deals d LEFT JOIN companies c ON c.id = d.company_id "
+                "WHERE d.contact_id = %s AND d.archived_at IS NULL "
+                "ORDER BY d.created_at DESC LIMIT %s",
+                (str(contact_id), n),
+            )
+            return [_normalize_deal_row(r) for r in _dict_rows(cur)]
+
     def list_company_open_deals(self, *, tenant_id: str, company_id: str,
                                 limit: int = DEFAULT_CRM_LIMIT) -> list[dict]:
         """A company's OPEN deals (not closed_won/closed_lost — hand-written stage literals),
@@ -660,11 +718,14 @@ class PgCrmClient(_PgTenantClient):
             return [_normalize_deal_row(r) for r in _dict_rows(cur)]
 
     def list_companies_directory(self, *, tenant_id: str, q: str | None = None,
-                                 limit: int = DEFAULT_CRM_LIMIT, offset: int = 0) -> list[dict]:
+                                 limit: int = DEFAULT_CRM_LIMIT, offset: int = 0,
+                                 archived_only: bool = False) -> list[dict]:
         """Directory page of companies with contact + open-deal counts (RLS scopes the count
-        subqueries too). `q` (optional) is a contains-match over name/domain."""
+        subqueries too). `q` (optional) is a contains-match over name/domain.
+        `archived_only=True` returns the ARCHIVED companies (the "Show archived" view)."""
         n = _clamp_limit(limit, DEFAULT_CRM_LIMIT)
         off = _clamp_offset(offset)
+        arch = "co.archived_at IS NOT NULL" if archived_only else "co.archived_at IS NULL"
         base = (
             "SELECT co.id, co.tenant_id, co.name, co.domain, co.created_at, "
             "(SELECT count(*) FROM contacts c WHERE c.company_id = co.id "
@@ -679,12 +740,12 @@ class PgCrmClient(_PgTenantClient):
             if q:
                 pat = _escape_ilike(q)
                 cur.execute(
-                    base + "WHERE co.archived_at IS NULL "
+                    base + f"WHERE {arch} "
                     "AND (co.name ILIKE %s ESCAPE '\\' OR co.domain ILIKE %s ESCAPE '\\') " + tail,
                     (pat, pat, n, off),
                 )
             else:
-                cur.execute(base + "WHERE co.archived_at IS NULL " + tail, (n, off))
+                cur.execute(base + f"WHERE {arch} " + tail, (n, off))
             return [_normalize_company_row(r) for r in _dict_rows(cur)]
 
     def get_company_directory(self, *, tenant_id: str, company_id: str) -> dict | None:
@@ -726,7 +787,8 @@ class PgCrmClient(_PgTenantClient):
     # exists + belongs to the tenant first, so a bad id is a clean 404, not an FK 500). Stage stays
     # OUT of this allow-list on purpose — stage moves must go through Greenlight (POST move-stage).
     _DEAL_UPDATE_COLUMNS = {"stage": "stage", "amount": "amount", "name": "title",
-                            "company_id": "company_id", "contact_id": "contact_id"}
+                            "company_id": "company_id", "contact_id": "contact_id",
+                            "close_reason": "close_reason"}
     _CONTACT_UPDATE_COLUMNS = {"name": "name", "email": "email", "phone": "phone",
                                "company_id": "company_id"}
     _COMPANY_UPDATE_COLUMNS = {"name": "name", "domain": "domain"}
@@ -884,7 +946,7 @@ class PgCrmClient(_PgTenantClient):
             "company": _normalize_company_write_row(row),
         }
 
-    _ARCHIVABLE_TABLES = {"deals", "contacts", "companies"}
+    _ARCHIVABLE_TABLES = {"deals", "contacts", "companies", "tasks"}
 
     def set_archived(self, *, tenant_id: str, table: str, entity_id: str, archived: bool) -> dict:
         """Soft-archive (or restore) a CRM entity by setting/clearing `archived_at`. Archived rows
@@ -908,6 +970,308 @@ class PgCrmClient(_PgTenantClient):
             "archived": archived,
             "archived_at": _as_iso(row.get("archived_at")),
         }
+
+    # ----------------------------------------------------------------- tasks (reminders)
+    # CRM follow-up tasks with due dates (CRM-depth #14). Tenant from the verified claim via
+    # SET LOCAL; identifiers are bound params and the table is fixed (`tasks`), never input-built.
+    _TASK_UPDATE_COLUMNS = {"title": "title", "due_at": "due_at"}
+
+    # The SELECT list shared by every task read: the raw row + the LEFT-JOINed display labels +
+    # the SQL-computed `overdue` flag (past due AND still open). RLS scopes every joined table.
+    _TASK_SELECT = (
+        "SELECT t.id, t.tenant_id, t.title, t.due_at, t.done_at, t.archived_at, "
+        "t.contact_id, t.deal_id, t.created_by, t.created_at, "
+        "(t.due_at IS NOT NULL AND t.due_at < now() AND t.done_at IS NULL) AS overdue, "
+        "c.name AS contact_name, d.title AS deal_title "
+        "FROM tasks t "
+        "LEFT JOIN contacts c ON c.id = t.contact_id "
+        "LEFT JOIN deals d ON d.id = t.deal_id "
+    )
+
+    def insert_task(self, *, tenant_id: str, title: str, due_at: str | None = None,
+                    contact_id: str | None = None, deal_id: str | None = None,
+                    created_by: str | None = None) -> dict:
+        """Insert one CRM follow-up task. `title` is required; `due_at` (ISO string, cast to
+        timestamptz by PG) and the contact_id/deal_id links are optional. A blank link is
+        normalized to NULL (an empty string is not a valid uuid). RLS-scoped; the contact/deal
+        composite FKs are the last line of defense (the route validates existence first)."""
+        clean_title = (title or "").strip()
+        if not clean_title:
+            raise ValueError("task title is required")
+        contact = str(contact_id).strip() if contact_id else ""
+        deal = str(deal_id).strip() if deal_id else ""
+        due = (due_at or "").strip() or None
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "INSERT INTO tasks (tenant_id, title, due_at, contact_id, deal_id, created_by) "
+                "VALUES (%s,%s,%s,%s,%s,%s) RETURNING id",
+                (str(tenant_id), clean_title, due, contact or None, deal or None, created_by),
+            )
+            new = _dict_one(cur)
+            if new is None:
+                raise RuntimeError("task insert returned no row")
+            cur.execute(self._TASK_SELECT + "WHERE t.id = %s", (_as_str(new.get("id")),))
+            row = _dict_one(cur)
+        if row is None:
+            raise RuntimeError("task insert read-back returned no row")
+        return _normalize_task_row(row)
+
+    def list_tasks(self, *, tenant_id: str, scope: str = "open",
+                   contact_id: str | None = None, deal_id: str | None = None,
+                   limit: int = DEFAULT_CRM_LIMIT, offset: int = 0) -> list[dict]:
+        """List tasks for the tenant, RLS-scoped. `scope` selects the surface:
+        - 'open'    : not done, not archived (overdue first, then soonest due, then newest)
+        - 'overdue' : open AND past due
+        - 'done'    : completed (not archived), most-recently-completed first
+        - 'all'     : every non-archived task
+        - 'archived': the soft-archived tasks
+        Optional contact_id/deal_id narrow to a drawer's tasks. Identifiers are bound params."""
+        n = _clamp_limit(limit, DEFAULT_CRM_LIMIT)
+        off = _clamp_offset(offset)
+        scope = str(scope or "open").strip().lower()
+        where = []
+        params: list[Any] = []
+        if scope == "archived":
+            where.append("t.archived_at IS NOT NULL")
+        else:
+            where.append("t.archived_at IS NULL")
+            if scope == "open":
+                where.append("t.done_at IS NULL")
+            elif scope == "overdue":
+                where.append("t.done_at IS NULL AND t.due_at IS NOT NULL AND t.due_at < now()")
+            elif scope == "done":
+                where.append("t.done_at IS NOT NULL")
+            # 'all' adds no done/overdue filter
+        if contact_id:
+            where.append("t.contact_id = %s")
+            params.append(str(contact_id))
+        if deal_id:
+            where.append("t.deal_id = %s")
+            params.append(str(deal_id))
+        # Ordering: completed lists newest-done first; open/overdue/all surface the most urgent
+        # work first (overdue, then soonest due with NULLs last, then newest-created as a tiebreak).
+        order = ("ORDER BY t.done_at DESC NULLS LAST, t.created_at DESC"
+                 if scope == "done"
+                 else "ORDER BY overdue DESC, t.due_at ASC NULLS LAST, t.created_at DESC")
+        params.extend([n, off])
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                self._TASK_SELECT + "WHERE " + " AND ".join(where) + " " + order
+                + " LIMIT %s OFFSET %s",
+                tuple(params),
+            )
+            return [_normalize_task_row(r) for r in _dict_rows(cur)]
+
+    def get_task(self, *, tenant_id: str, task_id: str) -> dict | None:
+        """One task by id (+ joined display labels), or None when RLS yields no row."""
+        with self._tx(tenant_id) as cur:
+            cur.execute(self._TASK_SELECT + "WHERE t.id = %s", (str(task_id),))
+            row = _dict_one(cur)
+        return _normalize_task_row(row) if row else None
+
+    def count_open_tasks(self, *, tenant_id: str) -> dict:
+        """Open + overdue task counts for the tenant (the nav badge). RLS-scoped; no joins."""
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "SELECT count(*) FILTER (WHERE done_at IS NULL) AS open_count, "
+                "count(*) FILTER (WHERE done_at IS NULL AND due_at IS NOT NULL "
+                "AND due_at < now()) AS overdue_count "
+                "FROM tasks WHERE archived_at IS NULL"
+            )
+            row = _dict_one(cur) or {}
+        return {
+            "open_count": int(row.get("open_count") or 0),
+            "overdue_count": int(row.get("overdue_count") or 0),
+        }
+
+    def update_task_fields(self, *, tenant_id: str, task_id: str, changes: dict) -> dict:
+        """Update allow-listed task fields (title/due_at). `due_at` may be set to null to clear the
+        date. RLS-scoped. Raises ValueError('task not found...') when no row is visible (-> 404)."""
+        items, _ = self._change_items(changes, self._TASK_UPDATE_COLUMNS)
+        if not items:
+            raise ValueError("changes must include at least one writable task field")
+        set_sql = ", ".join(f"{column} = %s" for _, column, _ in items)
+        params = [value for _, _, value in items]
+        params.append(str(task_id))
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                f"UPDATE tasks SET {set_sql} WHERE id = %s RETURNING id",
+                tuple(params),
+            )
+            updated = _dict_one(cur)
+            if updated is None:
+                raise ValueError("task not found or not visible")
+            cur.execute(self._TASK_SELECT + "WHERE t.id = %s", (str(task_id),))
+            row = _dict_one(cur)
+        return {
+            "id": _as_str(row.get("id")),
+            "updated": {key: changes[key] for key, _, _ in items},
+            "task": _normalize_task_row(row),
+        }
+
+    def set_task_done(self, *, tenant_id: str, task_id: str, done: bool) -> dict:
+        """Mark a task complete (done_at = now()) or reopen it (done_at = NULL). RLS-scoped.
+        Raises ValueError (-> route 404) when no row is visible."""
+        value_sql = "now()" if done else "NULL"
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                f"UPDATE tasks SET done_at = {value_sql} WHERE id = %s RETURNING id",
+                (str(task_id),),
+            )
+            updated = _dict_one(cur)
+            if updated is None:
+                raise ValueError("task not found or not visible")
+            cur.execute(self._TASK_SELECT + "WHERE t.id = %s", (str(task_id),))
+            row = _dict_one(cur)
+        return _normalize_task_row(row)
+
+    # ----------------------------------------------------------------- dedupe / merge
+    # Find likely-duplicate contacts/companies and merge a loser INTO a winner: re-point the
+    # loser's deals/activities/tasks, backfill the winner's empty fields, then soft-archive the
+    # loser (reversible — never a hard delete). All in ONE tenant-scoped transaction so a partial
+    # merge can never strand rows pointing at an archived loser. Identifiers are bound params and
+    # the tables are fixed; RLS (SET LOCAL) scopes every read + write to the verified tenant.
+
+    def find_duplicate_contacts(self, *, tenant_id: str, limit: int = DEFAULT_CRM_LIMIT) -> list[dict]:
+        """Cluster active contacts that look like duplicates: an exact (case-insensitive) email
+        match is the strong signal; failing an email, an exact normalized-name match. Returns
+        clusters of >=2, strongest signal first. RLS-scoped; the grouping is computed in SQL via a
+        derived dup_key so identifiers never come from input."""
+        n = _clamp_limit(limit, DEFAULT_CRM_LIMIT)
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "SELECT id, tenant_id, name, email, phone, company_id, created_at, "
+                "CASE WHEN nullif(btrim(lower(email)), '') IS NOT NULL "
+                "     THEN 'email:' || btrim(lower(email)) "
+                "     WHEN nullif(btrim(lower(name)), '') IS NOT NULL "
+                "     THEN 'name:' || btrim(lower(name)) "
+                "     ELSE NULL END AS dup_key "
+                "FROM contacts WHERE archived_at IS NULL "
+                "ORDER BY created_at ASC"
+            )
+            rows = _dict_rows(cur)
+        return self._cluster_dups(rows, n, _normalize_contact_row)
+
+    def find_duplicate_companies(self, *, tenant_id: str, limit: int = DEFAULT_CRM_LIMIT) -> list[dict]:
+        """Cluster active companies that look like duplicates: an exact (case-insensitive) domain
+        match is the strong signal; failing a domain, an exact normalized-name match. Returns
+        clusters of >=2, strongest signal first. RLS-scoped."""
+        n = _clamp_limit(limit, DEFAULT_CRM_LIMIT)
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "SELECT id, tenant_id, name, domain, created_at, "
+                "CASE WHEN nullif(btrim(lower(domain)), '') IS NOT NULL "
+                "     THEN 'domain:' || btrim(lower(domain)) "
+                "     WHEN nullif(btrim(lower(name)), '') IS NOT NULL "
+                "     THEN 'name:' || btrim(lower(name)) "
+                "     ELSE NULL END AS dup_key "
+                "FROM companies WHERE archived_at IS NULL "
+                "ORDER BY created_at ASC"
+            )
+            rows = _dict_rows(cur)
+        return self._cluster_dups(rows, n, _normalize_company_row)
+
+    @staticmethod
+    def _cluster_dups(rows: list[dict], limit: int, normalize) -> list[dict]:
+        """Group rows by their SQL-computed dup_key (NULL key = no signal, skipped), keep clusters
+        of >=2, and tag each with the match reason (the key's prefix). Email/domain clusters sort
+        before name clusters (stronger signal). The oldest member is suggested as the merge winner
+        (it carries the most history); the route leaves the final pick to the user."""
+        from collections import OrderedDict  # noqa: PLC0415 — local, import-safe
+        groups: "OrderedDict[str, list[dict]]" = OrderedDict()
+        for r in rows:
+            key = r.get("dup_key")
+            if not key:
+                continue
+            groups.setdefault(key, []).append(r)
+        clusters = []
+        for key, members in groups.items():
+            if len(members) < 2:
+                continue
+            reason = key.split(":", 1)[0]
+            clusters.append({
+                "key": key,
+                "reason": reason,
+                "members": [normalize(m) for m in members],
+            })
+        # Strong signal (email/domain) first, then larger clusters.
+        strong = {"email", "domain"}
+        clusters.sort(key=lambda c: (0 if c["reason"] in strong else 1, -len(c["members"])))
+        return clusters[:limit]
+
+    def _merge_entity(self, *, tenant_id: str, table: str, winner_id: str, loser_id: str,
+                      backfill_cols: tuple[str, ...], repoint: tuple[tuple[str, str], ...],
+                      normalize, select_sql: str) -> dict:
+        """Shared merge core. `repoint` is a tuple of (child_table, fk_column) whose loser-pointing
+        rows are moved to the winner; `backfill_cols` are winner columns filled from the loser when
+        the winner's value is NULL. The loser is soft-archived last. One transaction. Raises
+        ValueError (-> route 404/422) on a missing/visible-only row or a winner==loser request."""
+        if str(winner_id) == str(loser_id):
+            raise ValueError("winner and loser must be different rows")
+        repointed: dict[str, int] = {}
+        with self._tx(tenant_id) as cur:
+            # Both rows must be visible (RLS) and active — a merge into/from an archived or
+            # cross-tenant row is a clean 404, never an opaque FK error.
+            cur.execute(
+                f"SELECT id FROM {table} WHERE id = ANY(%s) AND archived_at IS NULL",
+                ([str(winner_id), str(loser_id)],),
+            )
+            seen = {_as_str(r.get("id")) for r in _dict_rows(cur)}
+            if str(winner_id) not in seen or str(loser_id) not in seen:
+                raise ValueError(f"{table[:-1]} not found or not visible")
+            # Re-point each child FK from loser -> winner.
+            for child, col in repoint:
+                cur.execute(
+                    f"UPDATE {child} SET {col} = %s WHERE {col} = %s",
+                    (str(winner_id), str(loser_id)),
+                )
+                repointed[child] = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+            # Backfill the winner's NULL columns from the loser (winner's own values win).
+            if backfill_cols:
+                set_sql = ", ".join(f"{c} = COALESCE(w.{c}, l.{c})" for c in backfill_cols)
+                cur.execute(
+                    f"UPDATE {table} w SET {set_sql} FROM {table} l "
+                    f"WHERE w.id = %s AND l.id = %s",
+                    (str(winner_id), str(loser_id)),
+                )
+            # Soft-archive the loser (reversible; the merge is undoable by unarchiving + re-pointing).
+            cur.execute(
+                f"UPDATE {table} SET archived_at = now() WHERE id = %s",
+                (str(loser_id),),
+            )
+            cur.execute(select_sql, (str(winner_id),))
+            winner = _dict_one(cur)
+        return {
+            "winner": normalize(winner) if winner else None,
+            "loser_id": str(loser_id),
+            "repointed": repointed,
+        }
+
+    def merge_contacts(self, *, tenant_id: str, winner_id: str, loser_id: str) -> dict:
+        """Merge the loser contact into the winner: re-point the loser's deals, activities, and
+        tasks, backfill the winner's empty email/phone/company, then soft-archive the loser."""
+        return self._merge_entity(
+            tenant_id=tenant_id, table="contacts", winner_id=winner_id, loser_id=loser_id,
+            backfill_cols=("email", "phone", "company_id"),
+            repoint=(("deals", "contact_id"), ("activities", "contact_id"), ("tasks", "contact_id")),
+            normalize=_normalize_contact_row,
+            select_sql=(
+                "SELECT c.id, c.tenant_id, c.name, c.email, c.phone, c.company_id, c.created_at, "
+                "(SELECT name FROM companies co WHERE co.id = c.company_id) AS company_name "
+                "FROM contacts c WHERE c.id = %s"
+            ),
+        )
+
+    def merge_companies(self, *, tenant_id: str, winner_id: str, loser_id: str) -> dict:
+        """Merge the loser company into the winner: re-point the loser's contacts and deals,
+        backfill the winner's empty domain, then soft-archive the loser."""
+        return self._merge_entity(
+            tenant_id=tenant_id, table="companies", winner_id=winner_id, loser_id=loser_id,
+            backfill_cols=("domain",),
+            repoint=(("contacts", "company_id"), ("deals", "company_id")),
+            normalize=_normalize_company_row,
+            select_sql="SELECT id, tenant_id, name, domain, created_at FROM companies WHERE id = %s",
+        )
 
     def insert_deal(self, *, tenant_id: str, company_id: str, name: str,
                     stage: str, amount: float | int | None,

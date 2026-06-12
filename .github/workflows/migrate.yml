@@ -19,6 +19,17 @@ name: Migrate
 
 on:
   workflow_dispatch:
+    inputs:
+      image:
+        description: >-
+          Optional FULL ECR image URI to migrate WITH (e.g.
+          <acct>.dkr.ecr.us-east-1.amazonaws.com/uplift-api:<sha>). Leave BLANK to use
+          whatever the live uplift-api service currently runs (the default). Set this to
+          a NEWLY-BUILT tag to add a new table/column BEFORE the matching code deploys —
+          the no-breakage ordering for additive migrations (deploy.yml's build job pushes
+          the tag; migrate with it here; THEN approve the apply gate).
+        required: false
+        default: ""
 
 permissions:
   id-token: write
@@ -39,11 +50,21 @@ jobs:
 
       - name: Register one-off task def on the live api image
         id: td
+        env:
+          # Passed via env (not inline ${{ }}) per workflow-injection best practice. This is a
+          # workflow_dispatch input (only a write-access dispatcher sets it), but env-binding keeps
+          # it out of the shell command string regardless.
+          INPUT_IMAGE: ${{ github.event.inputs.image }}
         run: |
           set -euo pipefail
-          IMG=$(aws ecs describe-task-definition --task-definition uplift-api \
-                  --query 'taskDefinition.containerDefinitions[0].image' --output text)
-          echo "live api image: $IMG"
+          if [ -n "$INPUT_IMAGE" ]; then
+            IMG="$INPUT_IMAGE"
+            echo "migrating WITH the dispatched image (no-breakage ordering): $IMG"
+          else
+            IMG=$(aws ecs describe-task-definition --task-definition uplift-api \
+                    --query 'taskDefinition.containerDefinitions[0].image' --output text)
+            echo "live api image: $IMG"
+          fi
           aws ecs describe-task-definition --task-definition uplift-migrate-oneoff \
             --query taskDefinition > td.json
           jq --arg img "$IMG" '

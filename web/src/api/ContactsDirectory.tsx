@@ -39,6 +39,7 @@ import {
   type EditContactBody,
 } from "./client";
 import { Spinner } from "./Spinner";
+import MergeDuplicates from "./MergeDuplicates";
 
 const { useState, useEffect, useCallback, useRef, useReducer, useMemo } = React;
 
@@ -168,13 +169,18 @@ export interface ContactsDirectoryProps {
    * passes a handler that loads the demo fixture into this tenant; without it
    * the empty state stays explanatory-only (no CTA). */
   onLoadSample?: () => void | Promise<void>;
+  /** Navigate to the Switchboard CSV importer (the shell passes navTo("integrations")).
+   * Discoverability glue ONLY — the import itself is the existing /integrations/csv/import
+   * pipeline (idempotent natural-key landing into the CRM tables); this never duplicates it. */
+  onOpenImport?: () => void;
 }
 
-export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: ContactsDirectoryProps) {
+export function ContactsDirectory({ client, onOpenPipeline, onLoadSample, onOpenImport }: ContactsDirectoryProps) {
   const api = client ?? defaultClient();
   const [tab, setTab] = useState<Tab>("people");
   const [query, setQuery] = useState("");
   const [loadingSample, setLoadingSample] = useState(false);
+  const [showMerge, setShowMerge] = useState(false);
 
   const runLoadSample = useCallback(async () => {
     if (loadingSample || !onLoadSample) return;
@@ -219,12 +225,15 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: Cont
   const [companyQuery, setCompanyQuery] = useState("");
   const [companyMenuOpen, setCompanyMenuOpen] = useState(false);
 
+  // "Show archived" view: lists the archived rows; each opens with a Restore action.
+  const [showArchived, setShowArchived] = useState(false);
+
   const loadPeople = useCallback(
     async (q: string, offset: number, append: boolean) => {
       const seq = ++loadSeq.current;
       setPeople((s) => ({ ...s, loading: true, error: null, rollout: false }));
       try {
-        const res = await api.listContacts({ q: q || undefined, limit: PAGE_SIZE, offset });
+        const res = await api.listContacts({ q: q || undefined, limit: PAGE_SIZE, offset, archived: showArchived });
         if (seq !== loadSeq.current) return;
         setPeople((s) => ({
           rows: append ? [...s.rows, ...res.contacts] : res.contacts,
@@ -247,7 +256,7 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: Cont
         }
       }
     },
-    [api],
+    [api, showArchived],
   );
 
   const loadCompanies = useCallback(
@@ -255,7 +264,7 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: Cont
       const seq = ++loadSeq.current;
       setCompanies((s) => ({ ...s, loading: true, error: null, rollout: false }));
       try {
-        const res = await api.listCompanies({ q: q || undefined, limit: PAGE_SIZE, offset });
+        const res = await api.listCompanies({ q: q || undefined, limit: PAGE_SIZE, offset, archived: showArchived });
         if (seq !== loadSeq.current) return;
         setCompanies((s) => ({
           rows: append ? [...s.rows, ...res.companies] : res.companies,
@@ -278,13 +287,13 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: Cont
         }
       }
     },
-    [api],
+    [api, showArchived],
   );
 
   const reload = useCallback(() => {
     if (tab === "people") void loadPeople(query.trim(), 0, false);
     else void loadCompanies(query.trim(), 0, false);
-  }, [tab, query, loadPeople, loadCompanies]);
+  }, [tab, query, loadPeople, loadCompanies, showArchived]);
 
   // Initial load + tab switches + debounced search. One effect owns all three
   // so there is exactly one trigger path (the debounce only matters while
@@ -343,6 +352,8 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: Cont
     setContactDetail(null);
     setCompanyDetail(null);
     setDetailError(null);
+    setQuickDeal(null);
+    setNoteText("");
   }, []);
 
   // Pull a page of companies the first time the form opens; company is optional,
@@ -443,30 +454,59 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: Cont
 
   // ---- Log a note on the open contact (direct write; refreshes the activity list) ----
   const [noteText, setNoteText] = useState("");
+  const [noteKind, setNoteKind] = useState("note"); // note / call / email / task
   const [noteBusy, setNoteBusy] = useState(false);
   const logNote = useCallback(async (contactId: string) => {
     const body = noteText.trim();
     if (!body) return;
     setNoteBusy(true);
     try {
-      await api.logActivity("contacts", contactId, { kind: "note", body });
+      await api.logActivity("contacts", contactId, { kind: noteKind, body });
       setNoteText("");
       void openContact(contactId);
     } catch { /* keep the text so the user can retry */ } finally { setNoteBusy(false); }
-  }, [api, noteText, openContact]);
+  }, [api, noteText, noteKind, openContact]);
 
-  // ---- Archive (soft) an entity, then close the drawer + refresh the list ----
+  // ---- Archive / restore (soft) an entity, then close the drawer + refresh ----
   const [archiveBusy, setArchiveBusy] = useState(false);
-  const archive = useCallback(async (entity: "contacts" | "companies", id: string) => {
+  const setEntityArchived = useCallback(async (entity: "contacts" | "companies", id: string, archived: boolean) => {
     setArchiveBusy(true);
     try {
-      await api.setArchived(entity, id, true);
+      await api.setArchived(entity, id, archived);
       closeDrawer();
       forceListRefresh();
       if (entity === "contacts") void loadPeople(query.trim(), 0, false);
       else void loadCompanies(query.trim(), 0, false);
     } catch { /* the list reload surfaces the true state */ } finally { setArchiveBusy(false); }
   }, [api, closeDrawer, forceListRefresh, loadPeople, loadCompanies, query]);
+  const archive = useCallback((entity: "contacts" | "companies", id: string) => setEntityArchived(entity, id, true), [setEntityArchived]);
+  const restore = useCallback((entity: "contacts" | "companies", id: string) => setEntityArchived(entity, id, false), [setEntityArchived]);
+
+  // ---- Quick "+ Add deal" from a contact/company drawer (pre-links the entity) ----
+  const [quickDeal, setQuickDeal] = useState<{ title: string; amount: string } | null>(null);
+  const [quickDealBusy, setQuickDealBusy] = useState(false);
+  const [quickDealError, setQuickDealError] = useState<string | null>(null);
+  const submitQuickDeal = useCallback(async () => {
+    if (!quickDeal || !drawer) return;
+    const title = quickDeal.title.trim();
+    if (!title) { setQuickDealError("Title is required."); return; }
+    const amt = quickDeal.amount.trim();
+    const amount = amt ? Number(amt) : null;
+    if (amt && (Number.isNaN(amount!) || amount! < 0)) { setQuickDealError("Amount must be a positive number."); return; }
+    setQuickDealBusy(true); setQuickDealError(null);
+    try {
+      const link = drawer.kind === "contact"
+        ? { contact_id: contactDetail?.contact.id, company_id: contactDetail?.contact.company_id ?? undefined }
+        : { company_id: companyDetail?.company.id };
+      await api.createDeal({ title, amount, ...link });
+      setQuickDeal(null);
+      // Refresh the drawer so the new deal appears in its deals section.
+      if (drawer.kind === "contact") void openContact(drawer.id);
+      else void openCompany(drawer.id);
+    } catch (e) {
+      setQuickDealError(friendlyErrorMessage(e, "Couldn't create the deal. Please try again."));
+    } finally { setQuickDealBusy(false); }
+  }, [api, quickDeal, drawer, contactDetail, companyDetail, openContact, openCompany]);
 
   // Matches for the picker menu: filter the loaded page by name/domain, capped
   // so the dropdown stays short.
@@ -627,11 +667,80 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: Cont
       </button>
     ));
 
+  // Quick "+ Add deal" affordance for the drawers — a button that opens a tiny inline form
+  // (title + amount) which POSTs a deal pre-linked to the open contact/company.
+  const quickDealBlock = (): React.ReactElement => (
+    <div style={{ marginTop: 12 }}>
+      {quickDeal === null ? (
+        <button
+          data-testid="drawer-add-deal-btn"
+          onClick={() => { setQuickDeal({ title: "", amount: "" }); setQuickDealError(null); }}
+          style={{ ...ghostBtn, padding: "7px 14px", fontSize: 13 }}
+        >
+          + Add deal
+        </button>
+      ) : (
+        <div data-testid="quick-deal-form" style={{ ...card, marginBottom: 0, padding: "14px 16px" }}>
+          <div style={{ fontWeight: 680, fontSize: 13.5, marginBottom: 8 }}>New deal here</div>
+          <input
+            data-testid="quick-deal-title"
+            value={quickDeal.title}
+            onChange={(e) => setQuickDeal((q) => q && { ...q, title: e.target.value })}
+            placeholder="Deal title"
+            style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--line, #e3ddd3)", fontSize: 13, fontFamily: "inherit", marginBottom: 8 }}
+          />
+          <input
+            data-testid="quick-deal-amount"
+            value={quickDeal.amount}
+            onChange={(e) => setQuickDeal((q) => q && { ...q, amount: e.target.value })}
+            placeholder="Amount (optional)"
+            style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--line, #e3ddd3)", fontSize: 13, fontFamily: "inherit" }}
+          />
+          {quickDealError && <div data-testid="quick-deal-error" style={{ color: "var(--rose, #b4413b)", fontSize: 12.5, marginTop: 8 }}>{quickDealError}</div>}
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 10 }}>
+            <button data-testid="quick-deal-cancel" onClick={() => setQuickDeal(null)} style={{ ...ghostBtn, padding: "7px 12px", fontSize: 13 }}>Cancel</button>
+            <button
+              data-testid="quick-deal-submit"
+              disabled={quickDealBusy || !quickDeal.title.trim()}
+              onClick={() => void submitQuickDeal()}
+              style={{ padding: "7px 14px", borderRadius: 9, border: "none", background: "var(--accent, #2a2622)", color: "#fff", fontSize: 13, fontWeight: 680, cursor: "pointer", opacity: quickDealBusy || !quickDeal.title.trim() ? 0.6 : 1 }}
+            >
+              {quickDealBusy ? "Creating…" : "Create deal"}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <div
       data-testid="contacts-directory"
       style={{ maxWidth: 860, margin: "0 auto", padding: "32px 24px", fontFamily: "system-ui, sans-serif" }}
     >
+      {showMerge && (
+        <div
+          data-testid="merge-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Find and merge duplicates"
+          style={{
+            position: "fixed", inset: 0, zIndex: 50,
+            background: "rgba(20,16,12,.32)",
+            display: "flex", alignItems: "flex-start", justifyContent: "center",
+            padding: "48px 16px", overflowY: "auto",
+          }}
+          onClick={(e) => { if (e.target === e.currentTarget) setShowMerge(false); }}
+        >
+          <div style={{ background: "var(--surface, #fff)", borderRadius: 16, padding: "22px 24px", width: "100%", maxWidth: 660, boxShadow: "0 12px 40px rgba(20,16,12,.18)" }}>
+            <MergeDuplicates
+              client={client}
+              onMerged={reload}
+              onClose={() => setShowMerge(false)}
+            />
+          </div>
+        </div>
+      )}
       <div style={{ marginBottom: 18 }}>
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
           <div>
@@ -639,6 +748,44 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: Cont
               Uplift CRM
             </div>
             <h1 style={{ fontSize: 26, fontWeight: 760, letterSpacing: "-.02em", margin: "6px 0 4px" }}>Contacts</h1>
+            <div style={{ display: "flex", gap: 8, marginTop: 2, flexWrap: "wrap" }}>
+              <button
+                data-testid="find-duplicates-btn"
+                onClick={() => setShowMerge(true)}
+                style={{
+                  padding: "4px 10px",
+                  borderRadius: 8,
+                  border: "1px solid var(--line, #e3ddd3)",
+                  background: "transparent",
+                  color: "var(--ink-2, #6b6358)",
+                  fontSize: 12.5,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                }}
+              >
+                Find duplicates
+              </button>
+              {onOpenImport && (
+                <button
+                  data-testid="import-csv-btn"
+                  onClick={onOpenImport}
+                  style={{
+                    padding: "4px 10px",
+                    borderRadius: 8,
+                    border: "1px solid var(--line, #e3ddd3)",
+                    background: "transparent",
+                    color: "var(--ink-2, #6b6358)",
+                    fontSize: 12.5,
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    fontFamily: "inherit",
+                  }}
+                >
+                  Import CSV
+                </button>
+              )}
+            </div>
           </div>
           {tab === "people" && (
             <button
@@ -710,6 +857,15 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: Cont
             color: "var(--ink, #2a2622)",
           }}
         />
+        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, ...muted, cursor: "pointer" }}>
+          <input
+            type="checkbox"
+            data-testid="dir-show-archived"
+            checked={showArchived}
+            onChange={(e) => setShowArchived(e.target.checked)}
+          />
+          Show archived
+        </label>
       </div>
 
       {active.loading && active.rows.length === 0 && (
@@ -893,19 +1049,38 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: Cont
                     >
                       Edit
                     </button>
-                    <button
-                      data-testid="archive-contact-btn"
-                      disabled={archiveBusy}
-                      onClick={() => void archive("contacts", contactDetail.contact.id)}
-                      style={{ ...ghostBtn, padding: "5px 12px", fontSize: 12.5, opacity: archiveBusy ? 0.6 : 1 }}
-                    >
-                      Archive
-                    </button>
+                    {showArchived ? (
+                      <button
+                        data-testid="restore-contact-btn"
+                        disabled={archiveBusy}
+                        onClick={() => void restore("contacts", contactDetail.contact.id)}
+                        style={{ ...ghostBtn, padding: "5px 12px", fontSize: 12.5, opacity: archiveBusy ? 0.6 : 1 }}
+                      >
+                        Restore
+                      </button>
+                    ) : (
+                      <button
+                        data-testid="archive-contact-btn"
+                        disabled={archiveBusy}
+                        onClick={() => void archive("contacts", contactDetail.contact.id)}
+                        style={{ ...ghostBtn, padding: "5px 12px", fontSize: 12.5, opacity: archiveBusy ? 0.6 : 1 }}
+                      >
+                        Archive
+                      </button>
+                    )}
                   </div>
                 </div>
                 <div style={{ fontSize: 13, ...muted }}>
                   {contactDetail.contact.company_name ?? "No company"}
                 </div>
+
+                {(contactDetail.contact_deals?.length ?? 0) > 0 && (
+                  <>
+                    <div style={sectionLabel}>This contact&rsquo;s deals</div>
+                    {contactDetail.contact_deals!.map(dealLink)}
+                  </>
+                )}
+                {!showArchived && quickDealBlock()}
                 <div style={{ fontSize: 13, marginTop: 8, lineHeight: 1.6 }}>
                   <div data-testid="drawer-email">{contactDetail.contact.email ?? "no email"}</div>
                   {contactDetail.contact.phone && (
@@ -954,14 +1129,25 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: Cont
                   ))
                 )}
 
-                {/* Log a note/call directly on this contact (direct write, not an agent send). */}
+                {/* Log a note/call/email/task directly on this contact (direct write, not an agent send). */}
                 <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                  <select
+                    data-testid="note-kind"
+                    value={noteKind}
+                    onChange={(e) => setNoteKind(e.target.value)}
+                    style={{ padding: "8px 8px", borderRadius: 8, border: "1px solid var(--line, #e3ddd3)", fontSize: 13, fontFamily: "inherit", background: "var(--surface, #fff)" }}
+                  >
+                    <option value="note">Note</option>
+                    <option value="call">Call</option>
+                    <option value="email">Email</option>
+                    <option value="task">Task</option>
+                  </select>
                   <input
                     data-testid="note-input"
                     value={noteText}
                     onChange={(e) => setNoteText(e.target.value)}
                     onKeyDown={(e) => { if (e.key === "Enter") void logNote(contactDetail.contact.id); }}
-                    placeholder="Log a note or call…"
+                    placeholder="Log a note, call, email, or task…"
                     style={{ flex: 1, padding: "8px 10px", borderRadius: 8, border: "1px solid var(--line, #e3ddd3)", fontSize: 13, fontFamily: "inherit" }}
                   />
                   <button
@@ -991,6 +1177,16 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: Cont
                     >
                       Edit
                     </button>
+                    {showArchived ? (
+                      <button
+                        data-testid="restore-company-btn"
+                        disabled={archiveBusy}
+                        onClick={() => void restore("companies", companyDetail.company.id)}
+                        style={{ ...ghostBtn, padding: "5px 12px", fontSize: 12.5, opacity: archiveBusy ? 0.6 : 1 }}
+                      >
+                        Restore
+                      </button>
+                    ) : (
                     <button
                       data-testid="archive-company-btn"
                       disabled={archiveBusy}
@@ -999,6 +1195,7 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: Cont
                     >
                       Archive
                     </button>
+                    )}
                   </div>
                 </div>
                 {companyDetail.company.domain && (
@@ -1013,6 +1210,7 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: Cont
                 ) : (
                   companyDetail.deals.map(dealLink)
                 )}
+                {!showArchived && quickDealBlock()}
 
                 <div style={sectionLabel}>People</div>
                 {companyDetail.contacts.length === 0 ? (

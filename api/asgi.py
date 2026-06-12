@@ -45,6 +45,7 @@ from api.contacts_routes import ContactsDeps
 from api.control.types import Action
 from api.cortex_routes import CortexDeps
 from api.deals_routes import DealsDeps
+from api.tasks_routes import TasksDeps
 from api.sidecar_routes import SidecarDeps
 from api.knowledge_routes import KnowledgeDeps, build_doc_ingestor
 from api.pg_clients import PgControlSettingsStore, PgCrmClient, PgRagClient
@@ -507,6 +508,9 @@ def build_app():
         # The dispatcher makes POST /contacts fire lead.created (the shipped
         # lead_followup_drafter template's trigger — audit P0-4).
         contacts=ContactsDeps(crm=crm, dispatcher=playbook_dispatcher),
+        # /tasks (the real CRM tasks/reminders surface) — the same single PgCrmClient. crm is None
+        # when the DSN is unconfigured -> honest 503.
+        tasks=TasksDeps(crm=crm),
         # /sidecar (the real agentic layer) — reads the SAME PgCrmClient and proposes Greenlight
         # drafts. crm is None when the DSN is unconfigured -> honest 503.
         sidecar=SidecarDeps(crm=crm),

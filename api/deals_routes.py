@@ -155,6 +155,9 @@ class CreateActivityBody(BaseModel):
 # --------------------------------------------------------------------------- #
 class MoveStageBody(BaseModel):
     to_stage: str
+    # Optional won/lost reason — only meaningful (and only persisted) when moving to a closed
+    # stage. Rides the SAME gated update_deal change so the reason lands atomically with the stage.
+    reason: str | None = None
 
 
 def _emit_created(deps: DealsDeps, event_name: str, tenant_id: str, row: dict) -> None:
@@ -242,13 +245,20 @@ def mount_deals(app: FastAPI, deps: DealsDeps, current_tenant, *, gate_deps: Any
     """
 
     @app.get("/deals")
-    def list_deals(claims: TenantClaims = Depends(current_tenant)):
+    def list_deals(q: str | None = None, archived: bool = False,
+                   claims: TenantClaims = Depends(current_tenant)):
         crm = _require_reader(deps)
-        rows = _checked_rows(crm.list_deals_board(tenant_id=claims.tenant_id), claims.tenant_id)
+        term = (q or "").strip() or None
+        rows = _checked_rows(
+            crm.list_deals_board(tenant_id=claims.tenant_id, archived_only=archived, q=term),
+            claims.tenant_id,
+        )
         return {
             "stages": _group_stages(rows),
             "total": len(rows),
             "stage_order": list(STAGE_ORDER),
+            "archived": archived,
+            "q": term,
         }
 
     @app.get("/deals/{deal_id}")
@@ -406,13 +416,18 @@ def mount_deals(app: FastAPI, deps: DealsDeps, current_tenant, *, gate_deps: Any
 
         meta = tool_meta("update_deal")
         title = row.get("title") or did
+        # A won/lost reason is captured ONLY when closing (closed_won/closed_lost) — it rides the
+        # same gated change so stage + reason land atomically on approval.
+        changes: dict = {"stage": to_stage}
+        if to_stage in ("closed_won", "closed_lost") and (body.reason or "").strip():
+            changes["close_reason"] = body.reason.strip()
         action = Action(
             name="update_deal",
             tenant_id=claims.tenant_id,           # tenant from the VERIFIED claim only
             agent=claims.sub,
             side_effecting=meta["side_effecting"],
             channel=meta["channel"],
-            payload={"deal_id": did, "changes": {"stage": to_stage}, "from_stage": from_stage},
+            payload={"deal_id": did, "changes": changes, "from_stage": from_stage},
             reasoning=f"Move deal {title!r} from stage {from_stage!r} to {to_stage!r} "
                       "(requested on the pipeline board).",
             value_at_stake=row.get("amount"),

@@ -36,6 +36,12 @@ import {
   type ListContactsResponse,
   type ListDealsResponse,
   type ListIntegrationsResponse,
+  type ListTasksParams,
+  type ListTasksResponse,
+  type TaskRow,
+  type ListDuplicatesResponse,
+  type MergeBody,
+  type MergeResult,
   type MoveStageBody,
   type MoveStageResponse,
   type SaveViewBody,
@@ -423,6 +429,37 @@ function seedDeals(): DealCard[] {
   ];
 }
 
+// Mirrors api/tasks_routes.py shapes. One overdue, one upcoming, one done — so the
+// offline Tasks surface shows every scope. Links line up with seedDeals/seedContacts.
+function seedTasks(): TaskRow[] {
+  return [
+    {
+      id: "t0000000-0000-0000-0000-000000000001",
+      title: "Call Birchwood back about the security review",
+      due_at: "2026-06-01T00:00:00+00:00", done_at: null, done: false, overdue: true,
+      archived_at: null, contact_id: "p-1", deal_id: "d0000000-0000-0000-0000-000000000001",
+      contact_name: "Dana Whitfield", deal_title: "Birchwood platform expansion",
+      created_by: "demo-user", created_at: "2026-05-28T00:00:00+00:00",
+    },
+    {
+      id: "t0000000-0000-0000-0000-000000000002",
+      title: "Send Halcyon the revised order form",
+      due_at: "2026-12-20T00:00:00+00:00", done_at: null, done: false, overdue: false,
+      archived_at: null, contact_id: "p-2", deal_id: "d0000000-0000-0000-0000-000000000002",
+      contact_name: "Marcus Oyelaran", deal_title: "Halcyon fleet rollout",
+      created_by: "demo-user", created_at: "2026-06-04T00:00:00+00:00",
+    },
+    {
+      id: "t0000000-0000-0000-0000-000000000003",
+      title: "Confirm Mesa Verde pilot kickoff date",
+      due_at: "2026-06-05T00:00:00+00:00", done_at: "2026-06-06T00:00:00+00:00", done: true,
+      overdue: false, archived_at: null, contact_id: "p-3", deal_id: null,
+      contact_name: "Priya Nadella", deal_title: null,
+      created_by: "demo-user", created_at: "2026-06-02T00:00:00+00:00",
+    },
+  ];
+}
+
 // Mirrors api/contacts_routes.py shapes. company_ids line up with seedDeals so
 // the contact drawer's "open deals" seam shows the same canned pipeline.
 function seedContacts(): ContactRow[] {
@@ -599,6 +636,7 @@ export class MockApi {
   private views: SavedViewRow[] = seedViews();
   private deals: DealCard[] = seedDeals();
   private contacts: ContactRow[] = seedContacts();
+  private tasks: TaskRow[] = seedTasks();
   private companies: CompanyRow[] = seedCompanies();
   private signupState: MockSignup | null = null;
   private integrations: Integration[] = seedIntegrations();
@@ -901,6 +939,78 @@ export class MockApi {
       };
     });
     return { stages, total: this.deals.length, stage_order: [...STAGE_ORDER] };
+  }
+
+  // --- dedupe / merge ----------------------------------------------------------
+
+  findDuplicates(entity: "contacts" | "companies"): ListDuplicatesResponse {
+    if (entity === "companies") {
+      const dups = this.companies.filter((c) => c.id !== "co-mock").slice(0, 2);
+      if (dups.length < 2) return { clusters: [], count: 0 };
+      return {
+        clusters: [{
+          key: `domain:${dups[0].domain ?? "example.com"}`,
+          reason: "domain",
+          members: dups.map((c) => ({ ...c })),
+        }],
+        count: 1,
+      };
+    }
+    const dups = this.contacts.slice(0, 2);
+    if (dups.length < 2) return { clusters: [], count: 0 };
+    return {
+      clusters: [{
+        key: `email:${dups[0].email ?? "dupe@example.com"}`,
+        reason: "email",
+        members: dups.map((c) => ({ ...c })),
+      }],
+      count: 1,
+    };
+  }
+
+  merge(entity: "contacts" | "companies", body: MergeBody): MergeResult {
+    if (body.winner_id === body.loser_id) {
+      throw new ApiError(422, "winner and loser must be different");
+    }
+    if (entity === "companies") {
+      this.companies = this.companies.filter((c) => c.id !== body.loser_id);
+      const winner = this.companies.find((c) => c.id === body.winner_id) ?? null;
+      return { winner: winner ? { ...winner } : null, loser_id: body.loser_id, repointed: { contacts: 2, deals: 1 } };
+    }
+    this.contacts = this.contacts.filter((c) => c.id !== body.loser_id);
+    const winner = this.contacts.find((c) => c.id === body.winner_id) ?? null;
+    return { winner: winner ? { ...winner } : null, loser_id: body.loser_id, repointed: { deals: 1, activities: 2, tasks: 0 } };
+  }
+
+  // --- tasks / reminders -------------------------------------------------------
+
+  listTasks(params: ListTasksParams = {}): ListTasksResponse {
+    const scope = params.scope ?? "open";
+    const limit = Math.max(1, Math.min(params.limit ?? 50, 200));
+    const offset = Math.max(0, params.offset ?? 0);
+    let rows = this.tasks.map((t) => ({ ...t }));
+    if (scope === "archived") {
+      rows = rows.filter((t) => t.archived_at !== null);
+    } else {
+      rows = rows.filter((t) => t.archived_at === null);
+      if (scope === "open") rows = rows.filter((t) => !t.done);
+      else if (scope === "overdue") rows = rows.filter((t) => !t.done && t.overdue);
+      else if (scope === "done") rows = rows.filter((t) => t.done);
+    }
+    if (params.contact_id) rows = rows.filter((t) => t.contact_id === params.contact_id);
+    if (params.deal_id) rows = rows.filter((t) => t.deal_id === params.deal_id);
+    const active = this.tasks.filter((t) => t.archived_at === null);
+    const page = rows.slice(offset, offset + limit);
+    return {
+      tasks: page,
+      count: page.length,
+      has_more: rows.length > offset + limit,
+      limit,
+      offset,
+      scope,
+      open_count: active.filter((t) => !t.done).length,
+      overdue_count: active.filter((t) => !t.done && t.overdue).length,
+    };
   }
 
   getDeal(dealId: string): DealDetailResponse {
