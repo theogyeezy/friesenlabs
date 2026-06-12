@@ -549,6 +549,20 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   usable + safe; RAG-embed IAM gap closed live.
 
 ## Lane Matt (app code) — log
+- 2026-06-12 — **Deploy-pipeline hardening SHIPPED (the incident pair):** deploy.yml gets a
+  `concurrency: deploy-production` group (queued, never cancelled — four concurrent runs
+  trampled the state lock + raced the immutable-tag gate tonight), and the tfvars CLOBBER
+  GUARD is live: key-name manifest in SSM `/uplift/live/tfvars-keys`,
+  `scripts/ops/set_tfvars_secret.py` as the blessed setter (refuses missing manifest keys;
+  `--allow-remove` for deliberate removals; updates the manifest on success), plus a
+  pre-plan check in deploy.yml on the MATERIALIZED tfvars so an out-of-band secret write
+  still fails before the state lock. TDD'd (incident shape pinned); bootstrapped live
+  (39-key manifest; armed-check clean; clobbered-file probe BLOCKED, exit 1). `ssm:*`
+  added to the scoped deploy policy (the /uplift/live/* params + the guard both need it
+  once the admin fallback detaches — tonight's 16:48/16:53 plan failures). NOTE: use the
+  script for ALL future secret updates — a raw `gh secret set` bypasses manifest upkeep
+  (the workflow check still catches removals, but additions won't be protected until the
+  next scripted set).
 - 2026-06-12 — **Dispatcher window-matching SHIPPED + live-verified (#314); deploy-pipeline
   incident handled (owner session):** each tick now owns the 15-min window ending at its floored
   boundary — windows partition time, so ANY cron minute fires exactly once (TDD: off-quarter,
