@@ -549,6 +549,16 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   usable + safe; RAG-embed IAM gap closed live.
 
 ## Lane Matt (app code) — log
+- 2026-06-12 — **Knowledge page hierarchy, slice 1/2: backend (#342):** `knowledge_pages`
+  (tenant+ref_prefix PK, parent_ref NULL=top, float sort_order; RLS FORCE; full DML to
+  crm_app; absent row = top-level default so NO backfill) + four tolerant PgRagClient meta
+  methods (42P01 -> reads None / typed PageOrganizeUnavailable on the write — psycopg2-free
+  import preserved) + PATCH /knowledge/documents/{ref}/location (one op per call: re-parent
+  with cycle-walk refusal, or move up/down with first-use integer materialization + honest
+  edge no-ops; un-migrated DB -> pinned 503). Edits CARRY the location row + children to the
+  new ref namespace in one tx; deletes re-parent children to the grandparent. +7 integration
+  tests + a real-PG meta-lifecycle proof (env-gated); full pytest exit 0. Slice 2 = the tree
+  rail/move UI; rollout = build tag -> Migrate with it -> approve Deploy -> Amplify.
 - 2026-06-12 — **Knowledge search paging + real-path dim assert (#339 — the last two knowledge
   P2s):** /knowledge/search gains a clamped offset (depth cap 200) + offset/next_offset on the
   wire (null at the honest end; degrade shapes carry the same keys — wire-compat with older
