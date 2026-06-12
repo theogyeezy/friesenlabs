@@ -263,6 +263,10 @@ test("503 from GET /knowledge -> calm knowledge-rollout panel; no error wall", a
   await page.getByTestId("knowledge-rollout-refresh").click();
   await expect(page.getByTestId("knowledge-source")).toHaveCount(3, { timeout: 15_000 });
   await expect(page.getByTestId("knowledge-rollout")).toHaveCount(0);
+
+  expect(errors, `page errors: ${errors.join("\n")}`).toHaveLength(0);
+});
+
 // ---------------------------------------------------------------------------
 // Add-document path (knowledge audit P0): POST /knowledge/documents
 // ---------------------------------------------------------------------------
