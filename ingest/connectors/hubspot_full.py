@@ -13,6 +13,7 @@ Files API is NEVER called. Built incrementally per HUBSPOT_FULL_EXTRACT_PLAN.md:
 """
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 HUBSPOT_API_BASE = "https://api.hubapi.com"
@@ -33,6 +34,65 @@ class PropertySet:
 
     names: tuple[str, ...]
     media: frozenset[str]
+
+
+@dataclass(frozen=True)
+class Record:
+    """One normalized CRM record headed for crm_records: the FULL property bag (media kept as
+    URL/id refs only, flagged under properties['_media_refs']), the flattened association graph,
+    the provider id, and the provider last-modified timestamp."""
+
+    object_type: str
+    source_ref_id: str
+    properties: dict
+    associations: dict
+    updated_at: str | None
+
+
+def _lastmod_prop(object_type: str) -> str:
+    """HubSpot's last-modified property — contacts are the odd one out (CRM v3 docs)."""
+    return "lastmodifieddate" if object_type == "contacts" else "hs_lastmodifieddate"
+
+
+def _to_millis(since: int | str) -> str:
+    """Cursor → epoch-millis STRING for the Search date filter. HubSpot's Search filter on a
+    datetime property wants epoch millis, NOT an ISO-8601 string — feeding ISO is the bug that
+    broke every incremental sync. Accepts an int/numeric-str (already millis) or an ISO-8601
+    string (converted)."""
+    if isinstance(since, (int, float)):
+        return str(int(since))
+    s = str(since)
+    if s.isdigit():
+        return s
+    from datetime import datetime, timezone  # noqa: PLC0415 — lazy
+
+    dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return str(int(dt.timestamp() * 1000))
+
+
+def _normalize(object_type: str, raw: dict, media_props: frozenset[str]) -> Record:
+    """Provider record → :class:`Record`. Media properties keep their value (URL/id) but are
+    listed under ``properties['_media_refs']`` so downstream NEVER treats them as fetchable text;
+    the bytes are never pulled. Associations are flattened to ``{toType: [ids]}``."""
+    props = dict(raw.get("properties") or {})
+    media_present = sorted(n for n in media_props if props.get(n) not in (None, ""))
+    if media_present:
+        props["_media_refs"] = media_present
+    assoc: dict[str, list[str]] = {}
+    for to_type, block in (raw.get("associations") or {}).items():
+        ids = [r.get("id") or r.get("toObjectId") for r in (block.get("results") or [])]
+        flat = [str(i) for i in ids if i]
+        if flat:
+            assoc[to_type] = flat
+    return Record(
+        object_type=object_type,
+        source_ref_id=str(raw.get("id")),
+        properties=props,
+        associations=assoc,
+        updated_at=raw.get("updatedAt") or props.get(_lastmod_prop(object_type)),
+    )
 
 
 class HubSpotFullClient:
@@ -60,6 +120,22 @@ class HubSpotFullClient:
             url = f"{url}?{urllib.parse.urlencode(params)}"
         req = urllib.request.Request(
             url, headers={"Authorization": f"Bearer {self._token}"}, method="GET")
+        with urllib.request.urlopen(req, timeout=self._timeout_s) as resp:  # noqa: S310 — fixed https base
+            return _json.loads(resp.read().decode("utf-8"))
+
+    # -- one POST (Search API) -------------------------------------------- #
+    def _post(self, path: str, payload: dict) -> dict:
+        import json as _json  # noqa: PLC0415
+        import urllib.request  # noqa: PLC0415
+
+        if not self._token:
+            raise RuntimeError("HubSpotFullClient: no token — authenticate() must run first")
+        req = urllib.request.Request(
+            f"{self._base_url}{path}",
+            data=_json.dumps(payload).encode("utf-8"),
+            headers={"Authorization": f"Bearer {self._token}", "Content-Type": "application/json"},
+            method="POST",
+        )
         with urllib.request.urlopen(req, timeout=self._timeout_s) as resp:  # noqa: S310 — fixed https base
             return _json.loads(resp.read().decode("utf-8"))
 
@@ -100,3 +176,60 @@ class HubSpotFullClient:
                 seen.add(name)
                 types.append(name)
         return tuple(types)
+
+    # -- item 4: full record pull ----------------------------------------- #
+    def list_records(
+        self,
+        object_type: str,
+        prop_set: PropertySet,
+        *,
+        since: int | str | None = None,
+        associated_types: tuple[str, ...] = (),
+        page_size: int = 100,
+    ) -> Iterator[Record]:
+        """Yield EVERY record for ``object_type`` with ALL properties, paginated.
+
+        - **Full pull** (``since is None``): List API ``GET /crm/v3/objects/{type}`` with the
+          association graph requested inline.
+        - **Incremental** (``since`` given): Search API filtered on the last-modified property
+          ``>= epoch-millis(since)`` — the epoch-millis filter is the sync-bug fix (ISO 400'd).
+
+        Paginates via ``paging.next.after``. Media properties keep their URL/id value but are
+        flagged under ``properties['_media_refs']`` — the bytes are never fetched and the HubSpot
+        Files API is never touched."""
+        lastmod = _lastmod_prop(object_type)
+        props = list(prop_set.names)
+        limit = min(int(page_size), 200)
+
+        if since is None:
+            def fetch(after: str | None) -> dict:
+                params = {"properties": ",".join(props), "limit": str(limit), "archived": "false"}
+                if associated_types:
+                    params["associations"] = ",".join(associated_types)
+                if after:
+                    params["after"] = after
+                return self._get(f"/crm/v3/objects/{object_type}", params)
+        else:
+            since_ms = _to_millis(since)
+
+            def fetch(after: str | None) -> dict:
+                body: dict = {
+                    "properties": props,
+                    "sorts": [{"propertyName": lastmod, "direction": "ASCENDING"}],
+                    "limit": limit,
+                    "filterGroups": [
+                        {"filters": [{"propertyName": lastmod, "operator": "GTE", "value": since_ms}]}
+                    ],
+                }
+                if after:
+                    body["after"] = after
+                return self._post(f"/crm/v3/objects/{object_type}/search", body)
+
+        after: str | None = None
+        while True:
+            page = fetch(after)
+            for raw in page.get("results", []):
+                yield _normalize(object_type, raw, prop_set.media)
+            after = (page.get("paging", {}).get("next") or {}).get("after")
+            if not after:
+                return

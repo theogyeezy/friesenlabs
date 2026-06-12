@@ -92,10 +92,12 @@ fix): `python -m api.migrate` loads `schema.sql` idempotently. Additive only.
   (constants) ∪ custom objects from `GET /crm/v3/schemas` (by `fullyQualifiedName`); tolerant of
   a schemas-call failure (falls back to standard set). 2 unit tests (union + failure tolerance);
   ruff clean. DONE.
-- [ ] 4. **Full-extract record pull** (`list_records(object_type, since)`): all properties,
-  paginated, incremental via epoch-millis Search filter; associations attached. Unit tests:
-  pagination (2 pages), incremental filter value is epoch-millis, media props kept as
-  URL-only + listed in `_media_refs`, no Files API call.
+- [x] 4. **Full-extract record pull** — `list_records(object_type, prop_set, since, associated_types)`
+  yields normalized `Record`s with ALL properties, paginated via `paging.next.after`. Full pull =
+  List API (associations inline); incremental = Search API filtered on lastmod `GTE` **epoch-millis**
+  (`_to_millis`, the sync-bug fix vs the old ISO filter). `_normalize` keeps media values as URL
+  refs + flags `_media_refs`, flattens associations to `{toType:[ids]}`. 4 unit tests (pagination,
+  epoch-millis filter value, media-ref-only + no Files call, association flatten); ruff clean. DONE.
 - [ ] 5. **`PgCrmRecordsSink`** in `ingest/sinks.py`: upsert into `crm_records`
   (ON CONFLICT (tenant_id,source,object_type,source_ref_id) DO UPDATE). Unit test the
   upsert SQL/columns + tenant scoping (SET LOCAL app.current_tenant).

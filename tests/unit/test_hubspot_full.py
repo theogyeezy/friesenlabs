@@ -3,6 +3,8 @@
 No network: every test injects a fake ``_get`` so the HTTP layer is never exercised — these
 assert the discovery/pull LOGIC (all properties listed, media flagged URL-only, etc.).
 """
+from datetime import datetime, timezone
+
 import pytest
 
 from ingest.connectors.hubspot_full import HubSpotFullClient, PropertySet
@@ -87,3 +89,76 @@ def test_discover_object_types_tolerates_schemas_failure():
     types = c.discover_object_types()
     assert "contacts" in types and "notes" in types  # standard+engagements still returned
     assert "p12345_pet" not in types                 # customs absent, but no crash
+
+
+# --- record pull (item 4) ------------------------------------------------ #
+def test_list_records_paginates_full_pull():
+    c = HubSpotFullClient()
+    c.set_token("t")
+    pages = [
+        {"results": [{"id": "1", "properties": {"email": "a@x.com"}, "updatedAt": "t1"}],
+         "paging": {"next": {"after": "P2"}}},
+        {"results": [{"id": "2", "properties": {"email": "b@x.com"}, "updatedAt": "t2"}]},
+    ]
+    calls = []
+
+    def fake_get(path, params=None):
+        calls.append(path)
+        return pages[0] if (params or {}).get("after") is None else pages[1]
+
+    c._get = fake_get  # type: ignore[assignment]
+    ps = PropertySet(names=("email",), media=frozenset())
+    recs = list(c.list_records("contacts", ps, since=None))
+    assert [r.source_ref_id for r in recs] == ["1", "2"]   # both pages walked
+    assert all("/files" not in p for p in calls)           # Files API never touched
+
+
+def test_list_records_incremental_filter_value_is_epoch_millis():
+    c = HubSpotFullClient()
+    c.set_token("t")
+    captured = {}
+
+    def fake_post(path, body):
+        captured["path"] = path
+        captured["body"] = body
+        return {"results": []}
+
+    c._post = fake_post  # type: ignore[assignment]
+    ps = PropertySet(names=("email", "lastmodifieddate"), media=frozenset())
+    list(c.list_records("contacts", ps, since="2026-06-01T00:00:00Z"))
+    flt = captured["body"]["filterGroups"][0]["filters"][0]
+    assert flt["propertyName"] == "lastmodifieddate" and flt["operator"] == "GTE"
+    assert flt["value"].isdigit()  # epoch millis, NOT ISO (the sync-bug fix)
+    expected = str(int(datetime(2026, 6, 1, tzinfo=timezone.utc).timestamp() * 1000))
+    assert flt["value"] == expected
+    assert captured["path"].endswith("/crm/v3/objects/contacts/search")
+
+
+def test_list_records_media_kept_as_ref_never_fetched():
+    c = HubSpotFullClient()
+    c.set_token("t")
+    page = {"results": [{"id": "9", "properties": {
+        "email": "a@x.com", "headshot": "https://files.hubspot.com/abc.png"}}]}
+    paths = []
+
+    def fake_get(path, params=None):
+        paths.append(path)
+        return page
+
+    c._get = fake_get  # type: ignore[assignment]
+    ps = PropertySet(names=("email", "headshot"), media=frozenset({"headshot"}))
+    rec = next(iter(c.list_records("contacts", ps, since=None)))
+    assert rec.properties["headshot"] == "https://files.hubspot.com/abc.png"  # URL kept verbatim
+    assert rec.properties["_media_refs"] == ["headshot"]                      # flagged
+    assert all("/files" not in p for p in paths)                             # bytes never fetched
+
+
+def test_list_records_flattens_associations():
+    c = HubSpotFullClient()
+    c.set_token("t")
+    page = {"results": [{"id": "9", "properties": {}, "associations": {
+        "companies": {"results": [{"id": "100"}, {"id": "200"}]}}}]}
+    c._get = lambda path, params=None: page  # type: ignore[assignment]
+    ps = PropertySet(names=(), media=frozenset())
+    rec = next(iter(c.list_records("contacts", ps, since=None)))
+    assert rec.associations == {"companies": ["100", "200"]}
