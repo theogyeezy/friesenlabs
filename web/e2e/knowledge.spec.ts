@@ -233,7 +233,7 @@ test("500 -> friendly copy with retry; raw 'API <code>' never reaches the DOM", 
   await expect(page.getByTestId("knowledge-error")).toHaveCount(0);
 });
 
-test("503 from GET /knowledge -> calm knowledge-rollout panel; no error wall", async ({ page }) => {
+test("503 from GET /knowledge -> calm UNPROVISIONED panel (distinct from rolling-out); no error wall", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(String(e)));
 
@@ -249,22 +249,53 @@ test("503 from GET /knowledge -> calm knowledge-rollout panel; no error wall", a
 
   await page.goto("/?view=knowledge");
 
-  // Calm rollout panel — same as 404; never a red error wall.
-  const rollout = page.getByTestId("knowledge-rollout");
-  await expect(rollout).toBeVisible({ timeout: 15_000 });
-  await expect(rollout).toContainText("Knowledge API is rolling out");
+  // The P1 split: a 503 (data plane unwired) is NOT the 404 "rolling out" story.
+  const panel = page.getByTestId("knowledge-unprovisioned");
+  await expect(panel).toBeVisible({ timeout: 15_000 });
+  await expect(panel).toContainText("isn't switched on for this workspace");
+  await expect(page.getByTestId("knowledge-rollout")).toHaveCount(0);
   await expect(page.getByTestId("knowledge-error")).toHaveCount(0);
 
   const text = await bodyText(page);
   expect(text).not.toMatch(/API \d+/);
   expect(text).not.toContain("reader not configured");
 
-  // Refresh recovers.
+  // Refresh recovers once the plane is wired.
   await page.getByTestId("knowledge-rollout-refresh").click();
   await expect(page.getByTestId("knowledge-source")).toHaveCount(3, { timeout: 15_000 });
-  await expect(page.getByTestId("knowledge-rollout")).toHaveCount(0);
+  await expect(page.getByTestId("knowledge-unprovisioned")).toHaveCount(0);
 
   expect(errors, `page errors: ${errors.join("\n")}`).toHaveLength(0);
+});
+
+test("a transient search failure offers a retry — NOT the warming-up story", async ({ page }) => {
+  let searches = 0;
+  await page.route(inventoryApi, (route) => route.fulfill({ json: INVENTORY }));
+  await page.route(searchApi, async (route) => {
+    searches += 1;
+    if (searches === 1) {
+      await route.fulfill({
+        json: { query: "deals", results: [], search_available: false,
+                reason: "search failed", reason_code: "search_error" },
+      });
+    } else {
+      await route.fulfill({ json: SEARCH_HITS });
+    }
+  });
+
+  await page.goto("/?view=knowledge");
+  await expect(page.getByTestId("knowledge-view")).toBeVisible({ timeout: 15_000 });
+
+  await page.getByTestId("knowledge-search-input").fill("deals");
+  await page.getByTestId("knowledge-search-submit").click();
+
+  const failed = page.getByTestId("knowledge-search-failed");
+  await expect(failed).toContainText("Search hit a snag");
+  await expect(page.getByTestId("knowledge-search-unavailable")).toHaveCount(0);
+
+  // The retry recovers in place.
+  await page.getByTestId("knowledge-search-retry").click();
+  await expect(page.getByTestId("knowledge-result")).toHaveCount(2);
 });
 
 // ---------------------------------------------------------------------------

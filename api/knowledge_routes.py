@@ -71,6 +71,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
 
 from api.auth import TenantClaims
+from api.pg_clients import EmbedderUnavailable  # typed embed boundary; psycopg2/boto3-free import
 
 log = logging.getLogger("api.knowledge")
 
@@ -105,10 +106,16 @@ MAX_SEARCH_LIMIT = 25
 # the full document dump (keeps the payload bounded and avoids over-exposing a long record).
 SNIPPET_LEN = 320
 
-# The honest degrade reason when the query embedder/model isn't reachable (Bedrock/Titan
-# env-key-gated on the live task today). The web banner keys off `search_available`, not this
-# string, but the integration test pins it so the operator story stays stable.
+# The honest degrade reasons (knowledge audit P1 — differentiated, never one blanket string):
+# `REASON_SEARCH_UNAVAILABLE` = the QUERY embedder isn't reachable (Bedrock/Titan env-key-gated
+# on the live task — the calm "warming up" story); `REASON_SEARCH_FAILED` = anything after the
+# embed (DB read, pool) — transient, the UI offers a retry, NOT "warming up" forever. The web
+# keys off `reason_code`; the strings are pinned by the integration tests so the operator
+# story stays stable.
 REASON_SEARCH_UNAVAILABLE = "search model not configured"
+REASON_SEARCH_FAILED = "search failed"
+REASON_CODE_EMBEDDER = "embedder_unavailable"
+REASON_CODE_SEARCH_ERROR = "search_error"
 
 # --- uploaded-document (pages) surface ------------------------------------------------------
 # A page ref is the chunk-family prefix under source='upload'. TWO shapes exist in real
@@ -268,17 +275,25 @@ def mount_knowledge(app: FastAPI, deps: KnowledgeDeps, current_tenant) -> None:
         n = max(1, min(int(limit), MAX_SEARCH_LIMIT))
         try:
             hits = rag.search(tenant_id=claims.tenant_id, query=query, limit=n)
-        except Exception as exc:  # noqa: BLE001 — the query embedder (Bedrock/Titan) is env-key
-            # gated on the live task; any embed/model failure degrades to an honest 200, never a
-            # 500 and never a leaked AWS error string. The WIRE response stays generic
-            # (search_available:false + REASON_SEARCH_UNAVAILABLE); but the SERVER LOG must carry
-            # the REAL reason (message + traceback), not just the exception type — otherwise an
-            # operator can't tell a missing Bedrock key from a model error from a Postgres outage.
-            # The log is server-only (never returned to the tenant), so detail here is safe.
+        except EmbedderUnavailable as exc:
+            # The query embedder (Bedrock/Titan) is env-key-gated on the live task; an embed
+            # failure degrades to an honest 200 with the "warming up" story, never a 500 and
+            # never a leaked AWS error string. The SERVER LOG carries the REAL reason
+            # (message + traceback) — server-only, so detail here is safe.
+            log.warning("knowledge: query embedder unavailable for tenant %s: %s",
+                        claims.tenant_id, exc, exc_info=True)
+            return {"query": query, "results": [], "search_available": False,
+                    "reason": REASON_SEARCH_UNAVAILABLE,
+                    "reason_code": REASON_CODE_EMBEDDER}
+        except Exception as exc:  # noqa: BLE001 — anything AFTER the embed (DB read/pool) is a
+            # TRANSIENT failure, not the embedder story (knowledge audit P1: the UI must not
+            # say "warming up" forever over a Postgres outage). Same honesty rules: 200 +
+            # search_available:false, generic wire string, real reason in the server log only.
             log.warning("knowledge: search failed for tenant %s: %s: %s",
                         claims.tenant_id, type(exc).__name__, exc, exc_info=True)
             return {"query": query, "results": [], "search_available": False,
-                    "reason": REASON_SEARCH_UNAVAILABLE}
+                    "reason": REASON_SEARCH_FAILED,
+                    "reason_code": REASON_CODE_SEARCH_ERROR}
         results = [
             {
                 "ref_id": h.get("ref_id"),
@@ -288,7 +303,8 @@ def mount_knowledge(app: FastAPI, deps: KnowledgeDeps, current_tenant) -> None:
             }
             for h in (hits or [])
         ]
-        return {"query": query, "results": results, "search_available": True, "reason": None}
+        return {"query": query, "results": results, "search_available": True, "reason": None,
+                "reason_code": None}
 
     @app.post("/knowledge/documents", status_code=201)
     def knowledge_add_document(body: AddDocumentBody,

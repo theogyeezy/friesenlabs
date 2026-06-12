@@ -36,10 +36,14 @@ from api.control.greenlight import Greenlight
 from api.knowledge_routes import (
     MAX_Q_LEN,
     MAX_SEARCH_LIMIT,
+    REASON_CODE_EMBEDDER,
+    REASON_CODE_SEARCH_ERROR,
+    REASON_SEARCH_FAILED,
     REASON_SEARCH_UNAVAILABLE,
     SNIPPET_LEN,
     KnowledgeDeps,
 )
+from api.pg_clients import EmbedderUnavailable
 from api.views import SavedViews
 
 H = {"Authorization": "Bearer t"}
@@ -202,20 +206,61 @@ def test_search_success_shape_snippet_and_score():
 
 @pytest.mark.integration
 def test_search_degrades_when_embedder_unavailable():
-    # The Titan/Bedrock query embedder is env-key-gated on the live task. Any embed/model failure
-    # must answer 200 with search_available:false + reason — never a 500, never a leaked AWS error.
-    boom = RuntimeError("Could not connect to the endpoint URL: bedrock-runtime / NoCredentials")
+    # The Titan/Bedrock query embedder is env-key-gated on the live task. An embed failure
+    # (the TYPED EmbedderUnavailable boundary from PgRagClient._embed) must answer 200 with
+    # the "warming up" story — never a 500, never a leaked AWS error.
+    boom = EmbedderUnavailable("Could not connect to the endpoint URL: bedrock-runtime / NoCredentials")
     r = _client(KnowledgeDeps(rag=FakeRag(search_error=boom))).get(
         "/knowledge/search?q=anything", headers=H)
     assert r.status_code == 200
     body = r.json()
     assert body["search_available"] is False
     assert body["reason"] == REASON_SEARCH_UNAVAILABLE
+    assert body["reason_code"] == REASON_CODE_EMBEDDER
     assert body["results"] == []
     assert body["query"] == "anything"
     # The raw AWS error text must not leak.
     assert "bedrock" not in r.text.lower()
     assert "NoCredentials" not in r.text
+
+
+@pytest.mark.integration
+def test_search_transient_failure_is_not_the_warming_up_story():
+    # Knowledge audit P1: a failure AFTER the embed (DB read/pool) must NOT read "search model
+    # not configured" — it's transient, the UI offers a retry. Same honesty rules otherwise:
+    # 200, search_available:false, no leaked detail.
+    boom = RuntimeError("FATAL: connection to server at aurora-ARN-SECRET failed")
+    r = _client(KnowledgeDeps(rag=FakeRag(search_error=boom))).get(
+        "/knowledge/search?q=anything", headers=H)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["search_available"] is False
+    assert body["reason"] == REASON_SEARCH_FAILED
+    assert body["reason_code"] == REASON_CODE_SEARCH_ERROR
+    assert body["results"] == []
+    assert "ARN-SECRET" not in r.text  # the raw DB error never leaks
+
+
+@pytest.mark.integration
+def test_pg_rag_client_wraps_embed_failures_typed():
+    """The boundary itself: an embedder failure surfaces as EmbedderUnavailable BEFORE any
+    connection checkout — the route can classify without string-sniffing, and a Bedrock
+    outage never even touches the pool."""
+    from api.pg_clients import PgRagClient
+
+    conns: list = []
+
+    def no_db():
+        conns.append("conn")
+        raise AssertionError("the failed embed must never reach the DB")
+
+    def broken_embedder(q):
+        raise RuntimeError("NoCredentials: bedrock-runtime")
+
+    client = PgRagClient(conn_factory=no_db, embedder=broken_embedder)
+    with pytest.raises(EmbedderUnavailable):
+        client.search(tenant_id="A", query="x", limit=3)
+    assert conns == []
 
 
 @pytest.mark.integration

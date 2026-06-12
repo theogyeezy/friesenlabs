@@ -689,11 +689,14 @@ export interface KnowledgeSearchResult {
 export interface KnowledgeSearchResponse {
   query: string;
   results: KnowledgeSearchResult[];
-  /** False = the query embedder (Titan/Bedrock) isn't reachable yet (env-key-gated):
-   * the result list is empty and `reason` explains it — an informative state, NOT an
-   * error. The inventory tab stays useful regardless. */
+  /** False = search degraded; `reason_code` says WHY (the audit-P1 split):
+   * "embedder_unavailable" = the query embedder (Titan/Bedrock) isn't reachable yet
+   * (env-key-gated) — the calm "warming up" state; "search_error" = a transient failure
+   * after the embed (retry-worthy, NOT "warming up"). Absent/null reason_code from an
+   * older API image is treated as the embedder story (the only degrade that existed). */
   search_available: boolean;
   reason: string | null;
+  reason_code?: string | null;
 }
 
 /** POST /knowledge/documents result — the customer document-add path (knowledge audit P0). */

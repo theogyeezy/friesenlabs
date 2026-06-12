@@ -173,7 +173,10 @@ export function KnowledgeView({ client }: KnowledgeViewProps) {
   const [data, setData] = useState<KnowledgeInventoryResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [rollout, setRollout] = useState(false);
+  // "rollout" = the live image predates the route (404 — refresh after the next deploy);
+  // "unprovisioned" = the API answered but the data plane isn't wired for this deployment
+  // (503). Distinct copy (knowledge audit P1: unprovisioned ≠ rolling-out) — both calm.
+  const [rollout, setRollout] = useState<false | "rollout" | "unprovisioned">(false);
 
   // Pages (the editable corpus) — independent of the inventory load so either
   // surface staying useful never depends on the other.
@@ -226,9 +229,9 @@ export function KnowledgeView({ client }: KnowledgeViewProps) {
     } catch (e) {
       setData(null);
       if (e instanceof ApiError && (e.status === 404 || e.status === 503)) {
-        // 404 = live API image predates the route; 503 = reader unconfigured.
-        // Both degrade to the calm rollout panel — never a red error wall.
-        setRollout(true);
+        // 404 = live API image predates the route; 503 = data plane unconfigured.
+        // Distinct calm copy for each — never a red error wall.
+        setRollout(e.status === 404 ? "rollout" : "unprovisioned");
       } else {
         setError(friendlyErrorMessage(e, "Couldn't load your knowledge base. Please try again."));
       }
@@ -861,13 +864,22 @@ export function KnowledgeView({ client }: KnowledgeViewProps) {
 
       {loading && <Spinner testid="knowledge-loading" label="Loading your knowledge base..." />}
 
-      {/* The live API image may predate /knowledge: a calm rollout note, not an error wall. */}
+      {/* Two calm not-here-yet states, never an error wall (P1: unprovisioned ≠ rolling-out):
+          404 = the live API image predates the route; 503 = the data plane isn't wired. */}
       {rollout && (
-        <div data-testid="knowledge-rollout" style={{ ...card, fontSize: 13.5 }}>
-          <div style={{ fontWeight: 700, marginBottom: 4 }}>Knowledge API is rolling out</div>
+        <div
+          data-testid={rollout === "rollout" ? "knowledge-rollout" : "knowledge-unprovisioned"}
+          style={{ ...card, fontSize: 13.5 }}
+        >
+          <div style={{ fontWeight: 700, marginBottom: 4 }}>
+            {rollout === "rollout"
+              ? "Knowledge API is rolling out"
+              : "Knowledge isn't switched on for this workspace yet"}
+          </div>
           <p style={{ ...muted, lineHeight: 1.5 }}>
-            Your deployment doesn&rsquo;t serve the knowledge endpoint yet — refresh after the next
-            API deploy. Nothing is wrong with your workspace.
+            {rollout === "rollout"
+              ? "Your deployment doesn't serve the knowledge endpoint yet — refresh after the next API deploy. Nothing is wrong with your workspace."
+              : "The knowledge data plane isn't connected on this deployment, so there's nothing to show or search here yet. It lights up the moment it's wired — nothing is wrong with your workspace, and refreshing won't change it until then."}
           </p>
           <button
             data-testid="knowledge-rollout-refresh"
@@ -944,16 +956,39 @@ export function KnowledgeView({ client }: KnowledgeViewProps) {
           {!searchError && search !== null && (
             <div style={{ marginBottom: 18 }}>
               {!search.search_available ? (
-                <div
-                  data-testid="knowledge-search-unavailable"
-                  style={{ ...card, background: "var(--accent-soft, #f4f1ea)", fontSize: 13.5 }}
-                >
-                  <div style={{ fontWeight: 700, marginBottom: 4 }}>Search is warming up</div>
-                  <p style={{ ...muted, lineHeight: 1.55, margin: 0 }}>
-                    Semantic search needs the embedding model, which is being connected on our side.
-                    Your pages below are already here; search lights up the moment it&rsquo;s ready.
-                  </p>
-                </div>
+                // The P1 split: "search_error" = transient (retry-worthy); anything else —
+                // incl. a missing reason_code from an older API image — is the embedder
+                // warming-up story (the only degrade that existed before the split).
+                search.reason_code === "search_error" ? (
+                  <div
+                    data-testid="knowledge-search-failed"
+                    style={{ ...card, background: "var(--accent-soft, #f4f1ea)", fontSize: 13.5 }}
+                  >
+                    <div style={{ fontWeight: 700, marginBottom: 4 }}>Search hit a snag</div>
+                    <p style={{ ...muted, lineHeight: 1.55, margin: "0 0 10px" }}>
+                      Something on our side interrupted that search — your pages and documents are
+                      unaffected. It&rsquo;s usually momentary.
+                    </p>
+                    <button
+                      data-testid="knowledge-search-retry"
+                      onClick={() => void runSearch(search.query || query)}
+                      style={ghostBtn}
+                    >
+                      Try the search again
+                    </button>
+                  </div>
+                ) : (
+                  <div
+                    data-testid="knowledge-search-unavailable"
+                    style={{ ...card, background: "var(--accent-soft, #f4f1ea)", fontSize: 13.5 }}
+                  >
+                    <div style={{ fontWeight: 700, marginBottom: 4 }}>Search is warming up</div>
+                    <p style={{ ...muted, lineHeight: 1.55, margin: 0 }}>
+                      Semantic search needs the embedding model, which is being connected on our side.
+                      Your pages below are already here; search lights up the moment it&rsquo;s ready.
+                    </p>
+                  </div>
+                )
               ) : search.results.length === 0 ? (
                 <div data-testid="knowledge-search-empty" style={{ ...card, fontSize: 13.5, ...muted }}>
                   No matches for &ldquo;{search.query}&rdquo; in your knowledge base.
