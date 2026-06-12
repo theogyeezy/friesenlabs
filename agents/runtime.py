@@ -734,6 +734,11 @@ def get_runtime(config: dict[str, Any] | None = None) -> AgentRuntime:
         return ManagedAgentsRuntime(
             api_key=config.get("api_key"),
             environment_id=config.get("environment_id"),  # the persisted per-tenant env id
+            # Per-call-site drain budget: chat keeps the edge-bounded default (None -> env/25s);
+            # playbook legs pass their own (scheduled/event 120s, run-now 45s) — the 25s chat
+            # default starved the worker's poll+serve+continue cycle on playbook runs (the
+            # twice-observed live "incomplete with unserved read-only calls").
+            settle_budget_s=config.get("settle_budget_s"),
         )
     if kind == "self_hosted":
         # Lazy import keeps this module's import cost unchanged for the fake/managed paths.

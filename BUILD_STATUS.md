@@ -549,6 +549,16 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   usable + safe; RAG-embed IAM gap closed live.
 
 ## Lane Matt (app code) — log
+- 2026-06-12 — **Worker drain-window latency ROOT-CAUSED + FIXED (settle budgets per leg):**
+  both live "incomplete" sightings surfaced at exactly +25s — the chat-tuned
+  `DEFAULT_TURN_SETTLE_SECONDS` (edge-bounded, with chat's async continue-leg as its safety
+  net) was starving playbook turns, which have no continue-leg. `get_runtime` now passes
+  `settle_budget_s` through (the plumbing gap), and each leg gets a fit-for-purpose budget:
+  scheduled/event = 120s (no http edge; `UPLIFT_PLAYBOOK_SETTLE_SECONDS`), HTTP-bound Run-now
+  = 45s (under the 60s CloudFront/ALB ceilings; `UPLIFT_RUNNOW_SETTLE_SECONDS`); chat
+  untouched. TDD: get_runtime pass-through, env resolvers, and a spy asserting the scheduled
+  leg builds runtimes with the 120s budget. 202-async Run-now filed as the durable follow-up
+  if 45s still clips.
 - 2026-06-12 — **CHAT LIVE-VERIFIED end-to-end (browser, demo tenant) — the "clanky chat"
   program closes:** "What is our discount policy?" answered in SECONDS via the Tier-0 fast
   lane: ONE 200 request, `grounding_status=grounded`, `retrieved_count=8`, `settled=true`,

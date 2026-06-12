@@ -362,16 +362,27 @@ def build_app():
     # configured (api_key + the DSN-backed workspace store); otherwise the store-only/inert default.
     playbook_dispatcher = None  # in-process event producer (deals/contacts); None = inert
     if dsn and api_key and workspace_store is not None:
-        from agents.playbooks.dispatch import BackgroundDispatcher, PlaybookDispatcher  # noqa: PLC0415 — lazy
+        from agents.playbooks.dispatch import (  # noqa: PLC0415 — lazy
+            BackgroundDispatcher,
+            PlaybookDispatcher,
+            playbook_settle_seconds,
+            runnow_settle_seconds,
+        )
         from agents.playbooks.store import PgPlaybookRunStore, PgPlaybookStore  # noqa: PLC0415
         from agents.runtime import get_runtime  # noqa: PLC0415 — lazy
 
-        def _studio_registrar_factory(tenant_id, _ws=workspace_store, _key=api_key):
+        def _studio_registrar_factory(tenant_id, _ws=workspace_store, _key=api_key,
+                                      settle_budget_s=None):
             row = _ws.get(tenant_id) or {}
             env_id = row.get("environment_id")
             if not env_id:
                 return None  # tenant not provisioned -> honest record-only
-            runtime = get_runtime({"runtime": "managed", "api_key": _key, "environment_id": env_id})
+            # Default budget = run-now's (this factory's HTTP-facing consumers: the activate +
+            # run routes must clear the 60s edge); the event leg overrides with the playbook
+            # budget below — the chat-tuned 25s starved the worker's serve cycle (live P1).
+            runtime = get_runtime({"runtime": "managed", "api_key": _key,
+                                   "environment_id": env_id,
+                                   "settle_budget_s": settle_budget_s or runnow_settle_seconds()})
             return (runtime, env_id, row.get("vault_id"))
 
         playbook_store = PgPlaybookStore(dsn)
@@ -387,7 +398,8 @@ def build_app():
                                    _store=playbook_store, _runs=playbook_run_store):
             from agents.playbooks import runner as runner_mod  # noqa: PLC0415 — lazy
 
-            resolved = _factory(tenant_id)
+            # Background thread — no http edge: wait the full playbook budget for the worker.
+            resolved = _factory(tenant_id, settle_budget_s=playbook_settle_seconds())
             if resolved is None:
                 record = runner_mod.RunRecord(
                     playbook_id=str(playbook_id), tenant_id=str(tenant_id), status="error",
