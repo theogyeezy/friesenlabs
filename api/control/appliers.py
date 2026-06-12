@@ -10,7 +10,10 @@ from typing import Any, Callable
 
 
 ApplyResult = dict[str, Any]
-Applier = Callable[[Any, str, dict], ApplyResult]
+# (crm, tenant_id, payload, *, approval_id=None, decided_by=None) -> ApplyResult.
+# The audit kwargs tie the applied write back to the approval row + the human who approved it
+# (downstream audit / Cortex feedback); appliers may ignore them.
+Applier = Callable[..., ApplyResult]
 
 RECORD_ONLY_RESULT = {
     "performed": False,
@@ -24,7 +27,7 @@ def _require_crm(crm: Any) -> Any:
     return crm
 
 
-def apply_update_deal(crm: Any, tenant_id: str, payload: dict) -> ApplyResult:
+def apply_update_deal(crm: Any, tenant_id: str, payload: dict, **_audit: Any) -> ApplyResult:
     client = _require_crm(crm)
     deal_id = payload["deal_id"]
     changes = payload.get("changes") or {}
@@ -39,7 +42,7 @@ def apply_update_deal(crm: Any, tenant_id: str, payload: dict) -> ApplyResult:
     }
 
 
-def apply_update_contact(crm: Any, tenant_id: str, payload: dict) -> ApplyResult:
+def apply_update_contact(crm: Any, tenant_id: str, payload: dict, **_audit: Any) -> ApplyResult:
     client = _require_crm(crm)
     contact_id = payload["contact_id"]
     changes = payload.get("changes") or {}
@@ -54,7 +57,7 @@ def apply_update_contact(crm: Any, tenant_id: str, payload: dict) -> ApplyResult
     }
 
 
-def apply_create_activity(crm: Any, tenant_id: str, payload: dict) -> ApplyResult:
+def apply_create_activity(crm: Any, tenant_id: str, payload: dict, **_audit: Any) -> ApplyResult:
     client = _require_crm(crm)
     result = client.insert_activity(
         tenant_id=tenant_id,
@@ -66,7 +69,7 @@ def apply_create_activity(crm: Any, tenant_id: str, payload: dict) -> ApplyResul
     return {"performed": True, "action": "create_activity", "result": result}
 
 
-def apply_create_deal(crm: Any, tenant_id: str, payload: dict) -> ApplyResult:
+def apply_create_deal(crm: Any, tenant_id: str, payload: dict, **_audit: Any) -> ApplyResult:
     client = _require_crm(crm)
     result = client.insert_deal(
         tenant_id=tenant_id,
@@ -79,7 +82,7 @@ def apply_create_deal(crm: Any, tenant_id: str, payload: dict) -> ApplyResult:
     return {"performed": True, "action": "create_deal", "result": result}
 
 
-def record_only(_crm: Any, _tenant_id: str, _payload: dict) -> ApplyResult:
+def record_only(_crm: Any, _tenant_id: str, _payload: dict, **_audit: Any) -> ApplyResult:
     return dict(RECORD_ONLY_RESULT)
 
 
@@ -93,12 +96,19 @@ APPLIERS: dict[str, Applier] = {
 }
 
 
-def apply_approved_action(crm: Any, tenant_id: str, payload: dict) -> ApplyResult:
+def apply_approved_action(crm: Any, tenant_id: str, payload: dict, *,
+                          approval_id: Any = None, decided_by: str | None = None) -> ApplyResult:
     action = payload.get("action")
     applier = APPLIERS.get(action)
     if applier is None:
         raise ValueError(f"no applier registered for action {action!r}")
-    return applier(crm, tenant_id, payload)
+    result = applier(crm, tenant_id, payload, approval_id=approval_id, decided_by=decided_by)
+    # Stamp the audit linkage onto the persisted apply_result (one place, applier-agnostic).
+    if approval_id is not None:
+        result.setdefault("approval_id", str(approval_id))
+    if decided_by is not None:
+        result.setdefault("decided_by", decided_by)
+    return result
 
 
 def was_performed(result: ApplyResult) -> bool:

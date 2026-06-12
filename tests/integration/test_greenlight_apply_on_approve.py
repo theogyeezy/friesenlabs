@@ -163,6 +163,9 @@ def test_send_email_approval_is_record_only_and_touches_no_sender_or_crm():
     assert r.json()["apply_result"] == {
         "performed": False,
         "reason": "draft-only until provider go-live",
+        # The audit linkage stamped by apply_approved_action (approval row + approving human).
+        "approval_id": str(rec["id"]),
+        "decided_by": "uA",
     }
     # A record-only (draft-only) send performed NOTHING, so it carries no applied_at — it must
     # never read as "sent at <time>" (same honest shape as the applier-error path).

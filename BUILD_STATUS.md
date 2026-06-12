@@ -626,6 +626,30 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   inert-safe behind the existing switches — the live release is exactly **REQ-012**
   (migrate + DeleteSecret/ListSecrets IAM + flips + the module Price), runbook also folded into
   `GO_LIVE_CHECKLIST.md` § 6.
+- 2026-06-11 — **Greenlight customer-readiness audit + hardening (one branch):** 4-pass audit
+  (backend core · agent plane · web UI · persistence/tests; spot-check-verified, one finder
+  false-positive refuted) — verdict: core sound (structural draft-only, race-free decide,
+  FORCE'd RLS), operational shell incomplete. Then implemented ALL filed TODOs, TDD: approval
+  expiry (lazy `expires_at`, `GREENLIGHT_TTL_HOURS` default 7d, decide() flips expired + refuses) ·
+  `GET /approvals` keyset pagination + `total_pending` + partial pending index (schema appended;
+  live apply rides the next migrate — Lane Nick) · isolation-gate approvals probe · `/chat` 409
+  while the kill switch is engaged (API boundary, both runtimes; posture documented in
+  `conv/session.py`) · record-only approvals logged + honest UI toast ("recorded as a draft",
+  never "sent") · status-named decide errors + already-decided UX (specific notice + quiet
+  resync) · queue 404 → "not yet enabled" parity · real-mode nav badge (polled `total_pending`)
+  + 45s quiet queue polling that never clobbers in-progress edits + refresh · structured "What
+  this will do" payload panel (recipient/deal/changes visible pre-approve; also fixed the
+  novel-key 422 when editing draft-less payloads) · optional deny reasons · worker TOOLS now
+  DERIVED from roster grants (parity by construction) · tz-aware TCPA quiet hours (server-side
+  hour from IANA `timezone`, fail-closed on junk) + compliance blocks logged · applier audit
+  linkage (`approval_id`/`decided_by` stamped onto `apply_result`) · pool-retry + dial-cache
+  read-your-own-write tests. Two deliberate documented postures (v1 all-members-admin,
+  append-forever retention) in the audit doc. Verified: full pytest green (1969 passed), web
+  typecheck/build green, full Playwright 134/134 ×2 (3 new specs). Also fixed a latent race this
+  branch's timing shift exposed in `signup-real.spec.ts`: the spec asserted the TRANSIENT
+  "provisioning" step with no synchronization (passes standalone, flaked under suite-parallel
+  load — seen failing in both directions); the second stubbed poll answer is now gated on the
+  test observing provisioning. Report: `docs/audits/greenlight-audit-2026-06-11.md`.
 - 2026-06-11 — **Neural constellation hero (landing):** the hero is now a live, dependency-free
   canvas render of the real 11-product suite — Command Center at the heart, any-to-any transient
   signal routes, product-true activity cards, and a ~9s Security guardrail interception (shield +

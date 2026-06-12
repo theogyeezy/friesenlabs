@@ -91,7 +91,8 @@ def test_decide_raises_for_the_race_loser_without_double_deciding():
     rec = _propose(gl)
     assert gl.decide("t1", rec["id"], "approve", decided_by="winner")["status"] == "approved"
     store.stale_pending_reads = 1  # the loser's pre-write read still says pending
-    with pytest.raises(ValueError, match="not pending"):
+    # The loser's error re-reads the row and names where it actually landed ("already approved").
+    with pytest.raises(ValueError, match="already approved"):
         gl.decide("t1", rec["id"], "deny", decided_by="loser")
     out = gl.store.get("t1", rec["id"])
     assert out["status"] == "approved" and out["decided_by"] == "winner"
