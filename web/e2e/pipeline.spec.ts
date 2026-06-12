@@ -299,3 +299,65 @@ test("empty tenant renders the honest empty state, not a fake board", async ({ p
   await expect(page.getByTestId("pipeline-count")).toContainText("0 open deals");
   await expect(page.getByTestId("deal-card")).toHaveCount(0);
 });
+
+test("new-deal form sends contact_id + company_id; no tenant_id in POST body", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+
+  const CONTACT_LIST = {
+    contacts: [
+      { id: "c-pick-1", name: "Alice Nguyen", title: null, email: "alice@example.com", phone: null,
+        company_id: "co-pick-1", company_name: "Acme Corp",
+        created_at: "2026-06-01T00:00:00+00:00", last_activity_at: null },
+    ],
+    count: 1, has_more: false, limit: 200, offset: 0, q: null,
+  };
+  const COMPANY_LIST = {
+    companies: [
+      { id: "co-pick-1", name: "Acme Corp", domain: "acme.example",
+        created_at: "2026-06-01T00:00:00+00:00", contact_count: 1, open_deal_count: 0 },
+      { id: "co-pick-2", name: "Globex", domain: "globex.example",
+        created_at: "2026-06-01T00:00:00+00:00", contact_count: 0, open_deal_count: 0 },
+    ],
+    count: 2, has_more: false, limit: 200, offset: 0, q: null,
+  };
+
+  let dealPostBody: Record<string, unknown> | null = null;
+
+  await page.route("**/deals", async (route) => {
+    if (route.request().method() === "POST") {
+      dealPostBody = route.request().postDataJSON() as Record<string, unknown>;
+      await route.fulfill({ status: 201, json: { deal: { id: "new-deal-1", name: "Pilot deal", stage: "new", amount: null } } });
+    } else {
+      await route.fulfill({ json: board([]) });
+    }
+  });
+  await page.route("**/contacts?*", (route) => route.fulfill({ json: CONTACT_LIST }));
+  await page.route("**/companies?*", (route) => route.fulfill({ json: COMPANY_LIST }));
+
+  await page.goto("/?view=pipeline");
+  await expect(page.getByTestId("pipeline-board")).toBeVisible({ timeout: 15_000 });
+
+  // Open the new-deal form.
+  await page.getByTestId("new-deal-btn").click();
+  await expect(page.getByTestId("deal-form-contact")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByTestId("deal-form-company")).toBeVisible();
+
+  // Fill the title, pick a contact and a company.
+  await page.getByTestId("deal-form-title").fill("Pilot deal");
+  await page.getByTestId("deal-form-contact").selectOption("c-pick-1");
+  await page.getByTestId("deal-form-company").selectOption("co-pick-2");
+
+  // Submit and check the intercepted POST body.
+  await page.getByTestId("deal-form-submit").click();
+
+  // Wait for the post to fire.
+  await expect(async () => {
+    expect(dealPostBody).not.toBeNull();
+  }).toPass({ timeout: 5_000 });
+
+  expect(dealPostBody).toEqual({ title: "Pilot deal", contact_id: "c-pick-1", company_id: "co-pick-2" });
+  expect(dealPostBody).not.toHaveProperty("tenant_id");
+
+  expect(errors, `page errors: ${errors.join("\n")}`).toHaveLength(0);
+});

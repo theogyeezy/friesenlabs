@@ -25,6 +25,8 @@ import {
   ApiError,
   defaultClient,
   friendlyErrorMessage,
+  type CompanyRow,
+  type ContactRow,
   type CreateDealBody,
   type DealCard,
   type DealDetailResponse,
@@ -136,10 +138,12 @@ interface QueuedMove {
 interface DealFormFields {
   title: string;
   amount: string; // string so the input is editable; converted to number on submit
+  contact_id: string;
+  company_id: string;
 }
 
 function emptyDealForm(): DealFormFields {
-  return { title: "", amount: "" };
+  return { title: "", amount: "", contact_id: "", company_id: "" };
 }
 
 export interface PipelineBoardProps {
@@ -193,6 +197,10 @@ export function PipelineBoard({ client, onOpenGreenlight, onLoadSample }: Pipeli
   const [dealFormFields, setDealFormFields] = useState<DealFormFields>(emptyDealForm);
   const [dealFormBusy, setDealFormBusy] = useState(false);
   const [dealFormError, setDealFormError] = useState<string | null>(null);
+
+  // Picker lists loaded when the create form opens (fail-soft: empty = only "— None —").
+  const [pickerContacts, setPickerContacts] = useState<ContactRow[]>([]);
+  const [pickerCompanies, setPickerCompanies] = useState<CompanyRow[]>([]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -279,13 +287,24 @@ export function PipelineBoard({ client, onOpenGreenlight, onLoadSample }: Pipeli
     setDealFormMode("create");
     setDealFormFields(emptyDealForm());
     setDealFormError(null);
-  }, []);
+    // Load picker lists when the form opens; fail-soft on any error.
+    void api.listContacts({ limit: 200 }).then(
+      (r) => setPickerContacts(r.contacts),
+      () => setPickerContacts([]),
+    );
+    void api.listCompanies({ limit: 200 }).then(
+      (r) => setPickerCompanies(r.companies),
+      () => setPickerCompanies([]),
+    );
+  }, [api]);
 
   const openEditDealForm = useCallback((d: DealCard) => {
     setDealFormMode({ kind: "edit", id: d.id });
     setDealFormFields({
       title: d.title ?? "",
       amount: d.amount !== null && d.amount !== undefined ? String(d.amount) : "",
+      contact_id: "",
+      company_id: "",
     });
     setDealFormError(null);
   }, []);
@@ -313,7 +332,12 @@ export function PipelineBoard({ client, onOpenGreenlight, onLoadSample }: Pipeli
     setDealFormError(null);
     try {
       if (dealFormMode === "create") {
-        const body: CreateDealBody = { title, amount };
+        const body: CreateDealBody = {
+          title,
+          amount,
+          contact_id: dealFormFields.contact_id || undefined,
+          company_id: dealFormFields.company_id || undefined,
+        };
         await api.createDeal(body);
       } else {
         const body: EditDealBody = { title, amount };
@@ -822,6 +846,79 @@ export function PipelineBoard({ client, onOpenGreenlight, onLoadSample }: Pipeli
                 }}
               />
             </div>
+
+            {dealFormMode === "create" && (
+              <>
+                <div style={{ marginBottom: 14 }}>
+                  <label
+                    htmlFor="deal-form-contact"
+                    style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--ink-3, #8a8278)", marginBottom: 4 }}
+                  >
+                    Contact
+                  </label>
+                  <select
+                    id="deal-form-contact"
+                    data-testid="deal-form-contact"
+                    value={dealFormFields.contact_id}
+                    onChange={(e) => setDealFormFields((f) => ({ ...f, contact_id: e.target.value }))}
+                    disabled={dealFormBusy}
+                    style={{
+                      width: "100%",
+                      boxSizing: "border-box",
+                      borderRadius: 10,
+                      border: "1px solid var(--line, #e3ddd3)",
+                      padding: "9px 12px",
+                      fontSize: 13.5,
+                      fontFamily: "inherit",
+                      background: "var(--surface, #fff)",
+                      color: "var(--ink, #2a2622)",
+                    }}
+                  >
+                    <option value="">— No contact —</option>
+                    {pickerContacts.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name ?? "(unnamed)"}
+                        {c.company_name ? ` · ${c.company_name}` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div style={{ marginBottom: 14 }}>
+                  <label
+                    htmlFor="deal-form-company"
+                    style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--ink-3, #8a8278)", marginBottom: 4 }}
+                  >
+                    Company
+                  </label>
+                  <select
+                    id="deal-form-company"
+                    data-testid="deal-form-company"
+                    value={dealFormFields.company_id}
+                    onChange={(e) => setDealFormFields((f) => ({ ...f, company_id: e.target.value }))}
+                    disabled={dealFormBusy}
+                    style={{
+                      width: "100%",
+                      boxSizing: "border-box",
+                      borderRadius: 10,
+                      border: "1px solid var(--line, #e3ddd3)",
+                      padding: "9px 12px",
+                      fontSize: 13.5,
+                      fontFamily: "inherit",
+                      background: "var(--surface, #fff)",
+                      color: "var(--ink, #2a2622)",
+                    }}
+                  >
+                    <option value="">— No company —</option>
+                    {pickerCompanies.map((co) => (
+                      <option key={co.id} value={co.id}>
+                        {co.name ?? "(unnamed)"}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </>
+            )}
 
             {dealFormError && (
               <div

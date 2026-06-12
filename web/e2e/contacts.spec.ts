@@ -329,3 +329,62 @@ test("empty tenant renders the honest empty state, not fake rows", async ({ page
   await expect(page.getByTestId("dir-empty")).toContainText("No contacts yet");
   await expect(page.getByTestId("contact-row")).toHaveCount(0);
 });
+
+test("add-contact form renders company picker and sends company_id; no tenant_id in POST body", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+
+  const COMPANY_LIST = {
+    companies: [
+      { id: "co-pick-1", name: "Birchwood Capital", domain: "birchwoodcap.example",
+        created_at: "2026-05-01T00:00:00+00:00", contact_count: 1, open_deal_count: 1 },
+      { id: "co-pick-2", name: "Globex", domain: "globex.example",
+        created_at: "2026-05-02T00:00:00+00:00", contact_count: 0, open_deal_count: 0 },
+    ],
+    count: 2, has_more: false, limit: 200, offset: 0, q: null,
+  };
+
+  let contactPostBody: Record<string, unknown> | null = null;
+
+  await page.route("**/contacts?*", (route) => route.fulfill({ json: contactsPage([]) }));
+  await page.route("**/contacts", async (route) => {
+    if (route.request().method() === "POST") {
+      contactPostBody = route.request().postDataJSON() as Record<string, unknown>;
+      await route.fulfill({
+        status: 201,
+        json: { contact: { id: "new-c-1", name: "Jordan Lee", email: null, phone: null, company_id: "co-pick-1" } },
+      });
+    } else {
+      await route.fulfill({ json: contactsPage([]) });
+    }
+  });
+  await page.route("**/companies?*", (route) => route.fulfill({ json: COMPANY_LIST }));
+
+  await page.goto("/?view=contacts");
+  await expect(page.getByTestId("contacts-directory")).toBeVisible({ timeout: 15_000 });
+
+  // Open the add-contact form.
+  await page.getByTestId("add-contact-btn").click();
+  const companySelect = page.getByTestId("contact-form-company");
+  await expect(companySelect).toBeVisible({ timeout: 10_000 });
+
+  // Both companies render as options.
+  await expect(companySelect.locator("option[value='co-pick-1']")).toHaveCount(1);
+  await expect(companySelect.locator("option[value='co-pick-2']")).toHaveCount(1);
+
+  // Fill name and pick a company.
+  await page.getByTestId("contact-form-name").fill("Jordan Lee");
+  await companySelect.selectOption("co-pick-1");
+
+  // Submit and verify the POST body.
+  await page.getByTestId("contact-form-submit").click();
+
+  await expect(async () => {
+    expect(contactPostBody).not.toBeNull();
+  }).toPass({ timeout: 5_000 });
+
+  expect(contactPostBody).toEqual({ name: "Jordan Lee", company_id: "co-pick-1" });
+  expect(contactPostBody).not.toHaveProperty("tenant_id");
+
+  expect(errors, `page errors: ${errors.join("\n")}`).toHaveLength(0);
+});

@@ -14,9 +14,10 @@
 //     the Pipeline board, where stage moves go through Greenlight).
 //   * A Companies toggle switches to GET /companies (contact + open-deal
 //     counts) with its own drawer (GET /companies/{id}: contacts + deals).
-//   * READ-ONLY by design: no create/edit controls exist this cycle — CRM
-//     writes arrive with a later update_contact tool through the gate, so the
-//     UI promises nothing it can't keep.
+//   * Direct writes via POST /contacts (create) and PATCH /contacts/{id}
+//     (edit) — the server applies RLS via SET LOCAL (not the Greenlight gate),
+//     matching the contacts_routes.py docstring. A company picker on the form
+//     is populated from GET /companies and bound to company_id.
 //   * A 404 from the list means the live API image predates these routes (the
 //     web can deploy ahead of the API): that renders a calm "rolling out"
 //     state with a refresh affordance — NOT an error wall.
@@ -208,6 +209,9 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: Cont
   const [formError, setFormError] = useState<string | null>(null);
   const [, forceListRefresh] = useReducer((n: number) => n + 1, 0);
 
+  // Company picker list loaded when the form opens (fail-soft: empty = only "— No company —").
+  const [pickerCompanies, setPickerCompanies] = useState<CompanyRow[]>([]);
+
   const loadPeople = useCallback(
     async (q: string, offset: number, append: boolean) => {
       const seq = ++loadSeq.current;
@@ -334,11 +338,19 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: Cont
     setDetailError(null);
   }, []);
 
+  const loadPickerCompanies = useCallback(() => {
+    void api.listCompanies({ limit: 200 }).then(
+      (r) => setPickerCompanies(r.companies),
+      () => setPickerCompanies([]),
+    );
+  }, [api]);
+
   const openCreateForm = useCallback(() => {
     setFormMode("create");
     setFormFields(emptyForm());
     setFormError(null);
-  }, []);
+    loadPickerCompanies();
+  }, [loadPickerCompanies]);
 
   const openEditForm = useCallback((c: ContactRow) => {
     setFormMode({ kind: "edit", id: c.id });
@@ -349,7 +361,8 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: Cont
       company_id: c.company_id ?? "",
     });
     setFormError(null);
-  }, []);
+    loadPickerCompanies();
+  }, [loadPickerCompanies]);
 
   const closeForm = useCallback(() => {
     setFormMode(null);
@@ -894,6 +907,40 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: Cont
                 />
               </div>
             ))}
+
+            <div style={{ marginBottom: 14 }}>
+              <label
+                htmlFor="contact-form-company"
+                style={{ display: "block", fontSize: 12, fontWeight: 600, ...muted, marginBottom: 4 }}
+              >
+                Company
+              </label>
+              <select
+                id="contact-form-company"
+                data-testid="contact-form-company"
+                value={formFields.company_id}
+                onChange={(e) => setFormFields((f) => ({ ...f, company_id: e.target.value }))}
+                disabled={formBusy}
+                style={{
+                  width: "100%",
+                  boxSizing: "border-box",
+                  borderRadius: 10,
+                  border: "1px solid var(--line, #e3ddd3)",
+                  padding: "9px 12px",
+                  fontSize: 13.5,
+                  fontFamily: "inherit",
+                  background: "var(--surface, #fff)",
+                  color: "var(--ink, #2a2622)",
+                }}
+              >
+                <option value="">— No company —</option>
+                {pickerCompanies.map((co) => (
+                  <option key={co.id} value={co.id}>
+                    {co.name ?? "(unnamed)"}
+                  </option>
+                ))}
+              </select>
+            </div>
 
             {formError && (
               <div
