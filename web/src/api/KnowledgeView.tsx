@@ -134,7 +134,9 @@ export function KnowledgeView({ client }: KnowledgeViewProps) {
       setData(await api.getKnowledge());
     } catch (e) {
       setData(null);
-      if (e instanceof ApiError && e.status === 404) {
+      if (e instanceof ApiError && (e.status === 404 || e.status === 503)) {
+        // 404 = live API image predates the route; 503 = reader unconfigured.
+        // Both degrade to the calm rollout panel — never a red error wall.
         setRollout(true);
       } else {
         setError(friendlyErrorMessage(e, "Couldn't load your knowledge base. Please try again."));

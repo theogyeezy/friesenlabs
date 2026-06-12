@@ -127,7 +127,9 @@ export function CortexView({ client }: { client?: ApiClient }) {
       setData(await api.getCortexHealth());
     } catch (e) {
       setData(null);
-      if (e instanceof ApiError && e.status === 404) {
+      if (e instanceof ApiError && (e.status === 404 || e.status === 503)) {
+        // 404 = live API image predates the route; 503 = unconfigured data plane.
+        // Both degrade to the calm rollout panel — never a red error wall.
         setRollout(true);
       } else {
         setError(friendlyErrorMessage(e, "Couldn't load Cortex health. Please try again."));
