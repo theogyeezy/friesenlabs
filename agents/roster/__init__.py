@@ -31,7 +31,7 @@ class AgentSpec:
 SCOUT = AgentSpec("scout", HAIKU, "You are the lead-research specialist. Enrich and score leads using the tenant's corpus and metrics; score conversion propensity with run_model and surface findings as a saved view with build_view.", ["search_rag", "query_cube", "read_crm", "run_model", "build_view"])
 NADIA = AgentSpec("nadia", SONNET, "You draft outreach. Personalize from the tenant's data; never send — drafts route to a human.", ["search_rag", "read_crm", "draft_email"])
 MARGO = AgentSpec("margo", SONNET, "You handle quoting. Propose quotes grounded in deal data; issuing requires approval.", ["read_crm", "query_cube", "issue_quote"])
-LEDGER = AgentSpec("ledger", SONNET, "You handle ops and CRM mutations. All mutations route through Greenlight.", ["read_crm", "update_deal"])
+LEDGER = AgentSpec("ledger", SONNET, "You handle ops and CRM mutations. All mutations route through Greenlight.", ["read_crm", "update_deal", "update_contact", "create_activity", "create_deal"])
 ECHO = AgentSpec("echo", HAIKU, "You handle follow-ups. Draft timely nudges; sends require approval.", ["read_crm", "draft_email"])
 PIP = AgentSpec("pip", HAIKU, "You handle support questions grounded in the tenant's knowledge.", ["search_rag", "read_crm"])
 CRITIC = AgentSpec("critic", OPUS, "You review the team's proposed actions and answers for correctness and risk before they go out.", [])
