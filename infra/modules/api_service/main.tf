@@ -101,6 +101,13 @@ variable "integrations_real" {
   type    = bool
   default = false
 }
+# Connector OAuth ("Connect with login"): the HMAC state-signing secret ARN. Injected as
+# OAUTH_STATE_SECRET; with OAUTH_REDIRECT_BASE below it satisfies OAuthConfig.configured(), so
+# /integrations/{name}/oauth/start signs state + returns the authorize_url instead of a 503.
+variable "oauth_state_secret_arn" {
+  type    = string
+  default = ""
+}
 # REQ-012 step 6: the ingest-plane master switch ON THE API TASK — powers in-process
 # API-kicked syncs ("Sync now": async 202 + integration_sync_runs guard) and CSV-import
 # landing. REQ-004's old "no INGEST_* on the api task" stance was about IN-REQUEST syncs,
@@ -321,6 +328,14 @@ resource "aws_ecs_task_definition" "api" {
         var.cube_endpoint != "" ? [{ name = "CUBE_ENDPOINT", value = var.cube_endpoint }] : [],
         var.posthog_host != "" ? [{ name = "POSTHOG_HOST", value = var.posthog_host }] : [],
         var.integrations_real ? [{ name = "INTEGRATIONS_REAL_SECRETS", value = "1" }] : [],
+        # Connector OAuth flow config (non-secret): the public API base the provider redirect_uri is
+        # built from (must route through the edge that stamps X-Origin-Verify — the SPA's /api path,
+        # NOT the bare ALB), and where the callback returns the browser. Gated on the state-secret ARN
+        # being wired so OAUTH_STATE_SECRET (below) and these always appear together.
+        var.oauth_state_secret_arn != "" ? [
+          { name = "OAUTH_REDIRECT_BASE", value = "https://friesenlabs.com/api" },
+          { name = "OAUTH_APP_RETURN_URL", value = "https://friesenlabs.com/?view=integrations" },
+        ] : [],
         # REQ-012 step 6: real sync-runner + csv-importer deps in the API process (the routes'
         # async/202 path; in-request syncs are gone). Deliberate, separate flip from the
         # secrets switch above.
@@ -338,6 +353,11 @@ resource "aws_ecs_task_definition" "api" {
           { name = "DB_USER", valueFrom = "${var.db_secret_arn}:username::" },
           { name = "DB_PASS", valueFrom = "${var.db_secret_arn}:password::" },
         ],
+        # Connector OAuth: HMAC state-signing secret (whole-secret ARN). Gated so an unset ARN
+        # never injects a valueFrom on an empty secret (which would block task startup).
+        var.oauth_state_secret_arn != "" ? [
+          { name = "OAUTH_STATE_SECRET", valueFrom = var.oauth_state_secret_arn },
+        ] : [],
         # REQ-001: org Anthropic key + env-id fallback — API task ONLY (never the worker), and
         # only once the secrets hold values (see var.api_anthropic_env). UPLIFT_ENV_KEY must
         # never appear here.
