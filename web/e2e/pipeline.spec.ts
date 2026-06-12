@@ -356,7 +356,9 @@ test("new-deal form sends contact_id + company_id; no tenant_id in POST body", a
     expect(dealPostBody).not.toBeNull();
   }).toPass({ timeout: 5_000 });
 
-  expect(dealPostBody).toEqual({ title: "Pilot deal", contact_id: "c-pick-1", company_id: "co-pick-2" });
+  // amount is sent as null when the field is left blank (the create body always carries it);
+  // contact_id/company_id come from the pickers. No tenant_id (the trust rule).
+  expect(dealPostBody).toEqual({ title: "Pilot deal", amount: null, contact_id: "c-pick-1", company_id: "co-pick-2" });
   expect(dealPostBody).not.toHaveProperty("tenant_id");
 
   expect(errors, `page errors: ${errors.join("\n")}`).toHaveLength(0);

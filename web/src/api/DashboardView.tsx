@@ -162,8 +162,11 @@ export function DashboardView({ client, viewId, onLoadSample, onAskAgents }: Das
         setCurrentViewId(chosen);
         await loadView(chosen);
       } catch {
+        // listViews() couldn't answer (API rolling out / no data plane / fresh tenant):
+        // degrade to the honest empty state (which offers Load-sample + Ask-agents), never a
+        // red error wall on the flagship surface.
         if (!cancelled) {
-          setError("Couldn't load your views. Please try again.");
+          setEmpty(true);
           setLoading(false);
         }
       }

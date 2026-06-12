@@ -61,6 +61,8 @@ export function GreenlightQueue({ client }: GreenlightQueueProps) {
   // Keyed by approval id; kept separately from the page-level load error so a
   // failed decision leaves the queue intact and shows the error in-item.
   const [itemErrors, setItemErrors] = useState<Record<number, string>>({});
+  // The last decision attempted per item, so a per-item retry repeats it faithfully.
+  const [lastDecision, setLastDecision] = useState<Record<number, "approve" | "edit" | "deny">>({});
   const [busy, setBusy] = useState<Record<number, boolean>>({});
   const [toast, setToast] = useState<string | null>(null);
 
@@ -87,6 +89,9 @@ export function GreenlightQueue({ client }: GreenlightQueueProps) {
   const decide = useCallback(
     async (a: Approval, decision: "approve" | "edit" | "deny") => {
       setBusy((b) => ({ ...b, [a.id]: true }));
+      // Remember this item's decision so a per-item RETRY repeats the SAME action
+      // (a failed deny must retry as deny, never silently become an approve).
+      setLastDecision((p) => ({ ...p, [a.id]: decision }));
       // Clear any prior per-item error for this item before retrying.
       setItemErrors((prev) => { const n = { ...prev }; delete n[a.id]; return n; });
       try {
@@ -302,7 +307,7 @@ export function GreenlightQueue({ client }: GreenlightQueueProps) {
               {itemErrors[a.id]}
               <button
                 data-testid="item-error-retry"
-                onClick={() => void decide(a, draftChanged(a, drafts[a.id]) ? "edit" : "approve")}
+                onClick={() => void decide(a, lastDecision[a.id] ?? (draftChanged(a, drafts[a.id]) ? "edit" : "approve"))}
                 disabled={busy[a.id]}
                 style={{ ...ghostBtn, marginLeft: 8, padding: "4px 10px", fontSize: 12.5, color: "var(--ink, #2a2622)" }}
               >

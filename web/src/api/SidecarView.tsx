@@ -74,7 +74,9 @@ export function SidecarView({ client, onOpenGreenlight, onOpenDeal, onOpenContac
     setLoading(true);
     setLoadError(null);
     setUnavailable(false);
-    setActError(null);
+    // NB: do NOT clear actError here — the 409 path sets it and then reloads the list, and we want
+    // the "that suggestion changed" notice to survive that refresh. actError is cleared at the
+    // start of the next accept() instead.
     try {
       const res = await api.getSidecarSuggestions();
       setSuggestions(res.suggestions);

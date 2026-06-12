@@ -67,7 +67,9 @@ function stubBoth(page: Page, playbooks: unknown[], templates: unknown[]) {
 }
 
 async function gotoStudio(page: Page) {
-  await page.goto("/?view=studio");
+  // The real shell routes by nav-click (there is no ?view= deep-link seam in the real build).
+  await page.goto("/");
+  await page.locator(".nav-item", { hasText: /^Studio$/ }).click();
   await expect(page.getByTestId("studio-view")).toBeVisible({ timeout: 15_000 });
 }
 

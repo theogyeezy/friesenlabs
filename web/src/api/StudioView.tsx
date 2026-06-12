@@ -224,7 +224,9 @@ export function StudioView() {
     setError(null);
     setRollout(false);
     setUnavailable(false);
-    setNotice(null);
+    // NB: do NOT clear `notice` here — the action handlers (activate/run/save/delete) set a notice
+    // and then await load() to refresh the list; clearing it here would wipe the message the user
+    // just earned. Each handler already clears the notice at its own start instead.
     try {
       const [pb, tp] = await Promise.all([
         studioRequest<{ playbooks: PlaybookRow[] }>("GET", "/studio/playbooks"),

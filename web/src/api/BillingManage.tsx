@@ -52,15 +52,19 @@ const PLAN_LABELS: Record<string, string> = {
 };
 
 // Format an integer-cents amount to a readable currency string (e.g. $1,234.00).
-function formatMoney(cents: number, currency: string): string {
+function formatMoney(cents: number, currency: string | null | undefined): string {
+  // Guard a null/empty currency BEFORE any .toUpperCase() (a null would throw — and the throw
+  // would re-throw inside the catch too). Stripe contracts default to "usd" but the row could be
+  // malformed; never let the invoice list crash the panel.
+  const cur = (currency || "USD").toUpperCase();
   try {
     return new Intl.NumberFormat(undefined, {
       style: "currency",
-      currency: currency.toUpperCase(),
+      currency: cur,
     }).format(cents / 100);
   } catch {
     // Unknown currency code — fall back to a plain decimal with the code.
-    return `${(cents / 100).toFixed(2)} ${currency.toUpperCase()}`;
+    return `${(cents / 100).toFixed(2)} ${cur}`;
   }
 }
 
