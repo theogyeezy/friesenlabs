@@ -197,6 +197,13 @@ export function KnowledgeView({ client, initialPageRef, onInitialPageConsumed }:
   // Pages (the editable corpus) — independent of the inventory load so either
   // surface staying useful never depends on the other.
   const [pages, setPages] = useState<KnowledgeDocumentSummary[] | null>(null);
+  // False until the knowledge_pages migration runs (or on an older API image): the rail
+  // stays the honest flat list and every organize affordance is hidden.
+  const [organizeAvailable, setOrganizeAvailable] = useState(false);
+  // The reader's Move panel + its honest notes.
+  const [moveOpen, setMoveOpen] = useState(false);
+  const [moveNote, setMoveNote] = useState<string | null>(null);
+  const [moving, setMoving] = useState(false);
   const [pagesRollout, setPagesRollout] = useState(false);
   const [pagesError, setPagesError] = useState<string | null>(null);
 
@@ -262,6 +269,7 @@ export function KnowledgeView({ client, initialPageRef, onInitialPageConsumed }:
     try {
       const res = await api.listKnowledgeDocuments();
       setPages(res.documents);
+      setOrganizeAvailable(res.organize_available === true);
     } catch (e) {
       setPages(null);
       if (e instanceof ApiError && (e.status === 404 || e.status === 503)) {
@@ -308,6 +316,8 @@ export function KnowledgeView({ client, initialPageRef, onInitialPageConsumed }:
       setDocError(null);
       setCleanupNote(false);
       setConfirmingDelete(false);
+      setMoveOpen(false);
+      setMoveNote(null);
       setDocLoading(true);
       try {
         setDoc(await api.getKnowledgeDocument(refId));
@@ -506,6 +516,48 @@ export function KnowledgeView({ client, initialPageRef, onInitialPageConsumed }:
     }
   };
 
+  // --- organize ----------------------------------------------------------------
+
+  /** A page's whole subtree (itself + descendants) — these can never become its parent. */
+  const subtreeOf = (root: string): Set<string> => {
+    const ids = new Set<string>([root]);
+    const list = pages ?? [];
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const p of list) {
+        if (p.ref_id && !ids.has(p.ref_id) && p.parent_ref != null && ids.has(p.parent_ref)) {
+          ids.add(p.ref_id);
+          grew = true;
+        }
+      }
+    }
+    return ids;
+  };
+
+  const doMove = async (op: { parent_ref?: string | null; move?: "up" | "down" }) => {
+    if (!doc || moving) return;
+    setMoving(true);
+    setMoveNote(null);
+    try {
+      await api.moveKnowledgeDocument(doc.ref_id, op);
+      await loadPages();
+      if ("parent_ref" in op) setMoveOpen(false);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 503) {
+        setMoveNote(
+          "Organizing is rolling out on our side — your pages are unaffected. Try again after the next update.",
+        );
+      } else if (e instanceof ApiError && e.status === 422) {
+        setMoveNote("That move isn't possible — a page can't go under itself or one of its own sub-pages.");
+      } else {
+        setMoveNote(friendlyErrorMessage(e, "Couldn't move the page. Please try again."));
+      }
+    } finally {
+      setMoving(false);
+    }
+  };
+
   // --- search ------------------------------------------------------------------
 
   const runSearch = useCallback(
@@ -570,13 +622,15 @@ export function KnowledgeView({ client, initialPageRef, onInitialPageConsumed }:
     </div>
   );
 
-  const pageRow = (p: KnowledgeDocumentSummary): React.ReactElement => {
+  const pageRow = (p: KnowledgeDocumentSummary, depth = 0): React.ReactElement => {
     const sel = p.ref_id !== null && p.ref_id === openRef;
     return (
       <button
         key={p.ref_id ?? p.title}
         data-testid="knowledge-page-item"
+        data-depth={depth}
         className={`kn-page-btn${sel ? " sel" : ""}`}
+        style={depth > 0 ? { paddingLeft: 10 + depth * 16 } : undefined}
         onClick={() => {
           if (!p.ref_id || !guardDiscard()) return;
           setEditor({ mode: "closed" });
@@ -617,6 +671,58 @@ export function KnowledgeView({ client, initialPageRef, onInitialPageConsumed }:
         )}
       </button>
     );
+  };
+
+  // Pages -> a rendered tree: children grouped under parents (an unknown/deleted parent
+  // renders the child top-level), siblings ordered by (sort_order, list position — the API
+  // list arrives newest-first). Depth display-capped; a server-data cycle can't trap the
+  // walk (visited set + a defensive flat tail).
+  const treeRows = (list: KnowledgeDocumentSummary[]): Array<[KnowledgeDocumentSummary, number]> => {
+    const refs = new Set(list.map((p) => p.ref_id));
+    const kids = new Map<string | null, KnowledgeDocumentSummary[]>();
+    for (const p of list) {
+      const parent = p.parent_ref != null && refs.has(p.parent_ref) ? p.parent_ref : null;
+      if (!kids.has(parent)) kids.set(parent, []);
+      kids.get(parent)!.push(p);
+    }
+    const idx = new Map(list.map((p, i) => [p.ref_id, i]));
+    const out: Array<[KnowledgeDocumentSummary, number]> = [];
+    const visited = new Set<string>();
+    const walk = (parent: string | null, depth: number) => {
+      const group = (kids.get(parent) ?? [])
+        .slice()
+        .sort(
+          (a, b) =>
+            (a.sort_order ?? 0) - (b.sort_order ?? 0) ||
+            (idx.get(a.ref_id) ?? 0) - (idx.get(b.ref_id) ?? 0),
+        );
+      for (const p of group) {
+        if (!p.ref_id || visited.has(p.ref_id)) continue;
+        visited.add(p.ref_id);
+        out.push([p, Math.min(depth, 6)]);
+        walk(p.ref_id, depth + 1);
+      }
+    };
+    walk(null, 0);
+    for (const p of list) {
+      if (p.ref_id && !visited.has(p.ref_id)) out.push([p, 0]);
+    }
+    return out;
+  };
+
+  /** The open page's ancestor chain (nearest-first reversed to root-first) for breadcrumbs. */
+  const breadcrumbs = (ref: string): KnowledgeDocumentSummary[] => {
+    const byRef = new Map((pages ?? []).map((p) => [p.ref_id, p]));
+    const chain: KnowledgeDocumentSummary[] = [];
+    let cur = byRef.get(ref)?.parent_ref ?? null;
+    let hops = 0;
+    while (cur != null && hops++ < 20) {
+      const parent = byRef.get(cur);
+      if (!parent) break;
+      chain.unshift(parent);
+      cur = parent.parent_ref ?? null;
+    }
+    return chain;
   };
 
   const resultRow = (r: KnowledgeSearchResult, i: number): React.ReactElement => {
@@ -781,6 +887,25 @@ export function KnowledgeView({ client, initialPageRef, onInitialPageConsumed }:
       )}
       {!docLoading && !docError && doc !== null && (
         <>
+          {breadcrumbs(doc.ref_id).length > 0 && (
+            <nav data-testid="knowledge-doc-breadcrumbs" style={{ fontSize: 12, marginBottom: 8, ...muted }}>
+              {breadcrumbs(doc.ref_id).map((b) => (
+                <span key={b.ref_id}>
+                  <button
+                    onClick={() => {
+                      if (!b.ref_id || !guardDiscard()) return;
+                      void openPage(b.ref_id);
+                    }}
+                    style={{ border: "none", background: "none", padding: 0, font: "inherit", color: "var(--ink-3, #8a8278)", cursor: "pointer", textDecoration: "underline" }}
+                  >
+                    {b.title}
+                  </button>
+                  {" / "}
+                </span>
+              ))}
+              <span style={{ color: "var(--ink-2, #5d564d)" }}>{doc.title}</span>
+            </nav>
+          )}
           <div style={{ display: "flex", alignItems: "flex-start", gap: 10, flexWrap: "wrap" }}>
             <div style={{ flex: 1, minWidth: 200 }}>
               <h2
@@ -795,6 +920,18 @@ export function KnowledgeView({ client, initialPageRef, onInitialPageConsumed }:
                 {!doc.editable && " · read-only"}
               </div>
             </div>
+            {organizeAvailable && !confirmingDelete && (
+              <button
+                data-testid="knowledge-doc-move"
+                onClick={() => {
+                  setMoveOpen((v) => !v);
+                  setMoveNote(null);
+                }}
+                style={ghostBtn}
+              >
+                Move
+              </button>
+            )}
             {doc.editable && !confirmingDelete && (
               <button data-testid="knowledge-doc-edit" onClick={startEdit} style={ghostBtn}>
                 Edit
@@ -825,6 +962,60 @@ export function KnowledgeView({ client, initialPageRef, onInitialPageConsumed }:
               </span>
             )}
           </div>
+
+          {moveOpen && (
+            <div
+              data-testid="knowledge-doc-move-panel"
+              style={{ ...card, fontSize: 13, margin: "14px 0 0", padding: "12px 14px", display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}
+            >
+              <span style={{ fontWeight: 700 }}>Move</span>
+              <button
+                data-testid="knowledge-move-up"
+                onClick={() => void doMove({ move: "up" })}
+                disabled={moving}
+                style={{ ...ghostBtn, padding: "4px 12px", fontSize: 12.5 }}
+              >
+                ↑ Up
+              </button>
+              <button
+                data-testid="knowledge-move-down"
+                onClick={() => void doMove({ move: "down" })}
+                disabled={moving}
+                style={{ ...ghostBtn, padding: "4px 12px", fontSize: 12.5 }}
+              >
+                ↓ Down
+              </button>
+              <label style={{ display: "inline-flex", gap: 6, alignItems: "center", marginLeft: 6 }}>
+                <span style={{ fontSize: 12.5, ...muted }}>Nest under</span>
+                <select
+                  data-testid="knowledge-move-parent"
+                  disabled={moving}
+                  value=""
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (v === "") return;
+                    void doMove({ parent_ref: v === "__top__" ? null : v });
+                  }}
+                  style={{ ...fieldStyle, width: "auto", padding: "4px 8px", fontSize: 12.5 }}
+                >
+                  <option value="">Choose…</option>
+                  <option value="__top__">Top level</option>
+                  {(pages ?? [])
+                    .filter((p) => p.ref_id && !subtreeOf(doc.ref_id).has(p.ref_id))
+                    .map((p) => (
+                      <option key={p.ref_id} value={p.ref_id!}>
+                        {p.title}
+                      </option>
+                    ))}
+                </select>
+              </label>
+              {moveNote && (
+                <span data-testid="knowledge-move-note" style={{ fontSize: 12.5, flexBasis: "100%", ...muted }}>
+                  {moveNote}
+                </span>
+              )}
+            </div>
+          )}
 
           {cleanupNote && (
             <div
@@ -1145,7 +1336,11 @@ export function KnowledgeView({ client, initialPageRef, onInitialPageConsumed }:
                         </p>
                       ) : (
                         <nav data-testid="knowledge-pages" style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                          {visible.map(pageRow)}
+                          {/* Filtering flattens (matches only); otherwise the tree renders
+                              indented sub-pages in manual order. */}
+                          {needle
+                            ? visible.map((p) => pageRow(p))
+                            : treeRows(visible).map(([p, d]) => pageRow(p, d))}
                         </nav>
                       )}
                     </>

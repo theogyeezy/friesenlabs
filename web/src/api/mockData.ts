@@ -56,6 +56,7 @@ import {
   type KnowledgeDocumentDetail,
   type KnowledgeDocumentSummary,
   type KnowledgeUpdateDocumentResponse,
+  type KnowledgeMoveResponse,
   type KnowledgeDeleteDocumentResponse,
   type CheckoutResponse,
   type SignupResponse,
@@ -961,6 +962,9 @@ export class MockApi {
     return { ref_id: ref, chunks: Math.max(1, Math.ceil(content.length / 1600)), source: "upload", title };
   }
 
+  // Page organization (mirrors knowledge_pages): ref -> {parent, sort}. Absent = top level.
+  private knowledgeTree: Map<string, { parent: string | null; sort: number }> = new Map();
+
   listKnowledgeDocuments(): KnowledgeDocumentListResponse {
     const documents: KnowledgeDocumentSummary[] = [...this.knowledgePages.entries()]
       .sort((a, b) => (a[1].updated < b[1].updated ? 1 : -1))
@@ -972,8 +976,54 @@ export class MockApi {
         editable: true,
         created_at: page.created,
         updated_at: page.updated,
+        parent_ref: this.knowledgeTree.get(ref)?.parent ?? null,
+        sort_order: this.knowledgeTree.get(ref)?.sort ?? 0,
       }));
-    return { documents, total: documents.length };
+    return { documents, total: documents.length, organize_available: true };
+  }
+
+  moveKnowledgeDocument(
+    refId: string,
+    op: { parent_ref?: string | null; move?: "up" | "down" },
+  ): KnowledgeMoveResponse {
+    if (!this.knowledgePages.has(refId)) {
+      throw new ApiError(404, "no document with that ref in your knowledge base");
+    }
+    if ("parent_ref" in op) {
+      const parent = op.parent_ref ?? null;
+      // Same refusal as the real route: never under itself or its own subtree.
+      let cur: string | null = parent;
+      let hops = 0;
+      while (cur !== null && hops++ < 100) {
+        if (cur === refId) throw new ApiError(422, "a page can't be moved under itself or one of its own sub-pages");
+        cur = this.knowledgeTree.get(cur)?.parent ?? null;
+      }
+      if (parent !== null && !this.knowledgePages.has(parent)) {
+        throw new ApiError(422, "parent page not found in your knowledge base");
+      }
+      const group = [...this.knowledgeTree.values()].filter((t) => t.parent === parent);
+      const sort = Math.max(0, ...group.map((t) => t.sort)) + 1;
+      this.knowledgeTree.set(refId, { parent, sort });
+      return { ref_id: refId, parent_ref: parent, sort_order: sort, organize_available: true };
+    }
+    // move up/down: materialize sibling order like the real route.
+    const parent = this.knowledgeTree.get(refId)?.parent ?? null;
+    const listed = this.listKnowledgeDocuments().documents
+      .filter((d) => (d.parent_ref ?? null) === parent)
+      .map((d) => d.ref_id as string);
+    const ordered = listed.sort(
+      (a, b) => (this.knowledgeTree.get(a)?.sort ?? 0) - (this.knowledgeTree.get(b)?.sort ?? 0),
+    );
+    const i = ordered.indexOf(refId);
+    const j = op.move === "up" ? i - 1 : i + 1;
+    if (j >= 0 && j < ordered.length) {
+      [ordered[i], ordered[j]] = [ordered[j], ordered[i]];
+      ordered.forEach((r, pos) => this.knowledgeTree.set(r, { parent, sort: pos }));
+    }
+    return {
+      ref_id: refId, parent_ref: parent,
+      sort_order: this.knowledgeTree.get(refId)?.sort ?? 0, organize_available: true,
+    };
   }
 
   getKnowledgeDocument(refId: string): KnowledgeDocumentDetail {

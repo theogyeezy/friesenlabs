@@ -885,3 +885,129 @@ test("pages endpoint 404 (web ahead of the API) degrades calmly; inventory + sea
 
   expect(errors, `page errors: ${errors.join("\n")}`).toHaveLength(0);
 });
+
+// ---------------------------------------------------------------------------
+// Page hierarchy — tree rail, breadcrumbs, the Move panel (knowledge_pages)
+// ---------------------------------------------------------------------------
+
+const REF_PARENT = "upload:handbook-aa00aa00";
+const REF_CHILD = "upload:hours-bb11bb11";
+const REF_OTHER = "upload:pricing-cc22cc22";
+
+const TREE_PAGES = {
+  documents: [
+    { ref_id: REF_CHILD, title: "Hours", preview: "Mon-Fri 9 to 5:30.", chunks: 1, editable: true,
+      created_at: "2026-06-12T10:00:00+00:00", updated_at: "2026-06-12T12:00:00+00:00",
+      parent_ref: REF_PARENT, sort_order: 0 },
+    { ref_id: REF_OTHER, title: "Pricing", preview: "Rates and discounts.", chunks: 1, editable: true,
+      created_at: "2026-06-12T09:00:00+00:00", updated_at: "2026-06-12T11:00:00+00:00",
+      parent_ref: null, sort_order: 2 },
+    { ref_id: REF_PARENT, title: "Handbook", preview: "Everything operational.", chunks: 1, editable: true,
+      created_at: "2026-06-12T08:00:00+00:00", updated_at: "2026-06-12T10:30:00+00:00",
+      parent_ref: null, sort_order: 1 },
+  ],
+  total: 3,
+  organize_available: true,
+};
+
+const docFor = (ref: string, title: string) => ({
+  ref_id: ref, title, content: `Body of ${title}.`, editable: true, sections: null,
+  chunks: 1, created_at: "2026-06-12T08:00:00+00:00", updated_at: "2026-06-12T12:00:00+00:00",
+});
+
+test("the rail renders sub-pages indented under parents in manual order", async ({ page }) => {
+  await page.route(inventoryApi, (route) => route.fulfill({ json: INVENTORY }));
+  await page.route(docsApi, (route) => route.fulfill({ json: TREE_PAGES }));
+
+  await page.goto("/?view=knowledge");
+  await expect(page.getByTestId("knowledge-page-item")).toHaveCount(3, { timeout: 15_000 });
+
+  const items = page.getByTestId("knowledge-page-item");
+  // Manual order: Handbook (sort 1) before Pricing (sort 2); Hours nests under Handbook.
+  await expect(items.nth(0)).toContainText("Handbook");
+  await expect(items.nth(0)).toHaveAttribute("data-depth", "0");
+  await expect(items.nth(1)).toContainText("Hours");
+  await expect(items.nth(1)).toHaveAttribute("data-depth", "1");
+  await expect(items.nth(2)).toContainText("Pricing");
+  await expect(items.nth(2)).toHaveAttribute("data-depth", "0");
+});
+
+test("breadcrumbs show the ancestor chain and navigate", async ({ page }) => {
+  await page.route(inventoryApi, (route) => route.fulfill({ json: INVENTORY }));
+  await page.route(docsApi, (route) => route.fulfill({ json: TREE_PAGES }));
+  await page.route(docDetailApi, (route, request) => {
+    const ref = detailRefOf(new URL(request.url()));
+    return route.fulfill({ json: ref === REF_CHILD ? docFor(REF_CHILD, "Hours") : docFor(REF_PARENT, "Handbook") });
+  });
+
+  await page.goto("/?view=knowledge");
+  await expect(page.getByTestId("knowledge-page-item")).toHaveCount(3, { timeout: 15_000 });
+
+  await page.getByTestId("knowledge-page-item").nth(1).click(); // Hours (the child)
+  await expect(page.getByTestId("knowledge-doc-title")).toHaveText("Hours");
+  const crumbs = page.getByTestId("knowledge-doc-breadcrumbs");
+  await expect(crumbs).toContainText("Handbook / Hours");
+  await crumbs.getByRole("button", { name: "Handbook" }).click();
+  await expect(page.getByTestId("knowledge-doc-title")).toHaveText("Handbook");
+  // The top-level parent has no chain of its own.
+  await expect(page.getByTestId("knowledge-doc-breadcrumbs")).toHaveCount(0);
+});
+
+test("the Move panel re-parents via PATCH /location and refreshes the tree", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+
+  let moved = false;
+  await page.route(inventoryApi, (route) => route.fulfill({ json: INVENTORY }));
+  await page.route(docsApi, (route) =>
+    route.fulfill({
+      json: moved
+        ? { ...TREE_PAGES,
+            documents: TREE_PAGES.documents.map((d) =>
+              d.ref_id === REF_OTHER ? { ...d, parent_ref: REF_PARENT, sort_order: 5 } : d) }
+        : TREE_PAGES,
+    }),
+  );
+  await page.route(docDetailApi, async (route, request) => {
+    const url = new URL(request.url());
+    const path = decodeURIComponent(url.pathname);
+    if (request.method() === "PATCH" && path.endsWith("/location")) {
+      expect(path).toContain(REF_OTHER);
+      const body = request.postDataJSON() as { parent_ref?: string | null };
+      expect(body.parent_ref).toBe(REF_PARENT);
+      moved = true;
+      return route.fulfill({
+        json: { ref_id: REF_OTHER, parent_ref: REF_PARENT, sort_order: 5, organize_available: true },
+      });
+    }
+    return route.fulfill({ json: docFor(REF_OTHER, "Pricing") });
+  });
+
+  await page.goto("/?view=knowledge");
+  await expect(page.getByTestId("knowledge-page-item")).toHaveCount(3, { timeout: 15_000 });
+
+  await page.getByTestId("knowledge-page-item").nth(2).click(); // Pricing
+  await page.getByTestId("knowledge-doc-move").click();
+  await page.getByTestId("knowledge-move-parent").selectOption(REF_PARENT);
+
+  // The tree refreshed: Pricing now renders nested under Handbook.
+  await expect(page.getByTestId("knowledge-page-item").nth(2)).toHaveAttribute("data-depth", "1", { timeout: 15_000 });
+  await expect(page.getByTestId("knowledge-doc-move-panel")).toHaveCount(0); // closed on success
+
+  expect(errors, `page errors: ${errors.join("\n")}`).toHaveLength(0);
+});
+
+test("organize affordances stay hidden until the migration lands", async ({ page }) => {
+  await page.route(inventoryApi, (route) => route.fulfill({ json: INVENTORY }));
+  await page.route(docsApi, (route) =>
+    route.fulfill({ json: { ...TREE_PAGES, organize_available: false,
+                            documents: TREE_PAGES.documents.map((d) => ({ ...d, parent_ref: null })) } }),
+  );
+  await page.route(docDetailApi, (route) => route.fulfill({ json: docFor(REF_PARENT, "Handbook") }));
+
+  await page.goto("/?view=knowledge");
+  await expect(page.getByTestId("knowledge-page-item")).toHaveCount(3, { timeout: 15_000 });
+  await page.getByTestId("knowledge-page-item").first().click();
+  await expect(page.getByTestId("knowledge-doc-title")).toBeVisible();
+  await expect(page.getByTestId("knowledge-doc-move")).toHaveCount(0);
+});
