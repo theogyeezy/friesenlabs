@@ -46,7 +46,7 @@ from api.control.types import Action
 from api.cortex_routes import CortexDeps
 from api.deals_routes import DealsDeps
 from api.sidecar_routes import SidecarDeps
-from api.knowledge_routes import KnowledgeDeps
+from api.knowledge_routes import KnowledgeDeps, build_doc_ingestor
 from api.pg_clients import PgControlSettingsStore, PgCrmClient, PgRagClient
 from api.limits import PlanResolver, TenantLimitsMiddleware
 from api.usage import PgCostRecorder, PgPlanLookup, PgUsageStore
@@ -513,7 +513,10 @@ def build_app():
         # /chat RAG tool use — one pool, one SET LOCAL discipline. The inventory is a plain
         # aggregate (no embedder); search embeds lazily via Titan (Bedrock, env-key-gated) and
         # degrades honestly. rag is None when the DSN is unconfigured -> honest 503.
-        knowledge=KnowledgeDeps(rag=rag),
+        # POST /knowledge/documents (customer corpus add, knowledge audit P0) is gated on the
+        # ingest plane's own INGEST_REAL_STORES switch — same posture as the CSV importer:
+        # unswitched = no ingestor = honest 503, never a quiet success into a throwaway store.
+        knowledge=KnowledgeDeps(rag=rag, ingest_document=build_doc_ingestor()),
         # GET /cortex/health (the #194 ml/health.py seam) rides the SAME env-built registry
         # run_model scores with, plus a PgPredictionLog over the shared crm_app DSN (per-op
         # SET LOCAL — RLS) for the live-AUC drift leg. Unconfigured pieces degrade honestly

@@ -316,3 +316,74 @@ def test_knowledge_route_imports_and_serves_without_boto3_or_ingest():
         f"stdout: {proc.stdout}\nstderr: {proc.stderr}"
     )
     assert "KNOWLEDGE-IMPORT-SAFE-OK" in proc.stdout
+
+
+# --------------------------------------------------------------------------- #
+# POST /knowledge/documents — the customer document-add path (knowledge audit P0)
+# --------------------------------------------------------------------------- #
+class FakeIngestor:
+    """Stand-in for the chunk→embed→upsert callable (ingest.upload via build_doc_ingestor)."""
+
+    def __init__(self, error: Exception | None = None):
+        self.calls: list[tuple] = []
+        self._error = error
+
+    def __call__(self, tenant_id: str, title: str, content: str):
+        self.calls.append((tenant_id, title, content))
+        if self._error is not None:
+            raise self._error
+        return {"ref_id": "upload:pricing-policy-ab12cd34", "chunks": 2, "source": "upload"}
+
+
+def test_add_document_lands_201_under_claims_tenant():
+    ing = FakeIngestor()
+    client = _client(KnowledgeDeps(rag=FakeRag(_inventory()), ingest_document=ing))
+    r = client.post("/knowledge/documents", headers=H, json={
+        "title": "Pricing Policy", "content": "Discounts cap at 15%.",
+        "tenant_id": "EVIL",  # smuggled — must be ignored (THE TRUST RULE)
+    })
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["ref_id"] == "upload:pricing-policy-ab12cd34"
+    assert body["chunks"] == 2
+    assert body["source"] == "upload"
+    # The ingestor ran under the VERIFIED claims tenant, never the smuggled one.
+    assert ing.calls == [("A", "Pricing Policy", "Discounts cap at 15%.")]
+
+
+def test_add_document_unconfigured_503():
+    client = _client(KnowledgeDeps(rag=FakeRag(_inventory())))  # no ingestor wired
+    r = client.post("/knowledge/documents", headers=H,
+                    json={"title": "Doc", "content": "text"})
+    assert r.status_code == 503
+    assert "not configured" in r.json()["detail"]
+
+
+def test_add_document_validation_422():
+    ing = FakeIngestor()
+    client = _client(KnowledgeDeps(rag=FakeRag(_inventory()), ingest_document=ing))
+    for bad in (
+        {"title": "  ", "content": "text"},
+        {"title": "Doc", "content": "   "},
+        {"content": "text"},
+        {"title": "Doc"},
+        {"title": "T" * 201, "content": "text"},
+        {"title": "Doc", "content": "x" * 100_001},
+    ):
+        assert client.post("/knowledge/documents", headers=H, json=bad).status_code == 422, bad
+    assert ing.calls == []  # nothing invalid ever reaches the ingest plane
+
+
+def test_add_document_ingest_failure_is_503_and_never_leaks():
+    ing = FakeIngestor(error=RuntimeError("AccessDenied arn:aws:secret-XYZZY"))
+    client = _client(KnowledgeDeps(rag=FakeRag(_inventory()), ingest_document=ing))
+    r = client.post("/knowledge/documents", headers=H,
+                    json={"title": "Doc", "content": "text"})
+    assert r.status_code == 503
+    assert "XYZZY" not in r.text  # a write fails LOUD but the raw error never leaks
+
+
+def test_add_document_requires_auth():
+    client = _client(KnowledgeDeps(rag=FakeRag(_inventory()), ingest_document=FakeIngestor()))
+    assert client.post("/knowledge/documents",
+                       json={"title": "Doc", "content": "text"}).status_code == 401

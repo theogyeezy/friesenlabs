@@ -159,3 +159,83 @@ def test_default_synthesizer_is_grounded_when_none_injected():
     assert out.citations
     assert out.grounded
     assert all(c.source_ref in {"doc:1", "doc:2"} for c in out.citations)
+
+
+# --------------------------------------------------------------------------- live hit shape
+# REGRESSION (knowledge audit P0, 2026-06-11): the LIVE PgRagClient.search returns hits keyed
+# {ref_id, source, content, score} — NOT the {ref, snippet} keys these fakes historically used.
+# _normalize missed `ref_id`, so every live citation fell back to the positional doc:N
+# placeholder and the hit's real source was discarded. These tests pin the live shape.
+
+@pytest.mark.unit
+def test_live_pg_hit_shape_citations_carry_real_ref_id():
+    rag = FakeRag({"tenant-A": [
+        {"ref_id": "demo:kb:pricing#0", "source": "upload",
+         "content": "Discounts cap at 15% without approval.", "score": 0.93},
+        {"ref_id": "demo:kb:onboarding#2", "source": "upload",
+         "content": "Onboarding takes five business days.", "score": 0.81},
+    ]})
+    ctx = RagContext(tenant_id="tenant-A", rag=rag)  # default extractive synthesizer
+    out = answer("what is the discount policy?", ctx)
+    assert out.citations, "live-shape hits produced no citations"
+    refs = {c.source_ref for c in out.citations}
+    assert refs == {"demo:kb:pricing#0", "demo:kb:onboarding#2"}
+    assert not any(r.startswith("doc:") for r in refs), "positional placeholder ref leaked"
+
+
+@pytest.mark.unit
+def test_live_pg_hit_shape_keeps_hit_source_for_synthesizer():
+    rag = FakeRag({"tenant-A": [
+        {"ref_id": "u:guide#0", "source": "upload", "content": "x", "score": 0.5},
+    ]})
+    synth = FakeSynth(claims=[{"text": "x", "source_refs": ["u:guide#0"]}])
+    ctx = RagContext(tenant_id="tenant-A", rag=rag, synthesizer=synth)
+    out = answer("q", ctx)
+    # The chunk handed to the synthesizer carries the hit's OWN source (e.g. 'upload'),
+    # not the hardcoded retrieval bucket — and the claim grounds against the real ref.
+    assert synth.saw_chunks[0]["source"] == "upload"
+    assert [c.source_ref for c in out.citations] == ["u:guide#0"]
+
+
+# --------------------------------------------------------------------------- grounding status
+# Observability (knowledge audit P0): the Answer itself reports whether retrieval found
+# anything and whether the result is grounded, and dropped claims are logged (refs only —
+# never the claim text, which can carry tenant data).
+
+@pytest.mark.unit
+def test_answer_status_no_sources_found_on_empty_retrieval():
+    ctx = RagContext(tenant_id="tenant-EMPTY", rag=FakeRag({}))
+    out = answer("anything", ctx)
+    assert out.retrieved_count == 0
+    assert out.status == "no_sources_found"
+    d = out.as_dict()
+    assert d["grounding_status"] == "no_sources_found"
+    assert d["retrieved_count"] == 0
+
+
+@pytest.mark.unit
+def test_answer_status_grounded_vs_ungrounded():
+    grounded = answer("q", RagContext(tenant_id="tenant-A", rag=_retrieved()))
+    assert grounded.status == "grounded"
+    assert grounded.retrieved_count == 2
+
+    # Chunks were retrieved but every claim proposed a bogus ref -> nothing grounded.
+    synth = FakeSynth(claims=[{"text": "x", "source_refs": ["doc:bogus"]}])
+    ungrounded = answer("q", RagContext(tenant_id="tenant-A", rag=_retrieved(), synthesizer=synth))
+    assert ungrounded.retrieved_count == 2
+    assert ungrounded.citations == []
+    assert ungrounded.status == "ungrounded"
+
+
+@pytest.mark.unit
+def test_dropped_claims_logged_with_refs_never_claim_text(caplog):
+    import logging
+
+    synth = FakeSynth(claims=[
+        {"text": "SECRET tenant fact that must not hit logs", "source_refs": ["doc:bogus"]},
+    ])
+    with caplog.at_level(logging.WARNING, logger="conv.rag"):
+        answer("q", RagContext(tenant_id="tenant-A", rag=_retrieved(), synthesizer=synth))
+    messages = [r.getMessage() for r in caplog.records if r.name == "conv.rag"]
+    assert any("dropped 1" in m and "doc:bogus" in m for m in messages), messages
+    assert all("SECRET tenant fact" not in m for m in messages)

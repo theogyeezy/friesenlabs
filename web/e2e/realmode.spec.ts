@@ -159,6 +159,45 @@ test("chat shows 'Agents unavailable' on /chat 503 — never the raw API error",
   expect(errors, `page errors: ${errors.join("\n")}`).toHaveLength(0);
 });
 
+test("chat surfaces an honest grounding note when the corpus has no matching documents", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+
+  // Grounding observability (knowledge audit P0): an empty-corpus answer must be
+  // distinguishable from a refusal — the turn carries grounding_status and the dock says so.
+  await page.route("**/chat", (route) =>
+    route.fulfill({
+      status: 200,
+      json: {
+        answer: "Acme looks healthy based on recent activity.",
+        citations: [],
+        pending_approvals: [],
+        slots: {},
+        needs_disambiguation: [],
+        delegations: [],
+        session_id: "s1",
+        tenant_id: "t1",
+        view_intent: false,
+        view_request: null,
+        grounding_status: "no_sources_found",
+        retrieved_count: 0,
+      },
+    }),
+  );
+
+  await page.goto("/?view=chat");
+  await expect(page.getByTestId("chat-dock")).toBeVisible({ timeout: 15_000 });
+
+  await page.getByTestId("chat-input").fill("How is Acme doing?");
+  await page.getByTestId("chat-send").click();
+
+  const reply = page.getByTestId("chat-msg-agent").last();
+  await expect(reply).toContainText("Acme looks healthy", { timeout: 15_000 });
+  await expect(page.getByTestId("grounding-note")).toContainText("knowledge base");
+
+  expect(errors, `page errors: ${errors.join("\n")}`).toHaveLength(0);
+});
+
 test("greenlight: spinner while loading, friendly 500 copy, retry recovers to empty state", async ({ page }) => {
   let calls = 0;
   await page.route("**/approvals", async (route) => {

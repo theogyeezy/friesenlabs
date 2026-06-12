@@ -572,6 +572,24 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   `studio.spec.ts` (chromium-real) covering Run-now/runs/banner. **Live DB migrate for the new
   table/columns: BLOCKED: Lane Nick** (GO_LIVE_CHECKLIST §7 updated — the schedule-leg flip now
   includes `PLAYBOOK_DISPATCH_ENABLED=1` on the api task).
+- 2026-06-11 — **Knowledge audit P0 fixes (`feat/matt-knowledge-p0`, TDD):** the three release
+  blockers from the knowledge audit (PR #247) implemented. (1) **Customer corpus-add path:**
+  `POST /knowledge/documents` (claims-only tenancy, pydantic body, 422 bounds, honest 503 when
+  the ingest plane is unswitched, LOUD 503 on ingest failure — never a quiet no-op) over a new
+  `ingest/upload.py` seam (production chunker + embedder, `upload:<slug>-<hash8>#<seq>` refs,
+  ALL chunks embed before the first upsert so a mid-doc failure lands nothing); wired in asgi
+  behind `INGEST_REAL_STORES` (the CSV-importer posture); KnowledgeView add-document form +
+  honest empty-state rewrite (the false "fills in automatically" promise is gone) + 503 degrade
+  copy. (2) **Live citation refs fixed:** `conv/rag.py _normalize` now reads the live
+  PgRagClient `ref_id` key (was falling back to positional `doc:0` placeholders) and keeps the
+  hit's real source; live-shape regression tests pin it. (3) **Grounding observability:**
+  `Answer.status`/`retrieved_count` → `Turn.grounding_status`/`retrieved_count` on every /chat
+  turn (`grounded` / `no_sources_found` / `ungrounded` / `unavailable` / null-skipped), dropped
+  claims logged refs-only (never claim text), ChatDock renders honest notes for non-grounded
+  turns. Verified: full pytest exit 0 (29 DSN-gated skips) · web typecheck + mock/real builds ·
+  node units · knowledge.spec 9/9 (2 new) · realmode.spec 10/10 (1 new). Caveat learned: shared
+  Playwright ports (4173-5) can attach to ANOTHER session's stale preview server
+  (`reuseExistingServer`) — a foreign-bundle run produced false failures; rerun with free ports.
 - 2026-06-11 — **Agents & Studio customer-readiness audit (`feat/matt-agents-studio-audit`):**
   4-pass read-audit (backend agent plane · web UI · tests/CI · data-layer+infra wiring), claims
   cross-checked between passes; 252 tests green locally (202 unit + 50 integration, RLS-proof
