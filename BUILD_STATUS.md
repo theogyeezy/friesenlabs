@@ -549,6 +549,14 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   usable + safe; RAG-embed IAM gap closed live.
 
 ## Lane Matt (app code) — log
+- 2026-06-12 — **Knowledge search paging + real-path dim assert (#339 — the last two knowledge
+  P2s):** /knowledge/search gains a clamped offset (depth cap 200) + offset/next_offset on the
+  wire (null at the honest end; degrade shapes carry the same keys — wire-compat with older
+  images); the web appends "Show more results" in place. The embed dim assert lands on the
+  REAL lazy-Titan path only (wrong width -> typed EmbedderUnavailable, the calm warming-up
+  story, never a Postgres operator error); the injected embedder seam stays dim-unchecked —
+  unit fakes deliberately use tiny vectors (their failures still wrap; the #334 boundary
+  holds). Full pytest exit 0; knowledge e2e 25/25.
 - 2026-06-12 — **Citations → knowledge pages + URL-addressable pages (#338):** the chat loop
   closes — a citation whose source_ref is a page chunk (upload:…#n / demo:kb:…#n; the SAME
   chunked-family rule as the rail, shape-decided client-side) gets "Open page". In-shell it
