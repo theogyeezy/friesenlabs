@@ -72,10 +72,10 @@ Until this is done, a real paid signup gets charged then parks `provisioning_fai
 
 ## 7. Turn on playbook automation
 
-- [ ] `playbook_dispatch_enabled = true` + `playbook_dispatch_tenants = "<tenant-id,...>"` → the EventBridge dispatcher fires scheduled playbooks (wired + disabled). **Same act: stamp `PLAYBOOK_DISPATCH_ENABLED=1` on the api task env** so the Studio stops bannering schedule playbooks as "trigger not enabled yet" (`GET /studio/playbooks` dispatch honesty — `feat/matt-agents-studio-p0s`).
+- [ ] `playbook_dispatch_enabled = true` + `playbook_dispatch_tenants = "<tenant-id,...>"` → ONE flag now does both legs (`feat/matt-playbook-dispatch-flip`): it enables the EventBridge dispatcher AND stamps `PLAYBOOK_DISPATCH_ENABLED=1` on the api task, so the Studio's "trigger not enabled yet" banner clears in the same apply (no separate env step).
 - [ ] (Studio live registrar: wired in `asgi.py` — activation/run register a real crew automatically once a tenant is provisioned with an MA environment; no flag.)
 - [x] Event triggers (`lead.created` from `POST /contacts`, `deal.created` from `POST /deals`) are live in-process once the agent plane is configured — no flag; fire-and-forget, draft-only, run history in `playbook_runs`. _(Needs the one-off DB migrate below first.)_
-- [ ] **One-off DB migrate** for `playbook_runs` + the `playbooks.ma_*` columns (`uplift-migrate-oneoff` task-def family, schema.sql + roles.sql are idempotent) — until then run history answers 503 and crew-reuse re-registers per run.
+- [x] **One-off DB migrate** for `playbook_runs` + the `playbooks.ma_*` columns — **DONE 2026-06-12 (migrate.yml run succeeded 05:07Z; idempotent schema.sql + roles.sql batch).**
 
 ## 8. Knowledge corpus + chat citations
 
