@@ -393,3 +393,48 @@ def test_discover_db_tenants_is_inert_without_a_dsn():
     from agents.playbooks.dispatch import discover_db_tenants
 
     assert discover_db_tenants(None) == []  # no store -> safe no-op, no driver import attempted
+
+
+# --------------------------------------------------------------------------- #
+# Tick-floor (found live 2026-06-12): EventBridge fires at :00/:15/:30/:45 but
+# the Fargate container starts ~30-90s later, so matching the cron against
+# datetime.now() misses the tick minute EVERY time (the 15:00 tick evaluated at
+# 15:01:10 -> '*/15 * * * *' never matched; "0 playbook run(s)"). main() must
+# match against the tick the run belongs to: now floored to the 15-min boundary.
+# --------------------------------------------------------------------------- #
+def test_tick_floor_recovers_the_scheduled_minute():
+    from datetime import datetime, timezone
+
+    from agents.playbooks.dispatch import _tick_floor
+
+    t = lambda h, m, s: datetime(2026, 6, 12, h, m, s, 123456, tzinfo=timezone.utc)  # noqa: E731
+    assert _tick_floor(t(15, 1, 10)) == t(15, 0, 0).replace(microsecond=0)   # the live miss
+    assert _tick_floor(t(8, 16, 8)) == t(8, 15, 0).replace(microsecond=0)    # first enabled tick
+    assert _tick_floor(t(15, 14, 59)) == t(15, 0, 0).replace(microsecond=0)  # extreme jitter
+    assert _tick_floor(t(15, 15, 0)) == t(15, 15, 0).replace(microsecond=0)  # exact boundary
+    assert _tick_floor(t(23, 59, 59)) == t(23, 45, 0).replace(microsecond=0)
+
+
+def test_quarter_hour_cron_fires_under_startup_jitter():
+    """The end-to-end shape of the live failure: an ACTIVE '*/15' playbook + a dispatcher
+    evaluated 70 seconds after the tick MUST still run it (via the floored tick time)."""
+    from datetime import datetime, timezone
+
+    from agents.playbooks.dispatch import PlaybookDispatcher, _tick_floor
+    from agents.playbooks.runner import TriggerEvent  # noqa: F401 — signature parity
+    from agents.playbooks.store import InMemoryPlaybookStore
+
+    store = InMemoryPlaybookStore()
+    row = store.create("t-1", {
+        "name": "Quarter-hour scout", "trigger": {"kind": "schedule", "schedule": "*/15 * * * *"},
+        "roster": [{"agent": "scout", "tools": ["read_crm"]}], "autonomy": "L1",
+        "greenlight": {"side_effects": "always_ask"},
+    })
+    store.set_status("t-1", row["id"], "active")
+    ran = []
+    dispatcher = PlaybookDispatcher(store, lambda tid, pid, ev: ran.append((tid, pid)) or
+                                    type("R", (), {"playbook_id": pid, "status": "ok"})())
+
+    container_start = datetime(2026, 6, 12, 15, 1, 10, tzinfo=timezone.utc)
+    dispatcher.dispatch_scheduled("t-1", now=_tick_floor(container_start))
+    assert ran == [("t-1", row["id"])], "the floored tick must fire the quarter-hour cron"

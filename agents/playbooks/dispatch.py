@@ -64,6 +64,17 @@ def _expand_field(field: str, lo: int, hi: int) -> set[int]:
     return out
 
 
+def _tick_floor(now: datetime, *, minutes: int = 15) -> datetime:
+    """The EventBridge tick this dispatcher run belongs to: ``now`` floored to the rule's
+    quarter-hour boundary. The Fargate container starts ~30-90s AFTER the tick fires, so
+    matching the cron against ``datetime.now()`` misses the tick minute every time (live
+    2026-06-12: the 15:00 tick evaluated at 15:01:10 → ``*/15 * * * *`` never matched —
+    "0 playbook run(s)"). Flooring recovers the scheduled minute regardless of start jitter;
+    correct while startup latency stays under the 15-minute interval, and exact because the
+    rule itself is quarter-aligned (infra ``cron(0/15 * * * ? *)``, #296)."""
+    return now.replace(minute=(now.minute // minutes) * minutes, second=0, microsecond=0)
+
+
 def cron_due(expr: str, now: datetime) -> bool:
     """True when the 5-field cron ``expr`` matches ``now`` (minute granularity).
 
@@ -334,7 +345,9 @@ def main(argv: list[str] | None = None) -> int:
 
     store, run_playbook = _build_runner(dsn)
     dispatcher = PlaybookDispatcher(store, run_playbook)
-    now = datetime.now(timezone.utc)
+    # Match against the TICK time, not container-start time (see _tick_floor — startup
+    # jitter otherwise misses the scheduled minute on every single run).
+    now = _tick_floor(datetime.now(timezone.utc))
     total = 0
     for tenant_id in tenants:
         try:
