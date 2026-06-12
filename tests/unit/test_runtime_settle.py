@@ -116,8 +116,9 @@ def test_settle_budget_exhausted_fails_closed_like_today():
 
     r = _managed(_DELEGATED_TURN, clock=clock, settle_budget_s=45.0)
     out = r.send_message(_session(r), "What is our discount policy?")
-    # Exactly today's fail-closed shape: the open call surfaces, the turn returns.
-    assert [p.get("tool") for p in out["pending_approvals"]] == ["search_rag"]
+    # Round 6: the per-event budget fires BEFORE any call is even collected — the turn
+    # surfaces unsettled immediately and /chat/continue (fresh budget) picks it back up.
+    assert out["pending_approvals"] == [{"status": "pending", "reason": "settle_budget"}]
     assert "Discounts cap at 15%" not in out["answer"]
 
 
@@ -188,8 +189,8 @@ def test_budget_exhausted_no_open_calls_surfaces_requires_action_reason():
 
     r = _managed(_THREAD_RACE_TURN, clock=clock, settle_budget_s=45.0)
     out = r.send_message(_session(r), "What can an AE approve?")
-    # Today's fail-closed shape for the no-open-calls case.
-    assert out["pending_approvals"] == [{"status": "pending", "reason": "requires_action"}]
+    # Round 6: the per-event budget bails first — unsettled, recoverable via continue.
+    assert out["pending_approvals"] == [{"status": "pending", "reason": "settle_budget"}]
     assert "AEs can approve up to 10%" not in out["answer"]
 
 
@@ -238,7 +239,7 @@ def test_continue_drain_replays_missed_events_then_finishes_the_turn():
     r = _managed(first_leg, clock=clock, settle_budget_s=45.0)
     session = _session(r)
     out1 = r.send_message(session, "What can an AE approve?")
-    assert out1["pending_approvals"] == [{"status": "pending", "reason": "requires_action"}]
+    assert out1["pending_approvals"] == [{"status": "pending", "reason": "settle_budget"}]
 
     # The continue request: list-replay carries the FULL session history (already-seen leg-1
     # events MUST dedupe) + everything missed; no new stream events needed.
@@ -250,8 +251,10 @@ def test_continue_drain_replays_missed_events_then_finishes_the_turn():
     assert "AEs can approve up to 10%" in out2["answer"]
     assert out2["pending_approvals"] == []
     assert [(x["tool"], x["status"]) for x in out2["tool_results"]] == [("search_rag", "ok")]
-    # Dedupe held: leg-1's delegation is not re-reported on the continue.
-    assert out2["delegations"] == []
+    # Round 6: leg 1 bailed BEFORE consuming its events (pre-dedupe budget check), so the
+    # continue replay legitimately carries the WHOLE turn — delegation included, exactly once.
+    assert out2["delegations"] == ["scout"]
+    assert "Routing this to Scout." in out2["answer"]
     # And NO user.message was sent by the continue (observe-only).
     r._client.beta.sessions.events.send.assert_called_once()
 
@@ -309,3 +312,30 @@ def test_client_is_built_with_a_bounded_stream_read_timeout():
     t = client.timeout
     assert isinstance(t, httpx.Timeout)
     assert t.read is not None and t.read <= 30.0, t  # must wake up under the 60s edge ceiling
+
+
+# Live finding ROUND 6 (steady-window re-test, 2026-06-12): the budget was only checked at
+# requires_action idles and stream drops — a BUSY session emitting ordinary events for minutes
+# never hits either checkpoint, so the drain runs the whole turn, blows the 60s edge ceiling
+# (504), and the still-held tenant turn lock starves /chat/continue into a 504 too. The budget
+# must bound EVERY event: the moment it is spent, the turn surfaces unsettled and the continue
+# leg (fresh budget) picks the session back up.
+
+@pytest.mark.unit
+def test_budget_bounds_a_busy_stream_that_never_idles():
+    # A long busy turn: many ordinary events, no requires_action, idle only at the very end.
+    busy = [_ev(type="agent.message", id=f"m{i}",
+                content=[_ev(type="text", text=f"working {i}")]) for i in range(50)]
+    busy.append(_ev(type="session.status_idle", id="end", stop_reason=_ev(type="end_turn")))
+
+    t = {"now": 0.0}
+
+    def clock():
+        t["now"] += 2.0  # 2s per observation — the budget (25s) is spent ~13 events in
+        return t["now"]
+
+    r = _managed(busy, clock=clock, settle_budget_s=25.0)
+    out = r.send_message(_session(r), "What is our discount policy?")
+    # The drain returned EARLY (unsettled) instead of riding all 50 events past the ceiling.
+    assert out["pending_approvals"] == [{"status": "pending", "reason": "settle_budget"}]
+    assert "working 49" not in out["answer"]
