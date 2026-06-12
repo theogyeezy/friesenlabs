@@ -237,6 +237,12 @@ CREATE INDEX IF NOT EXISTS playbooks_tenant_idx ON playbooks (tenant_id, created
 ALTER TABLE playbooks ADD COLUMN IF NOT EXISTS ma_coordinator_id text;
 ALTER TABLE playbooks ADD COLUMN IF NOT EXISTS ma_agent_ids jsonb;
 ALTER TABLE playbooks ADD COLUMN IF NOT EXISTS ma_registered_version int;
+-- vault_id: the workspace vault this playbook's runs attach (per-workspace vault isolation).
+-- The runner reads it off the row into create_session, so a triggered run is scoped to the
+-- tenant's vault instead of running vault-less. NULL until set (set_vault_id); a NULL row falls
+-- back to the runner's constructor-injected vault_id. Set by the activation/Studio path (api) from
+-- the tenant's workspace vault — NOT wired here (see the PR's asgi/wiring note).
+ALTER TABLE playbooks ADD COLUMN IF NOT EXISTS vault_id text;
 -- ---------------------------------------------------------------------------
 -- playbook_runs — Agent Studio run history (appended per the Matt-append rule).
 -- One row per playbook run (manual / scheduled / event): the RunRecord digest the runner

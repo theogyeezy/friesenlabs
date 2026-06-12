@@ -35,7 +35,14 @@ from agents.tools.base import Tool, ToolContext
 from agents.tools.build_view import BuildView
 from agents.tools.readonly import QueryCube, ReadCrm, SearchRag
 from agents.tools.run_model import RunModel
-from agents.tools.sideeffecting import DraftEmail, IssueQuote, UpdateDeal
+from agents.tools.sideeffecting import (
+    CreateActivity,
+    CreateDeal,
+    DraftEmail,
+    IssueQuote,
+    UpdateContact,
+    UpdateDeal,
+)
 from shared.config import (
     ENV_ANTHROPIC_API_KEY,
     ENV_CLOUDWATCH_METRICS,
@@ -53,10 +60,19 @@ log = logging.getLogger(__name__)
 # granted-but-unserved tool wedges sessions at requires_action forever; a served-but-ungranted
 # tool is dead weight nothing can call (send_email was exactly that — no agent grants it; the
 # real send still only ever runs through the post-approval Greenlight gate in api/control).
+#
+# REGISTRY RECONCILIATION (the worker-vs-registry drift fix): the trusted registry
+# (agents/tools/registry.py) defines the FULL CRM-write suite — update_deal, update_contact,
+# create_activity, create_deal — as real, ALWAYS_ASK, Greenlight-gated proposal tools (the same
+# actions the Greenlight appliers execute post-approval). Ledger, the CRM-mutations specialist,
+# now owns that whole suite (agents/roster), so all four are SERVED here — no longer
+# registered-but-unserved. send_email stays the deliberate exception: it's registered ONLY so the
+# action gate can classify it side-effecting; no agent grants it and the real send is the
+# post-approval api/control path, so the worker must NOT serve it.
 TOOLS = [
     SearchRag(), QueryCube(), ReadCrm(), RunModel(), BuildView(),  # read-only (AUTO)
     DraftEmail(),                                                  # draft (AUTO)
-    UpdateDeal(), IssueQuote(),                                    # ALWAYS_ASK -> Greenlight
+    UpdateDeal(), UpdateContact(), CreateActivity(), CreateDeal(), IssueQuote(),  # ALWAYS_ASK -> Greenlight
 ]
 
 # Brief Option A: a fixed 30s emit interval — two emits per alarm period (60s), so a single
@@ -183,6 +199,15 @@ def build_clients_from_env() -> dict:
         from ml.predictions import PgPredictionLog  # noqa: PLC0415 — lazy (psycopg2)
 
         clients["prediction_log"] = PgPredictionLog(dsn)
+    else:
+        # No crm_app DSN on this task -> rag (and db/greenlight/prediction_log) stay None. The
+        # worker still BOOTS and serves, but search_rag/read_crm error per-call and side-effecting
+        # tools can't persist their RLS-scoped proposals — a silent symptom in prod. Warn LOUDLY at
+        # startup so an unconfigured data plane is visible in the logs, not discovered per session.
+        log.warning(
+            "worker: no crm_app DSN (DB_*/UPLIFT_DB_URL unset) — rag/db/greenlight clients are "
+            "None; search_rag and read_crm will error per call until the data plane is configured"
+        )
     # Governed-metrics client over CUBE_ENDPOINT (+ CUBEJS_API_SECRET_VALUE) — the SAME
     # tenant-JWT-minting CubeClient the API wires (#175); the worker just reuses the factory.
     # THE TRUST RULE: the client takes tenant_id per call (from the session metadata the API
