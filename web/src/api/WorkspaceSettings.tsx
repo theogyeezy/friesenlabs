@@ -91,7 +91,7 @@ export function WorkspaceSettings({ client }: WorkspaceSettingsProps) {
     try {
       applyRow(await api.getSettings());
     } catch (e) {
-      if (e instanceof ApiError && e.status === 503) {
+      if (e instanceof ApiError && (e.status === 503 || e.status === 404)) {
         setUnavailable(true);
       } else {
         setLoadError(friendlyErrorMessage(e));

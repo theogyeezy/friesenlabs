@@ -201,12 +201,17 @@ def _normalize_deal_write_row(row: dict) -> dict:
 
 
 def _normalize_contact_write_row(row: dict) -> dict:
-    return {
+    out = {
         "id": _as_str(row.get("id")),
         "name": row.get("name"),
         "email": row.get("email"),
         "phone": row.get("phone"),
     }
+    if "company_id" in row:
+        out["company_id"] = _as_str(row.get("company_id"))
+    if "created_at" in row:
+        out["created_at"] = _as_iso(row.get("created_at"))
+    return out
 
 
 def _normalize_activity_write_row(row: dict) -> dict:
@@ -702,7 +707,8 @@ class PgCrmClient(_PgTenantClient):
     # parameters, and tenancy is enforced by the per-op SET LOCAL transaction + table RLS.
 
     _DEAL_UPDATE_COLUMNS = {"stage": "stage", "amount": "amount", "name": "title"}
-    _CONTACT_UPDATE_COLUMNS = {"name": "name", "email": "email", "phone": "phone"}
+    _CONTACT_UPDATE_COLUMNS = {"name": "name", "email": "email", "phone": "phone",
+                               "company_id": "company_id"}
     _CONTACT_SKIPPED_FIELDS = {"title": "contacts.title is not in the schema"}
 
     @staticmethod
@@ -795,6 +801,27 @@ class PgCrmClient(_PgTenantClient):
         if row is None:
             raise RuntimeError("activity insert returned no row")
         return _normalize_activity_write_row(row)
+
+    def insert_contact(self, *, tenant_id: str, name: str,
+                       email: str | None = None, phone: str | None = None,
+                       company_id: str | None = None) -> dict:
+        """Insert one CRM contact (direct write, tenant from verified claim via SET LOCAL).
+
+        `company_id` is normalized to NULL when blank/empty (the schema column is a
+        nullable FK; an empty string is not a valid uuid). The returned row shape mirrors
+        what the contacts_routes.py create_contact route passes to the caller."""
+        company = str(company_id).strip() if company_id else ""
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "INSERT INTO contacts (tenant_id, company_id, name, email, phone) "
+                "VALUES (%s,%s,%s,%s,%s) "
+                "RETURNING id, name, email, phone, company_id, created_at",
+                (str(tenant_id), company or None, name, email, phone),
+            )
+            row = _dict_one(cur)
+        if row is None:
+            raise RuntimeError("contact insert returned no row")
+        return _normalize_contact_write_row(row)
 
     def insert_deal(self, *, tenant_id: str, company_id: str, name: str,
                     stage: str, amount: float | int | None,

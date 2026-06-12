@@ -49,8 +49,9 @@ class FakeCrm:
     """
 
     def __init__(self):
-        self._contacts: dict[str, dict] = {}  # id -> row (includes tenant_id)
-        self._deals: dict[str, dict] = {}     # id -> row (includes tenant_id)
+        self._contacts: dict[str, dict] = {}   # id -> row (includes tenant_id)
+        self._deals: dict[str, dict] = {}      # id -> row (includes tenant_id)
+        self._companies: dict[str, dict] = {}  # id -> row (includes tenant_id)
         self.calls: list[tuple] = []           # (method, kwargs) audit log
 
     # --- contacts reads (minimal — the write tests call the write methods) ----
@@ -77,7 +78,10 @@ class FakeCrm:
         return []
 
     def get_company_directory(self, *, tenant_id, company_id):
-        return None
+        row = self._companies.get(str(company_id))
+        if row is None or str(row["tenant_id"]) != str(tenant_id):
+            return None
+        return row
 
     def list_company_contacts(self, *, tenant_id, company_id, limit=50):
         return []
@@ -152,6 +156,13 @@ class FakeCrm:
         self._contacts[cid] = {"id": cid, "name": "Seeded", "email": None,
                                "phone": None, "tenant_id": str(tenant_id)}
         return cid
+
+    def _seed_company(self, tenant_id, company_id=None):
+        """Test helper: insert a visible company for `tenant_id`, returns its id."""
+        coid = str(company_id or uuid.uuid4())
+        self._companies[coid] = {"id": coid, "name": "Seeded Co",
+                                 "tenant_id": str(tenant_id)}
+        return coid
 
     def update_deal_fields(self, *, tenant_id, deal_id, changes):
         self.calls.append(("update_deal_fields", dict(
@@ -613,3 +624,64 @@ def test_edit_deal_503_unconfigured():
     tc = TestClient(app, raise_server_exceptions=False)
     r = tc.patch(f"/deals/{uuid.uuid4()}", json={"title": "X"}, headers=H_A)
     assert r.status_code == 503
+
+
+# =========================================================================== #
+# POST /deals — company_id linking
+# =========================================================================== #
+
+@pytest.mark.unit
+def test_create_deal_with_company_id_passes_through():
+    """A valid, visible company_id is validated and passed to insert_deal."""
+    crm = FakeCrm()
+    coid = crm._seed_company("A")
+    tc, _ = _deals_client(crm)
+    r = tc.post("/deals", json={"title": "Corp Deal", "company_id": coid}, headers=H_A)
+    assert r.status_code == 201, r.text
+    method, kwargs = crm.calls[-1]
+    assert method == "insert_deal"
+    assert kwargs["company_id"] == coid   # actually persisted, not dropped
+
+
+@pytest.mark.unit
+def test_create_deal_unknown_company_id_404():
+    """A well-formed but non-existent company_id -> 404 'no such company'."""
+    tc, crm = _deals_client()   # empty companies store
+    r = tc.post("/deals", json={"title": "X", "company_id": str(uuid.uuid4())},
+                headers=H_A)
+    assert r.status_code == 404
+    assert r.json()["detail"] == "no such company"
+    assert not any(c[0] == "insert_deal" for c in crm.calls)
+
+
+@pytest.mark.unit
+def test_create_deal_cross_tenant_company_id_404():
+    """Tenant A cannot link a deal to tenant B's company — 404, indistinguishable."""
+    crm = FakeCrm()
+    coid = crm._seed_company("B")   # belongs to B
+    tc, _ = _deals_client(crm)
+    r = tc.post("/deals", json={"title": "X", "company_id": coid}, headers=H_A)  # claim A
+    assert r.status_code == 404
+    assert r.json()["detail"] == "no such company"
+    assert not any(c[0] == "insert_deal" for c in crm.calls)
+
+
+@pytest.mark.unit
+def test_create_deal_malformed_company_id_422():
+    """A non-uuid company_id is a client body error -> 422 'invalid company_id'."""
+    tc, crm = _deals_client()
+    r = tc.post("/deals", json={"title": "X", "company_id": "not-a-uuid"}, headers=H_A)
+    assert r.status_code == 422
+    assert r.json()["detail"] == "invalid company_id"
+    assert not any(c[0] == "insert_deal" for c in crm.calls)
+
+
+@pytest.mark.unit
+def test_create_deal_no_company_id_passes_empty_string():
+    """Omitting company_id passes '' to insert_deal (which normalizes it to NULL)."""
+    tc, crm = _deals_client()
+    r = tc.post("/deals", json={"title": "Solo"}, headers=H_A)
+    assert r.status_code == 201
+    _, kwargs = crm.calls[-1]
+    # company_id is None in the body so the route passes "" to insert_deal
+    assert kwargs["company_id"] == ""

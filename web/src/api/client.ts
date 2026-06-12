@@ -357,7 +357,7 @@ export interface EditContactBody {
 
 /** Response from POST /contacts (201). The created contact row (without tenant_id). */
 export interface CreateContactResponse {
-  contact: { id: string; name: string | null; email: string | null; phone: string | null };
+  contact: { id: string; name: string | null; email: string | null; phone: string | null; company_id: string | null };
 }
 
 /** Response from PATCH /contacts/{id}. */
@@ -374,6 +374,7 @@ export interface CreateDealBody {
   amount?: number | null;
   stage?: string;
   contact_id?: string | null;
+  company_id?: string | null;
 }
 
 /** Body for PATCH /deals/{id}: partial update (title and/or amount). */
@@ -1568,6 +1569,7 @@ export class ApiClient {
           name: body.name,
           email: body.email ?? null,
           phone: body.phone ?? null,
+          company_id: body.company_id ?? null,
         },
       };
     }

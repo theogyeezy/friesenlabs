@@ -10,7 +10,11 @@
 //   1. load_data    — one-click "Load sample data" (POST /onboarding/load-sample,
 //                     idempotent). On success the populated views surface.
 //   2. try_chat     — jump to the chat / Balto view (the agent front door).
-//   3. invite_team  — open settings to invite teammates.
+//   3. invite_team  — there is no self-serve team UI yet, so this step is honest
+//                     about that: it routes to support (the Help dialog) to get a
+//                     teammate added, rather than no-op'ing into settings (which
+//                     has no team surface) and promising a capability that doesn't
+//                     exist. If no support handler is wired, the step is hidden.
 //
 // Accessibility: a labelled region; the dismiss control is a real <button> with
 // an aria-label; each step's action is keyboard-operable; the load-sample button
@@ -28,6 +32,11 @@ export interface FirstRunChecklistProps {
    * step opens the chat dock via onOpenChat instead. */
   onNavigate?: (route: string) => void;
   onOpenChat?: () => void;
+  /** Open the in-app support (Help) dialog. The "Invite your team" step uses this
+   * because there is no self-serve team UI yet — getting a teammate added goes
+   * through support. When omitted, the team step is hidden rather than pointing
+   * at a settings surface that can't actually invite anyone. */
+  onContactSupport?: () => void;
 }
 
 interface StepDef {
@@ -53,8 +62,8 @@ const STEPS: StepDef[] = [
   {
     id: "invite_team",
     label: "Invite your team",
-    hint: "Bring teammates into the workspace from settings.",
-    cta: "Open settings",
+    hint: "Want teammates in this workspace? Self-serve invites aren't live yet — message support and we'll add them for you.",
+    cta: "Contact support",
   },
 ];
 
@@ -103,19 +112,24 @@ const ghostBtn: React.CSSProperties = {
   whiteSpace: "nowrap",
 };
 
-export function FirstRunChecklist({ onNavigate, onOpenChat }: FirstRunChecklistProps) {
+export function FirstRunChecklist({ onNavigate, onOpenChat, onContactSupport }: FirstRunChecklistProps) {
   const { state, loading, rollout, update, loadSample } = useOnboarding();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
+  // The "Invite your team" step routes to support (no self-serve team UI yet).
+  // If no support handler is wired we hide it rather than dead-end into settings,
+  // which can't actually invite anyone — never promise a capability we don't have.
+  const steps = onContactSupport ? STEPS : STEPS.filter((s) => s.id !== "invite_team");
+
   // Never render while the first GET is in flight (no flash), when the API
   // doesn't serve the routes yet, or once dismissed / fully complete.
   if (loading || rollout || state === null) return null;
-  const allDone = STEPS.every((s) => state.steps[s.id]);
+  const allDone = steps.every((s) => state.steps[s.id]);
   if (state.dismissed || allDone) return null;
 
-  const doneCount = STEPS.filter((s) => state.steps[s.id]).length;
+  const doneCount = steps.filter((s) => state.steps[s.id]).length;
 
   const onLoadSample = async () => {
     if (busy) return;
@@ -147,7 +161,10 @@ export function FirstRunChecklist({ onNavigate, onOpenChat }: FirstRunChecklistP
     if (s.id === "try_chat") {
       return void markAndGo("try_chat", () => (onOpenChat ? onOpenChat() : onNavigate?.("chat")));
     }
-    return void markAndGo("invite_team", () => onNavigate?.("settings"));
+    // No self-serve team UI: route to support instead of a non-existent
+    // settings team surface. (The step is hidden entirely when no handler is
+    // wired, so this branch only runs when onContactSupport exists.)
+    return void markAndGo("invite_team", () => onContactSupport?.());
   };
 
   const dismiss = async () => {
@@ -166,7 +183,7 @@ export function FirstRunChecklist({ onNavigate, onOpenChat }: FirstRunChecklistP
             Get started with Friesen Labs
           </h2>
           <p style={{ fontSize: 12.5, color: "var(--ink-3, #8a8278)", margin: "4px 0 0" }}>
-            <span data-testid="first-run-progress">{doneCount} of {STEPS.length} done</span> — a couple of quick steps.
+            <span data-testid="first-run-progress">{doneCount} of {steps.length} done</span> — a couple of quick steps.
           </p>
         </div>
         <button
@@ -192,7 +209,7 @@ export function FirstRunChecklist({ onNavigate, onOpenChat }: FirstRunChecklistP
       )}
 
       <div style={{ marginTop: 8 }}>
-        {STEPS.map((s) => {
+        {steps.map((s) => {
           const done = state.steps[s.id];
           return (
             <div key={s.id} data-testid={`first-run-step-${s.id}`} data-done={done ? "true" : "false"} style={stepRow}>

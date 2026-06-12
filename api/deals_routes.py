@@ -129,6 +129,7 @@ class CreateDealBody(BaseModel):
     amount: float | int | None = None
     stage: str = "new"
     contact_id: str | None = None
+    company_id: str | None = None
 
 
 class EditDealBody(BaseModel):
@@ -185,6 +186,15 @@ def _valid_contact_id_or_422(contact_id: str) -> str:
         return str(uuid.UUID(str(contact_id)))
     except (ValueError, AttributeError, TypeError):
         raise HTTPException(status_code=422, detail="invalid contact_id")
+
+
+def _valid_company_id_or_422(company_id: str) -> str:
+    """A deal's optional company_id must be a uuid (deals.company_id FK type). A malformed
+    body value is a client error on a body field — 422 'invalid company_id'."""
+    try:
+        return str(uuid.UUID(str(company_id)))
+    except (ValueError, AttributeError, TypeError):
+        raise HTTPException(status_code=422, detail="invalid company_id")
 
 
 def _checked_rows(rows: list[dict], tenant_id: str) -> list[dict]:
@@ -249,12 +259,22 @@ def mount_deals(app: FastAPI, deps: DealsDeps, current_tenant, *, gate_deps: Any
                 tenant_id=claims.tenant_id, contact_id=contact_id
             ) is None:
                 raise HTTPException(status_code=404, detail="no such contact")
+        company_id: str | None = None
+        if body.company_id:
+            # Validate shape (422 on a malformed body value), then existence under the
+            # verified tenant: a company this tenant can't see can't anchor its deal.
+            # Returning a clean 404 'no such company' beats letting the FK throw an opaque 500.
+            company_id = _valid_company_id_or_422(body.company_id)
+            if crm.get_company_directory(
+                tenant_id=claims.tenant_id, company_id=company_id
+            ) is None:
+                raise HTTPException(status_code=404, detail="no such company")
         # Direct write — tenant from the VERIFIED claim, RLS-scoped via SET LOCAL.
-        # company_id is omitted (insert_deal normalizes "" -> NULL, a nullable FK);
-        # contact_id rides through when given so the link is actually persisted.
+        # company_id and contact_id ride through when given so links are actually persisted;
+        # insert_deal normalizes "" -> NULL for either nullable FK.
         row = crm.insert_deal(
             tenant_id=claims.tenant_id,
-            company_id="",
+            company_id=company_id or "",
             name=title,
             stage=stage,
             amount=body.amount,

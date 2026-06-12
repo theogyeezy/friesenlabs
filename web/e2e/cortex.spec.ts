@@ -265,3 +265,37 @@ test("500 -> friendly copy with retry; raw 'API <code>' never reaches the DOM", 
   await expect(page.getByTestId("cortex-no-registry")).toBeVisible({ timeout: 15_000 });
   await expect(page.getByTestId("cortex-error")).toHaveCount(0);
 });
+
+test("503 from /cortex/health -> calm rollout panel, cortex-error absent", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+
+  let calls = 0;
+  await page.route(cortexApi, async (route) => {
+    calls += 1;
+    if (calls === 1) {
+      await route.fulfill({ status: 503, json: { detail: "data plane not configured" } });
+    } else {
+      await route.fulfill({ json: NO_REGISTRY });
+    }
+  });
+
+  await gotoCortex(page);
+
+  // Calm rollout — same panel as 404; never a red error wall.
+  const rollout = page.getByTestId("cortex-rollout");
+  await expect(rollout).toBeVisible({ timeout: 15_000 });
+  await expect(rollout).toContainText("Cortex health API is rolling out");
+  await expect(page.getByTestId("cortex-error")).toHaveCount(0);
+
+  const text = await bodyText(page);
+  expect(text).not.toMatch(/API \d+/);
+  expect(text).not.toContain("data plane not configured");
+
+  // Refresh recovers once the API is up.
+  await page.getByTestId("cortex-rollout-refresh").click();
+  await expect(page.getByTestId("cortex-no-registry")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId("cortex-rollout")).toHaveCount(0);
+
+  expect(errors, `page errors: ${errors.join("\n")}`).toHaveLength(0);
+});

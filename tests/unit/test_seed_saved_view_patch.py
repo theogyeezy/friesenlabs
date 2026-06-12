@@ -82,7 +82,10 @@ def test_spec_view_id_matches_command_center_default():
     mod = _load()
     dashboard = os.path.join(_ROOT, "web", "src", "api", "DashboardView.tsx")
     with open(dashboard, encoding="utf-8") as f:
-        assert 'viewId = "demo_pipeline"' in f.read()
+        # DashboardView's Command Center default view id must match the seed. The id is the
+        # 'demo_pipeline' literal the mount load falls back to (viewId ?? "demo_pipeline");
+        # check the literal rather than a specific syntax so the resolution can be refactored.
+        assert '"demo_pipeline"' in f.read()
     assert mod.SPEC["view_id"] == "demo_pipeline"
 
 

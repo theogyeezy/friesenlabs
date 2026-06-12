@@ -51,8 +51,18 @@ export function GreenlightQueue({ client }: GreenlightQueueProps) {
   const api = client ?? defaultClient();
   const [items, setItems] = useState<Approval[]>([]);
   const [drafts, setDrafts] = useState<Record<number, string>>({});
+  // Per-item deny reason text (optional, shown when Deny is clicked).
+  const [denyReasons, setDenyReasons] = useState<Record<number, string>>({});
+  // Tracks which items have Deny clicked (to show the reason textarea).
+  const [denyPending, setDenyPending] = useState<Record<number, boolean>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Per-item decision errors: set when decide() fails for ONE item.
+  // Keyed by approval id; kept separately from the page-level load error so a
+  // failed decision leaves the queue intact and shows the error in-item.
+  const [itemErrors, setItemErrors] = useState<Record<number, string>>({});
+  // The last decision attempted per item, so a per-item retry repeats it faithfully.
+  const [lastDecision, setLastDecision] = useState<Record<number, "approve" | "edit" | "deny">>({});
   const [busy, setBusy] = useState<Record<number, boolean>>({});
   const [toast, setToast] = useState<string | null>(null);
 
@@ -79,16 +89,22 @@ export function GreenlightQueue({ client }: GreenlightQueueProps) {
   const decide = useCallback(
     async (a: Approval, decision: "approve" | "edit" | "deny") => {
       setBusy((b) => ({ ...b, [a.id]: true }));
+      // Remember this item's decision so a per-item RETRY repeats the SAME action
+      // (a failed deny must retry as deny, never silently become an approve).
+      setLastDecision((p) => ({ ...p, [a.id]: decision }));
+      // Clear any prior per-item error for this item before retrying.
+      setItemErrors((prev) => { const n = { ...prev }; delete n[a.id]; return n; });
       try {
         const body =
           decision === "edit"
             ? { decision, edits: editsFor(a, drafts[a.id]) }
             : decision === "deny"
-              ? { decision, deny_message: "Declined by reviewer." }
+              ? { decision, deny_message: denyReasons[a.id]?.trim() || "Declined by reviewer." }
               : { decision };
         await api.decideApproval(a.id, body);
         // Optimistically drop it from the visible queue.
         setItems((cur) => cur.filter((i) => i.id !== a.id));
+        setDenyPending((p) => { const n = { ...p }; delete n[a.id]; return n; });
         setToast(
           decision === "deny"
             ? "Declined"
@@ -98,12 +114,17 @@ export function GreenlightQueue({ client }: GreenlightQueueProps) {
         );
         window.setTimeout(() => setToast(null), 2500);
       } catch (e) {
-        setError(friendlyErrorMessage(e, "That decision didn't go through. Please try again."));
+        // Per-item error: the item STAYS in the queue; the page-level error is
+        // NOT set so the page-level "queue failed to load" card never shows.
+        setItemErrors((prev) => ({
+          ...prev,
+          [a.id]: friendlyErrorMessage(e, "That decision didn't go through. Please try again."),
+        }));
       } finally {
         setBusy((b) => ({ ...b, [a.id]: false }));
       }
     },
-    [api, drafts],
+    [api, drafts, denyReasons],
   );
 
   return (
@@ -201,6 +222,33 @@ export function GreenlightQueue({ client }: GreenlightQueueProps) {
             }}
           />
 
+          {denyPending[a.id] && (
+            <div style={{ marginTop: 10 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-3, #8a8278)", marginBottom: 4 }}>
+                Reason (optional)
+              </div>
+              <textarea
+                data-testid="deny-reason"
+                value={denyReasons[a.id] ?? ""}
+                disabled={busy[a.id]}
+                placeholder="Why are you declining this? (optional)"
+                onChange={(e) => setDenyReasons((r) => ({ ...r, [a.id]: e.target.value }))}
+                style={{
+                  width: "100%",
+                  minHeight: 60,
+                  resize: "vertical",
+                  borderRadius: 10,
+                  border: "1px solid var(--line, #e3ddd3)",
+                  padding: "8px 12px",
+                  fontSize: 13.5,
+                  fontFamily: "inherit",
+                  lineHeight: 1.5,
+                  boxSizing: "border-box",
+                }}
+              />
+            </div>
+          )}
+
           <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
             <button
               data-testid="approve-btn"
@@ -210,15 +258,63 @@ export function GreenlightQueue({ client }: GreenlightQueueProps) {
             >
               {draftChanged(a, drafts[a.id]) ? "Approve edited" : "Approve"}
             </button>
-            <button
-              data-testid="deny-btn"
-              disabled={busy[a.id]}
-              onClick={() => void decide(a, "deny")}
-              style={ghostBtn}
-            >
-              Deny
-            </button>
+            {denyPending[a.id] ? (
+              <>
+                <button
+                  data-testid="deny-confirm-btn"
+                  disabled={busy[a.id]}
+                  onClick={() => void decide(a, "deny")}
+                  style={{ ...ghostBtn, color: "var(--rose, #b4413b)" }}
+                >
+                  Confirm deny
+                </button>
+                <button
+                  data-testid="deny-cancel-btn"
+                  disabled={busy[a.id]}
+                  onClick={() => setDenyPending((p) => { const n = { ...p }; delete n[a.id]; return n; })}
+                  style={{ ...ghostBtn, color: "var(--ink-3, #8a8278)" }}
+                >
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <button
+                data-testid="deny-btn"
+                disabled={busy[a.id]}
+                onClick={() => setDenyPending((p) => ({ ...p, [a.id]: true }))}
+                style={ghostBtn}
+              >
+                Deny
+              </button>
+            )}
           </div>
+
+          {itemErrors[a.id] && (
+            <div
+              data-testid="item-error"
+              role="alert"
+              style={{
+                marginTop: 10,
+                padding: "10px 12px",
+                borderRadius: 10,
+                background: "var(--rose-soft, #fdf2f2)",
+                border: "1px solid var(--rose, #b4413b)",
+                color: "var(--ink, #2a2622)",
+                fontSize: 13,
+              }}
+            >
+              <span style={{ color: "var(--rose, #b4413b)", fontWeight: 700 }}>Decision failed. </span>
+              {itemErrors[a.id]}
+              <button
+                data-testid="item-error-retry"
+                onClick={() => void decide(a, lastDecision[a.id] ?? (draftChanged(a, drafts[a.id]) ? "edit" : "approve"))}
+                disabled={busy[a.id]}
+                style={{ ...ghostBtn, marginLeft: 8, padding: "4px 10px", fontSize: 12.5, color: "var(--ink, #2a2622)" }}
+              >
+                Retry
+              </button>
+            </div>
+          )}
         </div>
       ))}
 

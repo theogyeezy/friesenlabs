@@ -233,6 +233,40 @@ test("500 -> friendly copy with retry; raw 'API <code>' never reaches the DOM", 
   await expect(page.getByTestId("knowledge-error")).toHaveCount(0);
 });
 
+test("503 from GET /knowledge -> calm knowledge-rollout panel; no error wall", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+
+  let calls = 0;
+  await page.route(inventoryApi, async (route) => {
+    calls += 1;
+    if (calls === 1) {
+      await route.fulfill({ status: 503, json: { detail: "reader not configured" } });
+    } else {
+      await route.fulfill({ json: INVENTORY });
+    }
+  });
+
+  await page.goto("/?view=knowledge");
+
+  // Calm rollout panel — same as 404; never a red error wall.
+  const rollout = page.getByTestId("knowledge-rollout");
+  await expect(rollout).toBeVisible({ timeout: 15_000 });
+  await expect(rollout).toContainText("Knowledge API is rolling out");
+  await expect(page.getByTestId("knowledge-error")).toHaveCount(0);
+
+  const text = await bodyText(page);
+  expect(text).not.toMatch(/API \d+/);
+  expect(text).not.toContain("reader not configured");
+
+  // Refresh recovers.
+  await page.getByTestId("knowledge-rollout-refresh").click();
+  await expect(page.getByTestId("knowledge-source")).toHaveCount(3, { timeout: 15_000 });
+  await expect(page.getByTestId("knowledge-rollout")).toHaveCount(0);
+
+  expect(errors, `page errors: ${errors.join("\n")}`).toHaveLength(0);
+});
+
 // ---------------------------------------------------------------------------
 // Add-document path (knowledge audit P0): POST /knowledge/documents
 // ---------------------------------------------------------------------------

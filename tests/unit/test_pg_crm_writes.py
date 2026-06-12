@@ -226,3 +226,109 @@ def test_forbidden_write_fields_rejected_before_any_sql(monkeypatch):
         )
 
     assert pool.log == []
+
+
+@pytest.mark.unit
+def test_insert_contact_set_local_and_bind_params(monkeypatch):
+    """insert_contact issues SET LOCAL then INSERT with (tenant_id, company_id->None when
+    blank, name, email, phone) bound in order — no literal values in the SQL."""
+    pool = FakePool(one={
+        "id": "ct-10",
+        "name": "Eve",
+        "email": "eve@example.com",
+        "phone": "+15551234",
+        "company_id": None,
+        "created_at": None,
+    })
+    _patch_pool(monkeypatch, pool)
+    crm = PgCrmClient("postgresql://crm_app@h/db")
+
+    out = crm.insert_contact(
+        tenant_id="T1",
+        name="Eve",
+        email="eve@example.com",
+        phone="+15551234",
+        company_id="",   # blank -> should normalize to NULL
+    )
+
+    sql = _sql(pool)
+    assert sql[0].startswith("SET LOCAL app.current_tenant")
+    assert pool.log[0][1] == ("T1",)
+    insert_sql, params = pool.log[1]
+    assert insert_sql.startswith("INSERT INTO contacts")
+    assert "VALUES (%s,%s,%s,%s,%s)" in insert_sql
+    assert "tenant_id =" not in insert_sql
+    # blank company_id normalizes to None; order: tenant_id, company_id, name, email, phone
+    assert params == ("T1", None, "Eve", "eve@example.com", "+15551234")
+    assert "Eve" not in insert_sql
+    assert out["name"] == "Eve"
+    assert out["email"] == "eve@example.com"
+
+
+@pytest.mark.unit
+def test_insert_contact_with_company_id(monkeypatch):
+    """A non-blank company_id is passed through as-is (uuid string, not coerced to None)."""
+    pool = FakePool(one={
+        "id": "ct-11",
+        "name": "Zara",
+        "email": None,
+        "phone": None,
+        "company_id": "co-99",
+        "created_at": None,
+    })
+    _patch_pool(monkeypatch, pool)
+    crm = PgCrmClient("postgresql://crm_app@h/db")
+
+    crm.insert_contact(tenant_id="T2", name="Zara", company_id="co-99")
+    _, params = pool.log[1]
+    assert params == ("T2", "co-99", "Zara", None, None)
+
+
+@pytest.mark.unit
+def test_update_contact_fields_company_id_allowed(monkeypatch):
+    """company_id is now in the allow-list — it can be set to a uuid or cleared to None."""
+    co_uuid = "11111111-1111-1111-1111-111111111111"
+    pool = FakePool(one={
+        "id": "ct-1",
+        "name": "Dana",
+        "email": "dana@example.com",
+        "phone": "+15550100",
+    })
+    _patch_pool(monkeypatch, pool)
+    crm = PgCrmClient("postgresql://crm_app@h/db")
+
+    # Set company_id to a uuid.
+    out = crm.update_contact_fields(
+        tenant_id="T1",
+        contact_id="ct-1",
+        changes={"company_id": co_uuid},
+    )
+
+    update_sql, params = pool.log[1]
+    assert "company_id = %s" in update_sql
+    assert params == (co_uuid, "ct-1")
+    assert out["updated"] == {"company_id": co_uuid}
+
+
+@pytest.mark.unit
+def test_update_contact_fields_company_id_clear_to_null(monkeypatch):
+    """company_id can be cleared to NULL by passing None."""
+    pool = FakePool(one={
+        "id": "ct-2",
+        "name": "Max",
+        "email": None,
+        "phone": None,
+    })
+    _patch_pool(monkeypatch, pool)
+    crm = PgCrmClient("postgresql://crm_app@h/db")
+
+    out = crm.update_contact_fields(
+        tenant_id="T1",
+        contact_id="ct-2",
+        changes={"name": "Max", "company_id": None},
+    )
+
+    _, params = pool.log[1]
+    # Both name and company_id are bound; company_id=None becomes SQL NULL.
+    assert params == ("Max", None, "ct-2")
+    assert out["updated"] == {"name": "Max", "company_id": None}

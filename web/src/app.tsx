@@ -39,6 +39,8 @@ const { Icon, Logo, FL_DATA, FLStore, useStore, askClaude, bizContext, confettiB
 // app.jsx, shell: sidebar, topbar, routing, tweaks, palette
 import { FirstRunChecklist } from "./onboarding/FirstRunChecklist";
 import { defaultClient } from "./api/client";
+import ErrorBoundary from "./ErrorBoundary";
+import { HelpDialog } from "./support/HelpForm";
 
 const ACCENTS = [
   { id: "indigo", name: "Indigo", h: 277 },
@@ -177,7 +179,15 @@ function App() {
   const [notif, setNotif] = useState(false);
   const [profile, setProfile] = useState(false);
   const [editProfile, setEditProfile] = useState(false);
+  // In-app support: the HelpDialog (same form the public landing uses) mounted
+  // behind the authed shell so signed-in users can reach support without
+  // leaving the app.
+  const [helpOpen, setHelpOpen] = useState(false);
   const auth = useAuth();
+  // Presence statuses. Defined ABOVE the identity block so meData.status can be
+  // clamped to a known key before any STATUS[...] index — a corrupt fl_me (e.g.
+  // {status:"online"}) must never crash the whole shell.
+  const STATUS = { available: ["Available", "var(--green)"], busy: ["Busy", "var(--rose)"], away: ["Away", "var(--amber)"] };
   const [me, setMe] = useState(() => { try { return JSON.parse(localStorage.getItem("fl_me")) || null; } catch (e) { return null; } });
   // Real identity from the Cognito ID token claims when signed in; the editable
   // mock persona ("Jordan Reyes" / localStorage fl_me) otherwise (mock mode).
@@ -187,12 +197,21 @@ function App() {
     email: auth.email || "",
     status: (me && me.status) || "available",
   } : null;
-  const meData = authMe || me || { name: "Jordan Reyes", title: "Owner", email: "jordan@reyesco.com", status: "available" };
+  const meRaw = authMe || me || { name: "Jordan Reyes", title: "Owner", email: "jordan@reyesco.com", status: "available" };
+  // Crash guard: a corrupt fl_me (out-of-set status, null/empty name) must never
+  // take down the shell. Clamp status to a known key and force name to a
+  // non-empty string so every STATUS[...] index and name.split(" ") is safe.
+  const meData = {
+    ...meRaw,
+    name: (meRaw && typeof meRaw.name === "string" && meRaw.name.trim()) ? meRaw.name : "Account",
+    title: (meRaw && meRaw.title) || "",
+    email: (meRaw && meRaw.email) || "",
+    status: STATUS[meRaw && meRaw.status] ? meRaw.status : "available",
+  };
   // Never seed fl_me from authMe: claim-derived PII (real name/email) must not
   // persist in localStorage past sign-out. Edits while authenticated only carry
   // prior fl_me content + the patch (e.g. status), not the token claims.
   const saveMe = (patch) => { const next = { ...(me || {}), ...patch }; setMe(next); try { localStorage.setItem("fl_me", JSON.stringify(next)); } catch (e) {} };
-  const STATUS = { available: ["Available", "var(--green)"], busy: ["Busy", "var(--rose)"], away: ["Away", "var(--amber)"] };
   const feed = useStore((s) => s.feed);
   const [onb, setOnb] = useState(() => { try { if (/[?&]onboard=1/.test(location.search)) { localStorage.removeItem("fl_onboarded"); localStorage.removeItem("fl_toured"); return true; } return !localStorage.getItem("fl_onboarded"); } catch (e) { return true; } });
   const [tour, setTour] = useState(false);
@@ -418,8 +437,8 @@ function App() {
           <div style={{ position: "relative" }}>
             <button className="user-chip" onClick={() => setProfile((v) => !v)}>
               <div style={{ position: "relative" }}>
-                <div className="avatar" style={{ background: "linear-gradient(145deg, var(--accent), var(--accent-press))" }}>{meData.name.split(" ").map((w) => w[0]).slice(0, 2).join("")}</div>
-                <span style={{ position: "absolute", right: -1, bottom: -1, width: 11, height: 11, borderRadius: 99, background: STATUS[meData.status][1], border: "2px solid var(--bg)" }} />
+                <div className="avatar" style={{ background: "linear-gradient(145deg, var(--accent), var(--accent-press))" }}>{(meData.name || "Account").split(" ").map((w) => w[0]).slice(0, 2).join("")}</div>
+                <span style={{ position: "absolute", right: -1, bottom: -1, width: 11, height: 11, borderRadius: 99, background: (STATUS[meData.status] || STATUS.available)[1], border: "2px solid var(--bg)" }} />
               </div>
               <div className="ucol"><b>{meData.name}</b><span>{meData.title}</span></div>
               <Icon name="chevDown" size={15} style={{ color: "var(--ink-3)" }} />
@@ -429,7 +448,7 @@ function App() {
                 <div style={{ position: "fixed", inset: 0, zIndex: 40 }} onClick={() => setProfile(false)} />
                 <div style={{ position: "absolute", top: 50, right: 0, width: 270, background: "var(--surface)", border: "1px solid var(--line)", borderRadius: "var(--r-md)", boxShadow: "var(--shadow-xl)", zIndex: 41, overflow: "hidden", animation: "feed-in .18s both" }}>
                   <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--line)", display: "flex", alignItems: "center", gap: 11 }}>
-                    <div className="avatar" style={{ background: "linear-gradient(145deg, var(--accent), var(--accent-press))", width: 40, height: 40, fontSize: 14 }}>{meData.name.split(" ").map((w) => w[0]).slice(0, 2).join("")}</div>
+                    <div className="avatar" style={{ background: "linear-gradient(145deg, var(--accent), var(--accent-press))", width: 40, height: 40, fontSize: 14 }}>{(meData.name || "Account").split(" ").map((w) => w[0]).slice(0, 2).join("")}</div>
                     <div style={{ minWidth: 0, flex: 1 }}><b style={{ fontSize: 14, fontWeight: 700, display: "block" }}>{meData.name}</b><span style={{ fontSize: 12, color: "var(--ink-3)" }}>{meData.email}</span></div>
                     <button className="icon-btn" style={{ width: 28, height: 28 }} title="Edit profile" onClick={() => { setEditProfile(true); setProfile(false); }}><Icon name="note" size={15} /></button>
                   </div>
@@ -442,11 +461,21 @@ function App() {
                     </div>
                   </div>
                   <div style={{ padding: 6 }}>
-                    {[["building", "Workspace settings", "settings"], ["users", "Manage team", "settings"], ["shield", "Security", "security"], ["trend", "Plan & billing", "settings"]].map(([ic, label, r]) => (
+                    {/* "Manage team" was removed: Settings has no team UI yet, so
+                        pointing there promised a capability that doesn't exist.
+                        Team setup is handled through support (below) until the
+                        real team surface ships. */}
+                    {[["building", "Workspace settings", "settings"], ["shield", "Security", "security"], ["trend", "Plan & billing", "settings"]].map(([ic, label, r]) => (
                       <button key={label} className="pm-item" onClick={() => { navTo(r); setProfile(false); }}>
                         <Icon name={ic} size={16} style={{ color: "var(--ink-3)" }} /><span>{label}</span>
                       </button>
                     ))}
+                    <button className="pm-item" data-testid="profile-contact-support" onClick={() => { setProfile(false); setHelpOpen(true); }}>
+                      <Icon name="mail" size={16} style={{ color: "var(--ink-3)" }} /><span>Contact support</span>
+                    </button>
+                    <a className="pm-item" data-testid="profile-status-link" href="/?view=status" style={{ textDecoration: "none" }} onClick={() => setProfile(false)}>
+                      <Icon name="gauge" size={16} style={{ color: "var(--ink-3)" }} /><span>Status</span>
+                    </a>
                     <button className="pm-item" onClick={() => { setProfile(false); setCmdk(true); }}>
                       <Icon name="search" size={16} style={{ color: "var(--ink-3)" }} /><span style={{ flex: 1 }}>Command palette</span><span className="kbd">⌘K</span>
                     </button>
@@ -483,6 +512,11 @@ function App() {
         )}
 
         <div className="viewport">
+          {/* Route-scoped error boundary: one broken surface keeps the sidebar,
+              topbar and chat alive and navigable. key={route} resets the boundary
+              on navigation so moving away from a crashed screen clears it. The
+              root boundary in main.tsx remains the full-page catch-all. */}
+          <ErrorBoundary key={route} compact>
           {realMode && !routeEnabled(route) ? (
             // Entitlement gate: the tenant navigated (e.g. via a deep button) to a
             // surface whose module they've disabled in Settings → "Your suite".
@@ -498,8 +532,8 @@ function App() {
                   "Load sample data" step loads the demo fixture into the tenant
                   and remounts the surfaces (sampleReloadKey) so populated views
                   surface immediately. */}
-              <FirstRunChecklist onNavigate={navTo} onOpenChat={() => setChat(true)} />
-              {route === "dashboard" && <DashboardView key={sampleReloadKey} />}
+              <FirstRunChecklist onNavigate={navTo} onOpenChat={() => setChat(true)} onContactSupport={() => setHelpOpen(true)} />
+              {route === "dashboard" && <DashboardView key={sampleReloadKey} onLoadSample={loadSampleData} onAskAgents={() => setChat(true)} />}
               {/* Pipeline is LIVE in real mode: RLS-scoped deals from GET /deals;
                   stage moves queue through Greenlight (never a direct write). */}
               {route === "crm" && <PipelineBoard key={sampleReloadKey} onOpenGreenlight={() => navTo("approvals")} onLoadSample={loadSampleData} />}
@@ -527,12 +561,12 @@ function App() {
                   /refine NL route (honest "not live yet" until the agent runtime
                   is wired) — never the FLStore Reports prototype + DataAssistant
                   overlay. */}
-              {route === "reports" && <ReportsView onAskAgents={() => setChat(true)} />}
+              {route === "reports" && <ReportsView onLoadSample={loadSampleData} onAskAgents={() => setChat(true)} />}
               {/* Dashboards is LIVE in real mode: named compositions of saved
                   views over GET/POST /dashboards (kind=dashboard rows), each
                   referenced view rendered through the SAME trusted SpecRenderer
                   — never executable code, never FLStore prototype numbers. */}
-              {route === "dashboards" && <DashboardsView />}
+              {route === "dashboards" && <DashboardsView onLoadSample={loadSampleData} onAskAgents={() => setChat(true)} />}
               {/* Knowledge is LIVE in real mode: the tenant's ingested corpus from
                   GET /knowledge (per-source inventory) + /knowledge/search (RLS
                   cosine search, honest degrade while the embedder warms up) —
@@ -544,7 +578,7 @@ function App() {
                   tenant's CRM (GET /sidecar/suggestions); accepting one enqueues a DRAFT
                   into Greenlight (POST /sidecar/act) — never a direct CRM write, never the
                   FLStore Sidecar prototype with its hard-coded fake agent activity. */}
-              {route === "sidecar" && <SidecarView onOpenGreenlight={() => navTo("approvals")} />}
+              {route === "sidecar" && <SidecarView onOpenGreenlight={() => navTo("approvals")} onOpenDeal={() => navTo("crm")} onOpenContact={() => navTo("contacts")} />}
               {/* Security is LIVE in real mode: the kill switch + autonomy dial
                   PUT real state through GET/PUT /control/*, and a read-only
                   decision-trace feed renders GET /control/traces — each control
@@ -626,6 +660,7 @@ function App() {
               {route === "settings" && <Settings agents={agents} onNavigate={navTo} />}
             </>
           )}
+          </ErrorBoundary>
         </div>
       </div>
 
@@ -644,7 +679,7 @@ function App() {
         <div className="cmdk-scrim show" onClick={() => setEditProfile(false)} style={{ alignItems: "center", paddingTop: 0 }}>
           <div className="cmdk" style={{ maxWidth: 420 }} onClick={(e) => e.stopPropagation()}>
             <div style={{ padding: "18px 20px", borderBottom: "1px solid var(--line)", display: "flex", alignItems: "center", gap: 11 }}>
-              <div className="avatar" style={{ background: "linear-gradient(145deg, var(--accent), var(--accent-press))", width: 36, height: 36, fontSize: 13 }}>{meData.name.split(" ").map((w) => w[0]).slice(0, 2).join("")}</div>
+              <div className="avatar" style={{ background: "linear-gradient(145deg, var(--accent), var(--accent-press))", width: 36, height: 36, fontSize: 13 }}>{(meData.name || "Account").split(" ").map((w) => w[0]).slice(0, 2).join("")}</div>
               <b style={{ fontSize: 16, fontWeight: 720, flex: 1 }}>Edit your profile</b>
               <button className="icon-btn" onClick={() => setEditProfile(false)}><Icon name="x" size={18} /></button>
             </div>
@@ -658,6 +693,10 @@ function App() {
           </div>
         </div>
       )}
+      {/* In-app support: the same HelpDialog the public landing uses, reachable
+          from the authed profile menu so signed-in users can contact support
+          without leaving the app. */}
+      {helpOpen && <HelpDialog onClose={() => setHelpOpen(false)} />}
       {/* DataAssistant is a prototype overlay over FLStore data — mock only. */}
       {route === "reports" && !realMode && <DataAssistant surface="reports" onNavigate={navTo} />}
       {route === "dashboard" && !realMode && <DataAssistant surface="dashboard" onNavigate={navTo} />}

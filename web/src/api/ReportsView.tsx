@@ -37,6 +37,7 @@ import {
   defaultClient,
   friendlyErrorMessage,
   type SavedViewRow,
+  type SynthesizeViewResponse,
 } from "./client";
 import { SpecRenderer, type LoadData } from "../dashboard/SpecRenderer";
 import { Spinner } from "./Spinner";
@@ -221,7 +222,12 @@ function Detail({
       setVersion(row.version);
       await loadData(row.spec_json);
     } catch (e) {
-      setError(friendlyErrorMessage(e, "Couldn't load this report. Please try again."));
+      if (e instanceof ApiError && e.status === 404) {
+        // A 404 on a specific view is an honest "not found" — not a red error.
+        setError("report-not-found");
+      } else {
+        setError(friendlyErrorMessage(e, "Couldn't load this report. Please try again."));
+      }
     } finally {
       setLoading(false);
     }
@@ -277,7 +283,21 @@ function Detail({
 
       {loading && <Spinner testid="report-loading" label="Loading report..." />}
 
-      {!loading && error && (
+      {!loading && error === "report-not-found" && (
+        <div data-testid="report-not-found" style={{ ...card, fontSize: 13.5, ...muted }}>
+          <div style={{ fontWeight: 700, marginBottom: 4, color: "var(--ink, #2a2622)" }}>
+            Report not found
+          </div>
+          <p style={{ lineHeight: 1.5, margin: "0 0 10px" }}>
+            This report no longer exists in your workspace.
+          </p>
+          <button data-testid="report-back-notfound" onClick={onBack} style={ghostBtn}>
+            Back to reports
+          </button>
+        </div>
+      )}
+
+      {!loading && error && error !== "report-not-found" && (
         <ErrorCard
           message={error}
           onRetry={() => void load()}
@@ -362,6 +382,183 @@ function Detail({
 }
 
 // ---------------------------------------------------------------------------
+// SynthesizeComposer — "Ask for a chart" from the gallery header. Calls
+// POST /views/synthesize, renders the returned draft spec via SpecRenderer,
+// and lets the user save it (POST /views/drafts/{id}/save) or discard.
+// ---------------------------------------------------------------------------
+
+function SynthesizeComposer({
+  api,
+  onSaved,
+  onOpenExisting,
+}: {
+  api: ApiClient;
+  onSaved: () => void;
+  onOpenExisting: (viewId: string) => void;
+}) {
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<SynthesizeViewResponse | null>(null);
+  // Loader for the draft spec preview (no live data; uses the empty loader).
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  // 503 degrade: the synthesize endpoint isn't wired on this deployment.
+  const [unavailable, setUnavailable] = useState(false);
+
+  const dataLoader: LoadData = async () => [];
+
+  const synthesize = useCallback(async () => {
+    const req = text.trim();
+    if (!req) return;
+    setBusy(true);
+    setResult(null);
+    setSaveError(null);
+    try {
+      const res = await api.synthesizeView({ request: req });
+      if (res.status === "exists" && res.view) {
+        // A saved view already covers this ask — open it directly.
+        onOpenExisting(res.view.view_id);
+        return;
+      }
+      setResult(res);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 503) {
+        setUnavailable(true);
+      } else {
+        // Propagate as a result-level error so the UI stays calm.
+        setResult({ status: "invalid", error: friendlyErrorMessage(e, "Couldn't synthesize that chart. Please try again.") });
+      }
+    } finally {
+      setBusy(false);
+    }
+  }, [api, text, onOpenExisting]);
+
+  const save = useCallback(async () => {
+    if (!result || result.status !== "ok" || !result.draft_id) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await api.saveViewDraft(result.draft_id);
+      setResult(null);
+      setText("");
+      onSaved();
+    } catch (e) {
+      setSaveError(friendlyErrorMessage(e, "Couldn't save this report. Please try again."));
+    } finally {
+      setSaving(false);
+    }
+  }, [api, result, onSaved]);
+
+  if (unavailable) {
+    return (
+      <div
+        data-testid="report-synthesize-unavailable"
+        style={{ ...card, fontSize: 13.5, ...muted }}
+      >
+        AI chart authoring isn&rsquo;t live yet — the synthesize agent isn&rsquo;t configured on
+        this deployment. Your saved reports render normally.
+      </div>
+    );
+  }
+
+  return (
+    <div data-testid="report-synthesize-composer" style={{ ...card, marginBottom: 18 }}>
+      <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>Ask for a chart</div>
+      <p style={{ ...muted, fontSize: 12.5, lineHeight: 1.5, marginBottom: 10 }}>
+        Describe the chart you want in plain English — e.g. &ldquo;Pipeline value by owner for the
+        last 30 days.&rdquo; Your agents build it and you choose whether to save it.
+      </p>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+        <input
+          data-testid="report-synthesize-input"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void synthesize(); } }}
+          placeholder="Pipeline by owner, last 30 days"
+          style={{
+            flex: 1,
+            padding: "10px 12px",
+            borderRadius: 10,
+            border: "1px solid var(--line, #e3ddd3)",
+            background: "var(--bg, #fff)",
+            color: "var(--ink, #2a2622)",
+            fontSize: 13.5,
+            fontFamily: "inherit",
+          }}
+        />
+        <button
+          data-testid="report-synthesize-submit"
+          onClick={() => void synthesize()}
+          disabled={busy || !text.trim()}
+          style={{
+            ...ghostBtn,
+            background: "var(--accent, #4f46e5)",
+            color: "#fff",
+            border: "1px solid transparent",
+            opacity: busy || !text.trim() ? 0.6 : 1,
+            cursor: busy || !text.trim() ? "default" : "pointer",
+          }}
+        >
+          {busy ? "Working..." : "Ask"}
+        </button>
+      </div>
+
+      {/* draft preview */}
+      {result?.status === "ok" && result.spec && (
+        <div data-testid="report-synthesize-preview" style={{ marginTop: 12 }}>
+          <SpecRenderer spec={result.spec} loadData={dataLoader} />
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10 }}>
+            <button
+              data-testid="report-synthesize-save"
+              onClick={() => void save()}
+              disabled={saving}
+              style={{
+                ...ghostBtn,
+                background: "var(--accent, #4f46e5)",
+                color: "#fff",
+                border: "1px solid transparent",
+                opacity: saving ? 0.6 : 1,
+              }}
+            >
+              {saving ? "Saving..." : "Save report"}
+            </button>
+            <button
+              data-testid="report-synthesize-discard"
+              onClick={() => { setResult(null); setText(""); }}
+              style={ghostBtn}
+            >
+              Discard
+            </button>
+            {saveError && (
+              <span style={{ fontSize: 12.5, color: "var(--rose, #b4413b)" }}>{saveError}</span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* honest refusal: no metric can answer the ask */}
+      {result?.status === "data_not_found" && (
+        <div
+          data-testid="report-synthesize-refusal"
+          style={{ fontSize: 13.5, ...muted, marginTop: 8, lineHeight: 1.5 }}
+        >
+          No metric can answer that &mdash;{" "}
+          {result.message ?? "the data you described doesn't exist in your connected sources."}
+        </div>
+      )}
+
+      {/* invalid / error */}
+      {result?.status === "invalid" && (
+        <p style={{ fontSize: 12.5, ...muted, marginTop: 8, lineHeight: 1.5 }}>
+          {result.error ?? "That request didn't produce a valid chart. Try rephrasing it."}
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Top-level: gallery <-> detail
 // ---------------------------------------------------------------------------
 
@@ -375,15 +572,24 @@ export function ReportsView({ client, onAskAgents }: ReportsViewProps) {
   const [views, setViews] = useState<SavedViewRow[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [rollout, setRollout] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
+  // Whether the synthesize composer is open (toggled by the gallery header button).
+  const [composing, setComposing] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setRollout(false);
     try {
       setViews(await api.listViews());
     } catch (e) {
-      setError(friendlyErrorMessage(e, "Couldn't load your reports. Please try again."));
+      if (e instanceof ApiError && e.status === 404) {
+        // GET /views 404: the route hasn't rolled out on this deployment yet.
+        setRollout(true);
+      } else {
+        setError(friendlyErrorMessage(e, "Couldn't load your reports. Please try again."));
+      }
     } finally {
       setLoading(false);
     }
@@ -392,6 +598,12 @@ export function ReportsView({ client, onAskAgents }: ReportsViewProps) {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // When a report is opened from the synthesize result.
+  const openExisting = useCallback((viewId: string) => {
+    setComposing(false);
+    setSelected(viewId);
+  }, []);
 
   return (
     <div
@@ -414,6 +626,23 @@ export function ReportsView({ client, onAskAgents }: ReportsViewProps) {
         <>
           {loading && <Spinner testid="reports-loading" label="Loading reports..." />}
 
+          {!loading && rollout && (
+            <div data-testid="reports-rollout" style={{ ...card, fontSize: 13.5 }}>
+              <div style={{ fontWeight: 700, marginBottom: 4 }}>Reports API is rolling out</div>
+              <p style={{ ...muted, lineHeight: 1.5 }}>
+                Your deployment doesn&rsquo;t serve the views endpoint yet — refresh after the next
+                API deploy. Nothing is wrong with your workspace.
+              </p>
+              <button
+                data-testid="reports-rollout-refresh"
+                onClick={() => void load()}
+                style={{ ...ghostBtn, marginTop: 10 }}
+              >
+                Refresh
+              </button>
+            </div>
+          )}
+
           {!loading && error && (
             <ErrorCard
               message={error}
@@ -423,35 +652,73 @@ export function ReportsView({ client, onAskAgents }: ReportsViewProps) {
             />
           )}
 
-          {!loading && !error && views && views.length === 0 && (
-            <div data-testid="reports-empty" style={{ ...card, textAlign: "center" }}>
-              <div style={{ fontSize: 15, fontWeight: 700, color: "var(--ink, #2a2622)" }}>
-                No saved reports yet
+          {!loading && !error && !rollout && views !== null && (
+            <>
+              {/* Gallery header with "Ask for a chart" button */}
+              <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14 }}>
+                {!composing && (
+                  <button
+                    data-testid="reports-ask-chart"
+                    onClick={() => setComposing(true)}
+                    style={{
+                      ...ghostBtn,
+                      background: "var(--accent, #4f46e5)",
+                      color: "#fff",
+                      border: "1px solid transparent",
+                      marginLeft: "auto",
+                    }}
+                  >
+                    Ask for a chart
+                  </button>
+                )}
               </div>
-              <p style={{ ...muted, fontSize: 13, marginTop: 6, lineHeight: 1.5 }}>
-                Ask your agents for a metric or chart, then save it. Saved views land here,
-                versioned, for the whole workspace.
-              </p>
-              {onAskAgents && (
-                <button
-                  data-testid="reports-empty-cta"
-                  onClick={onAskAgents}
-                  style={{
-                    ...ghostBtn,
-                    background: "var(--accent, #4f46e5)",
-                    color: "#fff",
-                    border: "1px solid transparent",
-                    marginTop: 16,
-                  }}
-                >
-                  Ask your agents
-                </button>
-              )}
-            </div>
-          )}
 
-          {!loading && !error && views && views.length > 0 && (
-            <Gallery views={views} onOpen={(id) => setSelected(id)} />
+              {composing && (
+                <SynthesizeComposer
+                  api={api}
+                  onSaved={() => { setComposing(false); void load(); }}
+                  onOpenExisting={openExisting}
+                />
+              )}
+
+              {views.length === 0 && !composing && (
+                <div data-testid="reports-empty" style={{ ...card, textAlign: "center" }}>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: "var(--ink, #2a2622)" }}>
+                    No saved reports yet
+                  </div>
+                  <p style={{ ...muted, fontSize: 13, marginTop: 6, lineHeight: 1.5 }}>
+                    Ask your agents for a metric or chart, then save it. Saved views land here,
+                    versioned, for the whole workspace.
+                  </p>
+                  <button
+                    data-testid="reports-empty-cta"
+                    onClick={() => setComposing(true)}
+                    style={{
+                      ...ghostBtn,
+                      background: "var(--accent, #4f46e5)",
+                      color: "#fff",
+                      border: "1px solid transparent",
+                      marginTop: 16,
+                    }}
+                  >
+                    Ask for a chart
+                  </button>
+                  {onAskAgents && (
+                    <button
+                      data-testid="reports-ask-agents"
+                      onClick={onAskAgents}
+                      style={{ ...ghostBtn, marginTop: 8, marginLeft: 8 }}
+                    >
+                      Ask your agents
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {views.length > 0 && (
+                <Gallery views={views} onOpen={(id) => setSelected(id)} />
+              )}
+            </>
           )}
         </>
       )}

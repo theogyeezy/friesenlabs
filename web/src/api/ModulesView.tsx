@@ -92,7 +92,7 @@ export function ModulesView({ client, onChange }: ModulesViewProps) {
     try {
       applyCatalog(await api.getModules());
     } catch (e) {
-      if (e instanceof ApiError && e.status === 503) {
+      if (e instanceof ApiError && (e.status === 503 || e.status === 404)) {
         setUnavailable(true);
       } else {
         setLoadError(friendlyErrorMessage(e));
