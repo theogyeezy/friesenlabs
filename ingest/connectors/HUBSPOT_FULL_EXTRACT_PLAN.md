@@ -111,8 +111,12 @@ fix): `python -m api.migrate` loads `schema.sql` idempotently. Additive only.
   existing typed contacts/companies/deals + vector-embedding path is untouched; this lands
   full-fidelity `crm_records` alongside it. 4 unit tests (lands per type, skips failing type,
   honors override, forwards since+associations); full `pytest tests/unit` green; ruff clean. DONE.
-- [ ] 7. **Registry + run_sync**: ensure `ingest/connectors/registry.py` + `run_sync.py`
-  drive the new pull. Backwards-compatible (no breaking the other connectors).
+- [x] 7. **Registry + run_sync** — `registry.build_hubspot_full_connector(tenant_id, secrets, dsn/
+  conn_factory, token)` wires HubSpotFullClient + PgCrmRecordsSink + HubSpotFullConnector, reusing
+  `HubSpotConnector.authenticate()` for the vault token (or `token=` to bypass). `run_sync.run_full_extract(
+  tenant_id, since)` is a real-mode-only driver. ADDITIVE — separate from `build_sync_connector`/the
+  `--all` typed-vector path (untouched). 3 unit tests (token bypass, vault-auth reuse, real-mode gate);
+  no regressions; ruff clean. DONE.
 - [ ] 8. **Full test pass**: `pytest tests/unit -q` green; `python -c` imports; no media/Files
   calls anywhere (grep). Update `BUILD_STATUS.md` (own lane only).
 - [ ] 9. **PR**: open a PR (branch `feat/hubspot-full-extract`), get CI green (python/web/
