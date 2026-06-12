@@ -121,3 +121,33 @@ def test_pages_are_chunked_families_only_and_namespace_delete_is_tenant_scoped(a
         "demo:kb:discount-authority"]
     assert "upload:pricing-policy-ab12cd34" in [
         d["ref_id"] for d in client.list_uploaded_documents(tenant_id=tenant_b)]
+
+
+@pytest.mark.integration
+def test_page_organization_meta_lifecycle_real_db(app_dsn):
+    """knowledge_pages against real Postgres: upsert location, list keyed by ref, an edit
+    carries the row + children to the new ref, a delete re-parents children to the
+    grandparent — all RLS-scoped (tenant B never sees tenant A's tree)."""
+    client = PgRagClient(app_dsn)
+    a, b = str(uuid.uuid4()), str(uuid.uuid4())
+    top, child, grand = "upload:top-aaaa1111", "upload:child-bbbb2222", "upload:grand-cccc3333"
+
+    client.set_page_location(tenant_id=a, ref_prefix=child, parent_ref=top, sort_order=1.0)
+    client.set_page_location(tenant_id=a, ref_prefix=grand, parent_ref=child, sort_order=0.0)
+    meta = client.list_page_meta(tenant_id=a)
+    assert meta[child]["parent_ref"] == top and meta[grand]["parent_ref"] == child
+    # RLS: tenant B sees an empty tree, not tenant A's rows.
+    assert client.list_page_meta(tenant_id=b) == {}
+
+    # Edit moved `child` to a new namespace: its row's key AND grand's pointer follow.
+    new_child = "upload:child-dddd4444"
+    client.migrate_page_ref(tenant_id=a, old_ref=child, new_ref=new_child)
+    meta = client.list_page_meta(tenant_id=a)
+    assert child not in meta and meta[new_child]["parent_ref"] == top
+    assert meta[grand]["parent_ref"] == new_child
+
+    # Deleting the (moved) child re-parents grand up to TOP, never orphans it under a ghost.
+    client.delete_page_meta(tenant_id=a, ref_prefix=new_child)
+    meta = client.list_page_meta(tenant_id=a)
+    assert new_child not in meta
+    assert meta[grand]["parent_ref"] == top

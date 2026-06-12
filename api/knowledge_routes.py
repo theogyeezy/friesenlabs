@@ -71,7 +71,10 @@ from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
 
 from api.auth import TenantClaims
-from api.pg_clients import EmbedderUnavailable  # typed embed boundary; psycopg2/boto3-free import
+from api.pg_clients import (  # typed boundaries; psycopg2/boto3-free import
+    EmbedderUnavailable,
+    PageOrganizeUnavailable,
+)
 
 log = logging.getLogger("api.knowledge")
 
@@ -141,6 +144,15 @@ DETAIL_BAD_REF = "not a valid uploaded-document ref"
 DETAIL_DOC_NOT_EDITABLE = (
     "this document predates editable knowledge and has no stored original — "
     "add it again to make it editable, or delete it"
+)
+# Page organization (hierarchy/order over knowledge_pages) — pinned honest details.
+DETAIL_ORGANIZE_UNAVAILABLE = (
+    "page organization is rolling out — the knowledge_pages migration hasn't run on this "
+    "deployment yet; your pages are unaffected"
+)
+DETAIL_ORGANIZE_CYCLE = "a page can't be moved under itself or one of its own sub-pages"
+DETAIL_ORGANIZE_ONE_OP = (
+    'send exactly one operation: parent_ref (a page ref or null) OR move ("up"/"down")'
 )
 
 
@@ -343,12 +355,104 @@ def mount_knowledge(app: FastAPI, deps: KnowledgeDeps, current_tenant) -> None:
 
     @app.get("/knowledge/documents")
     def knowledge_list_documents(claims: TenantClaims = Depends(current_tenant)):
-        """The tenant's pages, newest first. A plain RLS-scoped aggregate (no embedder) — an
-        un-uploaded tenant gets an honest empty list, never invented pages."""
+        """The tenant's pages. A plain RLS-scoped aggregate (no embedder) — an un-uploaded
+        tenant gets an honest empty list, never invented pages. Each page carries its
+        ORGANIZATION (parent_ref + sort_order from knowledge_pages; absent row = top level,
+        default order) and the response says whether organizing is available at all
+        (`organize_available: false` until the migration runs — the client renders the same
+        honest flat list it always has)."""
         rag = _require_reader(deps)
         rows = rag.list_uploaded_documents(tenant_id=claims.tenant_id)
-        docs = [_doc_summary(r) for r in rows]
-        return {"documents": docs, "total": len(docs)}
+        meta = rag.list_page_meta(tenant_id=claims.tenant_id)
+        docs = []
+        for r in rows:
+            d = _doc_summary(r)
+            m = (meta or {}).get(str(d.get("ref_id") or ""), {})
+            d["parent_ref"] = m.get("parent_ref")
+            d["sort_order"] = float(m.get("sort_order") or 0)
+            docs.append(d)
+        return {"documents": docs, "total": len(docs),
+                "organize_available": meta is not None}
+
+    @app.patch("/knowledge/documents/{ref_id}/location")
+    def knowledge_move_document(ref_id: str, body: LocationBody,
+                                claims: TenantClaims = Depends(current_tenant)):
+        """Organize one page: re-parent it (`parent_ref`: a page ref or null for top level)
+        OR nudge it within its siblings (`move`: "up" | "down") — one operation per call.
+        Cycles are refused (a page can never become its own ancestor), unknown parents are
+        refused, and a database that predates the knowledge_pages migration answers an
+        honest 503 — never a 500, never a silently-dropped move."""
+        rag = _require_reader(deps)
+        ref = _check_ref(ref_id)
+        reparenting = "parent_ref" in body.model_fields_set
+        if reparenting == (body.move is not None):
+            raise HTTPException(status_code=422, detail=DETAIL_ORGANIZE_ONE_OP)
+        if body.move is not None and body.move not in ("up", "down"):
+            raise HTTPException(status_code=422,
+                                detail='move must be "up" or "down"')
+
+        rows = rag.list_uploaded_documents(tenant_id=claims.tenant_id)
+        refs = [str(r.get("ref_id") or "") for r in rows]
+        if ref not in refs:
+            raise HTTPException(status_code=404, detail=DETAIL_DOC_NOT_FOUND)
+        meta = rag.list_page_meta(tenant_id=claims.tenant_id)
+        if meta is None:
+            raise HTTPException(status_code=503, detail=DETAIL_ORGANIZE_UNAVAILABLE)
+
+        def parent_of(r: str) -> str | None:
+            return (meta.get(r) or {}).get("parent_ref")
+
+        try:
+            if reparenting:
+                parent = body.parent_ref
+                if parent is not None:
+                    parent = _check_ref(parent)
+                    if parent == ref:
+                        raise HTTPException(status_code=422, detail=DETAIL_ORGANIZE_CYCLE)
+                    if parent not in refs:
+                        raise HTTPException(status_code=422,
+                                            detail="parent page not found in your knowledge base")
+                    # Walk the would-be ancestor chain: hitting `ref` means the page would
+                    # become its own ancestor. Bounded — meta is finite and cycles can't
+                    # already exist, but never trust a walk without a leash.
+                    seen, cur = 0, parent_of(parent)
+                    while cur is not None and seen < 1000:
+                        if cur == ref:
+                            raise HTTPException(status_code=422, detail=DETAIL_ORGANIZE_CYCLE)
+                        cur = parent_of(cur)
+                        seen += 1
+                # Land at the END of the new sibling group.
+                group = [m for m in meta.values() if m.get("parent_ref") == parent]
+                order = max((float(m.get("sort_order") or 0) for m in group), default=0.0) + 1.0
+                rag.set_page_location(tenant_id=claims.tenant_id, ref_prefix=ref,
+                                      parent_ref=parent, sort_order=order)
+                return {"ref_id": ref, "parent_ref": parent, "sort_order": order,
+                        "organize_available": True}
+
+            # move up/down within the CURRENT sibling group. Effective order mirrors the
+            # client: (sort_order, list position) — list position breaks the all-zeroes tie
+            # for never-organized pages (newest first, the SQL order).
+            parent = parent_of(ref)
+            sibs = [r for r in refs if parent_of(r) == parent]
+            ordered = sorted(sibs, key=lambda r: (float((meta.get(r) or {}).get("sort_order") or 0),
+                                                  refs.index(r)))
+            i = ordered.index(ref)
+            j = i - 1 if body.move == "up" else i + 1
+            if j < 0 or j >= len(ordered):
+                # Already at the edge — honest no-op, not an error.
+                return {"ref_id": ref, "parent_ref": parent,
+                        "sort_order": float((meta.get(ref) or {}).get("sort_order") or 0),
+                        "organize_available": True}
+            ordered[i], ordered[j] = ordered[j], ordered[i]
+            # Materialize the whole group's order (integers by position) so the swap is
+            # stable even when every row still carried the default 0.
+            for pos, r in enumerate(ordered):
+                rag.set_page_location(tenant_id=claims.tenant_id, ref_prefix=r,
+                                      parent_ref=parent, sort_order=float(pos))
+            return {"ref_id": ref, "parent_ref": parent, "sort_order": float(j),
+                    "organize_available": True}
+        except PageOrganizeUnavailable:
+            raise HTTPException(status_code=503, detail=DETAIL_ORGANIZE_UNAVAILABLE) from None
 
     @app.get("/knowledge/documents/{ref_id}")
     def knowledge_get_document(ref_id: str,
@@ -410,6 +514,12 @@ def mount_knowledge(app: FastAPI, deps: KnowledgeDeps, current_tenant) -> None:
                 # Honest signal instead: previous_removed=false (the old page is still listed).
                 log.error("knowledge: stale namespace cleanup failed (%s)", type(exc).__name__)
                 previous_removed = False
+            try:
+                # Carry the page's spot in the tree to its new ref (and re-point children).
+                # Best-effort: a failure leaves the page top-level, never blocks the edit.
+                rag.migrate_page_ref(tenant_id=claims.tenant_id, old_ref=ref, new_ref=new_ref)
+            except Exception as exc:  # noqa: BLE001
+                log.error("knowledge: page-location carry failed (%s)", type(exc).__name__)
         return {"ref_id": new_ref, "chunks": out.get("chunks"), "source": out.get("source"),
                 "title": out.get("title"), "replaced_ref_id": ref,
                 "previous_removed": previous_removed}
@@ -426,12 +536,26 @@ def mount_knowledge(app: FastAPI, deps: KnowledgeDeps, current_tenant) -> None:
                                                    ref_prefix=ref) or 0)
         if removed == 0:
             raise HTTPException(status_code=404, detail=DETAIL_DOC_NOT_FOUND)
+        try:
+            # Children move up to the deleted page's parent; its own location row goes.
+            # Best-effort: a failure leaves orphans rendered top-level, never blocks delete.
+            rag.delete_page_meta(tenant_id=claims.tenant_id, ref_prefix=ref)
+        except Exception as exc:  # noqa: BLE001
+            log.error("knowledge: page-location cleanup failed (%s)", type(exc).__name__)
         return {"ref_id": ref, "deleted": True, "rows_removed": removed}
 
 
 class AddDocumentBody(BaseModel):
     title: str
     content: str
+
+
+class LocationBody(BaseModel):
+    """PATCH /knowledge/documents/{ref}/location — exactly ONE of the two operations.
+    `parent_ref` is meaningful even as null (move to top level), so its presence is read
+    from model_fields_set, not its value."""
+    parent_ref: str | None = None
+    move: str | None = None
 
 
 def _clean_doc(body: AddDocumentBody) -> tuple[str, str]:

@@ -26,6 +26,28 @@ CREATE INDEX IF NOT EXISTS documents_tenant_source_idx ON documents (tenant_id, 
 CREATE UNIQUE INDEX IF NOT EXISTS documents_tenant_ref_idx ON documents (tenant_id, source, ref_id);
 
 -- ---------------------------------------------------------------------------
+-- knowledge_pages — page-level ORGANIZATION metadata for the editable knowledge
+-- corpus (the Notion-style hierarchy: sub-pages + manual order). One row per
+-- uploaded document family (ref_prefix, e.g. 'upload:pricing-policy-ab12cd34');
+-- the CONTENT stays in `documents` (chunks + the #raw original). An ABSENT row
+-- means "top level, default order" — legacy/seeded corpora need no backfill and
+-- the pages list works with or without this table (the reader degrades to a
+-- flat list until the migration runs). parent_ref is same-tenant by RLS;
+-- cycle prevention is the API's job (the table deliberately has no FK to a
+-- "pages" entity — page identity IS the ref namespace in `documents`).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS knowledge_pages (
+    tenant_id  uuid NOT NULL,
+    ref_prefix text NOT NULL,
+    parent_ref text,                                       -- NULL = top level
+    sort_order double precision NOT NULL DEFAULT 0,        -- midpoint insertion; ties break on created_at
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, ref_prefix)
+);
+CREATE INDEX IF NOT EXISTS knowledge_pages_parent_idx ON knowledge_pages (tenant_id, parent_ref);
+
+-- ---------------------------------------------------------------------------
 -- CRM core — system of record
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS companies (
@@ -485,7 +507,7 @@ DECLARE
         'documents', 'companies', 'contacts', 'deals', 'activities',
         'saved_views', 'approvals', 'traces', 'ingest_cursor', 'tenant_workspaces',
         'tenant_settings', 'playbooks', 'playbook_runs', 'predictions', 'usage_counters', 'cost_events', 'onboarding_state',
-        'integration_sync_runs', 'members', 'points_ledger', 'tasks'
+        'integration_sync_runs', 'members', 'points_ledger', 'tasks', 'knowledge_pages'
     ];
 BEGIN
     FOREACH t IN ARRAY tenant_tables LOOP
@@ -504,6 +526,7 @@ END $$;
 -- Explicit per-table statements too (belt and suspenders; also documents intent for reviewers
 -- and makes the FORCE requirement greppable/testable). These are idempotent with the block above.
 ALTER TABLE documents   ENABLE ROW LEVEL SECURITY; ALTER TABLE documents   FORCE ROW LEVEL SECURITY;
+ALTER TABLE knowledge_pages ENABLE ROW LEVEL SECURITY; ALTER TABLE knowledge_pages FORCE ROW LEVEL SECURITY;
 ALTER TABLE companies   ENABLE ROW LEVEL SECURITY; ALTER TABLE companies   FORCE ROW LEVEL SECURITY;
 ALTER TABLE contacts    ENABLE ROW LEVEL SECURITY; ALTER TABLE contacts    FORCE ROW LEVEL SECURITY;
 ALTER TABLE deals       ENABLE ROW LEVEL SECURITY; ALTER TABLE deals       FORCE ROW LEVEL SECURITY;
