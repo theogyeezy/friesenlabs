@@ -290,7 +290,14 @@ resource "aws_iam_role_policy" "api_task_ssm_exec" {
 # ECS Exec session audit (REQ-012 item 8c): the cluster's execute_command_configuration now
 # OVERRIDEs logging into a KMS-encrypted log group — the TASK role must be able to write the
 # session transcript there and use the session-encryption key, or `aws ecs execute-command`
-# fails to start. Empty ARNs = policy not created (module stays standalone-validate clean).
+# fails to start. The count rides the STATIC flag (default false = policy not created, module
+# stays standalone-validate clean) — it must NOT test the ARN values: they come from resources
+# in module.ecs and can be unknown at plan time, which makes `count` un-plannable ("Invalid
+# count argument", broke deploy run 27401329030). Unknown values are fine INSIDE the policy.
+variable "ecs_exec_audit_enabled" {
+  type    = bool
+  default = false
+}
 variable "ecs_exec_kms_key_arn" {
   type    = string
   default = ""
@@ -301,7 +308,7 @@ variable "ecs_exec_log_group_arn" {
 }
 
 resource "aws_iam_role_policy" "api_task_exec_audit" {
-  count = (var.ecs_exec_kms_key_arn != "" && var.ecs_exec_log_group_arn != "") ? 1 : 0
+  count = var.ecs_exec_audit_enabled ? 1 : 0
   name  = "ecs-exec-audit"
   role  = aws_iam_role.task["api"].id
   policy = jsonencode({

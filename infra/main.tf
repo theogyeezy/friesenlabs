@@ -49,8 +49,10 @@ module "iam" {
   # REQ-012 item 1: the scoped deploy policy is attached unconditionally; admin stays only
   # while this is true (current live state). Item 8c: ECS Exec audit grants for the api task.
   deploy_role_admin_fallback = var.deploy_role_admin_fallback
-  ecs_exec_kms_key_arn       = module.ecs.ecs_exec_kms_key_arn
-  ecs_exec_log_group_arn     = module.ecs.ecs_exec_log_group_arn
+  # Plan-time-known gate (the ARNs below are apply-time values and must never drive a count).
+  ecs_exec_audit_enabled = var.enable_ecs_exec
+  ecs_exec_kms_key_arn   = module.ecs.ecs_exec_kms_key_arn
+  ecs_exec_log_group_arn = module.ecs.ecs_exec_log_group_arn
 }
 
 # REQ-003: org-shared platform secrets created out-of-band (Lane Nick console/CLI) — referenced,
