@@ -462,3 +462,30 @@ test("contact drawer shows the contact's own deals + a kind-tagged note", async 
   await expect(async () => { expect(noteBody).not.toBeNull(); }).toPass({ timeout: 5_000 });
   expect(noteBody).toEqual({ kind: "call", body: "Rang" });
 });
+
+
+test("contextual + Add deal from a contact posts a deal pre-linked to the contact", async ({ page }) => {
+  let dealBody: Record<string, unknown> | null = null;
+  await page.route("**/views/*", (r) => r.fulfill({ status: 404, json: { detail: "x" } }));
+  await page.route("**/approvals", (r) => r.fulfill({ json: { approvals: [] } }));
+  await page.route("**/contacts?*", (r) => r.fulfill({ json: contactsPage([CONTACT_DANA]) }));
+  await page.route(`**/contacts/${CONTACT_DANA.id}`, (r) =>
+    r.fulfill({ json: { contact: { ...CONTACT_DANA, company_id: "co-7" }, activities: [], contact_deals: [], company_deals: [] } }));
+  await page.route((url) => url.pathname === "/deals", async (route) => {
+    if (route.request().method() !== "POST") return route.fulfill({ json: { stages: [], total: 0, stage_order: [] } });
+    dealBody = route.request().postDataJSON() as Record<string, unknown>;
+    await route.fulfill({ status: 201, json: { deal: { id: "d-new", name: "Renewal", stage: "new", amount: null } } });
+  });
+
+  await page.goto("/");
+  await page.locator(".nav-item", { hasText: "Contacts" }).click();
+  await page.locator(`[data-contact-id="${CONTACT_DANA.id}"]`).first().click();
+  await page.getByTestId("drawer-add-deal-btn").click();
+  await page.getByTestId("quick-deal-title").fill("Renewal");
+  await page.getByTestId("quick-deal-submit").click();
+  await expect(async () => { expect(dealBody).not.toBeNull(); }).toPass({ timeout: 5_000 });
+  expect(dealBody!.title).toBe("Renewal");
+  expect(dealBody!.contact_id).toBe(CONTACT_DANA.id);
+  expect(dealBody!.company_id).toBe("co-7");
+  expect(dealBody).not.toHaveProperty("tenant_id");
+});

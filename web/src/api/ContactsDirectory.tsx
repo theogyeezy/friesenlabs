@@ -346,6 +346,8 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: Cont
     setContactDetail(null);
     setCompanyDetail(null);
     setDetailError(null);
+    setQuickDeal(null);
+    setNoteText("");
   }, []);
 
   // Pull a page of companies the first time the form opens; company is optional,
@@ -473,6 +475,32 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: Cont
   }, [api, closeDrawer, forceListRefresh, loadPeople, loadCompanies, query]);
   const archive = useCallback((entity: "contacts" | "companies", id: string) => setEntityArchived(entity, id, true), [setEntityArchived]);
   const restore = useCallback((entity: "contacts" | "companies", id: string) => setEntityArchived(entity, id, false), [setEntityArchived]);
+
+  // ---- Quick "+ Add deal" from a contact/company drawer (pre-links the entity) ----
+  const [quickDeal, setQuickDeal] = useState<{ title: string; amount: string } | null>(null);
+  const [quickDealBusy, setQuickDealBusy] = useState(false);
+  const [quickDealError, setQuickDealError] = useState<string | null>(null);
+  const submitQuickDeal = useCallback(async () => {
+    if (!quickDeal || !drawer) return;
+    const title = quickDeal.title.trim();
+    if (!title) { setQuickDealError("Title is required."); return; }
+    const amt = quickDeal.amount.trim();
+    const amount = amt ? Number(amt) : null;
+    if (amt && (Number.isNaN(amount!) || amount! < 0)) { setQuickDealError("Amount must be a positive number."); return; }
+    setQuickDealBusy(true); setQuickDealError(null);
+    try {
+      const link = drawer.kind === "contact"
+        ? { contact_id: contactDetail?.contact.id, company_id: contactDetail?.contact.company_id ?? undefined }
+        : { company_id: companyDetail?.company.id };
+      await api.createDeal({ title, amount, ...link });
+      setQuickDeal(null);
+      // Refresh the drawer so the new deal appears in its deals section.
+      if (drawer.kind === "contact") void openContact(drawer.id);
+      else void openCompany(drawer.id);
+    } catch (e) {
+      setQuickDealError(friendlyErrorMessage(e, "Couldn't create the deal. Please try again."));
+    } finally { setQuickDealBusy(false); }
+  }, [api, quickDeal, drawer, contactDetail, companyDetail, openContact, openCompany]);
 
   // Matches for the picker menu: filter the loaded page by name/domain, capped
   // so the dropdown stays short.
@@ -632,6 +660,52 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: Cont
         </div>
       </button>
     ));
+
+  // Quick "+ Add deal" affordance for the drawers — a button that opens a tiny inline form
+  // (title + amount) which POSTs a deal pre-linked to the open contact/company.
+  const quickDealBlock = (): React.ReactElement => (
+    <div style={{ marginTop: 12 }}>
+      {quickDeal === null ? (
+        <button
+          data-testid="drawer-add-deal-btn"
+          onClick={() => { setQuickDeal({ title: "", amount: "" }); setQuickDealError(null); }}
+          style={{ ...ghostBtn, padding: "7px 14px", fontSize: 13 }}
+        >
+          + Add deal
+        </button>
+      ) : (
+        <div data-testid="quick-deal-form" style={{ ...card, marginBottom: 0, padding: "14px 16px" }}>
+          <div style={{ fontWeight: 680, fontSize: 13.5, marginBottom: 8 }}>New deal here</div>
+          <input
+            data-testid="quick-deal-title"
+            value={quickDeal.title}
+            onChange={(e) => setQuickDeal((q) => q && { ...q, title: e.target.value })}
+            placeholder="Deal title"
+            style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--line, #e3ddd3)", fontSize: 13, fontFamily: "inherit", marginBottom: 8 }}
+          />
+          <input
+            data-testid="quick-deal-amount"
+            value={quickDeal.amount}
+            onChange={(e) => setQuickDeal((q) => q && { ...q, amount: e.target.value })}
+            placeholder="Amount (optional)"
+            style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--line, #e3ddd3)", fontSize: 13, fontFamily: "inherit" }}
+          />
+          {quickDealError && <div data-testid="quick-deal-error" style={{ color: "var(--rose, #b4413b)", fontSize: 12.5, marginTop: 8 }}>{quickDealError}</div>}
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 10 }}>
+            <button data-testid="quick-deal-cancel" onClick={() => setQuickDeal(null)} style={{ ...ghostBtn, padding: "7px 12px", fontSize: 13 }}>Cancel</button>
+            <button
+              data-testid="quick-deal-submit"
+              disabled={quickDealBusy || !quickDeal.title.trim()}
+              onClick={() => void submitQuickDeal()}
+              style={{ padding: "7px 14px", borderRadius: 9, border: "none", background: "var(--accent, #2a2622)", color: "#fff", fontSize: 13, fontWeight: 680, cursor: "pointer", opacity: quickDealBusy || !quickDeal.title.trim() ? 0.6 : 1 }}
+            >
+              {quickDealBusy ? "Creating…" : "Create deal"}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <div
@@ -939,6 +1013,7 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: Cont
                     {contactDetail.contact_deals!.map(dealLink)}
                   </>
                 )}
+                {!showArchived && quickDealBlock()}
                 <div style={{ fontSize: 13, marginTop: 8, lineHeight: 1.6 }}>
                   <div data-testid="drawer-email">{contactDetail.contact.email ?? "no email"}</div>
                   {contactDetail.contact.phone && (
@@ -1068,6 +1143,7 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample }: Cont
                 ) : (
                   companyDetail.deals.map(dealLink)
                 )}
+                {!showArchived && quickDealBlock()}
 
                 <div style={sectionLabel}>People</div>
                 {companyDetail.contacts.length === 0 ? (
