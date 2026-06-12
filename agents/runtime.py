@@ -413,6 +413,7 @@ class ManagedAgentsRuntime(AgentRuntime):
         usage_model: str | None = None
         reconnects = 0
         turn_start = self._clock()  # settle budget anchor (see the requires_action branch)
+        last_stop: str | None = None  # the most recent idle's stop reason (settle observability)
         seen = self._seen_event_ids.setdefault(session.id, set())
 
         def _accumulate_usage(event) -> None:
@@ -495,21 +496,27 @@ class ManagedAgentsRuntime(AgentRuntime):
                 # open calls as pending and return — fail closed, never execute in-process.
                 # The session stays blocked; worker recovery / approval flows resolve it
                 # out-of-band. Every other idle ends the turn.
-                stop = self._stop_reason_type(event)
+                nonlocal last_stop
+                stop = last_stop = self._stop_reason_type(event)
                 if stop == "retries_exhausted":
                     raise RuntimeError(
                         f"MA session {session.id} idle after retries_exhausted"
                         + (f" — errors: {errors}" if errors else "")
                     )
                 if stop == "requires_action":
+                    # SETTLE: requires_action means the session expects EXTERNAL progress —
+                    # the worker serving open calls, or a delegated specialist thread whose
+                    # tool calls haven't even reached the stream yet (live round-2 finding:
+                    # the idle can fire with ZERO open calls while Scout's searches are still
+                    # being scheduled). Keep draining within the budget instead of ending the
+                    # turn on a race the customer experiences as "I'll report back" + silence.
+                    # A routed Greenlight proposal is the one legitimate requires_action stop
+                    # (draft-only approval IS the next action) — never wait on it. On budget
+                    # exhaustion fail closed exactly as before (worker down / wedged session).
+                    routed_stop = any(p.get("tool_name") for p in pending)
+                    if not routed_stop and self._clock() - turn_start < self._settle_budget_s:
+                        return False
                     if calls:
-                        # SETTLE: open calls are the WORKER's to serve and it typically answers
-                        # within seconds — keep draining (the worker's user.custom_tool_result
-                        # resumes the session) instead of ending the turn on a race the customer
-                        # experiences as "I'll report back" + silence. Budget-bounded: on
-                        # exhaustion fail closed exactly as before (worker down / unknown tool).
-                        if self._clock() - turn_start < self._settle_budget_s:
-                            return False
                         pending.extend(calls)
                         calls.clear()
                     elif not pending:
@@ -554,6 +561,12 @@ class ManagedAgentsRuntime(AgentRuntime):
                     except Exception as exc:
                         if not _is_stream_drop(exc):
                             raise
+                        # Settle guard: a read-timeout on a session that is never going to
+                        # progress (wedged built-in call, worker dead) must SURFACE the open
+                        # work fail-closed once the budget is spent — not burn the reconnect
+                        # budget and raise a 500 at the customer.
+                        if self._clock() - turn_start >= self._settle_budget_s:
+                            break
                         if reconnects >= MAX_STREAM_RECONNECTS:
                             raise RuntimeError(
                                 f"MA session {session.id} stream dropped again after "
@@ -564,6 +577,10 @@ class ManagedAgentsRuntime(AgentRuntime):
             break
         # Defensive: anything still open at stream end surfaces (never silently dropped).
         pending.extend(calls)
+        # A stream that ENDED while we were settle-waiting on a no-calls requires_action keeps
+        # the honest blocked-session signal (the pre-settle contract for wedged sessions).
+        if not pending and last_stop == "requires_action":
+            pending.append({"status": "pending", "reason": "requires_action"})
         return {
             "session_id": session.id,
             "tenant_id": session.tenant_id,
