@@ -106,7 +106,10 @@ def main() -> None:
     cur = conn.cursor()
     cur.execute("SET app.current_tenant = %s", (tenant,))
 
-    for t in ("activities", "deals", "contacts", "companies", "approvals", "saved_views"):
+    # NOTE: approvals are deliberately NOT wiped — the audit-trail hardening REVOKEd DELETE on
+    # approvals from crm_app (db/roles.sql), so the old wipe would now crash the seed; decided
+    # rows are audit history anyway. Stale PENDING seeds should be denied through the API.
+    for t in ("activities", "deals", "contacts", "companies", "saved_views"):
         cur.execute(f"DELETE FROM {t}")  # RLS scopes this to the tenant
 
     cids = []
