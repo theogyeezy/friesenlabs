@@ -405,3 +405,60 @@ test("log a note on a contact posts to /contacts/{id}/activities", async ({ page
   await expect(async () => { expect(noteBody).not.toBeNull(); }).toPass({ timeout: 5_000 });
   expect(noteBody).toEqual({ kind: "note", body: "Called back" });
 });
+
+
+// ===========================================================================
+// CRM-depth: archived view + restore, contact's own deals, activity kind
+// ===========================================================================
+
+test("Show archived lists archived contacts and Restore unarchives", async ({ page }) => {
+  let listArchived = false;
+  let restorePath = "";
+  await page.route("**/views/*", (r) => r.fulfill({ status: 404, json: { detail: "x" } }));
+  await page.route("**/approvals", (r) => r.fulfill({ json: { approvals: [] } }));
+  await page.route("**/contacts?*", (route) => {
+    listArchived = new URL(route.request().url()).searchParams.get("archived") === "1";
+    route.fulfill({ json: contactsPage(listArchived ? [CONTACT_DANA] : []) });
+  });
+  await page.route(`**/contacts/${CONTACT_DANA.id}`, (r) =>
+    r.fulfill({ json: { contact: CONTACT_DANA, activities: [], contact_deals: [], company_deals: [] } }));
+  await page.route(`**/contacts/${CONTACT_DANA.id}/unarchive`, async (route) => {
+    restorePath = new URL(route.request().url()).pathname;
+    await route.fulfill({ json: { id: CONTACT_DANA.id, archived: false, archived_at: null } });
+  });
+
+  await page.goto("/");
+  await page.locator(".nav-item", { hasText: "Contacts" }).click();
+  await page.getByTestId("dir-show-archived").check();
+  await expect(page.locator(`[data-contact-id="${CONTACT_DANA.id}"]`).first()).toBeVisible({ timeout: 15_000 });
+  expect(listArchived).toBe(true);
+  await page.locator(`[data-contact-id="${CONTACT_DANA.id}"]`).first().click();
+  await page.getByTestId("restore-contact-btn").click();
+  await expect(async () => { expect(restorePath).toContain("/unarchive"); }).toPass({ timeout: 5_000 });
+  expect(restorePath).toBe(`/contacts/${CONTACT_DANA.id}/unarchive`);
+});
+
+test("contact drawer shows the contact's own deals + a kind-tagged note", async ({ page }) => {
+  let noteBody: Record<string, unknown> | null = null;
+  const OWN_DEAL = { id: "d-own", title: "Own deal", stage: "new", amount: 1000, currency: "USD", company_id: null, company_name: "Acme" };
+  await page.route("**/views/*", (r) => r.fulfill({ status: 404, json: { detail: "x" } }));
+  await page.route("**/approvals", (r) => r.fulfill({ json: { approvals: [] } }));
+  await page.route("**/contacts?*", (r) => r.fulfill({ json: contactsPage([CONTACT_DANA]) }));
+  await page.route(`**/contacts/${CONTACT_DANA.id}`, (r) =>
+    r.fulfill({ json: { contact: CONTACT_DANA, activities: [], contact_deals: [OWN_DEAL], company_deals: [] } }));
+  await page.route(`**/contacts/${CONTACT_DANA.id}/activities`, async (route) => {
+    noteBody = route.request().postDataJSON() as Record<string, unknown>;
+    await route.fulfill({ status: 201, json: { activity: { id: "a1", kind: "call", body: "Rang", occurred_at: null } } });
+  });
+
+  await page.goto("/");
+  await page.locator(".nav-item", { hasText: "Contacts" }).click();
+  await page.locator(`[data-contact-id="${CONTACT_DANA.id}"]`).first().click();
+  await expect(page.getByText("This contact’s deals")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("Own deal")).toBeVisible();
+  await page.getByTestId("note-kind").selectOption("call");
+  await page.getByTestId("note-input").fill("Rang");
+  await page.getByTestId("note-submit").click();
+  await expect(async () => { expect(noteBody).not.toBeNull(); }).toPass({ timeout: 5_000 });
+  expect(noteBody).toEqual({ kind: "call", body: "Rang" });
+});

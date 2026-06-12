@@ -222,12 +222,18 @@ export function PipelineBoard({ client, onOpenGreenlight, onLoadSample }: Pipeli
   const [contactQuery, setContactQuery] = useState("");
   const [contactMenuOpen, setContactMenuOpen] = useState(false);
 
+  // Board search + the "Show archived" view. `boardQuery` is the committed search
+  // (submitted, not every keystroke); `showArchived` flips the board to archived deals.
+  const [boardQuery, setBoardQuery] = useState("");
+  const [searchInput, setSearchInput] = useState("");
+  const [showArchived, setShowArchived] = useState(false);
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     setRollout(false);
     try {
-      setData(await api.listDeals());
+      setData(await api.listDeals({ q: boardQuery.trim() || undefined, archived: showArchived }));
     } catch (e) {
       setData(null);
       if (e instanceof ApiError && e.status === 404) {
@@ -238,7 +244,7 @@ export function PipelineBoard({ client, onOpenGreenlight, onLoadSample }: Pipeli
     } finally {
       setLoading(false);
     }
-  }, [api]);
+  }, [api, boardQuery, showArchived]);
 
   useEffect(() => {
     void load();
@@ -458,6 +464,15 @@ export function PipelineBoard({ client, onOpenGreenlight, onLoadSample }: Pipeli
     } catch { /* the board reload reflects the true state */ } finally { setDealArchiveBusy(false); }
   }, [api, closeDrawer, load]);
 
+  const restoreDeal = useCallback(async (dealId: string) => {
+    setDealArchiveBusy(true);
+    try {
+      await api.setArchived("deals", dealId, false);
+      closeDrawer();
+      void load();
+    } catch { /* the board reload reflects the true state */ } finally { setDealArchiveBusy(false); }
+  }, [api, closeDrawer, load]);
+
   // Stage options for the move control: every stage the board knows about,
   // minus the deal's current one. Labels come from the server's groups.
   const stageOptions = useMemo(() => {
@@ -506,10 +521,46 @@ export function PipelineBoard({ client, onOpenGreenlight, onLoadSample }: Pipeli
         <p style={{ color: "var(--ink-3, #8a8278)", fontSize: 14 }}>
           Your deals by stage. Stage moves go through Greenlight — nothing changes until you approve it there.
         </p>
+        {/* Search + the "Show archived" toggle. */}
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 12, flexWrap: "wrap" }}>
+          <input
+            data-testid="board-search-input"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") setBoardQuery(searchInput); }}
+            placeholder="Search deals by title or company…"
+            style={{ flex: "1 1 240px", maxWidth: 360, padding: "8px 11px", borderRadius: 9, border: "1px solid var(--line, #e3ddd3)", fontSize: 13, fontFamily: "inherit" }}
+          />
+          <button
+            data-testid="board-search-btn"
+            onClick={() => setBoardQuery(searchInput)}
+            style={{ ...ghostBtn, padding: "8px 14px", fontSize: 13 }}
+          >
+            Search
+          </button>
+          {boardQuery && (
+            <button
+              data-testid="board-search-clear"
+              onClick={() => { setSearchInput(""); setBoardQuery(""); }}
+              style={{ ...ghostBtn, padding: "8px 12px", fontSize: 13 }}
+            >
+              Clear
+            </button>
+          )}
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--ink-3, #8a8278)", marginLeft: "auto", cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              data-testid="board-show-archived"
+              checked={showArchived}
+              onChange={(e) => setShowArchived(e.target.checked)}
+            />
+            Show archived
+          </label>
+        </div>
         {/* Only claim a count once we actually know it (post-load, no error). */}
         {!loading && !error && !rollout && data !== null && (
           <div data-testid="pipeline-count" style={{ marginTop: 10, fontSize: 13, color: "var(--ink-3, #8a8278)" }}>
-            {total} open {total === 1 ? "deal" : "deals"}
+            {showArchived ? `${total} archived ${total === 1 ? "deal" : "deals"}` : `${total} open ${total === 1 ? "deal" : "deals"}`}
           </div>
         )}
       </div>
@@ -703,14 +754,25 @@ export function PipelineBoard({ client, onOpenGreenlight, onLoadSample }: Pipeli
                     >
                       Edit
                     </button>
-                    <button
-                      data-testid="archive-deal-btn"
-                      disabled={dealArchiveBusy}
-                      onClick={() => void archiveDeal(detail.deal.id)}
-                      style={{ ...ghostBtn, padding: "5px 12px", fontSize: 12.5, opacity: dealArchiveBusy ? 0.6 : 1 }}
-                    >
-                      Archive
-                    </button>
+                    {showArchived ? (
+                      <button
+                        data-testid="restore-deal-btn"
+                        disabled={dealArchiveBusy}
+                        onClick={() => void restoreDeal(detail.deal.id)}
+                        style={{ ...ghostBtn, padding: "5px 12px", fontSize: 12.5, opacity: dealArchiveBusy ? 0.6 : 1 }}
+                      >
+                        Restore
+                      </button>
+                    ) : (
+                      <button
+                        data-testid="archive-deal-btn"
+                        disabled={dealArchiveBusy}
+                        onClick={() => void archiveDeal(detail.deal.id)}
+                        style={{ ...ghostBtn, padding: "5px 12px", fontSize: 12.5, opacity: dealArchiveBusy ? 0.6 : 1 }}
+                      >
+                        Archive
+                      </button>
+                    )}
                   </div>
                 </div>
                 <div style={{ fontSize: 13, color: "var(--ink-3, #8a8278)" }}>

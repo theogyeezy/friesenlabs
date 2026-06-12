@@ -441,3 +441,37 @@ test("re-link a deal's company via the edit form patches company_id", async ({ p
   expect(patchBody!.company_id).toBe("co-9");
   expect(patchBody).not.toHaveProperty("tenant_id");
 });
+
+
+// ===========================================================================
+// CRM-depth: deal board search + archived view/restore
+// ===========================================================================
+
+test("board search sends ?q= and the archived toggle sends ?archived=1 + restores", async ({ page }) => {
+  const seen: { q: string | null; archived: string | null }[] = [];
+  let restorePath = "";
+  // pathname-exact matcher so query strings (?q=, ?archived=) are still captured.
+  await page.route((url) => url.pathname === "/deals", (route) => {
+    const u = new URL(route.request().url());
+    seen.push({ q: u.searchParams.get("q"), archived: u.searchParams.get("archived") });
+    return route.fulfill({ json: board([DEAL_A]) });
+  });
+  await page.route("**/deals/*/unarchive", async (route) => {
+    restorePath = new URL(route.request().url()).pathname;
+    await route.fulfill({ json: { id: DEAL_A.id, archived: false, archived_at: null } });
+  });
+  await page.route((url) => /^\/deals\/[^/]+$/.test(url.pathname), (route) =>
+    route.fulfill({ json: DETAIL_A }));
+
+  await page.goto("/?view=pipeline");
+  await expect(page.getByTestId("deal-card").first()).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId("board-search-input").fill("birch");
+  await page.getByTestId("board-search-btn").click();
+  await expect(async () => { expect(seen.some((s) => s.q === "birch")).toBe(true); }).toPass({ timeout: 5_000 });
+
+  await page.getByTestId("board-show-archived").check();
+  await expect(async () => { expect(seen.some((s) => s.archived === "1")).toBe(true); }).toPass({ timeout: 5_000 });
+  await page.locator(`[data-deal-id="${DEAL_A.id}"]`).click();
+  await page.getByTestId("restore-deal-btn").click();
+  await expect(async () => { expect(restorePath).toContain("/unarchive"); }).toPass({ timeout: 5_000 });
+});
