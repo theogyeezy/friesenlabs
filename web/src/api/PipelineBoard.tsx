@@ -26,6 +26,7 @@ import {
   defaultClient,
   friendlyErrorMessage,
   type ContactRow,
+  type CortexScore,
   type CreateDealBody,
   type DealCard,
   type DealDetailResponse,
@@ -54,6 +55,14 @@ function formatWhen(iso: string | null): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
+// Cortex conversion-likelihood score (0..1) -> a whole-percent string, clamped so
+// a stray out-of-range score never renders nonsense. Only ever called with a real
+// champion score (the client maps every empty/degraded state to null first).
+function formatLikelihood(score: number): string {
+  const pct = Math.max(0, Math.min(100, Math.round(score * 100)));
+  return `${pct}%`;
 }
 
 // Honest per-status copy for the move-stage contract. The API authors
@@ -184,6 +193,10 @@ export function PipelineBoard({ client, onOpenGreenlight, onLoadSample }: Pipeli
   const [detail, setDetail] = useState<DealDetailResponse | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
+  // Cortex conversion-likelihood for the open deal. Lazy-loaded alongside the
+  // detail (never blocking it) and honest: null whenever the tenant has no
+  // champion / no logged score (the badge simply doesn't render).
+  const [cortexScore, setCortexScore] = useState<CortexScore | null>(null);
 
   // Move-stage control state.
   const [moveTo, setMoveTo] = useState("");
@@ -237,7 +250,15 @@ export function PipelineBoard({ client, onOpenGreenlight, onLoadSample }: Pipeli
       setDetailError(null);
       setMoveTo("");
       setMoveError(null);
+      setCortexScore(null);
       setDetailLoading(true);
+      // Fire the Cortex score lazily, in parallel with the detail load — it must
+      // never block or fail the drawer. getCortexScore resolves null on no
+      // champion / 503 / error, so a tenant without Cortex just sees no badge.
+      void api.getCortexScore(deal.id).then(
+        (s) => setCortexScore(s),
+        () => setCortexScore(null),
+      );
       try {
         setDetail(await api.getDeal(deal.id));
       } catch (e) {
@@ -255,6 +276,7 @@ export function PipelineBoard({ client, onOpenGreenlight, onLoadSample }: Pipeli
     setDetailError(null);
     setMoveError(null);
     setMoveTo("");
+    setCortexScore(null);
   }, []);
 
   // Esc closes the drawer (house pattern for slide-overs).
@@ -658,6 +680,26 @@ export function PipelineBoard({ client, onOpenGreenlight, onLoadSample }: Pipeli
                   {detail.deal.created_at && (
                     <span style={{ fontSize: 12.5, color: "var(--ink-3, #8a8278)", alignSelf: "center" }}>
                       opened {formatWhen(detail.deal.created_at)}
+                    </span>
+                  )}
+                  {/* Cortex conversion likelihood — only when a real champion score
+                      exists. No champion / no prediction => the client returns null
+                      and this renders NOTHING (honest, calm-empty). */}
+                  {cortexScore && (
+                    <span
+                      data-testid="cortex-score-badge"
+                      title={`Predicted conversion likelihood from your Cortex model (v${cortexScore.model_version})`}
+                      style={{
+                        fontSize: 12,
+                        fontWeight: 650,
+                        padding: "4px 12px",
+                        borderRadius: 999,
+                        background: "oklch(0.95 0.05 155)",
+                        color: "oklch(0.42 0.09 155)",
+                        alignSelf: "center",
+                      }}
+                    >
+                      {formatLikelihood(cortexScore.score)} likely to convert
                     </span>
                   )}
                 </div>
