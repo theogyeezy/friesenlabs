@@ -91,6 +91,23 @@ class CachedConversation:
                 convo = self._cache.rebuild(self._tenant_id, dead=convo)
                 return convo.send(message, **kwargs)
 
+    def continue_turn(self):
+        """Pass-through for the async turn contract (POST /chat/continue) — same per-tenant
+        turn lock as send() so a continue never interleaves with another drain on the ONE MA
+        session. A terminated cached session rebuilds fresh; the fresh session has no turn in
+        flight, so the continue settles empty and the client simply stops."""
+        with self._cache.turn_lock(self._tenant_id):
+            convo = self._cache.lease(self._tenant_id)
+            if convo is None:
+                _raise_unavailable()
+            try:
+                return convo.continue_turn()
+            except RuntimeError as e:
+                if "terminated" not in str(e):
+                    raise
+                convo = self._cache.rebuild(self._tenant_id, dead=convo)
+                return convo.continue_turn()
+
 
 def _raise_unavailable():
     try:

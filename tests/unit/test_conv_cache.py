@@ -311,3 +311,35 @@ def test_asgi_factory_hands_the_conversation_a_live_today_provider():
     convo = factory("tenant-A")
     assert convo.today == date(2026, 6, 10)
     assert convo.today == date(2026, 6, 11)  # a NEW date on the next turn — not frozen
+
+
+# --------------------------------------------------------------------------- continue_turn proxy
+# Live finding (2026-06-12, round 5): POST /chat/continue 501'd in prod — the factory returns
+# THIS proxy, which only exposed send(), so the route's hasattr(convo, 'continue_turn') guard
+# fired. The proxy must pass continue_turn through under the SAME per-tenant turn lock.
+
+@pytest.mark.unit
+def test_cached_conversation_proxies_continue_turn():
+    class _ContinuableConvo(_FakeConvo):
+        def __init__(self, tenant_id):
+            super().__init__(tenant_id)
+            self.continues = 0
+
+        def continue_turn(self):
+            self.continues += 1
+            return {"answer": "settled", "settled": True}
+
+    built = {}
+
+    def builder(tenant_id):
+        built[tenant_id] = _ContinuableConvo(tenant_id)
+        return built[tenant_id]
+
+    cache = TenantConversationCache(builder)
+    proxy = cache("tenant-a")
+    proxy.send("hello")
+    out = proxy.continue_turn()
+    assert out == {"answer": "settled", "settled": True}
+    assert built["tenant-a"].continues == 1
+    # The route's capability check must see the method on the PROXY.
+    assert hasattr(proxy, "continue_turn")
