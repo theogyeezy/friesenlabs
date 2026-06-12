@@ -723,11 +723,26 @@ export interface KnowledgeDocumentSummary {
   editable: boolean;
   created_at: string | null;
   updated_at: string | null;
+  /** Organization (knowledge_pages): null/absent = top level; sort within siblings.
+   * Optional so an older API image (pre-hierarchy) still type-checks. */
+  parent_ref?: string | null;
+  sort_order?: number;
 }
 
 export interface KnowledgeDocumentListResponse {
   documents: KnowledgeDocumentSummary[];
   total: number;
+  /** False until the knowledge_pages migration runs — the client renders the same
+   * honest flat list and hides every organize affordance. Absent (older API) = false. */
+  organize_available?: boolean;
+}
+
+/** PATCH /knowledge/documents/{ref}/location — exactly one operation per call. */
+export interface KnowledgeMoveResponse {
+  ref_id: string;
+  parent_ref: string | null;
+  sort_order: number;
+  organize_available: boolean;
 }
 
 /** One page in full (GET /knowledge/documents/{ref}). Exactly one of `content`
@@ -2167,6 +2182,24 @@ export class ApiClient {
     return this.request<KnowledgeDeleteDocumentResponse>(
       "DELETE",
       `/knowledge/documents/${encodeURIComponent(refId)}`,
+    );
+  }
+
+  /** PATCH /knowledge/documents/{ref}/location: organize a page — re-parent
+   * ({parent_ref: ref|null}) OR nudge it ({move: "up"|"down"}), one op per call.
+   * 503 = the knowledge_pages migration hasn't run yet (honest rolling-out copy);
+   * 422 = cycle/unknown parent. */
+  async moveKnowledgeDocument(
+    refId: string,
+    op: { parent_ref?: string | null; move?: "up" | "down" },
+  ): Promise<KnowledgeMoveResponse> {
+    if (this.mock) {
+      return (await this.mockApi()).moveKnowledgeDocument(refId, op);
+    }
+    return this.request<KnowledgeMoveResponse>(
+      "PATCH",
+      `/knowledge/documents/${encodeURIComponent(refId)}/location`,
+      op,
     );
   }
 

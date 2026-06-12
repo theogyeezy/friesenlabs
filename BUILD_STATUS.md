@@ -549,6 +549,15 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   usable + safe; RAG-embed IAM gap closed live.
 
 ## Lane Matt (app code) — log
+- 2026-06-12 — **Knowledge page hierarchy, slice 2/2: tree UI (#343):** the rail renders
+  sub-pages indented in manual order (cycle-safe walk; deleted parents degrade children to
+  top level; filter flattens), the open page gets clickable breadcrumbs, and a Move panel
+  (up/down + nest-under excluding the page's own subtree + top level) with honest per-class
+  notes (503 organizing-rolling-out / 422 cycle). EVERY affordance gated on
+  organize_available — un-migrated DB renders exactly the #332 flat rail. Mock gains a
+  stateful tree. +4 e2e; knowledge spec 29/29; full chromium-real 180/180. Rollout after
+  merge: Deploy build tag -> Migrate with it (knowledge_pages additive) -> approve apply ->
+  Amplify.
 - 2026-06-12 — **Knowledge page hierarchy, slice 1/2: backend (#342):** `knowledge_pages`
   (tenant+ref_prefix PK, parent_ref NULL=top, float sort_order; RLS FORCE; full DML to
   crm_app; absent row = top-level default so NO backfill) + four tolerant PgRagClient meta
