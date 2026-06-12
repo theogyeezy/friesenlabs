@@ -63,6 +63,18 @@ class InMemoryPredictionLog:
                     if r["outcome"] is not None]
         return resolved[-int(limit):]
 
+    def latest_for_deal(self, tenant_id: str, deal_id: str) -> dict | None:
+        """The champion's most recent logged prediction for one deal, or None if never scored.
+
+        Returns ``{"model_version", "score", "outcome"}`` — a REAL champion-produced score (the
+        score-time prediction the drift flywheel already recorded), never a fabricated number.
+        """
+        for row in reversed(self._rows(tenant_id)):
+            if row["deal_id"] == str(deal_id):
+                return {"model_version": row["model_version"], "score": row["score"],
+                        "outcome": row["outcome"]}
+        return None
+
 
 class PgPredictionLog(PgTenantOps):
     """Durable prediction log over the `predictions` table (RLS-FORCEd; see db/schema.sql)."""
@@ -98,6 +110,25 @@ class PgPredictionLog(PgTenantOps):
             rows = dict_rows(cur)
         # Chronological order (oldest first) to match the in-memory log's append order.
         return [(float(r["score"]), int(r["outcome"])) for r in reversed(rows)]
+
+    def latest_for_deal(self, tenant_id: str, deal_id: str) -> dict | None:
+        """The champion's most recent logged prediction for one deal, or None (RLS-scoped).
+
+        A REAL score-time prediction read back from the `predictions` table — never a fabricated
+        number. The tenant-scoped SET LOCAL transaction means RLS confines this to the claim.
+        """
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "SELECT model_version, score, outcome FROM predictions "
+                "WHERE deal_id = %s ORDER BY predicted_at DESC LIMIT 1",
+                (str(deal_id),),
+            )
+            rows = dict_rows(cur)
+        if not rows:
+            return None
+        r = rows[0]
+        return {"model_version": int(r["model_version"]), "score": float(r["score"]),
+                "outcome": int(r["outcome"]) if r["outcome"] is not None else None}
 
 
 def live_auc(prediction_log: Any, tenant_id: str, *,

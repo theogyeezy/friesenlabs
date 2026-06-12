@@ -27,11 +27,14 @@ it on its own lazy client.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from agents.roster import SONNET
 
 from .rag import _default_synthesize
+
+log = logging.getLogger("conv.synthesizer")
 
 _SYSTEM = """\
 You are the synthesis stage of a retrieval-augmented answering pipeline for a multi-tenant CRM.
@@ -130,12 +133,25 @@ class AnthropicSynthesizer:
         if not chunks:
             return {"summary": None, "claims": []}
 
+        raw: str | None = None  # stays None if _call_model raises (distinguishes error vs bad output)
         try:
             raw = self._call_model(question, chunks)
             claims = _parse_claims(raw)
         except Exception:
-            claims = None  # API error / unexpected response shape -> extractive fallback
+            # API error / unexpected response shape -> extractive fallback. Don't let it crash a
+            # turn — but NEVER swallow it silently: log the real reason so a degraded synthesizer
+            # (bad key, model error, SDK shape change) is visible in the logs, not invisible behind
+            # a seemingly-fine extractive answer.
+            log.warning("synthesizer: live model call failed; falling back to extractive synthesis",
+                        exc_info=True)
+            claims = None
         if claims is None:
+            # Reachable either via the exception path above (already logged) OR a clean call whose
+            # output was unparseable/wrong-shape (_parse_claims -> None). Note the latter explicitly
+            # so a model that keeps emitting unusable JSON is also visible, not silently absorbed.
+            if raw is not None:
+                log.info("synthesizer: model output was unusable (unparseable or wrong shape); "
+                         "using extractive fallback")
             return _default_synthesize(question, chunks)
 
         # Normalize refs via str() on BOTH sides of the filter: `_call_model` serializes every
