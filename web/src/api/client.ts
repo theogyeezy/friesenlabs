@@ -307,6 +307,8 @@ export interface CompanyDeal {
 export interface ContactDetailResponse {
   contact: ContactRow;
   activities: ContactActivity[];
+  /** Deals this contact is directly attached to (deals.contact_id). */
+  contact_deals?: CompanyDeal[];
   /** The contact's company's open deals — links toward the Pipeline board. */
   company_deals: CompanyDeal[];
 }
@@ -342,6 +344,8 @@ export interface DirectoryListParams {
   q?: string;
   limit?: number;
   offset?: number;
+  /** When true, list the ARCHIVED rows (archived_at IS NOT NULL) — the "Show archived" view. */
+  archived?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -1618,11 +1622,15 @@ export class ApiClient {
   // --- deals / pipeline (authed) ----------------------------------------------
 
   /** GET /deals: the board — deals grouped into ordered stage columns. */
-  async listDeals(): Promise<ListDealsResponse> {
+  async listDeals(params: { q?: string; archived?: boolean } = {}): Promise<ListDealsResponse> {
     if (this.mock) {
       return (await this.mockApi()).listDeals();
     }
-    return this.request<ListDealsResponse>("GET", "/deals");
+    const qs = new URLSearchParams();
+    if (params.q) qs.set("q", params.q);
+    if (params.archived) qs.set("archived", "1");
+    const s = qs.toString();
+    return this.request<ListDealsResponse>("GET", `/deals${s ? `?${s}` : ""}`);
   }
 
   /** GET /deals/{id}: one deal + its recent activities (the detail drawer). */
@@ -1661,6 +1669,7 @@ export class ApiClient {
     if (params.q !== undefined && params.q !== "") qs.set("q", params.q);
     if (params.limit !== undefined) qs.set("limit", String(params.limit));
     if (params.offset !== undefined) qs.set("offset", String(params.offset));
+    if (params.archived) qs.set("archived", "1");
     const s = qs.toString();
     return s ? `?${s}` : "";
   }

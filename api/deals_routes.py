@@ -242,13 +242,20 @@ def mount_deals(app: FastAPI, deps: DealsDeps, current_tenant, *, gate_deps: Any
     """
 
     @app.get("/deals")
-    def list_deals(claims: TenantClaims = Depends(current_tenant)):
+    def list_deals(q: str | None = None, archived: bool = False,
+                   claims: TenantClaims = Depends(current_tenant)):
         crm = _require_reader(deps)
-        rows = _checked_rows(crm.list_deals_board(tenant_id=claims.tenant_id), claims.tenant_id)
+        term = (q or "").strip() or None
+        rows = _checked_rows(
+            crm.list_deals_board(tenant_id=claims.tenant_id, archived_only=archived, q=term),
+            claims.tenant_id,
+        )
         return {
             "stages": _group_stages(rows),
             "total": len(rows),
             "stage_order": list(STAGE_ORDER),
+            "archived": archived,
+            "q": term,
         }
 
     @app.get("/deals/{deal_id}")

@@ -516,21 +516,32 @@ class PgCrmClient(_PgTenantClient):
     # tenant_isolation policies on deals/companies/contacts/activities scope BOTH sides of every
     # join inside the per-op `SET LOCAL` transaction.
 
-    def list_deals_board(self, *, tenant_id: str, limit: int = MAX_LIMIT) -> list[dict]:
+    def list_deals_board(self, *, tenant_id: str, limit: int = MAX_LIMIT,
+                         archived_only: bool = False, q: str | None = None) -> list[dict]:
         """All board rows for the tenant: deal columns + the joined company name.
 
         Ordered newest-first; the route does the stage grouping/ordering (presentation concern).
+        `archived_only=True` flips the filter to the ARCHIVED deals (the "Show archived" view).
+        `q` (optional) is a contains-match over the deal title or its company's name.
         """
         n = _clamp_limit(limit, MAX_LIMIT)
+        arch = "d.archived_at IS NOT NULL" if archived_only else "d.archived_at IS NULL"
+        base = (
+            "SELECT d.id, d.tenant_id, d.title, d.stage, d.amount, d.currency, "
+            "d.company_id, d.contact_id, d.created_at, c.name AS company_name "
+            "FROM deals d LEFT JOIN companies c ON c.id = d.company_id "
+            f"WHERE {arch} "
+        )
+        tail = "ORDER BY d.created_at DESC LIMIT %s"
         with self._tx(tenant_id) as cur:
-            cur.execute(
-                "SELECT d.id, d.tenant_id, d.title, d.stage, d.amount, d.currency, "
-                "d.company_id, d.contact_id, d.created_at, c.name AS company_name "
-                "FROM deals d LEFT JOIN companies c ON c.id = d.company_id "
-                "WHERE d.archived_at IS NULL "  # archived deals drop off the board
-                "ORDER BY d.created_at DESC LIMIT %s",
-                (n,),
-            )
+            if q:
+                pat = _escape_ilike(q)
+                cur.execute(
+                    base + "AND (d.title ILIKE %s ESCAPE '\\' OR c.name ILIKE %s ESCAPE '\\') " + tail,
+                    (pat, pat, n),
+                )
+            else:
+                cur.execute(base + tail, (n,))
             return [_normalize_deal_row(r) for r in _dict_rows(cur)]
 
     def get_deal_board(self, *, tenant_id: str, deal_id: str) -> dict | None:
@@ -580,11 +591,14 @@ class PgCrmClient(_PgTenantClient):
     # the open-deal predicates are hand-written SQL, never input.
 
     def list_contacts_directory(self, *, tenant_id: str, q: str | None = None,
-                                limit: int = DEFAULT_CRM_LIMIT, offset: int = 0) -> list[dict]:
+                                limit: int = DEFAULT_CRM_LIMIT, offset: int = 0,
+                                archived_only: bool = False) -> list[dict]:
         """Directory page of contacts: contact columns + the joined company name + the
-        newest activity timestamp. `q` (optional) is a contains-match over name/email."""
+        newest activity timestamp. `q` (optional) is a contains-match over name/email.
+        `archived_only=True` returns the ARCHIVED contacts (the "Show archived" view)."""
         n = _clamp_limit(limit, DEFAULT_CRM_LIMIT)
         off = _clamp_offset(offset)
+        arch = "c.archived_at IS NOT NULL" if archived_only else "c.archived_at IS NULL"
         base = (
             "SELECT c.id, c.tenant_id, c.name, c.email, c.phone, c.company_id, c.created_at, "
             "co.name AS company_name, "
@@ -597,12 +611,12 @@ class PgCrmClient(_PgTenantClient):
             if q:
                 pat = _escape_ilike(q)
                 cur.execute(
-                    base + "WHERE c.archived_at IS NULL "
+                    base + f"WHERE {arch} "
                     "AND (c.name ILIKE %s ESCAPE '\\' OR c.email ILIKE %s ESCAPE '\\') " + tail,
                     (pat, pat, n, off),
                 )
             else:
-                cur.execute(base + "WHERE c.archived_at IS NULL " + tail, (n, off))
+                cur.execute(base + f"WHERE {arch} " + tail, (n, off))
             return [_normalize_contact_row(r) for r in _dict_rows(cur)]
 
     def get_contact_directory(self, *, tenant_id: str, contact_id: str) -> dict | None:
@@ -642,6 +656,22 @@ class PgCrmClient(_PgTenantClient):
             for r in rows
         ]
 
+    def list_contact_deals(self, *, tenant_id: str, contact_id: str,
+                           limit: int = DEFAULT_CRM_LIMIT) -> list[dict]:
+        """Deals this contact is directly attached to (deals.contact_id), newest first — distinct
+        from the contact's company's deals. Excludes archived. RLS-scoped."""
+        n = _clamp_limit(limit, DEFAULT_CRM_LIMIT)
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "SELECT d.id, d.tenant_id, d.title, d.stage, d.amount, d.currency, "
+                "d.company_id, d.contact_id, d.created_at, c.name AS company_name "
+                "FROM deals d LEFT JOIN companies c ON c.id = d.company_id "
+                "WHERE d.contact_id = %s AND d.archived_at IS NULL "
+                "ORDER BY d.created_at DESC LIMIT %s",
+                (str(contact_id), n),
+            )
+            return [_normalize_deal_row(r) for r in _dict_rows(cur)]
+
     def list_company_open_deals(self, *, tenant_id: str, company_id: str,
                                 limit: int = DEFAULT_CRM_LIMIT) -> list[dict]:
         """A company's OPEN deals (not closed_won/closed_lost — hand-written stage literals),
@@ -660,11 +690,14 @@ class PgCrmClient(_PgTenantClient):
             return [_normalize_deal_row(r) for r in _dict_rows(cur)]
 
     def list_companies_directory(self, *, tenant_id: str, q: str | None = None,
-                                 limit: int = DEFAULT_CRM_LIMIT, offset: int = 0) -> list[dict]:
+                                 limit: int = DEFAULT_CRM_LIMIT, offset: int = 0,
+                                 archived_only: bool = False) -> list[dict]:
         """Directory page of companies with contact + open-deal counts (RLS scopes the count
-        subqueries too). `q` (optional) is a contains-match over name/domain."""
+        subqueries too). `q` (optional) is a contains-match over name/domain.
+        `archived_only=True` returns the ARCHIVED companies (the "Show archived" view)."""
         n = _clamp_limit(limit, DEFAULT_CRM_LIMIT)
         off = _clamp_offset(offset)
+        arch = "co.archived_at IS NOT NULL" if archived_only else "co.archived_at IS NULL"
         base = (
             "SELECT co.id, co.tenant_id, co.name, co.domain, co.created_at, "
             "(SELECT count(*) FROM contacts c WHERE c.company_id = co.id "
@@ -679,12 +712,12 @@ class PgCrmClient(_PgTenantClient):
             if q:
                 pat = _escape_ilike(q)
                 cur.execute(
-                    base + "WHERE co.archived_at IS NULL "
+                    base + f"WHERE {arch} "
                     "AND (co.name ILIKE %s ESCAPE '\\' OR co.domain ILIKE %s ESCAPE '\\') " + tail,
                     (pat, pat, n, off),
                 )
             else:
-                cur.execute(base + "WHERE co.archived_at IS NULL " + tail, (n, off))
+                cur.execute(base + f"WHERE {arch} " + tail, (n, off))
             return [_normalize_company_row(r) for r in _dict_rows(cur)]
 
     def get_company_directory(self, *, tenant_id: str, company_id: str) -> dict | None:

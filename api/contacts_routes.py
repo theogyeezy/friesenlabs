@@ -182,13 +182,14 @@ def mount_contacts(app: FastAPI, deps: ContactsDeps, current_tenant) -> None:
 
     @app.get("/contacts")
     def list_contacts(q: str | None = None, limit: int = DEFAULT_PAGE, offset: int = 0,
+                      archived: bool = False,
                       claims: TenantClaims = Depends(current_tenant)):
         crm = _require_reader(deps)
         term = _clean_q(q)
         n, off = _clamp_page(limit, offset)
         # Ask for one row beyond the page so has_more is honest without a count query.
         rows = crm.list_contacts_directory(tenant_id=claims.tenant_id, q=term,
-                                           limit=n + 1, offset=off)
+                                           limit=n + 1, offset=off, archived_only=archived)
         contacts = _checked_rows(rows, claims.tenant_id)
         has_more = len(contacts) > n
         return {
@@ -209,6 +210,12 @@ def mount_contacts(app: FastAPI, deps: ContactsDeps, current_tenant) -> None:
             raise HTTPException(status_code=404, detail="no such contact")
         contact = _checked_rows([row], claims.tenant_id)[0]
         activities = crm.list_contact_activities(tenant_id=claims.tenant_id, contact_id=cid)
+        # Deals THIS contact is directly attached to (deals.contact_id) — distinct from the
+        # company's deals below; a contact can be on a deal whose company differs.
+        contact_deals = _checked_rows(
+            crm.list_contact_deals(tenant_id=claims.tenant_id, contact_id=cid),
+            claims.tenant_id,
+        )
         # The contact's company's OPEN deals — the seam into the Pipeline board. No company
         # -> honestly empty, no extra read.
         company_deals: list[dict] = []
@@ -218,7 +225,8 @@ def mount_contacts(app: FastAPI, deps: ContactsDeps, current_tenant) -> None:
                                             company_id=contact["company_id"]),
                 claims.tenant_id,
             )
-        return {"contact": contact, "activities": activities, "company_deals": company_deals}
+        return {"contact": contact, "activities": activities,
+                "contact_deals": contact_deals, "company_deals": company_deals}
 
     @app.post("/contacts", status_code=201)
     def create_contact(body: CreateContactBody,
@@ -278,12 +286,13 @@ def mount_contacts(app: FastAPI, deps: ContactsDeps, current_tenant) -> None:
 
     @app.get("/companies")
     def list_companies(q: str | None = None, limit: int = DEFAULT_PAGE, offset: int = 0,
+                       archived: bool = False,
                        claims: TenantClaims = Depends(current_tenant)):
         crm = _require_reader(deps)
         term = _clean_q(q)
         n, off = _clamp_page(limit, offset)
         rows = crm.list_companies_directory(tenant_id=claims.tenant_id, q=term,
-                                            limit=n + 1, offset=off)
+                                            limit=n + 1, offset=off, archived_only=archived)
         companies = _checked_rows(rows, claims.tenant_id)
         has_more = len(companies) > n
         return {
