@@ -478,6 +478,20 @@ class ManagedAgentsRuntime(AgentRuntime):
             """Process ONE session event (live stream or replay); True = the turn is over.
             Events carrying a server id are deduped against the per-session ledger, so a
             replayed/overlapping event is processed exactly once."""
+            # BUDGET ON EVERY EVENT (round 6): a BUSY session emitting ordinary events for
+            # minutes never hits a requires_action idle or a stream drop, so checking the
+            # budget only there let the drain ride the whole turn past the 60s edge ceiling
+            # (504) while the held tenant turn lock starved /chat/continue into a 504 too.
+            # The moment the per-request budget is spent the turn surfaces UNSETTLED. The
+            # check runs BEFORE the dedupe ledger records this event, so the continue leg
+            # (fresh budget) re-reads it from events.list and nothing is lost.
+            if self._clock() - turn_start >= self._settle_budget_s:
+                if not calls and not pending:
+                    pending.append({"status": "pending", "reason": "settle_budget"})
+                else:
+                    pending.extend(calls)
+                    calls.clear()
+                return True
             eid = getattr(event, "id", None)
             if eid is not None:
                 if eid in seen:

@@ -549,6 +549,14 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   usable + safe; RAG-embed IAM gap closed live.
 
 ## Lane Matt (app code) — log
+- 2026-06-12 — **Settle round 6 — budget on EVERY event (steady-window 504 root cause):** the
+  budget was only checked at requires_action idles + stream drops; a BUSY session emitting
+  ordinary events for minutes hits neither, so the drain rode the whole turn past the 60s edge
+  (504) while the held tenant turn lock starved /chat/continue into a 504 too (proven in a
+  no-deploy-churn window: /chat 504 + /chat/continue 504, no POST ever completing in the api
+  log). handle() now checks the per-request budget BEFORE the dedupe ledger records each event —
+  spent → surface unsettled ({reason: settle_budget}); the un-consumed event replays on the
+  continue. 3 older budget-shape tests updated to the earlier-exit contract. Full pytest exit 0.
 - 2026-06-12 — **Security-audit remediation APPLIED LIVE (owner-directed, REQ-013 + RBAC strict).**
   PR #290 (P0/P1/P2 code) merged + deployed. REQ-013 infra applied as targeted, plan-reviewed
   steps: scoped deploy policy + **`AdministratorAccess` DETACHED** from `uplift-deploy` (after one
