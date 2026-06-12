@@ -50,10 +50,17 @@ class HubSpotClient(Protocol):
 class HubSpotConnector(Connector):
     source = "hubspot"
 
-    def __init__(self, tenant_id, *, client: HubSpotClient, **kwargs) -> None:
+    def __init__(self, tenant_id, *, client: HubSpotClient,
+                 secret_writer=None, **kwargs) -> None:
         super().__init__(tenant_id, **kwargs)
         self._client = client
         self._token: str | None = None
+        # Optional write seam (oauth.SecretWriter — any object with put_secret):
+        # when present, a refreshed OAuth access token is persisted back to the
+        # vault slot so the next sync starts from the new token. Absent (the
+        # default / pasted-key path) = no write-back; the refreshed token is still
+        # used for THIS run.
+        self._secret_writer = secret_writer
 
     # -- auth ------------------------------------------------------------ #
     def authenticate(self) -> None:
@@ -85,13 +92,79 @@ class HubSpotConnector(Connector):
             raise MissingTenantCredentialError(
                 self.tenant_id, self.source, per_tenant_ref, "empty value"
             )
-        self._token = token
+        # The vault slot holds EITHER a legacy pasted private-app token (a bare
+        # string) OR — for the OAuth "connect with login" path — a JSON envelope
+        # with a refresh_token. parse_oauth_secret tells them apart; a bare token
+        # falls through unchanged (back-compat). NEVER log the resolved value.
+        self._token = self._resolve_bearer(token, per_tenant_ref)
         # Hand the resolved token to the injected source client when it accepts
         # one (HubSpotRestClient does; test fakes need not implement set_token).
         set_token = getattr(self._client, "set_token", None)
         if callable(set_token):
-            set_token(token)
+            set_token(self._token)
         self._authed = True
+
+    # -- OAuth-aware bearer resolution ----------------------------------- #
+    def _resolve_bearer(self, raw_value: str, ref: str) -> str:
+        """Turn the vaulted secret value into the bearer token to use this run.
+
+        Bare string -> use as-is (legacy pasted private-app token). OAuth envelope
+        -> use its access_token, refreshing first (and writing the new tokens back
+        to the vault when a writer is wired) if the access token is at/near expiry.
+        Refresh resolves the app's client_id/client_secret via the SAME injected
+        SecretProvider as the tenant token. NEVER logs a token value.
+        """
+        from .oauth import (  # noqa: PLC0415 — local import keeps base import-light
+            get_provider,
+            is_expired,
+            oauth_secret_value,
+            parse_oauth_secret,
+            refresh_access_token,
+        )
+
+        secret = parse_oauth_secret(raw_value)
+        if secret is None:
+            return raw_value  # legacy bare token — unchanged behavior
+
+        if not is_expired(secret):
+            return secret["access_token"]
+
+        provider = get_provider(self.source)
+        if provider is None:  # defensive — hubspot is registered
+            return secret["access_token"]
+        # Resolve the app's client credentials (refs, not values) via the reader.
+        try:
+            client_id = self._secrets.get_secret(provider.client_id_ref)
+            client_secret = self._secrets.get_secret(provider.client_secret_ref)
+        except SecretNotFoundError as exc:
+            # Can't refresh without the app creds — fail honestly (reconnect), never
+            # ride a known-expired access token into a silent 401 mid-sync.
+            log.error(
+                "ingest auth failed: event=oauth_refresh_unconfigured tenant_id=%s "
+                "source=%s reason=client_creds_not_provisioned", self.tenant_id, self.source,
+            )
+            raise MissingTenantCredentialError(
+                self.tenant_id, self.source, ref,
+                "OAuth token expired and app client credentials are not provisioned",
+            ) from exc
+        # Refresh (HTTP via oauth.post_form — the test seam). Any failure propagates
+        # untouched; it carries no token material.
+        new = refresh_access_token(
+            provider, refresh_token=secret["refresh_token"],
+            client_id=client_id, client_secret=client_secret,
+        )
+        log.info("ingest oauth: refreshed access token tenant_id=%s source=%s",
+                 self.tenant_id, self.source)
+        if self._secret_writer is not None:
+            self._secret_writer.put_secret(
+                ref,
+                oauth_secret_value(
+                    access_token=new["access_token"],
+                    refresh_token=new["refresh_token"],
+                    expires_at=new["expires_at"],
+                ),
+            )
+        return new["access_token"]
 
     # -- pull ------------------------------------------------------------ #
     def pull(self, since_cursor: str | None) -> Iterable[NormalizedRecord]:

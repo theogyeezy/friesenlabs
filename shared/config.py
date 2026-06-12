@@ -280,6 +280,24 @@ def load() -> Config:
 # --- never a fake success.
 ENV_INTEGRATIONS_REAL_SECRETS = "INTEGRATIONS_REAL_SECRETS"
 
+# --- OAuth "connect with login" plane (ingest/connectors/oauth.py + api/integrations_routes.py).
+# --- NEW deliberate names (deploy invariance: the OAuth flow never keys off env the live tasks
+# --- already inject). The OAuth start/callback routes are wired ONLY when these are present AND
+# --- the INTEGRATIONS_REAL_SECRETS master switch is on (the vault writer/reader must be real);
+# --- any piece unset = the routes answer an honest 503 "not configured", never a fake redirect.
+#   * OAUTH_STATE_SECRET  — the RESOLVED HMAC signing-secret VALUE (Lane Nick wires a Secrets
+#     Manager secret into the API task `secrets` block under this name). It signs the `state`
+#     param so the callback can recover the tenant_id without trusting the browser (CSRF + tenant
+#     binding). Empty = the OAuth routes stay 503.
+#   * OAUTH_REDIRECT_BASE — the public deployment base URL (e.g. https://api.friesenlabs.com) the
+#     provider redirect_uri is built from: {base}/integrations/{name}/oauth/callback. MUST match
+#     the redirect URI registered in the provider's app. Empty = the OAuth routes stay 503.
+#   * OAUTH_APP_RETURN_URL — where the browser is sent AFTER the callback finishes (the SPA
+#     integrations page, e.g. https://friesenlabs.com/app/integrations). Empty -> "/".
+ENV_OAUTH_STATE_SECRET = "OAUTH_STATE_SECRET"
+ENV_OAUTH_REDIRECT_BASE = "OAUTH_REDIRECT_BASE"
+ENV_OAUTH_APP_RETURN_URL = "OAUTH_APP_RETURN_URL"
+
 # --- Live agent-plane verify env-var NAMES (scripts/verify_agent_plane.py — TODO AI/P1).
 # --- NEW deliberate names (deploy invariance: new behavior never keys off env the live tasks
 # --- already inject). All-unset = the script runs in offline PLAN mode and makes ZERO live
