@@ -32,6 +32,10 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
+# Script execution puts THIS directory on sys.path, not the repo root — without this the
+# lazy `from ingest...` imports die with ModuleNotFoundError when run as a one-off task
+# (`python scripts/demo/seed_knowledge.py`), the exact live failure of 2026-06-12.
+sys.path.insert(0, REPO_ROOT)
 DEFAULT_DOCS_DIR = os.path.join(REPO_ROOT, "agents", "knowledge_seed")
 
 # Knowledge docs land as uploads (schema documents.source vocabulary) under a dedicated ref_id
