@@ -30,7 +30,7 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException
 
-from api.auth import TenantClaims
+from api.auth import TenantClaims, make_current_admin
 
 log = logging.getLogger("api.account_export")
 
@@ -159,15 +159,18 @@ def _collect_knowledge_docs(rag: Any, tenant_id: str) -> list[dict]:
 
 
 def mount_account(app: FastAPI, deps: AccountDeps, current_tenant) -> None:
-    """Mount GET /account/export on `app`, authed via `current_tenant` (the same
-    verified-claims dependency every other authed route uses).
+    """Mount GET /account/export on `app`, ADMIN-gated via the api.auth admin policy.
 
-    Read-only: no gate deps — nothing here mutates. Account deletion is deliberately absent.
+    Read-only (no gate deps — nothing here mutates; account deletion is deliberately absent),
+    but TENANT-ADMIN ONLY despite being a GET: this is the tenant's ENTIRE data bundle in one
+    response — a bulk-egress surface, not a member-level read. A non-admin member gets the
+    honest fixed 403 from api.auth.
     """
+    current_admin = make_current_admin(current_tenant)
 
     @app.get("/account/export")
-    def account_export(claims: TenantClaims = Depends(current_tenant)):
-        """Return the tenant's full data bundle for GDPR/portability export.
+    def account_export(claims: TenantClaims = Depends(current_admin)):
+        """Return the tenant's full data bundle for GDPR/portability export (admin-only).
 
         Tenant identity comes ONLY from the verified JWT claim (THE TRUST RULE). Every section
         is RLS-scoped; the defense-in-depth cross-tenant check runs on every outbound row.

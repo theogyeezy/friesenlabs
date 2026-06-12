@@ -5,6 +5,10 @@ variable "project" { type = string }
 variable "vpc_cidr" { type = string }
 variable "azs" { type = list(string) }
 variable "region" { type = string }
+variable "log_retention_days" {
+  type    = number
+  default = 30 # one knob for every uplift log group (TODO Sec/P3 213)
+}
 
 locals {
   # /16 → four /20s. Public: 10.0.0.0/20, 10.0.16.0/20. Private: 10.0.128.0/20, 10.0.144.0/20.
@@ -94,6 +98,59 @@ resource "aws_vpc_endpoint" "s3" {
   vpc_endpoint_type = "Gateway"
   route_table_ids   = [aws_route_table.private.id]
   tags              = { Name = "${var.project}-s3-endpoint" }
+}
+
+# --- VPC flow logs (Sec, REQ-012 item 5): traffic-level audit for the VPC holding tenant data.
+# ALL traffic (accept + reject) into CloudWatch; the reject stream is the lateral-movement /
+# exfil-attempt signal GuardDuty and humans read. Unconditional + additive.
+resource "aws_cloudwatch_log_group" "flow_logs" {
+  name              = "/vpc/${var.project}-flow-logs"
+  retention_in_days = var.log_retention_days
+}
+
+data "aws_iam_policy_document" "flow_logs_assume" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["vpc-flow-logs.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "flow_logs" {
+  name               = "${var.project}-vpc-flow-logs"
+  assume_role_policy = data.aws_iam_policy_document.flow_logs_assume.json
+}
+
+resource "aws_iam_role_policy" "flow_logs" {
+  name = "flow-log-delivery"
+  role = aws_iam_role.flow_logs.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "logs:CreateLogStream",
+        "logs:PutLogEvents",
+        "logs:DescribeLogGroups",
+        "logs:DescribeLogStreams",
+      ]
+      Resource = [
+        aws_cloudwatch_log_group.flow_logs.arn,
+        "${aws_cloudwatch_log_group.flow_logs.arn}:*",
+      ]
+    }]
+  })
+}
+
+resource "aws_flow_log" "vpc" {
+  vpc_id               = aws_vpc.this.id
+  traffic_type         = "ALL"
+  log_destination_type = "cloud-watch-logs"
+  log_destination      = aws_cloudwatch_log_group.flow_logs.arn
+  iam_role_arn         = aws_iam_role.flow_logs.arn
+  tags                 = { Name = "${var.project}-vpc-flow-logs" }
 }
 
 output "vpc_id" { value = aws_vpc.this.id }

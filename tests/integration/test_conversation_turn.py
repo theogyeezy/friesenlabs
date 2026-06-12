@@ -90,7 +90,7 @@ def test_action_question_surfaces_pending_approval_via_greenlight():
         "send an email to the Acme contact",
         to="lead@acme.com",
         subject="Following up",
-        body="Hi there",
+        body="Hi there. Reply unsubscribe to opt out.",
     )
 
     assert turn.pending_approvals, "an action should surface a pending approval"

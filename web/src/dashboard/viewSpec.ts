@@ -73,12 +73,23 @@ export interface KpiBlock {
   span?: number;
 }
 
+/** Whitelisted Vega-Lite fragment: mark + encoding + transform ONLY (mirror of the
+ * server's chartSpecFragment). Anything else — params, signals, data, datasets,
+ * usermeta, projection, config, width, ... — is a hard validation error, and no key
+ * named href/url may appear anywhere inside encoding/transform (no links, no URL
+ * loads). The renderer additionally strips unknown keys before vega-embed. */
+export interface ChartSpecFragment {
+  mark?: string;
+  encoding?: Record<string, unknown>;
+  transform?: Array<Record<string, unknown>>;
+}
+
 export interface ChartBlock {
   type: "chart";
   title?: string;
   encoding: "vega-lite";
   /** Optional Vega-Lite spec fragment. Treated as untrusted data, never code. */
-  spec?: Record<string, unknown>;
+  spec?: ChartSpecFragment;
   query: CubeQuery;
   span?: number;
 }
@@ -255,6 +266,63 @@ function checkTitle(v: unknown, path: string, errors: string[]): void {
   if (v !== undefined && !isString(v)) errors.push(`${path}: must be a string`);
 }
 
+// Whitelist for a chart block's Vega-Lite `spec` fragment (mirror of the server's
+// chartSpecFragment in shared/schemas/view_spec.schema.json + shared/view_spec.py —
+// keep all three in lockstep). The renderer owns data/sizing; a fragment must stay
+// declarative data, never code, signals, or a loader.
+const CHART_FRAGMENT_KEYS = ["mark", "encoding", "transform"];
+
+// No key named href/url may appear anywhere inside encoding/transform: kills the
+// `href` encoding channel (clickable marks), the `url` channel (external images),
+// and any lookup transform that references a URL (from.data.url).
+const LINK_KEYS = ["href", "url"];
+
+function checkNoLinkKeys(v: unknown, path: string, errors: string[]): void {
+  if (Array.isArray(v)) {
+    v.forEach((item, i) => checkNoLinkKeys(item, `${path}[${i}]`, errors));
+    return;
+  }
+  if (!isPlainObject(v)) return;
+  for (const key of Object.keys(v)) {
+    if (LINK_KEYS.includes(key)) {
+      errors.push(`${path}.${key}: link/URL keys are not allowed in a chart spec fragment`);
+    } else {
+      checkNoLinkKeys(v[key], `${path}.${key}`, errors);
+    }
+  }
+}
+
+function checkChartFragment(v: unknown, path: string, errors: string[]): void {
+  if (!isPlainObject(v)) {
+    errors.push(`${path}: must be an object`);
+    return;
+  }
+  rejectUnknownKeys(v, CHART_FRAGMENT_KEYS, path, errors);
+  if (v.mark !== undefined && !isString(v.mark)) {
+    errors.push(`${path}.mark: must be a string mark name`);
+  }
+  if (v.encoding !== undefined) {
+    if (!isPlainObject(v.encoding)) {
+      errors.push(`${path}.encoding: must be an object`);
+    } else {
+      checkNoLinkKeys(v.encoding, `${path}.encoding`, errors);
+    }
+  }
+  if (v.transform !== undefined) {
+    if (!Array.isArray(v.transform)) {
+      errors.push(`${path}.transform: must be an array`);
+    } else {
+      v.transform.forEach((entry, i) => {
+        if (!isPlainObject(entry)) {
+          errors.push(`${path}.transform[${i}]: must be an object`);
+        } else {
+          checkNoLinkKeys(entry, `${path}.transform[${i}]`, errors);
+        }
+      });
+    }
+  }
+}
+
 function checkCubeQuery(v: unknown, path: string, errors: string[]): void {
   if (!isPlainObject(v)) {
     errors.push(`${path}: must be an object`);
@@ -356,9 +424,7 @@ function checkBlock(v: unknown, path: string, errors: string[]): boolean {
     else if (v.encoding !== "vega-lite") {
       errors.push(`${path}.encoding: only "vega-lite" is allowed, got ${JSON.stringify(v.encoding)}`);
     }
-    if (v.spec !== undefined && !isPlainObject(v.spec)) {
-      errors.push(`${path}.spec: must be an object`);
-    }
+    if (v.spec !== undefined) checkChartFragment(v.spec, `${path}.spec`, errors);
     if (v.query === undefined) errors.push(`${path}: "query" is required`);
     else checkCubeQuery(v.query, `${path}.query`, errors);
     return false;

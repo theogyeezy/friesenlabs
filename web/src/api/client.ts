@@ -1377,11 +1377,17 @@ export class ApiClient {
 
   // Pre-auth request: no Authorization header at all (the signup funnel runs
   // before any tenant or token exists). Still never sends a tenant_id; the typed
-  // body shapes have no such field.
-  private async requestPublic<T>(method: string, path: string, body?: unknown): Promise<T> {
+  // body shapes have no such field. `extraHeaders` carries only non-identity
+  // metadata (today: the x-captcha-token for the signup-start abuse gate).
+  private async requestPublic<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+    extraHeaders?: Record<string, string>,
+  ): Promise<T> {
     const res = await this.fetchImpl(`${this.baseURL}${path}`, {
       method,
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...(extraHeaders ?? {}) },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     if (!res.ok) {
@@ -1885,13 +1891,21 @@ export class ApiClient {
   // send a tenant_id. The mock walks the state machine forward deterministically
   // so Playwright can drive the whole funnel offline.
 
-  /** POST /signup: create the pending account from {email, phone}. */
-  async signup(body: SignupBody): Promise<SignupResponse> {
+  /** POST /signup: create the pending account from {email, phone}.
+   *  `opts.captchaToken` (the Cloudflare Turnstile token, present only when the
+   *  build carries VITE_TURNSTILE_SITE_KEY) is sent as the `x-captcha-token`
+   *  header the server's CaptchaVerifier reads; absent => no header at all. */
+  async signup(body: SignupBody, opts?: { captchaToken?: string }): Promise<SignupResponse> {
     if (this.mock) {
       return (await this.mockApi()).signup();
     }
     // Pre-auth: send without a bearer token. Body carries email/phone only.
-    return this.requestPublic<SignupResponse>("POST", "/signup", body);
+    return this.requestPublic<SignupResponse>(
+      "POST",
+      "/signup",
+      body,
+      opts?.captchaToken ? { "x-captcha-token": opts.captchaToken } : undefined,
+    );
   }
 
   /** POST /signup/{id}/verify-email: confirm the email token. */

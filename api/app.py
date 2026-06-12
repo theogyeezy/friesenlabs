@@ -23,11 +23,11 @@ from api.status_routes import StatusDeps
 from api.settings_routes import SettingsDeps
 from api.modules_routes import ModulesDeps
 from api.agents_routes import AgentsDeps
-from api.auth import JwtVerifier, TenantClaims, make_current_tenant
+from api.auth import JwtVerifier, TenantClaims, make_current_admin, make_current_tenant
 from api.control.autonomy import AutonomyConfig
 from api.control.appliers import apply_approved_action, was_performed
 from api.control.gate import ActionGate, GateContext
-from api.control.greenlight import DEFAULT_APPROVALS_LIMIT, EditNotAllowed, Greenlight
+from api.control.greenlight import ComplianceViolation, DEFAULT_APPROVALS_LIMIT, EditNotAllowed, Greenlight
 from api.control.killswitch import KillSwitch
 from api.control.traces import InMemoryTraceStore, TraceStore
 from api.control.types import Action
@@ -39,6 +39,7 @@ from api.integrations_routes import IntegrationsDeps, build_integrations_deps
 from api.knowledge_routes import KnowledgeDeps
 from api.views import SavedViews
 from api.workflows_routes import WorkflowsDeps
+from shared import view_spec
 from shared.gamify_rules import DEAL_CLOSED_WON, points_for
 
 logger = logging.getLogger(__name__)
@@ -273,6 +274,11 @@ def create_app(deps: ApiDeps) -> FastAPI:
     # member-upsert-on-auth rides the shared verified-JWT dependency: deps.members None (the default)
     # keeps it a no-op, so the unauth path and every non-asgi constructor are unchanged.
     current_tenant = make_current_tenant(deps.verifier, member_store=deps.members)
+    # Tenant-admin gate (RBAC). decide_approval is THE consequential write in the product --
+    # approving an edit/approve is what moves a draft to execution -- so it carries the same
+    # admin requirement as the other privileged writes (killswitch/autonomy/billing/modules/
+    # export/delete/settings). 401 (bad token) still resolves before 403 (not admin).
+    current_admin = make_current_admin(current_tenant)
 
     @app.get("/healthz")
     def healthz():
@@ -306,7 +312,7 @@ def create_app(deps: ApiDeps) -> FastAPI:
         }
 
     @app.post("/approvals/{approval_id}/decide")
-    def decide_approval(approval_id: str, body: DecideBody, claims: TenantClaims = Depends(current_tenant)):
+    def decide_approval(approval_id: str, body: DecideBody, claims: TenantClaims = Depends(current_admin)):
         # Read tenant-scoped (RLS via the verified claim); re-check post-read as defense in depth.
         rec = deps.greenlight.store.get(claims.tenant_id, approval_id)
         if rec is None or str(rec["tenant_id"]) != str(claims.tenant_id):
@@ -333,6 +339,13 @@ def create_app(deps: ApiDeps) -> FastAPI:
             )
         except EditNotAllowed as e:  # edit tried to change 'action' / a non-payload key
             raise HTTPException(status_code=422, detail=str(e))
+        except ComplianceViolation as e:
+            # The decision (typically an `edit` — e.g. stripping the unsubscribe link) produced a
+            # snapshot that fails the deterministic compliance floor. decide() raised BEFORE the
+            # atomic status flip, so the approval is still PENDING (re-decidable after a compliant
+            # edit). The detail is the fixed prefix + the CURATED policy reason the validator
+            # authored — never internal exception text.
+            raise HTTPException(status_code=422, detail=f"decision rejected by compliance: {e.reason}")
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         if not wants_apply:
@@ -429,11 +442,18 @@ def create_app(deps: ApiDeps) -> FastAPI:
 
     @app.post("/views")
     def save_view(body: SaveViewBody, claims: TenantClaims = Depends(current_tenant)):
+        # 422-detail hygiene: only the CURATED view_spec.ValidationError (every reason authored in
+        # shared/view_spec.py / api/views.py) is echoed to the client. Any other exception is
+        # logged server-side and answered with a FIXED message — internal text (KeyError reprs,
+        # driver errors, DSNs) must never reach a client.
         try:
             return deps.saved_views.save(claims.tenant_id, body.spec,
                                          source_prompt=body.source_prompt, created_by=claims.sub)
-        except Exception as e:  # validation error -> 422
+        except view_spec.ValidationError as e:  # curated validation outcome -> client-actionable 422
             raise HTTPException(status_code=422, detail=str(e))
+        except Exception:  # noqa: BLE001 — logged, never echoed
+            logger.exception("save_view: spec rejected by an unexpected error")
+            raise HTTPException(status_code=422, detail="view spec failed validation")
 
     @app.post("/views/{view_id}/refine")
     def refine_view(view_id: str, body: RefineBody, claims: TenantClaims = Depends(current_tenant)):
@@ -444,8 +464,11 @@ def create_app(deps: ApiDeps) -> FastAPI:
         try:
             return deps.saved_views.refine_nl(claims.tenant_id, view_id, body.instruction,
                                               deps.view_patcher, created_by=claims.sub)
-        except Exception as e:  # validation error on the patched spec -> 422
+        except view_spec.ValidationError as e:  # curated validation outcome -> client-actionable 422
             raise HTTPException(status_code=422, detail=str(e))
+        except Exception:  # noqa: BLE001 — 422-detail hygiene: logged, never echoed
+            logger.exception("refine_view: patched spec rejected by an unexpected error")
+            raise HTTPException(status_code=422, detail="refined view spec failed validation")
 
     @app.post("/views/synthesize")
     def synthesize_view(body: SynthesizeViewBody, claims: TenantClaims = Depends(current_tenant)):
@@ -477,8 +500,11 @@ def create_app(deps: ApiDeps) -> FastAPI:
             row = deps.view_synthesizer.save_draft(
                 claims.tenant_id, draft_id, created_by=claims.sub,
             )
-        except Exception as e:  # validation error on the drafted spec -> 422
+        except view_spec.ValidationError as e:  # curated validation outcome -> client-actionable 422
             raise HTTPException(status_code=422, detail=str(e))
+        except Exception:  # noqa: BLE001 — 422-detail hygiene: logged, never echoed
+            logger.exception("save_view_draft: drafted spec rejected by an unexpected error")
+            raise HTTPException(status_code=422, detail="draft view spec failed validation")
         if row is None:
             raise HTTPException(status_code=404, detail="no such draft")
         return row
@@ -512,8 +538,11 @@ def create_app(deps: ApiDeps) -> FastAPI:
         try:
             return deps.saved_views.save(claims.tenant_id, body.spec,
                                          source_prompt=body.source_prompt, created_by=claims.sub)
-        except Exception as e:  # validation error -> 422
+        except view_spec.ValidationError as e:  # curated validation outcome -> client-actionable 422
             raise HTTPException(status_code=422, detail=str(e))
+        except Exception:  # noqa: BLE001 — 422-detail hygiene: logged, never echoed
+            logger.exception("save_dashboard: spec rejected by an unexpected error")
+            raise HTTPException(status_code=422, detail="dashboard spec failed validation")
 
     @app.post("/chat")
     def chat(body: ChatBody, claims: TenantClaims = Depends(current_tenant)):

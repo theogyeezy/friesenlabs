@@ -208,6 +208,9 @@ resource "aws_iam_role_policy" "api_task_cognito_signup" {
         "cognito-idp:AdminConfirmSignUp",
         "cognito-idp:AdminUpdateUserAttributes",
         "cognito-idp:AdminSetUserPassword",
+        # RBAC (REQ-012 item 10): provisioning assigns the first user of a tenant to the
+        # "admin" group (best-effort, app code in flight) — same single-pool scope.
+        "cognito-idp:AdminAddUserToGroup",
       ]
       Resource = var.cognito_user_pool_arn
     }]
@@ -284,10 +287,59 @@ resource "aws_iam_role_policy" "api_task_ssm_exec" {
   })
 }
 
+# ECS Exec session audit (REQ-012 item 8c): the cluster's execute_command_configuration now
+# OVERRIDEs logging into a KMS-encrypted log group — the TASK role must be able to write the
+# session transcript there and use the session-encryption key, or `aws ecs execute-command`
+# fails to start. Empty ARNs = policy not created (module stays standalone-validate clean).
+variable "ecs_exec_kms_key_arn" {
+  type    = string
+  default = ""
+}
+variable "ecs_exec_log_group_arn" {
+  type    = string
+  default = ""
+}
+
+resource "aws_iam_role_policy" "api_task_exec_audit" {
+  count = (var.ecs_exec_kms_key_arn != "" && var.ecs_exec_log_group_arn != "") ? 1 : 0
+  name  = "ecs-exec-audit"
+  role  = aws_iam_role.task["api"].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["kms:Decrypt"]
+        Resource = var.ecs_exec_kms_key_arn
+      },
+      {
+        # DescribeLogGroups takes no resource scoping narrower than log-group:*; the write
+        # actions are pinned to exactly the exec audit group's streams.
+        Effect   = "Allow"
+        Action   = ["logs:DescribeLogGroups"]
+        Resource = "arn:aws:logs:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:log-group:*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogStream",
+          "logs:DescribeLogStreams",
+          "logs:PutLogEvents",
+        ]
+        Resource = "${var.ecs_exec_log_group_arn}:*"
+      }
+    ]
+  })
+}
+
 # CI/CD (TODO Sec/P1): GitHub Actions OIDC — deploy.yml assumes this role; no static keys.
 # Trust is pinned to this repo (build jobs on main + the protected 'production' environment).
-# Policy is AdministratorAccess for now (terraform apply spans every service) — tightening to a
-# scoped deploy policy is a recorded follow-up.
+# Sec/P0: the role now carries a SCOPED customer-managed deploy policy (attached unconditionally,
+# below) enumerating exactly the services this repo's terraform + deploy.yml/build-images.yml
+# touch. AdministratorAccess remains attached ONLY behind var.deploy_role_admin_fallback
+# (default true = current live state; the union of both policies changes nothing) — the
+# migration path is: run one full successful deploy on the scoped policy, then flip the var
+# to false to detach admin. See infra/REQUESTS.md (REQ-012 item 1).
 resource "aws_iam_openid_connect_provider" "github" {
   url             = "https://token.actions.githubusercontent.com"
   client_id_list  = ["sts.amazonaws.com"]
@@ -322,9 +374,204 @@ resource "aws_iam_role" "github_deploy" {
   assume_role_policy = data.aws_iam_policy_document.github_deploy_assume.json
 }
 
+# Sec/P0 (REQ-012 item 1): keep AdministratorAccess ONLY while the scoped policy below is being
+# proven. Default true = the CURRENT LIVE state (zero behavior change: scoped ∪ admin = admin).
+# Flip procedure (infra/REQUESTS.md): one full successful deploy.yml run with this still true,
+# then set false in tfvars + targeted apply — the deploy role drops to the scoped policy only.
+variable "deploy_role_admin_fallback" {
+  type        = bool
+  default     = true
+  description = <<-EOT
+    Keep arn:aws:iam::aws:policy/AdministratorAccess attached to the GitHub OIDC deploy role
+    alongside the scoped uplift-deploy-scoped policy. SECURITY: admin on an internet-assumable
+    (OIDC) role is the single largest blast radius in the account — the goal state is FALSE.
+    Flip to false ONLY after one full successful deploy (plan+apply+service roll) has run with
+    the scoped policy attached, so a missing permission surfaces as a diff-able AccessDenied
+    in CI rather than a broken half-applied prod. Rollback: set true + targeted apply.
+  EOT
+}
+
+# Address continuity: the attachment used to be unconditional (no count). Without this move,
+# flipping nothing would still plan a destroy+create of the live attachment.
+moved {
+  from = aws_iam_role_policy_attachment.github_deploy_admin
+  to   = aws_iam_role_policy_attachment.github_deploy_admin[0]
+}
+
 resource "aws_iam_role_policy_attachment" "github_deploy_admin" {
+  count      = var.deploy_role_admin_fallback ? 1 : 0
   role       = aws_iam_role.github_deploy.name
   policy_arn = "arn:aws:iam::aws:policy/AdministratorAccess"
+}
+
+# The SCOPED deploy policy (attached unconditionally): exactly the services this repo's
+# terraform manages (enumerated module-by-module) + what deploy.yml/build-images.yml call
+# directly (ecr login/push, ecs update-service/wait, terraform S3+KMS state backend).
+# iam:* is RESTRICTED to the project's own role/policy ARNs; iam:PassRole is conditioned on
+# the exact services tasks/functions/rules pass roles to. NO organizations:*, NO account:*,
+# NO aws-portal/billing-write anywhere in this policy (pure allowlist — safe to union with
+# the admin fallback; no Deny statements that could narrow the live role).
+resource "aws_iam_policy" "github_deploy_scoped" {
+  name        = "${var.project}-deploy-scoped"
+  description = "Scoped CI/CD deploy policy for the ${var.project}-deploy OIDC role (replaces AdministratorAccess once deploy_role_admin_fallback flips false)."
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        # Service planes this terraform manages: ecs/ecr (api, cube, worker, ingest, scheduled
+        # jobs), elbv2 (alb), cloudfront+wafv2 (api_cdn), cognito-idp (auth), rds (data),
+        # elasticache (redis), s3+kms (buckets, state backend, log/exec encryption),
+        # secretsmanager (secrets, rotation), lambda+states+events (provisioning, schedules),
+        # logs+cloudwatch+sns (observability, alarms, dashboards), budgets (guardrails),
+        # cloudtrail+config+guardduty (baseline), amplify+route53+acm (web_hosting, dns),
+        # servicediscovery (Cloud Map), application-autoscaling (service scaling),
+        # serverlessrepo+cloudformation (the SAR crm-db rotation stack).
+        Sid    = "DeployInfraServices"
+        Effect = "Allow"
+        Action = [
+          "acm:*",
+          "amplify:*",
+          "application-autoscaling:*",
+          "budgets:*",
+          "cloudformation:*",
+          "cloudfront:*",
+          "cloudtrail:*",
+          "cloudwatch:*",
+          "cognito-idp:*",
+          "config:*",
+          "ecr:*",
+          "ecs:*",
+          "elasticache:*",
+          "elasticloadbalancing:*",
+          "events:*",
+          "guardduty:*",
+          "kms:*",
+          "lambda:*",
+          "logs:*",
+          "rds:*",
+          "route53:*",
+          "s3:*",
+          "secretsmanager:*",
+          "serverlessrepo:*",
+          "servicediscovery:*",
+          "sns:*",
+          "states:*",
+          "wafv2:*",
+        ]
+        Resource = "*"
+      },
+      {
+        # EC2 is restricted to the NETWORKING surface the vpc/security modules manage — no
+        # RunInstances/SpotFleet/AMI plane. Describe* covers every read + data source
+        # (managed prefix list reads additionally need Get*).
+        Sid    = "DeployEc2Networking"
+        Effect = "Allow"
+        Action = [
+          "ec2:Describe*",
+          "ec2:GetManagedPrefixList*",
+          "ec2:CreateTags",
+          "ec2:DeleteTags",
+          "ec2:*Vpc*",
+          "ec2:*Subnet*",
+          "ec2:*RouteTable*",
+          "ec2:CreateRoute",
+          "ec2:DeleteRoute",
+          "ec2:ReplaceRoute",
+          "ec2:*InternetGateway*",
+          "ec2:*NatGateway*",
+          "ec2:AllocateAddress",
+          "ec2:ReleaseAddress",
+          "ec2:AssociateAddress",
+          "ec2:DisassociateAddress",
+          "ec2:*SecurityGroup*",
+          "ec2:*FlowLogs",
+        ]
+        Resource = "*"
+      },
+      {
+        # iam:* ONLY on the project's own roles/policies (every role this repo creates is
+        # ${project}-* — verified module-by-module), the SAR rotation stack's generated roles
+        # (serverlessrepo-${project}-*), and the GitHub OIDC provider resource itself.
+        # PassRole is deliberately NOT granted here — see the conditioned statement below.
+        Sid    = "IamScopedToProject"
+        Effect = "Allow"
+        Action = [
+          "iam:Get*",
+          "iam:List*",
+          "iam:CreateRole",
+          "iam:DeleteRole",
+          "iam:UpdateRole",
+          "iam:UpdateRoleDescription",
+          "iam:UpdateAssumeRolePolicy",
+          "iam:PutRolePolicy",
+          "iam:DeleteRolePolicy",
+          "iam:AttachRolePolicy",
+          "iam:DetachRolePolicy",
+          "iam:TagRole",
+          "iam:UntagRole",
+          "iam:CreatePolicy",
+          "iam:DeletePolicy",
+          "iam:CreatePolicyVersion",
+          "iam:DeletePolicyVersion",
+          "iam:SetDefaultPolicyVersion",
+          "iam:TagPolicy",
+          "iam:UntagPolicy",
+          "iam:CreateOpenIDConnectProvider",
+          "iam:DeleteOpenIDConnectProvider",
+          "iam:UpdateOpenIDConnectProviderThumbprint",
+          "iam:AddClientIDToOpenIDConnectProvider",
+          "iam:RemoveClientIDFromOpenIDConnectProvider",
+          "iam:TagOpenIDConnectProvider",
+          "iam:UntagOpenIDConnectProvider",
+        ]
+        Resource = [
+          "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${var.project}-*",
+          "arn:aws:iam::${data.aws_caller_identity.current.account_id}:policy/${var.project}-*",
+          "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/serverlessrepo-${var.project}-*",
+          "arn:aws:iam::${data.aws_caller_identity.current.account_id}:oidc-provider/token.actions.githubusercontent.com",
+        ]
+      },
+      {
+        # PassRole locked to the exact service principals this stack hands roles to:
+        # ecs-tasks (task/execution roles), lambda (provisioning fn), states (SFN role),
+        # events (EventBridge->ECS target roles), budgets (deny-at-90 action role),
+        # config (recorder role), vpc-flow-logs (flow-log delivery role).
+        Sid    = "PassRoleToKnownServicesOnly"
+        Effect = "Allow"
+        Action = ["iam:PassRole"]
+        Resource = [
+          "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${var.project}-*",
+          "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/serverlessrepo-${var.project}-*",
+        ]
+        Condition = {
+          StringEquals = {
+            "iam:PassedToService" = [
+              "ecs-tasks.amazonaws.com",
+              "lambda.amazonaws.com",
+              "states.amazonaws.com",
+              "events.amazonaws.com",
+              "budgets.amazonaws.com",
+              "config.amazonaws.com",
+              "vpc-flow-logs.amazonaws.com",
+            ]
+          }
+        }
+      },
+      {
+        # First-create of RDS/ECS/ElastiCache/GuardDuty/Config/autoscaling silently needs the
+        # service-linked role to exist; scoped to the SLR namespace only.
+        Sid      = "ServiceLinkedRoles"
+        Effect   = "Allow"
+        Action   = ["iam:CreateServiceLinkedRole"]
+        Resource = "arn:aws:iam::*:role/aws-service-role/*"
+      },
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "github_deploy_scoped" {
+  role       = aws_iam_role.github_deploy.name
+  policy_arn = aws_iam_policy.github_deploy_scoped.arn
 }
 
 output "deploy_role_arn" { value = aws_iam_role.github_deploy.arn }

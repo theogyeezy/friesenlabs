@@ -27,8 +27,12 @@ accounts.meta jsonb layout (one column, two writers, NO clobbering):
     jsonb merge `meta = meta || %s::jsonb` (top-level keys it owns are replaced; keys it does not
     own survive);
   * 'otp' — the in-flight OTP record, written ONLY by PgOtpStore via the single-statement merge
-    `meta = meta || jsonb_build_object('otp', %s::jsonb)` (no read-modify-write window).
-An account update can therefore never erase a concurrently-issued OTP, and vice versa.
+    `meta = meta || jsonb_build_object('otp', %s::jsonb)` (no read-modify-write window);
+  * 'used_email_tokens' — the consumed email-token nonces ({nonce: expires_at}), written ONLY by
+    PgUsedTokenStore via a single statement that prunes expired nonces and adds the new one with
+    the merge computed inside Postgres (no read-modify-write window, bounded growth).
+An account update can therefore never erase a concurrently-issued OTP or a consumed-token
+record, and vice versa.
 
 Import-safe: psycopg2 is imported lazily on construction; importing this module needs no driver
 and no network.
@@ -333,4 +337,57 @@ class PgOtpStore(_PgBase):
             cur.execute(
                 "UPDATE accounts SET meta = meta - 'otp', updated_at = now() WHERE id = %s",
                 (str(account_id),),
+            )
+
+
+class PgUsedTokenStore(_PgBase):
+    """`signup.tokens.UsedTokenStore` over accounts.meta jsonb — single-use email-token nonces
+    SHARED across Fargate tasks.
+
+    WHY (security): `EmailTokenService` defaults to the per-process `InMemoryUsedTokenStore`,
+    so with 2+ API tasks a consumed verification token verifies AGAIN on whichever task never
+    saw it — a replay window as long as the token's 15-min TTL. Like PgOtpStore, the shared
+    state rides the account row itself (NO new table): the token is account-bound (the HMAC'd
+    body carries the account_id, proven before the single-use check runs), so the account row
+    is the natural scope for its used-set.
+
+    meta layout: `'used_email_tokens': {<nonce>: <expires_at epoch int>}` — written ONLY here.
+    `mark_used` is ONE atomic statement that BOTH prunes expired nonces and adds the new one,
+    with the merge computed inside Postgres under the row lock — no read-modify-write window
+    for a concurrent account update (which itself merges, never replaces) or a concurrent
+    mark_used to clobber. Pruning on write bounds growth: a nonce past its expiry can never
+    verify again (the TTL check fails before the single-use check), so dropping it is safe and
+    the map never holds more than the nonces consumed within one 15-minute TTL window.
+    """
+
+    def __init__(self, dsn: str, *, now=time.time):
+        super().__init__(dsn)
+        self._now = now
+
+    def is_used(self, account_id: str, nonce: str) -> bool:
+        # jsonb key-existence (`?`) — membership only. An expired-but-unpruned nonce reading
+        # True is harmless: EmailTokenService rejects on TTL before it ever asks. No row
+        # (unknown account) is an honest False — verify's account binding already failed it.
+        with self._tx() as cur:
+            cur.execute(
+                "SELECT (meta->'used_email_tokens') ? %s AS used FROM accounts WHERE id = %s",
+                (str(nonce), str(account_id)),
+            )
+            row = cur.fetchone()
+        return bool(row and row.get("used"))
+
+    def mark_used(self, account_id: str, nonce: str, expires_at: int) -> None:
+        # ONE statement: rebuild the nonce map from the row's CURRENT value (under the UPDATE's
+        # row lock) keeping only unexpired entries, then add this nonce — prune-on-write per the
+        # class docstring. The other meta writers' top-level keys survive (merge, not replace).
+        with self._tx() as cur:
+            cur.execute(
+                "UPDATE accounts SET meta = meta || jsonb_build_object("
+                "'used_email_tokens', "
+                "(SELECT COALESCE(jsonb_object_agg(t.key, t.value), '{}'::jsonb) "
+                "FROM jsonb_each(COALESCE(accounts.meta->'used_email_tokens', '{}'::jsonb)) AS t "
+                "WHERE (t.value)::text::bigint >= %s) "
+                "|| jsonb_build_object(%s::text, %s::bigint)"
+                "), updated_at = now() WHERE id = %s",
+                (int(self._now()), str(nonce), int(expires_at), str(account_id)),
             )

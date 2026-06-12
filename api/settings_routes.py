@@ -32,7 +32,7 @@ from typing import Any
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
 
-from api.auth import TenantClaims
+from api.auth import TenantClaims, make_current_admin
 
 log = logging.getLogger("api.settings")
 
@@ -127,7 +127,11 @@ def _empty_settings() -> dict:
 
 def mount_settings(app: FastAPI, deps: SettingsDeps, current_tenant) -> None:
     """Mount GET/PUT /account/settings on `app`, authed via `current_tenant` (the same
-    verified-claims dependency every other authed route uses)."""
+    verified-claims dependency every other authed route uses).
+
+    The PUT (write) is tenant-admin-gated via the api.auth admin policy over `cognito:groups`;
+    the GET stays open — every tenant user may read the workspace name + prefs."""
+    current_admin = make_current_admin(current_tenant)
 
     @app.get("/account/settings")
     def get_settings(claims: TenantClaims = Depends(current_tenant)):
@@ -140,8 +144,10 @@ def mount_settings(app: FastAPI, deps: SettingsDeps, current_tenant) -> None:
         return row if row is not None else _empty_settings()
 
     @app.put("/account/settings")
-    def put_settings(body: SettingsBody, claims: TenantClaims = Depends(current_tenant)):
+    def put_settings(body: SettingsBody, claims: TenantClaims = Depends(current_admin)):
         """Validate + persist the provided settings fields, returning the saved row.
+
+        ADMIN-GATED write (current_admin) — workspace identity is a tenant-admin concern.
 
         Only the fields present in the body are updated (partial PUT). Tenant identity comes ONLY
         from the verified claim — a tenant_id in the body is ignored (it is not a model field, so

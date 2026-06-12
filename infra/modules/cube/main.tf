@@ -26,6 +26,24 @@ variable "image" {
   default = "" # custom uplift-cube image (semantic/ baked in); "" = the pinned public image
 }
 
+# Sec (REQ-012 item 8a): ADOT sidecar image — default is the exact live string (zero-diff);
+# pin a digest via tfvars (supply-chain: a mutable :latest is pulled at every task start).
+variable "adot_image" {
+  type        = string
+  default     = "public.ecr.aws/aws-observability/aws-otel-collector:latest"
+  description = "ADOT collector sidecar image. SECURITY: pin a digest in tfvars; the :latest default only preserves the current live task def (flip = roll tasks)."
+}
+
+# Sec (REQ-012 item 8b): immutable root FS on the cube container. CAUTION — cube is a
+# third-party Node app whose write paths we don't own: /tmp is mounted ephemeral, but the
+# baked /cube/conf must NOT be shadowed by a mount (it holds the model + security context).
+# Flip in a verify window; the deployment circuit breaker auto-rolls back a wedged def.
+variable "readonly_root_filesystem" {
+  type        = bool
+  default     = false
+  description = "Set readonlyRootFilesystem on the cube container and mount /tmp as an ephemeral volume. Default false preserves the live task def; flip only in a verify window (third-party image write paths)."
+}
+
 resource "aws_cloudwatch_log_group" "cube" {
   name              = "/ecs/${var.project}-cube"
   retention_in_days = var.log_retention_days
@@ -46,8 +64,17 @@ resource "aws_ecs_task_definition" "cube" {
   execution_role_arn       = var.execution_role_arn
   task_role_arn            = var.task_role_arn
 
+  # /tmp ephemeral volume (Fargate; no tmpfs) — exists only when readonly_root_filesystem
+  # flips, keeping the default task def byte-identical to the live one (REQ-012 item 8b).
+  dynamic "volume" {
+    for_each = var.readonly_root_filesystem ? [1] : []
+    content {
+      name = "tmp"
+    }
+  }
+
   container_definitions = jsonencode([
-    {
+    merge({
       name         = "cube"
       image        = var.image != "" ? var.image : "cubejs/cube:latest@sha256:3e3715ccad21ba7914203c5a0e1c011f829200738d77ed9cb4012f67caa05ee4" # custom model image, or the pinned public amd64 fallback
       essential    = true
@@ -75,13 +102,20 @@ resource "aws_ecs_task_definition" "cube" {
           "awslogs-stream-prefix" = "cube"
         }
       }
-    },
+      },
+      # Immutable root FS keys appear ONLY when flipped (default = live task def unchanged).
+      # JSON round-trip keeps both conditional arms the same HCL type (string).
+      jsondecode(var.readonly_root_filesystem ? jsonencode({
+        readonlyRootFilesystem = true
+        mountPoints            = [{ sourceVolume = "tmp", containerPath = "/tmp", readOnly = false }]
+      }) : jsonencode({}))
+    ),
     # ADOT collector sidecar (H10, offline IaC leg): receives OTLP spans from the cube container and
     # exports them to X-Ray. The task role needs xray:PutTraceSegments at apply.
     # NOTE: full end-to-end X-Ray trace verification needs apply (BLOCKED: needs Nick).
     {
       name      = "aws-otel-collector"
-      image     = "public.ecr.aws/aws-observability/aws-otel-collector:latest"
+      image     = var.adot_image
       essential = false
       logConfiguration = {
         logDriver = "awslogs"

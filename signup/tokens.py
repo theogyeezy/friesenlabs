@@ -17,8 +17,10 @@ or body here, and never logged.
 
 Stores: single-use/rate-limit state lives behind tiny injectable protocols. The in-memory
 implementations here are per-process (fine for tests/dev); production injects the Aurora-backed
-`signup.store_pg.PgOtpStore` (OTP in accounts.meta jsonb, atomic merge) so state survives
-restarts and is shared across Fargate tasks.
+`signup.store_pg.PgOtpStore` (OTP in accounts.meta jsonb, atomic merge) AND
+`signup.store_pg.PgUsedTokenStore` (used email-token nonces, same meta-jsonb approach) so state
+survives restarts and is shared across Fargate tasks — without the shared used-nonce store, a
+consumed email token would REPLAY on whichever task never saw it, for its whole 15-min TTL.
 
 Import-safe: stdlib only — no network, no driver, nothing at import time.
 """
@@ -52,24 +54,34 @@ class OtpRateLimitError(Exception):
 # ---------------------------------------------------------------------------
 
 class UsedTokenStore(Protocol):
-    """Single-use bookkeeping for email-token nonces."""
+    """Single-use bookkeeping for email-token nonces.
 
-    def is_used(self, nonce: str) -> bool: ...
-    def mark_used(self, nonce: str, expires_at: int) -> None: ...
+    `account_id` rides along on both calls so a SHARED implementation can keep the used-set on
+    the account row itself (`signup.store_pg.PgUsedTokenStore` over accounts.meta jsonb — no new
+    table) instead of needing a global nonce index. Implementations: `InMemoryUsedTokenStore`
+    (here, per-process) and `PgUsedTokenStore` (Aurora, shared across Fargate tasks).
+    """
+
+    def is_used(self, account_id: str, nonce: str) -> bool: ...
+    def mark_used(self, account_id: str, nonce: str, expires_at: int) -> None: ...
 
 
 class InMemoryUsedTokenStore:
-    """Per-process used-nonce set with lazy expiry pruning (prod injects a shared store)."""
+    """Per-process used-nonce set with lazy expiry pruning (prod injects a shared store).
+
+    Nonces are 16-byte CSPRNG values (globally unique), so the in-memory map stays nonce-keyed;
+    `account_id` is accepted for protocol parity with the account-row-scoped Pg store.
+    """
 
     def __init__(self, now=time.time):
         self._now = now
         self._used: dict[str, int] = {}   # nonce -> expires_at (prune once stale)
 
-    def is_used(self, nonce: str) -> bool:
+    def is_used(self, account_id: str, nonce: str) -> bool:
         self._prune()
         return nonce in self._used
 
-    def mark_used(self, nonce: str, expires_at: int) -> None:
+    def mark_used(self, account_id: str, nonce: str, expires_at: int) -> None:
         self._prune()
         self._used[nonce] = int(expires_at)
 
@@ -131,10 +143,11 @@ class EmailTokenService:
         # 3. TTL.
         if int(self._now()) > expires_at:
             return False
-        # 4. Single-use (replay -> False).
-        if self._used.is_used(nonce):
+        # 4. Single-use (replay -> False). Account-scoped: the shared Pg store keeps the used
+        #    set on THIS account's row (the token's account binding was proven in step 2).
+        if self._used.is_used(str(account_id), nonce):
             return False
-        self._used.mark_used(nonce, expires_at)
+        self._used.mark_used(str(account_id), nonce, expires_at)
         return True
 
 

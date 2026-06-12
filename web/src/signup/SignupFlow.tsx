@@ -38,6 +38,7 @@ import { ApiClient, defaultClient, friendlyErrorMessage, type SignupState } from
 import { Analytics, defaultAnalytics } from "../analytics/posthog";
 import { isAuthEnabled, signIn } from "../auth/cognito";
 import { PLAN_TIERS, formatMonthlyPrice, type PlanTier } from "../pricing";
+import { TurnstileWidget } from "./turnstile";
 
 const { useState, useCallback, useRef, useEffect } = React;
 
@@ -216,6 +217,12 @@ export function SignupFlow({ client, analytics, pollMs = 600 }: SignupFlowProps)
   const [emailToken, setEmailToken] = useState("");
   const [phoneCode, setPhoneCode] = useState("");
 
+  // Cloudflare Turnstile token (captcha seam). Stays null — and the widget
+  // renders nothing, loads nothing — unless the build carries
+  // VITE_TURNSTILE_SITE_KEY. When present, the latest token rides the
+  // signup-start request as the x-captcha-token header.
+  const [captchaToken, setCaptchaToken] = useState<string | null>(null);
+
   const [accountId, setAccountId] = useState<string | null>(null);
   // SIGNUP_REQUIRE_PHONE feature flag (from the create response). When false, the phone-verify
   // step is skipped — email-only verification while SMS approval is pending. Defaults true.
@@ -243,7 +250,10 @@ export function SignupFlow({ client, analytics, pollMs = 600 }: SignupFlowProps)
       // login works with what was typed. The password is never logged, stored in the DB, or
       // echoed in any response. It is zeroed from component state after submission below.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const res = await api.signup({ email, phone, password } as any);
+      const res = await api.signup(
+        { email, phone, password } as any,
+        captchaToken ? { captchaToken } : undefined,
+      );
       setAccountId(res.account_id);
       // The server tells us whether phone verification is required (feature flag). Only false
       // explicitly disables it; anything else keeps the phone step (safe default).
@@ -253,11 +263,13 @@ export function SignupFlow({ client, analytics, pollMs = 600 }: SignupFlowProps)
       ph.capture("signup_started", { surface: "signup" });
       setStep("email");
     } catch (e) {
+      // A missing/invalid captcha token comes back as the server's 400 detail
+      // and surfaces here verbatim via friendlyErrorMessage (4xx detail rule).
       setError(friendlyErrorMessage(e, "Couldn't start signup. Please try again."));
     } finally {
       setBusy(false);
     }
-  }, [api, ph, email, phone, strength.score]);
+  }, [api, ph, email, phone, strength.score, captchaToken]);
 
   const submitEmail = useCallback(async () => {
     if (!accountId) return;
@@ -496,6 +508,9 @@ export function SignupFlow({ client, analytics, pollMs = 600 }: SignupFlowProps)
               onChange={(e) => setPhone(e.target.value)}
               style={input}
             />
+
+            {/* Captcha seam: renders null (no script, no header) without a site key. */}
+            <TurnstileWidget onToken={setCaptchaToken} />
 
             <button data-testid="account-submit" style={primaryBtn} disabled={busy} onClick={() => void submitAccount()}>
               {busy ? "Creating..." : "Continue"}

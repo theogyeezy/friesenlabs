@@ -3,6 +3,13 @@
 A guard step that runs BEFORE Greenlight and blocks non-compliant actions outright — a hard fail never
 reaches the approval queue. Deterministic checks (TCPA quiet hours/consent for SMS, CAN-SPAM
 unsubscribe for email) plus an optional injected LLM critic pass for regulated verticals.
+
+Enforced from TWO layers:
+  * `ActionGate.run` (api/control/gate.py) — the full validate, critic included, blocking before
+    the queue.
+  * `Greenlight.propose` / `Greenlight.decide` (api/control/greenlight.py) — the deterministic
+    floor on EVERY proposal path (worker, sidecar, playbooks) and on the post-edit snapshot right
+    before it can be applied, with channel classification from the trusted tool registry.
 """
 from __future__ import annotations
 

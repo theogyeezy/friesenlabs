@@ -13,7 +13,10 @@ from api.control.greenlight import Greenlight
 def _propose(gl, tenant="t1", body="draft"):
     return gl.propose(tenant_id=tenant, action="send_email", agent="nadia",
                       reasoning="follow up on hot lead", value_at_stake=2500.0,
-                      payload={"to": "x@y.com", "subject": "Hi", "body": body})
+                      payload={"to": "x@y.com", "subject": "Hi", "body": body,
+                               # satisfies the compliance floor (send_email needs an
+                               # unsubscribe mechanism or it lands DENIED, not pending)
+                               "has_unsubscribe": True})
 
 
 def _backdate(gl, tenant, approval_id, seconds=1):

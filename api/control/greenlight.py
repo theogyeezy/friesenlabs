@@ -6,13 +6,22 @@ denies. Maps to the Managed Agents tool-confirmation reply (user.tool_confirmati
 mapping is authored + flagged "verify"; it is never called live here.
 
 Conforms to the `Greenlight` protocol in agents/tools/base.py (so Phase 4 tools route through it).
+
+COMPLIANCE FLOOR: every `propose` (worker tool invokes, Sidecar accept, playbook runs — not just the
+ActionGate path) runs the deterministic compliance checks (api/control/compliance.py) with channel
+classification from the TRUSTED tool registry; a violating proposal is stored DENIED with the reason
+and can never be decided/applied. `decide` re-validates the post-edit snapshot before the atomic
+status flip, so a human `edit` cannot make an approved draft non-compliant either.
 """
 import os
 import threading
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Protocol
+from typing import Callable, Protocol
+
+from . import compliance
+from .types import Action
 
 # Approval expiry (customer-readiness audit P0): propose() stamps expires_at = now + TTL.
 # Expiry is LAZY — an expired row drops out of the pending list/count and a decide() on it flips
@@ -52,6 +61,43 @@ class EditNotAllowed(ValueError):
     a human edit may tune WHAT the approved action does, never swap it for a different action.
     Maps to 422 at the API boundary (a subclass of ValueError so untyped callers still fail safe).
     """
+
+
+class ComplianceViolation(ValueError):
+    """The action snapshot that was about to become executable fails the deterministic
+    compliance floor (TCPA quiet hours/consent, CAN-SPAM unsubscribe — api/control/compliance.py).
+
+    Raised by `Greenlight.decide` BEFORE the atomic pending->decided flip, so the approval stays
+    PENDING and the applier can never run a non-compliant snapshot — including one produced by a
+    human `edit` (e.g. an edit that strips the unsubscribe link from an approved email draft).
+    Maps to 422 at the API boundary. `reason` is the CURATED policy string the validator authored
+    (never internal exception text), safe to surface to the deciding human.
+    """
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(f"rejected by compliance: {reason}")
+
+
+def _registry_channel_resolver(action: str) -> dict:
+    """Default channel resolver: classify `action` via the TRUSTED server-side tool registry
+    (`agents.tools.registry.tool_meta`) — the same source of truth POST /actions uses.
+
+    THE SECURITY CONTRACT: whether a proposal is side-effecting, and on which comms channel,
+    comes from the TOOL'S OWN DEFINITION — never from the (caller-supplied) payload. A payload
+    carrying forged `channel`/`side_effecting` keys cannot route around TCPA/CAN-SPAM here.
+
+    The import is deliberately lazy (call time, not module import): `api.control` must stay
+    importable without pulling the agents package — keeping this module dependency-light is what
+    guarantees no `api.control` <-> `agents.*` import cycle can form (today `agents.tools` imports
+    nothing from `api.*`, so even the lazy call-time import has no back-edge). Constructors that
+    need a different classification (tests, future runtimes) inject `channel_resolver=` instead.
+
+    Raises KeyError for an unknown tool — callers MUST fail CLOSED (deny), never default-allow
+    (the same contract `tool_meta` documents).
+    """
+    from agents.tools.registry import tool_meta  # noqa: PLC0415 — deliberate lazy import (no cycle)
+    return tool_meta(action)
 
 
 class ApprovalStore(Protocol):
@@ -209,13 +255,16 @@ class PgApprovalStore:
             self._pool.putconn(conn)
 
     def insert(self, row: dict) -> str:
+        # deny_message rides the INSERT (nullable column) so a compliance-denied proposal lands in
+        # ONE write carrying its reason — never a pending row that a racer could approve before a
+        # second "mark denied" write landed.
         with self._tx(row["tenant_id"]) as cur:
             cur.execute(
-                "INSERT INTO approvals (tenant_id, proposed_action, agent, reasoning, value_at_stake, status, expires_at) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+                "INSERT INTO approvals (tenant_id, proposed_action, agent, reasoning, value_at_stake, status, expires_at, deny_message) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
                 (row["tenant_id"], self._Json(row["proposed_action"]), row.get("agent"),
                  row.get("reasoning"), row.get("value_at_stake"), row.get("status", "pending"),
-                 row.get("expires_at")),
+                 row.get("expires_at"), row.get("deny_message")),
             )
             return str(cur.fetchone()["id"])
 
@@ -296,10 +345,47 @@ class PgApprovalStore:
 
 
 class Greenlight:
-    def __init__(self, store: ApprovalStore | None = None, *, ttl_hours: float | None = None):
+    def __init__(self, store: ApprovalStore | None = None, *, ttl_hours: float | None = None,
+                 channel_resolver: Callable[[str], dict] | None = None):
         self.store = store or InMemoryApprovalStore()
         # None -> GREENLIGHT_TTL_HOURS env -> 7-day default; <= 0 disables expiry stamping.
         self.ttl_hours = _ttl_hours(ttl_hours)
+        # Side-effect/channel classifier for the compliance floor below. None (the default every
+        # production constructor uses — api/asgi.py, worker/worker.py, sidecar via ApiDeps) means
+        # the TRUSTED tool registry via the lazy `_registry_channel_resolver`, so EVERY Greenlight
+        # instance enforces compliance without its constructor needing new wiring. Injectable for
+        # tests / alternate runtimes only — never resolved from the payload.
+        self._channel_resolver = channel_resolver or _registry_channel_resolver
+
+    def _compliance_verdict(self, *, action: str, agent: str | None, tenant_id: str,
+                            value_at_stake: float | None,
+                            proposed_action: dict) -> compliance.ComplianceResult:
+        """The deterministic compliance floor for a proposal snapshot.
+
+        Classification (side-effecting? which channel?) comes ONLY from the injected/trusted
+        resolver keyed by the TRUSTED action name — never from `proposed_action` itself, so a
+        payload smuggling `channel`/`side_effecting` keys cannot route around TCPA/CAN-SPAM.
+        An action the resolver doesn't know fails CLOSED (denied) — `tool_meta`'s own contract:
+        reject unknown tools, never default-allow. The gate's optional LLM critic remains a
+        GATE concern (ActionGate.run still runs it pre-propose); this floor is the deterministic
+        subset every propose path gets — worker, sidecar, playbooks, and the gate alike.
+        """
+        try:
+            meta = self._channel_resolver(action)
+        except KeyError:
+            return compliance.ComplianceResult(
+                False, f"unknown action {action!r}: not in the trusted tool registry"
+            )
+        probe = Action(
+            name=action,
+            tenant_id=tenant_id,
+            agent=agent,
+            side_effecting=bool(meta.get("side_effecting")),
+            channel=meta.get("channel"),
+            payload=proposed_action,
+            value_at_stake=value_at_stake,
+        )
+        return compliance.validate(probe)
 
     # --- matches agents.tools.base.Greenlight.propose(...) ---
     def propose(self, *, tenant_id: str, action: str, agent: str | None,
@@ -308,16 +394,33 @@ class Greenlight:
         # and the label compliance/traces key off. A client-supplied payload['action']
         # must never override it (audit-label divergence + a latent compliance
         # route-around) — the spread order below makes the trusted name win.
+        proposed_action = {**payload, "action": action}
+
+        # Compliance INSIDE propose: the gate validated before calling here (and still does,
+        # belt-and-suspenders + critic), but the worker (agents/tools/base.py), Sidecar accept,
+        # and the playbook runner propose DIRECTLY — without this check those paths would queue
+        # a non-compliant draft that one human click executes the day a real sender lands in
+        # APPLIERS. A violation follows the gate's deny pattern: the row is stored DENIED with
+        # the curated compliance reason (visible, auditable, maps to a tool_confirmation deny via
+        # to_ma_confirmation) and can never be decided/applied (`decide` requires status pending)
+        # — callers see a denied proposal, never an exception.
+        verdict = self._compliance_verdict(
+            action=action, agent=agent, tenant_id=tenant_id,
+            value_at_stake=value_at_stake, proposed_action=proposed_action,
+        )
         expires_at = _now() + timedelta(hours=self.ttl_hours) if self.ttl_hours > 0 else None
-        approval_id = self.store.insert({
+        row = {
             "tenant_id": tenant_id,
-            "proposed_action": {**payload, "action": action},
+            "proposed_action": proposed_action,
             "agent": agent,
             "reasoning": reasoning,
             "value_at_stake": value_at_stake,
-            "status": "pending",
+            "status": "pending" if verdict.ok else "denied",
             "expires_at": expires_at,
-        })
+        }
+        if not verdict.ok:
+            row["deny_message"] = verdict.reason
+        approval_id = self.store.insert(row)
         return self.store.get(tenant_id, approval_id)
 
     def list_pending(self, tenant_id: str) -> list[dict]:
@@ -375,6 +478,21 @@ class Greenlight:
                         f"not editable: {', '.join(map(repr, bad))}"
                     )
                 action.update(edits)
+            # Post-edit re-validation: THIS dict is the snapshot the applier will execute, so it —
+            # not the snapshot propose() vetted — must pass the deterministic compliance floor.
+            # An `edit` can otherwise strip the unsubscribe link / move an SMS into quiet hours
+            # AFTER compliance ran (greenlight edits change recipient/body/amount by design).
+            # Validating the plain-`approve` snapshot too is deliberate belt-and-suspenders: a
+            # pending row that predates propose-time validation can never sneak past the choke
+            # point right before apply. Raised BEFORE the conditional status flip below, so the
+            # approval stays PENDING (the CAS pending->decided semantics are untouched).
+            verdict = self._compliance_verdict(
+                action=str(action.get("action", "")), agent=rec.get("agent"),
+                tenant_id=tenant_id, value_at_stake=rec.get("value_at_stake"),
+                proposed_action=action,
+            )
+            if not verdict.ok:
+                raise ComplianceViolation(verdict.reason)
             changes = {"status": "approved", "proposed_action": action, "decided_by": decided_by}
         else:
             raise ValueError(f"unknown decision {decision!r}")

@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import logging
 
+from . import mask_phone  # PII-safe logging (signup/__init__.py): never log a raw phone number
+
 log = logging.getLogger(__name__)
 
 
@@ -55,8 +57,9 @@ class SnsSmsOtpSender:
         Un-gated transport/config failure -> SmsSendError.
         """
         if not self.allow_real_sends:
-            # DRAFT-GATE: refuse real delivery unless explicitly enabled.
-            log.info("DRAFT-GATE: real sends disabled; dropping OTP SMS to %s", phone)
+            # DRAFT-GATE: refuse real delivery unless explicitly enabled. The phone is MASKED
+            # (signup.mask_phone) — logs must never accumulate every signup's raw number.
+            log.info("DRAFT-GATE: real sends disabled; dropping OTP SMS to %s", mask_phone(phone))
             return False
         message = (
             f"Your {self.product_name} verification code is {code}. It expires in 10 minutes."
@@ -79,7 +82,10 @@ class SnsSmsOtpSender:
             )
             return True
         except Exception as e:  # noqa: BLE001 — normalize transport errors
-            raise SmsSendError(f"SNS publish to {phone} failed: {type(e).__name__}: {e}") from e
+            # The error message gets logged by callers — carry the MASKED phone only.
+            raise SmsSendError(
+                f"SNS publish to {mask_phone(phone)} failed: {type(e).__name__}: {e}"
+            ) from e
 
     def _get_client(self):
         if self._client is None:

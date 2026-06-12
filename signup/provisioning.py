@@ -29,6 +29,11 @@ from .accounts import Account, State
 
 log = logging.getLogger(__name__)
 
+# The Cognito group that makes the tenant's FIRST user its workspace admin. MUST match
+# api/auth.py ADMIN_GROUP (the one admin policy reads `cognito:groups` for this name) — kept
+# as a literal here so signup never imports the api package.
+ADMIN_GROUP_NAME = "admin"
+
 
 @dataclass
 class ProvisionResult:
@@ -316,10 +321,52 @@ class Provisioner:
             )
 
     def _step_cognito_tenant(self, account: Account, created: dict | None) -> None:
-        # 4. Set Cognito custom:tenant_id (now that it exists) + confirm the account.
+        # 4. Set Cognito custom:tenant_id (now that it exists) + confirm the account, then
+        # grant the tenant's FIRST user (the signup user) the "admin" group — best-effort.
         self._require_tenant(account)
         self.cognito.set_tenant_id(account.cognito_sub, account.tenant_id)
         self.cognito.confirm(account.cognito_sub)
+        self._grant_admin_group(account)
+
+    def _grant_admin_group(self, account: Account) -> None:
+        """Best-effort RBAC bootstrap: add the signup user to the Cognito "admin" group.
+
+        The signup user is the tenant's FIRST (and at provisioning time, ONLY) user, so they
+        are the workspace admin by definition — membership surfaces in the `cognito:groups`
+        claim the api/auth.py admin policy reads.
+
+        BEST-EFFORT BY DESIGN — this MUST NOT fail or roll back provisioning:
+          * Until RBAC_STRICT=1 flips, a user with NO groups is treated as admin anyway
+            (the api/auth.py back-compat allowance), so a missed grant degrades gracefully.
+          * The "admin" group itself is Lane Nick terraform that may not be applied yet —
+            failing the whole pipeline (charged customer, no instance) over a group that
+            doesn't exist would be strictly worse than a loud log.
+        Every failure path logs a WARNING with the exact reason + remediation so it is never
+        silent. Nothing secret is logged — only the sub and the group name.
+        """
+        adder = getattr(self.cognito, "add_user_to_group", None)
+        if not callable(adder):
+            # An injected cognito client predating the RBAC contract (older stub/fake).
+            log.warning(
+                "RBAC: cognito client %s has no add_user_to_group — user %s NOT added to the "
+                "%r group. Remediation: deploy a CognitoAdminClient with add_user_to_group, "
+                "then re-run, or add the user via "
+                "`aws cognito-idp admin-add-user-to-group`. Provisioning continues "
+                "(empty-groups users are admins until RBAC_STRICT=1).",
+                type(self.cognito).__name__, account.cognito_sub, ADMIN_GROUP_NAME,
+            )
+            return
+        try:
+            adder(account.cognito_sub, ADMIN_GROUP_NAME)
+        except Exception as e:  # noqa: BLE001 — best-effort: NEVER fail/park provisioning here
+            log.warning(
+                "RBAC: could not add user %s to the Cognito %r group: %s: %s. Most likely the "
+                "group does not exist yet (Lane Nick terraform not applied) or the role lacks "
+                "cognito-idp:AdminAddUserToGroup. Remediation: apply the group terraform, then "
+                "`aws cognito-idp admin-add-user-to-group --username <sub> --group-name %s`. "
+                "Provisioning continues (empty-groups users are admins until RBAC_STRICT=1).",
+                account.cognito_sub, ADMIN_GROUP_NAME, type(e).__name__, e, ADMIN_GROUP_NAME,
+            )
 
     def _step_tenant_context(self, account: Account, created: dict | None) -> None:
         # 5. Tenant-context defaults — two halves with DIFFERENT realities:

@@ -29,23 +29,47 @@ const PRODUCTS = [
 ];
 
 // Product-true activity (numbers highlighted in clay). Personas match the page.
+// Messages are SEGMENT ARRAYS, not HTML: plain strings render as text nodes and
+// N("...") segments render as the clay-highlighted <span class="num"> — built with
+// createElement/textContent in setCardBody, never innerHTML, so no string here (or
+// anywhere) is ever parsed as markup.
+const N = (t) => ({ num: t });
 const AGENT_MSGS = {
-  "Command Center": ['Morning view ready: <span class="num">6 items</span> need you', 'All agents green, <span class="num">31 tasks</span> queued', 'Pipeline up <span class="num">$8.2k</span> this week'],
-  "Uplift CRM": ['Moved <span class="num">2 deals</span> to Proposal', "Logged 14 touchpoints overnight", "Next step set on every open deal"],
-  "Frontline": ['Pip deflected <span class="num">9 tickets</span>', "Routed a refund request to you", 'Answered "are you open?" in 4s'],
-  "Workflows": ['Ran the new-lead workflow <span class="num">12×</span>', "Built a workflow from your prompt", "Paused at the approval step"],
-  "Greenlight": ['Quote <span class="num">#1042</span> approved by you', "Holding 3 drafts for review", "Spend limit honored on every send"],
-  "Agents": ['Margo drafted <span class="num">3 quotes</span>', "Nadia booked a discovery call", "Ledger nudged 2 overdue invoices"],
-  "Switchboard": ["Synced HubSpot & Stripe, read-only", 'Imported <span class="num">214 contacts</span> from a CSV', "Connected a new tool in 2 min"],
-  "Sidecar": ['Enriched <span class="num">12 deals</span> from your CRM data', "Drafted the next step on a HubSpot deal", "Scout briefed your next call"],
-  "Knowledge": ['Indexed <span class="num">12 new pages</span>', "Cited the 2026 price sheet", "Answered from your own docs"],
-  "Cortex": ['Scored <span class="num">18 new leads</span>', "Accuracy up 4% this cycle", "Flagged a churn-risk account"],
-  "Security": ['Audit trail: <span class="num">142 actions</span> logged', "Blocked an off-policy send", "Kill switch armed and ready"],
+  "Command Center": [["Morning view ready: ", N("6 items"), " need you"], ["All agents green, ", N("31 tasks"), " queued"], ["Pipeline up ", N("$8.2k"), " this week"]],
+  "Uplift CRM": [["Moved ", N("2 deals"), " to Proposal"], ["Logged 14 touchpoints overnight"], ["Next step set on every open deal"]],
+  "Frontline": [["Pip deflected ", N("9 tickets")], ["Routed a refund request to you"], ['Answered "are you open?" in 4s']],
+  "Workflows": [["Ran the new-lead workflow ", N("12×")], ["Built a workflow from your prompt"], ["Paused at the approval step"]],
+  "Greenlight": [["Quote ", N("#1042"), " approved by you"], ["Holding 3 drafts for review"], ["Spend limit honored on every send"]],
+  "Agents": [["Margo drafted ", N("3 quotes")], ["Nadia booked a discovery call"], ["Ledger nudged 2 overdue invoices"]],
+  "Switchboard": [["Synced HubSpot & Stripe, read-only"], ["Imported ", N("214 contacts"), " from a CSV"], ["Connected a new tool in 2 min"]],
+  "Sidecar": [["Enriched ", N("12 deals"), " from your CRM data"], ["Drafted the next step on a HubSpot deal"], ["Scout briefed your next call"]],
+  "Knowledge": [["Indexed ", N("12 new pages")], ["Cited the 2026 price sheet"], ["Answered from your own docs"]],
+  "Cortex": [["Scored ", N("18 new leads")], ["Accuracy up 4% this cycle"], ["Flagged a churn-risk account"]],
+  "Security": [["Audit trail: ", N("142 actions"), " logged"], ["Blocked an off-policy send"], ["Kill switch armed and ready"]],
 };
 const SEC_MSGS = [
-  'Held an off-policy send, parked the draft in <span class="num">Greenlight</span>',
-  'Caught a send outside policy, routed to <span class="num">Greenlight</span> for you',
+  ["Held an off-policy send, parked the draft in ", N("Greenlight")],
+  ["Caught a send outside policy, routed to ", N("Greenlight"), " for you"],
 ];
+
+// Render a segment-array message into a card's .abody using ONLY text nodes and
+// class-fixed <span class="num"> elements (textContent throughout — no innerHTML,
+// no HTML parsing, identical DOM to the previous markup).
+function setCardBody(el, parts) {
+  const body = el.querySelector(".abody");
+  if (!body) return;
+  body.textContent = "";
+  for (const part of parts) {
+    if (typeof part === "string") {
+      body.appendChild(document.createTextNode(part));
+    } else {
+      const s = document.createElement("span");
+      s.className = "num";
+      s.textContent = part.num;
+      body.appendChild(s);
+    }
+  }
+}
 
 // Canvas literals visually matched to the .lp editorial tokens (canvas can't
 // read CSS custom properties per-frame cheaply).
@@ -225,7 +249,7 @@ export function ConstellationHero({ children }) {
         const el = cardRefs[nextSlot].current;
         if (!el) return;
         el.querySelector(".aname").textContent = G.nodes[hi].label;
-        el.querySelector(".abody").innerHTML = list[msgCursor[name]];
+        setCardBody(el, list[msgCursor[name]]);
         cards[nextSlot] = { hub: hi, born: t, life: CARD_LIFE };
         nextSlot = 1 - nextSlot;
         return;
@@ -235,7 +259,7 @@ export function ConstellationHero({ children }) {
       const el = cardRefs[2].current;
       if (!el) return;
       secMsgI = (secMsgI + 1) % SEC_MSGS.length;
-      el.querySelector(".abody").innerHTML = SEC_MSGS[secMsgI];
+      setCardBody(el, SEC_MSGS[secMsgI]);
       cards[2] = { hub: SECURITY_I, born: t, life: SEC_CARD_LIFE };
     };
     const layoutCards = (t) => {

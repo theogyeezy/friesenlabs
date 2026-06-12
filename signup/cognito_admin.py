@@ -98,6 +98,30 @@ class CognitoAdminClient:
             UserAttributes=[{"Name": "custom:tenant_id", "Value": str(tenant_id)}],
         )
 
+    def add_user_to_group(self, sub: str, group_name: str) -> None:
+        """Add the user to a Cognito group (``AdminAddUserToGroup``) — the RBAC write side.
+
+        Group memberships surface in the verified ``cognito:groups`` JWT claim that
+        ``api/auth.py``'s admin policy reads — this is the ONLY writer of that role signal
+        (admin-only IAM: ``cognito-idp:AdminAddUserToGroup`` on the provisioning role; the app
+        client must NOT be able to grant itself groups).
+
+        Idempotent: AdminAddUserToGroup succeeds (no error) when the user is already a member,
+        so a re-delivered webhook / SFN retry is a natural no-op. RAISES when the group does
+        not exist (``ResourceNotFoundException``) or the user is missing — the CALLER decides
+        the policy (provisioning treats it as best-effort and logs loudly without failing the
+        pipeline, because the group is Lane Nick terraform that may not be applied yet).
+        Nothing secret is handled here — only the immutable sub and a group name.
+        """
+        client = self._cidp()
+        client.admin_add_user_to_group(
+            UserPoolId=self._pool_id,
+            # Admin APIs accept the immutable sub as the username lookup value (same as
+            # set_tenant_id above).
+            Username=sub,
+            GroupName=group_name,
+        )
+
     def set_signup_password(self, sub: str, password: str) -> None:
         """Set the user's chosen password immediately at signup (never log or store it).
 

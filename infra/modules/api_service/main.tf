@@ -180,6 +180,45 @@ variable "desired_count" {
   default = 2
 }
 
+# Sec/P0 (REQ-012 item 3): UPLIFT_ENVIRONMENT — arms shared/config.py is_prod(), whose
+# refuse-to-boot guard (Stripe internal bypass set in prod => crash, fail closed) is dead code
+# until this is present on the task. "prod" on the live task; "" omits the entry (module-level
+# escape hatch only — the root default is "prod").
+variable "uplift_environment" {
+  type        = string
+  default     = "prod"
+  description = "Value for the UPLIFT_ENVIRONMENT task env var; shared/config.is_prod() gates prod-only safety refusals on it."
+}
+
+# Sec (REQ-012 item 8a): the ADOT sidecar image. Default = the exact string the live task defs
+# carry today (zero-diff). Pin to a digest (public.ecr.aws/...@sha256:...) via tfvars — a
+# mutable :latest sidecar pulled at every task start is a supply-chain hole.
+variable "adot_image" {
+  type        = string
+  default     = "public.ecr.aws/aws-observability/aws-otel-collector:latest"
+  description = "ADOT collector sidecar image. SECURITY: pin a digest in tfvars; the :latest default only preserves the current live task def (flip = roll tasks)."
+}
+
+# Sec (REQ-012 item 8b): readonlyRootFilesystem on the app container. Default false = current
+# live task def (zero-diff). When true the container's root FS is immutable and /tmp becomes a
+# Fargate ephemeral volume (the only runtime write path: Python tempfile; PYTHONDONTWRITEBYTECODE
+# is set in the Dockerfile so no .pyc writes). Flip = new task-def revision = service roll
+# (circuit breaker auto-rolls back a broken def).
+variable "readonly_root_filesystem" {
+  type        = bool
+  default     = false
+  description = "Set readonlyRootFilesystem on the app container and mount /tmp as an ephemeral volume. Default false preserves the live task def; flipping rolls the service."
+}
+
+# Sec (REQ-012 item 8c): ECS Exec on the api service. Default true = the current live state
+# (break-glass shells stay available, now with session audit logging via the cluster's
+# execute_command_configuration). Set false to close the interactive-shell surface entirely.
+variable "enable_ecs_exec" {
+  type        = bool
+  default     = true
+  description = "enable_execute_command on the api service. Default true = current live state; sessions are KMS-encrypted + audit-logged via the cluster exec configuration."
+}
+
 # Plain env entries injected only when set, so an apply with the "" defaults changes nothing on
 # the live task (deploy invariance). Names mirror shared/config.py — never invented here.
 locals {
@@ -228,8 +267,18 @@ resource "aws_ecs_task_definition" "api" {
     operating_system_family = "LINUX"
   }
 
+  # /tmp as a Fargate EPHEMERAL volume (no host_path / no tmpfs — tmpfs is EC2-launch-type
+  # only): exists ONLY when readonly_root_filesystem flips, so the default task def stays
+  # byte-identical to the live one.
+  dynamic "volume" {
+    for_each = var.readonly_root_filesystem ? [1] : []
+    content {
+      name = "tmp"
+    }
+  }
+
   container_definitions = jsonencode([
-    {
+    merge({
       name         = "api"
       image        = var.image != "" ? var.image : "${var.project}-api:latest"
       essential    = true
@@ -243,6 +292,9 @@ resource "aws_ecs_task_definition" "api" {
         # For `python -m api.migrate` (one-off task): master + crm secret ARNs (read via boto3).
         { name = "AURORA_MASTER_SECRET_ARN", value = var.aurora_master_secret_arn },
         { name = "CRM_APP_SECRET_ARN", value = var.db_secret_arn },
+        # Sec/P0 (REQ-012 item 3): arms shared/config.is_prod() — the refuse-to-boot guard for
+        # SIGNUP_INTERNAL_BYPASS_DOMAINS-in-prod reads exactly this.
+        { name = "UPLIFT_ENVIRONMENT", value = var.uplift_environment },
         ],
         # REQ-003 step 0: the master switch appears ONLY at the deliberate go-live act —
         # without it build_signup_deps() boots all-stub even with every secret present.
@@ -306,13 +358,21 @@ resource "aws_ecs_task_definition" "api" {
           "awslogs-stream-prefix" = "api"
         }
       }
-    },
+      },
+      # Immutable root FS (REQ-012 item 8b) — keys appear ONLY when flipped so the rendered
+      # JSON (and therefore the task-def revision) is unchanged at the default. The JSON
+      # round-trip keeps both conditional arms the same HCL type (string).
+      jsondecode(var.readonly_root_filesystem ? jsonencode({
+        readonlyRootFilesystem = true
+        mountPoints            = [{ sourceVolume = "tmp", containerPath = "/tmp", readOnly = false }]
+      }) : jsonencode({}))
+    ),
     # ADOT collector sidecar (H10, offline IaC leg): receives OTLP spans from the api container and
     # exports them to X-Ray. The task role needs xray:PutTraceSegments at apply.
     # NOTE: full end-to-end X-Ray trace verification needs apply (BLOCKED: needs Nick).
     {
       name      = "aws-otel-collector"
-      image     = "public.ecr.aws/aws-observability/aws-otel-collector:latest"
+      image     = var.adot_image
       essential = false
       logConfiguration = {
         logDriver = "awslogs"
@@ -342,7 +402,9 @@ resource "aws_ecs_service" "api" {
   deployment_maximum_percent         = 200
 
   # Break-glass debugging (TODO Sec/P3 212): live shell into a task via SSM — no inbound ports.
-  enable_execute_command = true
+  # Sessions are KMS-encrypted + audit-logged via the cluster execute_command_configuration
+  # (REQ-012 item 8c); var default true = current live state.
+  enable_execute_command = var.enable_ecs_exec
 
   # First deploy: tasks need time to pull the image + pass health checks before the LB drains them.
   health_check_grace_period_seconds = 120

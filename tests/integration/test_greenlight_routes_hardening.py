@@ -55,7 +55,8 @@ def _propose(gl, *, action="update_deal", body="draft"):
     return gl.propose(
         tenant_id="A", action=action, agent="ledger", reasoning="queued by test",
         value_at_stake=100,
-        payload={"deal_id": DEAL_ID, "changes": {"stage": "closed_won"}, "body": body},
+        payload={"deal_id": DEAL_ID, "changes": {"stage": "closed_won"}, "body": body,
+                               "has_unsubscribe": True},  # compliance floor: email needs opt-out
     )
 
 

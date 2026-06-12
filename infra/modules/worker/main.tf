@@ -58,6 +58,23 @@ variable "cortex_local_dir" {
   default = ""
 }
 
+# Sec (REQ-012 item 8a): ADOT sidecar image — default is the exact live string (zero-diff);
+# pin a digest via tfvars (supply-chain: a mutable :latest is pulled at every task start).
+variable "adot_image" {
+  type        = string
+  default     = "public.ecr.aws/aws-observability/aws-otel-collector:latest"
+  description = "ADOT collector sidecar image. SECURITY: pin a digest in tfvars; the :latest default only preserves the current live task def (flip = roll tasks)."
+}
+
+# Sec (REQ-012 item 8b): immutable root FS on the worker container; /tmp rides a Fargate
+# ephemeral volume (Python tempfile is the only runtime write path; PYTHONDONTWRITEBYTECODE
+# is set in worker/Dockerfile). Default false = the live task def unchanged.
+variable "readonly_root_filesystem" {
+  type        = bool
+  default     = false
+  description = "Set readonlyRootFilesystem on the worker container and mount /tmp as an ephemeral volume. Default false preserves the live task def; flipping rolls the service."
+}
+
 resource "aws_cloudwatch_log_group" "worker" {
   name              = "/ecs/${var.project}-worker"
   retention_in_days = var.log_retention_days
@@ -85,8 +102,17 @@ resource "aws_ecs_task_definition" "worker" {
     operating_system_family = "LINUX"
   }
 
+  # /tmp ephemeral volume (Fargate; no tmpfs) — exists only when readonly_root_filesystem
+  # flips, keeping the default task def byte-identical to the live one (REQ-012 item 8b).
+  dynamic "volume" {
+    for_each = var.readonly_root_filesystem ? [1] : []
+    content {
+      name = "tmp"
+    }
+  }
+
   container_definitions = jsonencode([
-    {
+    merge({
       name      = "worker"
       image     = var.image != "" ? var.image : "${var.project}-worker:latest" # verify: real ECR URI
       essential = true
@@ -118,13 +144,20 @@ resource "aws_ecs_task_definition" "worker" {
           "awslogs-stream-prefix" = "worker"
         }
       }
-    },
+      },
+      # Immutable root FS keys appear ONLY when flipped (default = live task def unchanged).
+      # JSON round-trip keeps both conditional arms the same HCL type (string).
+      jsondecode(var.readonly_root_filesystem ? jsonencode({
+        readonlyRootFilesystem = true
+        mountPoints            = [{ sourceVolume = "tmp", containerPath = "/tmp", readOnly = false }]
+      }) : jsonencode({}))
+    ),
     # ADOT collector sidecar (H10, offline IaC leg): receives OTLP spans from the worker container and
     # exports them to X-Ray. The task role needs xray:PutTraceSegments at apply.
     # NOTE: full end-to-end X-Ray trace verification needs apply (BLOCKED: needs Nick).
     {
       name      = "aws-otel-collector"
-      image     = "public.ecr.aws/aws-observability/aws-otel-collector:latest"
+      image     = var.adot_image
       essential = false
       logConfiguration = {
         logDriver = "awslogs"
