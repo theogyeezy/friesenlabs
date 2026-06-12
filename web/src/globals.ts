@@ -57,7 +57,6 @@ import "./screens/brain";
 import "./screens/personal-recall";
 import "./screens/agents";
 import "./screens/agent-market";
-import "./screens/studio";
 import "./screens/import-data";
 import "./screens/greenlight";
 import "./screens/reports";
