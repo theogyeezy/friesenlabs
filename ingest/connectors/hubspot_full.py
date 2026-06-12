@@ -256,6 +256,20 @@ class HubSpotFullClient:
             if not after:
                 return
 
+    # -- live (bounded) search for the agent MCP tools (item 10) ---------- #
+    def search_live(self, object_type: str, *, q: str | None = None,
+                    properties: tuple[str, ...] | None = None, limit: int = 10) -> list[Record]:
+        """ONE bounded Search page for LIVE agent queries (read-only) — never paginates the whole
+        CRM. `q` is HubSpot's full-text `query`. Returns normalized :class:`Record`s; values come
+        back as text (media URLs are NOT fetched — the no-blobs guardrail holds on this path too)."""
+        body: dict = {"limit": max(1, min(int(limit), 100))}
+        if properties:
+            body["properties"] = list(properties)
+        if q:
+            body["query"] = q
+        page = self._post(f"/crm/v3/objects/{object_type}/search", body)
+        return [_normalize(object_type, raw, frozenset()) for raw in page.get("results", [])]
+
 
 @dataclass
 class FullSyncResult:

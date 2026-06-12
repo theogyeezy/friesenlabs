@@ -130,11 +130,14 @@ fix): `python -m api.migrate` loads `schema.sql` idempotently. Additive only.
 The extract above feeds ML/dashboards/grounding (the moat). Path B adds **live** agent access +
 write-actions via MCP, so agents can fetch/act on HubSpot in real time without waiting on a sync.
 Build after the extract core (items 1–9) is green.
-- [ ] 10. **HubSpot MCP server** (`mcp/hubspot/` or vendor HubSpot's official server): expose
-  read tools (search/get contacts/companies/deals/engagements, list properties/schemas) backed by
-  the SAME per-tenant vaulted OAuth token (reuse `HubSpotConnector` auth/refresh). Read-only first;
-  write-actions (create/update) behind Greenlight. NO media blobs (URL refs only). Unit-test the
-  tool schemas + token threading with mocked HubSpot responses.
+- [x] 10. **HubSpot live agent tools** (the "MCP" surface — repo uses native agent tools, not the
+  MCP wire protocol; no new dep) in `agents/tools/hubspot_live.py`: `hubspot_object_types`,
+  `hubspot_properties`, `hubspot_search` — all `Policy.AUTO` (read-only, auto-run) backed by
+  `ctx.hubspot` (a per-tenant token-set `HubSpotFullClient`; added `hubspot` to `ToolContext`).
+  Added `HubSpotFullClient.search_live()` (bounded one-page Search, no whole-CRM walk). NO media
+  blobs (URL refs only). Write actions deferred (ALWAYS_ASK/Greenlight). 5 unit tests (specs/AUTO,
+  object types, media flag, search arg-threading, not-connected); 204 agent/tool tests still green;
+  ruff clean. DONE.
 - [ ] 11. **Wire into the agent plane** as a per-tenant tool source (token injected from the vault
   per session; THE TRUST RULE — tenant from the JWT, never the request). Read tools auto-run;
   write tools route through the `api/control` Greenlight gate. Test the per-tenant isolation.

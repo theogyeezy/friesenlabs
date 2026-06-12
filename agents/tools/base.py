@@ -39,6 +39,7 @@ class ToolContext:
     cube: Any = None        # governed-metrics client
     rag: Any = None         # vector-search client
     cortex: Any = None      # model-prediction client
+    hubspot: Any = None     # live HubSpot client (HubSpotFullClient, token already set per-tenant)
     greenlight: Greenlight | None = None
     extra: dict = field(default_factory=dict)
 
