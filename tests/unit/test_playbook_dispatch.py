@@ -530,7 +530,10 @@ def test_playbook_and_runnow_settle_resolvers(monkeypatch):
 
     monkeypatch.delenv("UPLIFT_PLAYBOOK_SETTLE_SECONDS", raising=False)
     monkeypatch.delenv("UPLIFT_RUNNOW_SETTLE_SECONDS", raising=False)
-    assert playbook_settle_seconds() == 120.0
+    # 480s: the 19:45Z live tick proved 120s doesn't cover a DELEGATION cycle (coordinator ->
+    # scout sub-turn -> tools -> resume); the dispatch one-off task has no edge constraint and
+    # 8 minutes is fine against a 15-minute tick cadence.
+    assert playbook_settle_seconds() == 480.0
     assert runnow_settle_seconds() == 45.0
     monkeypatch.setenv("UPLIFT_PLAYBOOK_SETTLE_SECONDS", "300")
     monkeypatch.setenv("UPLIFT_RUNNOW_SETTLE_SECONDS", "50")
@@ -570,4 +573,4 @@ def test_build_runner_real_mode_uses_the_playbook_budget(monkeypatch):
 
     managed = [c for c in captured if c.get("runtime") == "managed"]
     assert managed, "real mode must build a managed runtime"
-    assert managed[0].get("settle_budget_s") == 120.0
+    assert managed[0].get("settle_budget_s") == 480.0

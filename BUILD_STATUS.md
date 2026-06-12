@@ -549,6 +549,13 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   usable + safe; RAG-embed IAM gap closed live.
 
 ## Lane Matt (app code) — log
+- 2026-06-12 — **Playbook settle 120s -> 480s (option 1, owner-directed):** the 19:45Z live
+  tick proved 120s covers a direct tool round-trip (Run-now at 45s served query_cube+read_crm)
+  but NOT a delegation cycle — the coordinator delegated to scout and the sub-turn's calls were
+  still open at budget end. The scheduled/event legs have no http edge; 8 minutes clears the
+  15-minute cadence with margin. Run-now stays 45s (edge-bounded; a delegating run surfaces
+  `incomplete` + a settle_budget sentinel honestly — 202-async Run-now remains the durable
+  follow-up).
 - 2026-06-12 — **MA session-id persistence (deploy-roll survival):** the in-memory Conversation
   (and the tenant's MA session id with it) died on every api task roll — in-flight CREW turns
   were unrecoverable and history reset. Now: `tenant_workspaces.session_id` (idempotent ALTER),
