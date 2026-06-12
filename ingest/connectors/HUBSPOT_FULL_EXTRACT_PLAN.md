@@ -121,9 +121,10 @@ fix): `python -m api.migrate` loads `schema.sql` idempotently. Additive only.
   imports OK; ruff clean across all new/touched files; no-media grep confirms the only `.read()` is
   the JSON response body in `_get`/`_post` (never a file blob, never the Files API). `BUILD_STATUS.md`
   build-log entry added (own lane). DONE.
-- [ ] 9. **PR**: open a PR (branch `feat/hubspot-full-extract`), get CI green (python/web/
-  terraform/smoke). DO NOT merge/deploy without owner review — note in the PR that it needs
-  the `crm_records` migration run via one-off task before the api rolls.
+- [x] 9. **PR** — opened **#340** (feat/hubspot-full-extract → main) with the additive-extract
+  summary + the deploy-ordering note (run the `crm_records` migration via `uplift-migrate-oneoff`
+  BEFORE the api rolls). NOT merged/deployed (owner-gated). CI verified before the loop's final stop.
+  Path A (extract) DONE. Path B (MCP, items 10–12) builds next on its OWN branch (separate feature).
 
 ## Path B — HubSpot MCP (live agent access) — DO BOTH (user, sequenced after the extract core)
 The extract above feeds ML/dashboards/grounding (the moat). Path B adds **live** agent access +
