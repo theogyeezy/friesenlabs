@@ -38,7 +38,7 @@ export default defineConfig({
     },
     {
       name: "chromium-real",
-      testMatch: /(realmode|integrations|pipeline|contacts|agents|workflows|reports|dashboards|dashboard-real|knowledge|onboarding|signup-real|billing|cortex|depth-ui|studio|sidecar|greenlight-real)\.spec\.ts/,
+      testMatch: /(realmode|integrations|pipeline|contacts|agents|workflows|reports|dashboards|dashboard-real|knowledge|onboarding|signup-real|billing|cortex|depth-ui|studio|sidecar|sell|greenlight-real)\.spec\.ts/,
       use: { ...devices["Desktop Chrome"], baseURL: "http://localhost:4174" },
     },
     {

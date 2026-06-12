@@ -34,6 +34,7 @@ import WorkspaceSettings from "./api/WorkspaceSettings";
 import MarketplaceView from "./api/MarketplaceView";
 import ModulesView from "./api/ModulesView";
 import SidecarView from "./api/SidecarView";
+import SellView from "./api/SellView";
 const { useState, useEffect, useRef, useMemo, useCallback, useLayoutEffect, useReducer, useContext, useImperativeHandle, useId } = React;
 const { Icon, Logo, FL_DATA, FLStore, useStore, askClaude, bizContext, confettiBurst, XPBadge, useCountUp, CountUp, AreaChart, Sparkline, LoadBars, Donut, SlideOver, CommandPalette, HEAT, fmtMoney, StatCard, ToneIco, FLflag, useTweaks, TweaksPanel, TweakSection, TweakRow, TweakSlider, TweakToggle, TweakRadio, TweakSelect, TweakText, TweakNumber, TweakColor, TweakButton, FoxDemo, KanbanDemo, WorkflowDemo, GreenlightDemo, CommandDemo, IntegrationDemo, SupportDemo, SecurityDemo, SidecarDemo, CortexDemo } = window as any;
 // app.jsx, shell: sidebar, topbar, routing, tweaks, palette
@@ -181,7 +182,10 @@ function App() {
   );
   // The visible nav per section after entitlement gating (so an all-disabled
   // section hides its label too, not just its buttons).
-  const navMain = useMemo(() => NAV.filter((n) => n.id !== "sell" || gamifyOn).filter((n) => routeEnabled(n.id)), [NAV, gamifyOn, routeEnabled]);
+  // Sell visibility: in REAL mode it's gated by the real module/entitlement gate
+  // (routeEnabled — i.e. the "sell" module in /account/modules), exactly like
+  // every other surface. In MOCK mode it keeps the prototype's gamifyOn toggle.
+  const navMain = useMemo(() => NAV.filter((n) => n.id !== "sell" || realMode || gamifyOn).filter((n) => routeEnabled(n.id)), [NAV, realMode, gamifyOn, routeEnabled]);
   const navCrm = useMemo(() => NAV_CRM.filter((n) => routeEnabled(n.id)), [NAV_CRM, routeEnabled]);
   const navAgents = useMemo(() => NAV_AGENTS.filter((n) => routeEnabled(n.id)), [NAV_AGENTS, routeEnabled]);
   const navConnect = useMemo(() => NAV_CONNECT.filter((n) => routeEnabled(n.id)), [NAV_CONNECT, routeEnabled]);
@@ -597,6 +601,12 @@ function App() {
                   into Greenlight (POST /sidecar/act) — never a direct CRM write, never the
                   FLStore Sidecar prototype with its hard-coded fake agent activity. */}
               {route === "sidecar" && <SidecarView onOpenGreenlight={() => navTo("approvals")} onOpenDeal={() => navTo("crm")} onOpenContact={() => navTo("contacts")} />}
+              {/* Sell is LIVE in real mode: the rep's real level/xp/streak +
+                  today's progress (GET /sell/me), the tenant leaderboard
+                  (GET /sell/leaderboard) and ledger-backed quests (GET /sell/
+                  quests) — honest 503 "not switched on" + 404 rollout degrades,
+                  never a fabricated score, never the FLStore confetti prototype. */}
+              {route === "sell" && <SellView />}
               {/* Security is LIVE in real mode: the kill switch + autonomy dial
                   PUT real state through GET/PUT /control/*, and a read-only
                   decision-trace feed renders GET /control/traces — each control
@@ -643,7 +653,7 @@ function App() {
                   <AccountDataControls />
                 </div>
               )}
-              {route !== "dashboard" && route !== "crm" && route !== "contacts" && route !== "agents" && route !== "studio" && route !== "workflows" && route !== "reports" && route !== "dashboards" && route !== "knowledge" && route !== "approvals" && route !== "integrations" && route !== "sidecar" && route !== "security" && route !== "settings" && route !== "cortex" && route !== "marketplace" && (
+              {route !== "dashboard" && route !== "crm" && route !== "contacts" && route !== "agents" && route !== "studio" && route !== "workflows" && route !== "reports" && route !== "dashboards" && route !== "knowledge" && route !== "approvals" && route !== "integrations" && route !== "sidecar" && route !== "sell" && route !== "security" && route !== "settings" && route !== "cortex" && route !== "marketplace" && (
                 <ComingSoon title={meta.h1} icon={navIconFor(route)} />
               )}
             </>
