@@ -28,6 +28,15 @@ const HUBSPOT = {
   status: "not_connected",
 };
 
+const GOHIGHLEVEL = {
+  name: "gohighlevel",
+  label: "GoHighLevel",
+  category: "CRM",
+  description: "Sync opportunities and contacts from GoHighLevel.",
+  connected: false as boolean | null,
+  status: "not_connected",
+};
+
 const CSV_CONNECTOR = {
   name: "csv",
   label: "CSV Import",
@@ -236,6 +245,36 @@ test("oauth: HubSpot offers a 'Connect with login' redirect; paste-key is the Ad
   // Clicking the login button is a full-page redirect to the OAuth start endpoint.
   await oauthBtn.click();
   await page.waitForURL("**/integrations/hubspot/oauth/start", { timeout: 15_000 });
+});
+
+test("oauth: GoHighLevel offers a 'Connect with login' redirect; paste-key is the Advanced fallback", async ({ page }) => {
+  await page.route("**/integrations", (route) =>
+    route.fulfill({
+      json: { integrations: [GOHIGHLEVEL], secrets_configured: true, sync_configured: true, csv_import_configured: true },
+    }),
+  );
+  // Intercept the full-page OAuth redirect so the test doesn't actually leave for
+  // a provider — the assert is that the browser navigates to the start endpoint.
+  await page.route("**/integrations/gohighlevel/oauth/start", (route) =>
+    route.fulfill({ contentType: "text/html", body: "<!doctype html><title>authorize</title>ok" }),
+  );
+
+  await page.goto("/?view=integrations");
+  await expect(page.getByTestId("integration-item")).toBeVisible({ timeout: 15_000 });
+
+  // GoHighLevel is OAuth-capable (no oauth_available flag in the payload -> the
+  // graceful-degrade default treats "gohighlevel" as capable): a primary login button.
+  const oauthBtn = page.getByTestId("int-oauth-btn");
+  await expect(oauthBtn).toBeVisible();
+  await expect(oauthBtn).toContainText("Connect with GoHighLevel");
+  await expect(oauthBtn).toHaveAttribute("data-provider", "gohighlevel");
+
+  // The paste-an-API-key path is still present, demoted to an Advanced fallback.
+  await expect(page.getByTestId("int-connect-btn")).toContainText("Advanced: paste an API key instead");
+
+  // Clicking the login button is a full-page redirect to the OAuth start endpoint.
+  await oauthBtn.click();
+  await page.waitForURL("**/integrations/gohighlevel/oauth/start", { timeout: 15_000 });
 });
 
 test("oauth: a connector that advertises oauth_available:false shows only the paste-key path", async ({ page }) => {
