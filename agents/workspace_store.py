@@ -28,6 +28,8 @@ class WorkspaceStore(Protocol):
                environment_id: str | None, coordinator_id: str | None) -> None: ...
     def get(self, tenant_id: str) -> dict | None: ...
 
+    def set_session_id(self, tenant_id: str, session_id: str | None) -> None: ...
+
 
 class InMemoryWorkspaceStore:
     """Offline workspace store (for FakeRuntime/tests; the real one is `PgWorkspaceStore`)."""
@@ -38,17 +40,25 @@ class InMemoryWorkspaceStore:
     def upsert(self, tenant_id: str, workspace_id: str | None,
                environment_id: str | None, coordinator_id: str | None) -> None:
         # Same semantics as the Pg ON CONFLICT (tenant_id) DO UPDATE: one row per tenant.
+        prior = self._rows.get(str(tenant_id)) or {}
         self._rows[str(tenant_id)] = {
             "tenant_id": str(tenant_id),
             "workspace_id": workspace_id,
             "environment_id": environment_id,
             "coordinator_id": coordinator_id,
+            "session_id": prior.get("session_id"),
         }
 
     def get(self, tenant_id: str) -> dict | None:
         # Tenant-scope the read (mirrors the Pg RLS boundary): keyed by the caller's tenant only.
         row = self._rows.get(str(tenant_id))
         return dict(row) if row else None
+
+
+    def set_session_id(self, tenant_id: str, session_id: str | None) -> None:
+        row = self._rows.get(str(tenant_id))
+        if row is not None:
+            row["session_id"] = session_id
 
 
 class PgWorkspaceStore:
@@ -129,3 +139,12 @@ class PgWorkspaceStore:
             cur.execute("SELECT * FROM tenant_workspaces WHERE tenant_id = %s", (str(tenant_id),))
             row = cur.fetchone()
         return dict(row) if row else None
+
+    def set_session_id(self, tenant_id: str, session_id: str | None) -> None:
+        """Persist (or clear, with None) the tenant's CURRENT MA session id — the handle a
+        fresh api task resumes after a deploy roll. RLS scopes the UPDATE to the bound tenant."""
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "UPDATE tenant_workspaces SET session_id = %s WHERE tenant_id = %s",
+                (session_id, str(tenant_id)),
+            )

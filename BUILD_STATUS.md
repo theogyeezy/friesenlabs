@@ -549,6 +549,16 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   usable + safe; RAG-embed IAM gap closed live.
 
 ## Lane Matt (app code) — log
+- 2026-06-12 — **MA session-id persistence (deploy-roll survival):** the in-memory Conversation
+  (and the tenant's MA session id with it) died on every api task roll — in-flight CREW turns
+  were unrecoverable and history reset. Now: `tenant_workspaces.session_id` (idempotent ALTER),
+  `WorkspaceStore.set_session_id`, `ManagedAgentsRuntime.resume_session` (offline handle) with
+  LAZY LEDGER PRIMING (a new send marks all prior events seen so reconnect-replays never fold
+  history into a digest; a continue marks through the last `user.message` so the in-flight tail
+  is recovered exactly), Conversation resume-or-create + `persist_session` seam +
+  `forget_session`, cache rebuild-on-terminated clears the dead id first, asgi factory wired.
+  TDD (7 new integration tests across store/conv/cache/runtime); full pytest exit 0. Needs the
+  migrate workflow before the deploy (the new column).
 - 2026-06-12 — **Worker drain-window latency ROOT-CAUSED + FIXED (settle budgets per leg):**
   both live "incomplete" sightings surfaced at exactly +25s — the chat-tuned
   `DEFAULT_TURN_SETTLE_SECONDS` (edge-bounded, with chat's async continue-leg as its safety

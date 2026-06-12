@@ -44,10 +44,10 @@ What remains is **owner-gated** (infra flips/seeding — see P0/P1 below), **web
   answer with 11 citations across 4 `demo:kb:` docs, `grounding_status=grounded`,
   `retrieved_count=8`, in one fast-lane request. _(The near-live ManagedAgentsRuntime
   integration-test item below stays open for CI coverage.)_
-- [ ] **Chat polish (post fast-lane, 2026-06-12):** persist the MA session id per tenant so a
-  deploy roll can't kill an in-flight CREW turn (the conv cache + session id die with the api
-  task today); bound fast-lane citation snippets to ~320 chars (they carry the full chunk);
-  optional Haiku router behind the `conv/router.py` seam; SSE streaming.
+- [ ] **Chat polish (post fast-lane, 2026-06-12):** ~~persist the MA session id per tenant~~
+  DONE (same day): `tenant_workspaces.session_id` + runtime resume with lazy ledger priming +
+  cache forget-on-terminated. Remaining: bound fast-lane citation snippets to ~320 chars (they
+  carry the full chunk); optional Haiku router behind the `conv/router.py` seam; SSE streaming.
 - [ ] **(was) Live-runtime citations (grounded RAG on the real coordinator path)** — `partial`
   - ~~Seed the demo tenant knowledge corpus~~ DONE 2026-06-12 (26 docs, retrieval verified in-VPC).
   - Add a live or near-live integration test that proves a populated corpus yields grounded citations through ManagedAgentsRuntime (current coverage is FakeRuntime/unit only).

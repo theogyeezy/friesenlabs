@@ -144,6 +144,10 @@ CREATE TABLE IF NOT EXISTS tenant_workspaces (
     coordinator_id text,
     created_at     timestamptz NOT NULL DEFAULT now()
 );
+-- Session persistence (2026-06-12): the tenant's CURRENT MA session id, so a fresh api task
+-- resumes the same session after a deploy roll (in-flight turns + history survive). Cleared
+-- when the session terminates (the cache's rebuild path) and rewritten on create.
+ALTER TABLE tenant_workspaces ADD COLUMN IF NOT EXISTS session_id text;
 
 -- ---------------------------------------------------------------------------
 -- accounts — signup/provisioning lifecycle rows (Build Guide Phase 10, Steps 52-55).
