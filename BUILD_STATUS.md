@@ -549,6 +549,17 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   usable + safe; RAG-embed IAM gap closed live.
 
 ## Lane Matt (app code) — log
+- 2026-06-12 — **Pages-rail integrity + onboarding seeds knowledge (#337):** (1) LATENT BUG —
+  the demo fixture lands 169 single-row activity shadows under source='upload'
+  (demo:doc:act:N); post-#332 they'd flood the pages rail as junk read-only "pages" titled by
+  their trailing digit. list_uploaded_documents now requires a CHUNKED family (#0..#n / #raw
+  member) — proven against real Postgres in the new env-gated test_knowledge_pages_sql.py
+  (list shape, raw head bound, inventory #raw exclusion, RLS-scoped namespace delete).
+  (2) The audit's "onboarding never touches knowledge": load-sample seeds 3 clearly-labelled
+  EDITABLE sample pages (pricing/refunds/FAQ) through the SAME build_doc_ingestor seam the
+  Knowledge tab rides; idempotent; honest degrades (no plane -> pages_seeded:0 + pinned
+  reason; mid-seed failure reports what landed, never fails the CRM load). +3 unit tests,
+  full pytest exit 0; backend-only (the response gains the `knowledge` key).
 - 2026-06-12 — **Knowledge degrade reasons differentiated (#334 — audit P1, knowledge slice):**
   `PgRagClient._embed` raises a TYPED `EmbedderUnavailable` (RuntimeError subclass — broad
   callers unchanged; a Bedrock outage never touches the pool), `/knowledge/search` classifies

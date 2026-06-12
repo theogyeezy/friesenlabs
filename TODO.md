@@ -615,11 +615,12 @@ connector VERIFY/IAM, batch-embed live run) are NOT repeated below.
   coordinator's; citations come from an independent `_grounded_answer` synthesis
   (`conv/session.py:403-407`), so claims may not match the prose. Merge/dedupe or render the
   grounded claims as their own block.
-- [ ] **Onboarding never touches knowledge** — `STEP_IDS` (`api/onboarding_routes.py:51`) has
-  no knowledge step and `/onboarding/load-sample` seeds CRM only. Seed a small sample corpus
-  with load-sample (reuse `agents/knowledge_seed`). _(The empty-state half is DONE in #251 —
-  it now guides the customer to add a document / connect sources instead of the false
-  "fills in automatically" promise.)_
+- [x] **Onboarding never touches knowledge** _(DONE in #337, 2026-06-12)_ — load-sample now
+  seeds 3 clearly-labelled EDITABLE sample pages (pricing/refunds/FAQ) through the SAME
+  build_doc_ingestor seam the Knowledge tab rides (idempotent; honest pages_seeded:0 + reason
+  when the ingest plane is unwired; a seeding failure never fails the CRM load). A knowledge
+  checklist STEP id was deliberately NOT added (web checklist churn — revisit if wanted).
+  _(The empty-state half was DONE in #251.)_
 - [x] **Unprovisioned ≠ rolling-out** _(DONE in #334, 2026-06-12)_ — a 503 from
   `GET /knowledge` (data plane unwired) now renders its own calm "isn't switched on for this
   workspace yet" panel, distinct from the 404 "rolling out after the next deploy" story.
