@@ -66,6 +66,12 @@ export interface StudioTemplate {
   definition: PlaybookDefinition;
 }
 
+export interface PlaybookRunResult {
+  ran: boolean;
+  run?: { status: string; actions: unknown[] };
+  run_reason?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Thin authed fetcher over the SAME auth primitives ApiClient uses. Never
 // sends tenant_id (the trust rule); only the bearer token rides along.
@@ -199,8 +205,10 @@ export function StudioView() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [rollout, setRollout] = useState(false);
+  const [unavailable, setUnavailable] = useState(false);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [noticeOk, setNoticeOk] = useState(true); // false = error-styled notice
 
   // Editor state: editing an existing playbook (id) or composing a new one (null).
   const [editorOpen, setEditorOpen] = useState(false);
@@ -215,6 +223,8 @@ export function StudioView() {
     setLoading(true);
     setError(null);
     setRollout(false);
+    setUnavailable(false);
+    setNotice(null);
     try {
       const [pb, tp] = await Promise.all([
         studioRequest<{ playbooks: PlaybookRow[] }>("GET", "/studio/playbooks"),
@@ -225,6 +235,8 @@ export function StudioView() {
     } catch (e) {
       if (e instanceof ApiError && e.status === 404) {
         setRollout(true); // the live API image predates /studio — calm, not an error wall
+      } else if (e instanceof ApiError && e.status === 503) {
+        setUnavailable(true); // data plane not wired on this deployment — calm, not an error wall
       } else {
         setError(friendlyErrorMessage(e, "Couldn't load the Studio. Please try again."));
       }
@@ -273,6 +285,7 @@ export function StudioView() {
         await studioRequest<PlaybookRow>("PUT", `/studio/playbooks/${editingId}`, { definition });
       }
       setEditorOpen(false);
+      setNoticeOk(true);
       setNotice(editingId === null ? "Playbook created." : "Playbook updated.");
       await load();
     } catch (e) {
@@ -288,9 +301,11 @@ export function StudioView() {
     setNotice(null);
     try {
       await fn();
+      setNoticeOk(true);
       setNotice(doneNotice);
       await load();
     } catch (e) {
+      setNoticeOk(false);
       setNotice(friendlyErrorMessage(e, "That didn't work. Please try again."));
     } finally {
       setBusy(false);
@@ -308,6 +323,7 @@ export function StudioView() {
     setNotice(null);
     try {
       const row = await studioRequest<PlaybookRow>("POST", `/studio/playbooks/${id}/activate`);
+      setNoticeOk(true);
       if (row.registered === false) {
         const reason = row.registration_reason
           ? ` (${row.registration_reason})`
@@ -322,6 +338,40 @@ export function StudioView() {
       }
       await load();
     } catch (e) {
+      setNoticeOk(false);
+      setNotice(friendlyErrorMessage(e, "That didn't work. Please try again."));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // ---------------------------------------------------------------------------
+  // Run now — POST /studio/playbooks/{id}/run — only available for active playbooks.
+  // Returns {ran:true, run:{status, actions:[]}} when a registrar resolves, or
+  // {ran:false, run_reason} for record-only state. The UI is honest: draft-only
+  // guarantee means we never claim "sent" — actions are drafted, waiting in Greenlight.
+  // ---------------------------------------------------------------------------
+
+  const runNow = async (id: string) => {
+    setBusy(true);
+    setNotice(null);
+    try {
+      const result = await studioRequest<PlaybookRunResult>("POST", `/studio/playbooks/${id}/run`);
+      setNoticeOk(true);
+      if (result.ran) {
+        const count = result.run?.actions?.length ?? 0;
+        setNotice(
+          `Run started — ${count} action${count === 1 ? "" : "s"} drafted, waiting in Greenlight.`,
+        );
+      } else {
+        const reason = result.run_reason ? ` (${result.run_reason})` : "";
+        setNotice(
+          `Run recorded (record-only${reason}) — agent plane pending.`,
+        );
+      }
+      await load();
+    } catch (e) {
+      setNoticeOk(false);
       setNotice(friendlyErrorMessage(e, "That didn't work. Please try again."));
     } finally {
       setBusy(false);
@@ -387,6 +437,19 @@ export function StudioView() {
         </div>
       )}
 
+      {unavailable && (
+        <div data-testid="studio-unavailable" style={{ ...card, fontSize: 13.5 }}>
+          <div style={{ fontWeight: 700, marginBottom: 4 }}>Agent Studio isn&rsquo;t available on this deployment yet</div>
+          <p style={{ ...muted, lineHeight: 1.5 }}>
+            The data plane isn&rsquo;t wired on this deployment. Nothing is wrong with your workspace —
+            the Studio will be available once the data plane is configured.
+          </p>
+          <button data-testid="studio-unavailable-refresh" onClick={() => void load()} style={{ ...ghostBtn, marginTop: 10 }}>
+            Refresh
+          </button>
+        </div>
+      )}
+
       {error && (
         <div data-testid="studio-error" style={{ ...card, borderColor: "var(--rose, #b4413b)", fontSize: 13.5 }}>
           <div style={{ fontWeight: 700, marginBottom: 4 }}>Something needs another try</div>
@@ -398,7 +461,19 @@ export function StudioView() {
       )}
 
       {notice && !loading && (
-        <div data-testid="studio-notice" style={{ ...card, marginBottom: 14, fontSize: 13, padding: "10px 16px" }}>
+        <div
+          data-testid="studio-notice"
+          data-ok={noticeOk ? "1" : "0"}
+          style={{
+            ...card,
+            marginBottom: 14,
+            fontSize: 13,
+            padding: "10px 16px",
+            ...(noticeOk
+              ? {}
+              : { borderColor: "var(--rose, #b4413b)", color: "var(--rose, #b4413b)" }),
+          }}
+        >
           {notice}
         </div>
       )}
@@ -447,6 +522,9 @@ export function StudioView() {
                       </>
                     ) : (
                       <>
+                        <button data-testid="playbook-run" style={primaryBtn} disabled={busy} onClick={() => void runNow(p.id)}>
+                          Run now
+                        </button>
                         <button data-testid="playbook-deactivate" style={ghostBtn} disabled={busy} onClick={() => void deactivate(p.id)}>
                           Deactivate
                         </button>
