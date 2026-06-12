@@ -1,4 +1,4 @@
-"""OAuth "connect with login" helpers for connectors — HubSpot first.
+"""OAuth "connect with login" helpers for connectors — HubSpot + GoHighLevel.
 
 This is the small, dependency-free core of the OAuth flow. It changes only WHAT
 fills a tenant's vault slot (`uplift/{tenant_id}/{source}`): instead of a pasted
@@ -7,7 +7,7 @@ private-app token (a bare string), the slot holds a JSON envelope of
 can refresh on expiry. The vault mechanics (per-tenant ref, SecretWriter,
 INTEGRATIONS_REAL_SECRETS gating) are REUSED unchanged.
 
-Three things live here, none of which touch the network at import time:
+Four things live here, none of which touch the network at import time:
   1. A provider REGISTRY (:data:`PROVIDERS`) — per-provider authorize/token URLs,
      scopes, and the Secrets Manager *reference names* for the app's client
      credentials (`uplift/oauth/hubspot/client_id` + `.../client_secret`). The
@@ -15,8 +15,9 @@ Three things live here, none of which touch the network at import time:
      SecretProvider seam — never hardcoded.
   2. SIGNED-STATE codec (:func:`sign_state` / :func:`verify_state`) — the `state`
      query param is an HMAC-SHA256-signed envelope carrying the tenant_id + a
-     nonce + an issued-at timestamp. This is the ONLY tenant binding the callback
-     has (a top-level provider redirect carries no JWT), and it is CSRF defence:
+     nonce + an issued-at timestamp (+ a PKCE code_verifier for providers that
+     require PKCE — see below). This is the ONLY tenant binding the callback has
+     (a top-level provider redirect carries no JWT), and it is CSRF defence:
      a tampered or expired state is rejected. THE TRUST RULE still holds — the
      tenant_id the callback acts on came from a value WE signed, not from the
      browser.
@@ -24,6 +25,14 @@ Three things live here, none of which touch the network at import time:
      over the provider token endpoint. HTTP goes through the module-level
      :func:`post_form` (stdlib urllib, lazy) so tests monkeypatch one seam and
      make ZERO live calls. Token VALUES are never logged.
+  4. PKCE (:func:`generate_pkce_pair`) for providers that require it
+     (`provider.pkce` — GoHighLevel/LeadConnector). The `/start` route generates a
+     code_verifier, sends only the S256 code_challenge to the provider, and carries
+     the verifier INSIDE the signed `state` (the callback is unauthenticated, so
+     the signed state is the only safe place to stash it). The verifier rides the
+     token exchange. GoHighLevel's token response also carries locationId/companyId
+     (the location the user chose at `chooselocation`); those are persisted in the
+     vault envelope so the connector can make location-level API calls.
 """
 from __future__ import annotations
 
@@ -32,6 +41,7 @@ import hashlib
 import hmac
 import json
 import logging
+import secrets
 import time
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
@@ -73,10 +83,18 @@ class OAuthProvider:
     scopes: tuple[str, ...]
     client_id_ref: str
     client_secret_ref: str
+    # PKCE required? (GoHighLevel/LeadConnector require it.) When True the /start
+    # route generates a code_verifier+challenge, sends the S256 challenge to the
+    # provider, and the verifier rides the signed state into the token exchange.
+    pkce: bool = False
+    # Extra fields merged into BOTH the authorization_code and refresh_token POST
+    # bodies (e.g. GoHighLevel's `user_type=Location`, which selects a
+    # location-scoped token). Tuple-of-pairs so the dataclass stays hashable/frozen.
+    token_extra: tuple[tuple[str, str], ...] = ()
 
     @property
     def scope_str(self) -> str:
-        # HubSpot (and the OAuth 2.0 spec) want space-delimited scopes.
+        # HubSpot/GoHighLevel (and the OAuth 2.0 spec) want space-delimited scopes.
         return " ".join(self.scopes)
 
 
@@ -96,6 +114,30 @@ PROVIDERS: dict[str, OAuthProvider] = {
         ),
         client_id_ref="uplift/oauth/hubspot/client_id",
         client_secret_ref="uplift/oauth/hubspot/client_secret",
+    ),
+    "gohighlevel": OAuthProvider(
+        name="gohighlevel",
+        # The marketplace "chooselocation" screen lets the agency owner pick the
+        # location (sub-account) to connect; the resulting code exchanges to a
+        # LOCATION-scoped token whose response carries locationId/companyId.
+        authorize_url="https://marketplace.gohighlevel.com/oauth/chooselocation",
+        # LeadConnector is GoHighLevel's API host (services.leadconnectorhq.com).
+        token_url="https://services.leadconnectorhq.com/oauth/token",
+        # Read-only scopes for what the connector pulls — contacts + opportunities,
+        # plus locations.readonly so a location-scoped token can resolve its own
+        # location. Read-only by design — Uplift never writes back.
+        scopes=(
+            "contacts.readonly",
+            "opportunities.readonly",
+            "locations.readonly",
+        ),
+        client_id_ref="uplift/oauth/gohighlevel/client_id",
+        client_secret_ref="uplift/oauth/gohighlevel/client_secret",
+        # GoHighLevel requires PKCE on the authorization-code grant.
+        pkce=True,
+        # `user_type=Location` selects a location-scoped token (vs Company).
+        # # VERIFY on first live connect against the LeadConnector token endpoint.
+        token_extra=(("user_type", "Location"),),
     ),
 }
 
@@ -125,29 +167,39 @@ class StateError(ValueError):
     403/422 (reject) versus a 502 (provider exchange failed)."""
 
 
-def sign_state(tenant_id: str, secret: str, *, nonce: str, issued_at: int | None = None) -> str:
+def sign_state(tenant_id: str, secret: str, *, nonce: str, issued_at: int | None = None,
+               code_verifier: str | None = None) -> str:
     """Return an HMAC-signed, URL-safe `state` value binding `tenant_id`.
 
     Layout: ``<b64url(payload_json)>.<b64url(hmac_sha256)>``. The payload carries
     the tenant_id, a caller-supplied nonce (single-use entropy), and an issued-at
     epoch second so :func:`verify_state` can enforce a max age. `secret` is the
     resolved HMAC signing-secret VALUE (OAUTH_STATE_SECRET), never a ref.
+
+    For PKCE providers, `code_verifier` is carried (signed) under the `cv` key:
+    the callback is unauthenticated, so the signed state is the only tamper-proof
+    place to stash the verifier between /start and /callback. It is never sent to
+    the provider's authorize endpoint (only the S256 challenge is).
     """
     if not secret:
         raise StateError("no state signing secret configured")
     payload = {"t": tenant_id, "n": nonce, "ts": int(issued_at if issued_at is not None else time.time())}
+    if code_verifier:
+        payload["cv"] = code_verifier
     body = _b64url(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8"))
     sig = _b64url(hmac.new(secret.encode("utf-8"), body.encode("ascii"), hashlib.sha256).digest())
     return f"{body}.{sig}"
 
 
-def verify_state(state: str, secret: str, *, max_age_s: int = STATE_MAX_AGE_S,
-                 now: int | None = None) -> str:
-    """Verify a signed `state` and return the bound tenant_id.
+def verify_state_payload(state: str, secret: str, *, max_age_s: int = STATE_MAX_AGE_S,
+                         now: int | None = None) -> dict:
+    """Verify a signed `state` and return its full validated payload dict.
 
-    Raises :class:`StateError` on any tamper (bad shape, bad signature) or when the
-    state is older than `max_age_s`. The signature is checked with a constant-time
-    compare BEFORE the payload is trusted, so a forged tenant_id never escapes.
+    Keys: ``t`` (tenant_id), ``ts`` (issued-at), ``n`` (nonce), and — for PKCE
+    providers — ``cv`` (the code_verifier). Raises :class:`StateError` on any tamper
+    (bad shape, bad signature) or when the state is older than `max_age_s`. The
+    signature is checked with a constant-time compare BEFORE the payload is trusted,
+    so a forged tenant_id (or verifier) never escapes.
     """
     if not secret:
         raise StateError("no state signing secret configured")
@@ -161,6 +213,8 @@ def verify_state(state: str, secret: str, *, max_age_s: int = STATE_MAX_AGE_S,
         payload = json.loads(_b64url_decode(body).decode("utf-8"))
     except (ValueError, UnicodeDecodeError) as exc:
         raise StateError("undecodable state payload") from exc
+    if not isinstance(payload, dict):
+        raise StateError("incomplete state payload")
     tenant_id = payload.get("t")
     ts = payload.get("ts")
     if not tenant_id or not isinstance(ts, int):
@@ -168,7 +222,30 @@ def verify_state(state: str, secret: str, *, max_age_s: int = STATE_MAX_AGE_S,
     current = int(now if now is not None else time.time())
     if current - ts > max_age_s:
         raise StateError("state expired")
-    return tenant_id
+    return payload
+
+
+def verify_state(state: str, secret: str, *, max_age_s: int = STATE_MAX_AGE_S,
+                 now: int | None = None) -> str:
+    """Verify a signed `state` and return the bound tenant_id (thin wrapper over
+    :func:`verify_state_payload` for callers that only need the tenant)."""
+    return verify_state_payload(state, secret, max_age_s=max_age_s, now=now)["t"]
+
+
+# --------------------------------------------------------------------------- #
+# PKCE (RFC 7636) — required by providers with `provider.pkce` (GoHighLevel).
+# --------------------------------------------------------------------------- #
+def generate_pkce_pair() -> tuple[str, str]:
+    """Return ``(code_verifier, code_challenge)`` for the S256 PKCE method.
+
+    The verifier is high-entropy URL-safe text (RFC 7636 allows 43-128 chars from
+    the unreserved set, which `token_urlsafe` satisfies); the challenge is
+    ``b64url(sha256(verifier))`` with no padding. The verifier is carried (signed)
+    in `state`; only the challenge is sent to the provider's authorize endpoint.
+    """
+    verifier = secrets.token_urlsafe(64)  # ~86 chars, within the 43-128 bound
+    challenge = _b64url(hashlib.sha256(verifier.encode("ascii")).digest())
+    return verifier, challenge
 
 
 # --------------------------------------------------------------------------- #
@@ -177,21 +254,28 @@ def verify_state(state: str, secret: str, *, max_age_s: int = STATE_MAX_AGE_S,
 TOKEN_TYPE = "oauth"
 
 
-def oauth_secret_value(*, access_token: str, refresh_token: str, expires_at: int) -> str:
+def oauth_secret_value(*, access_token: str, refresh_token: str, expires_at: int,
+                       location_id: str | None = None, company_id: str | None = None) -> str:
     """Serialize the OAuth token set into the JSON string stored in the vault slot.
 
     `token_type:"oauth"` is the discriminator the connector uses to tell an OAuth
-    envelope apart from a legacy pasted bare token (a plain string).
+    envelope apart from a legacy pasted bare token (a plain string). For
+    GoHighLevel/LeadConnector the token response also carries the chosen
+    `location_id`/`company_id`; they are persisted (when present) so the connector
+    can make location-level API calls without a second round trip. HubSpot passes
+    neither, so its envelope is byte-for-byte unchanged.
     """
-    return json.dumps(
-        {
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "expires_at": int(expires_at),
-            "token_type": TOKEN_TYPE,
-        },
-        separators=(",", ":"),
-    )
+    obj = {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "expires_at": int(expires_at),
+        "token_type": TOKEN_TYPE,
+    }
+    if location_id:
+        obj["location_id"] = str(location_id)
+    if company_id:
+        obj["company_id"] = str(company_id)
+    return json.dumps(obj, separators=(",", ":"))
 
 
 def parse_oauth_secret(value: str) -> dict | None:
@@ -296,33 +380,57 @@ def _tokens_from_response(resp: dict, *, fallback_refresh: str | None = None,
         expires_at = current + int(expires_in) if expires_in is not None else 0
     except (TypeError, ValueError):
         expires_at = 0
-    return {"access_token": access, "refresh_token": refresh,
-            "expires_at": expires_at, "token_type": TOKEN_TYPE}
+    out = {"access_token": access, "refresh_token": refresh,
+           "expires_at": expires_at, "token_type": TOKEN_TYPE}
+    # GoHighLevel/LeadConnector return the chosen location (and its company) on
+    # both exchange and refresh. Capture them (camelCase per the LeadConnector API,
+    # snake_case tolerated) so the caller can persist them in the vault envelope.
+    # Providers that don't send these (HubSpot) leave `out` unchanged.
+    location_id = resp.get("locationId") or resp.get("location_id")
+    company_id = resp.get("companyId") or resp.get("company_id")
+    if location_id:
+        out["location_id"] = str(location_id)
+    if company_id:
+        out["company_id"] = str(company_id)
+    return out
 
 
 def exchange_code(provider: OAuthProvider, *, code: str, redirect_uri: str,
-                  client_id: str, client_secret: str, now: int | None = None) -> dict:
-    """Exchange an authorization `code` for a token set (vault envelope dict)."""
-    resp = post_form(provider.token_url, {
+                  client_id: str, client_secret: str,
+                  code_verifier: str | None = None, now: int | None = None) -> dict:
+    """Exchange an authorization `code` for a token set (vault envelope dict).
+
+    For PKCE providers (`provider.pkce`) the `code_verifier` is sent so the
+    provider can match the S256 challenge from the authorize step. `provider.token_extra`
+    fields (e.g. GoHighLevel's `user_type=Location`) are merged into the POST body."""
+    fields = {
         "grant_type": "authorization_code",
         "client_id": client_id,
         "client_secret": client_secret,
         "redirect_uri": redirect_uri,
         "code": code,
-    })
+    }
+    if code_verifier:
+        fields["code_verifier"] = code_verifier
+    fields.update(dict(provider.token_extra))
+    resp = post_form(provider.token_url, fields)
     return _tokens_from_response(resp, now=now)
 
 
 def refresh_access_token(provider: OAuthProvider, *, refresh_token: str,
                          client_id: str, client_secret: str, now: int | None = None) -> dict:
     """Exchange a `refresh_token` for a fresh access token (vault envelope dict).
-    Preserves the existing refresh_token when the provider doesn't return a new one."""
-    resp = post_form(provider.token_url, {
+    Preserves the existing refresh_token when the provider doesn't return a new one.
+    `provider.token_extra` fields are merged into the POST body (the LeadConnector
+    refresh grant takes the same `user_type` as the code exchange)."""
+    fields = {
         "grant_type": "refresh_token",
         "client_id": client_id,
         "client_secret": client_secret,
         "refresh_token": refresh_token,
-    })
+    }
+    fields.update(dict(provider.token_extra))
+    resp = post_form(provider.token_url, fields)
     return _tokens_from_response(resp, fallback_refresh=refresh_token, now=now)
 
 
@@ -355,15 +463,22 @@ class OAuthConfig:
 
 
 def build_authorize_url(provider: OAuthProvider, *, client_id: str, redirect_uri: str,
-                        state: str) -> str:
-    """Assemble the provider authorize URL the browser is sent to (GET)."""
+                        state: str, code_challenge: str | None = None) -> str:
+    """Assemble the provider authorize URL the browser is sent to (GET).
+
+    For PKCE providers the caller passes the S256 `code_challenge` (the verifier
+    itself stays signed inside `state`); we add `code_challenge` +
+    `code_challenge_method=S256` to the query."""
     import urllib.parse  # noqa: PLC0415 — lazy, consistent with the rest of this module
 
-    query = urllib.parse.urlencode({
+    params = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
         "scope": provider.scope_str,
         "response_type": "code",
         "state": state,
-    })
-    return f"{provider.authorize_url}?{query}"
+    }
+    if code_challenge:
+        params["code_challenge"] = code_challenge
+        params["code_challenge_method"] = "S256"
+    return f"{provider.authorize_url}?{urllib.parse.urlencode(params)}"
