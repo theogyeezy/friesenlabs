@@ -32,8 +32,16 @@ jobs:
       - uses: aws-actions/amazon-ecr-login@v2
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
-      - name: Build + push (arm64, immutable tag)
+      - name: Build + push (arm64, immutable tag; skip when the tag already exists)
         run: |
+          # ECR tags are immutable: a deploy RETRY on the same commit (e.g. after an apply
+          # failure) cannot re-push and used to fail the whole run here (run 27402130189).
+          # The tag is the commit SHA, so an existing image IS the right image — skip to plan.
+          if aws ecr describe-images --repository-name uplift-api \
+               --image-ids imageTag="${GITHUB_SHA::7}" >/dev/null 2>&1; then
+            echo "image ${GITHUB_SHA::7} already in ECR (immutable) — skipping build/push"
+            exit 0
+          fi
           docker buildx build --platform linux/arm64 -f api/Dockerfile \
             -t "${{ steps.meta.outputs.image }}" --push .
 
