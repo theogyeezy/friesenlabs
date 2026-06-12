@@ -21,6 +21,7 @@ import {
   buildViewDataLoader,
   defaultClient,
   friendlyErrorMessage,
+  type ChatResponse,
   type Citation,
 } from "./client";
 import { SpecRenderer, type LoadData } from "../dashboard/SpecRenderer";
@@ -192,12 +193,12 @@ export function ChatDock({ client, analytics, embedded = false }: ChatDockProps)
       // Coarse usage signal only — the message TEXT is never captured (it can
       // carry tenant data); we mark that a chat happened + its length bucket.
       ph.capture("chat_message_sent", { embedded, length: body.length });
-      try {
-        let res = await api.chat(body);
-        // ASYNC TURN CONTRACT: settled === false means the delegation/tool round-trips are
-        // still in flight server-side — continue the SAME turn (no new message, no human
-        // nudge) until it settles. Each continue is a short request under the edge's 60s
-        // ceiling; narration accumulates progressively so the customer watches it work.
+      // ASYNC TURN CONTRACT: settled === false means the delegation/tool round-trips are
+      // still in flight server-side — continue the SAME turn (no new message, no human
+      // nudge) until it settles. Each continue is a short request under the edge's 60s
+      // ceiling; narration accumulates progressively so the customer watches it work.
+      const settleTurn = async (first: ChatResponse) => {
+        let res = first;
         let narration = res.answer ?? "";
         let continues = 0;
         const MAX_CONTINUES = 10;
@@ -228,6 +229,19 @@ export function ChatDock({ client, analytics, embedded = false }: ChatDockProps)
               grounding: res.grounding_status ?? null },
           ];
         });
+        return res;
+      };
+      try {
+        let res: ChatResponse;
+        try {
+          res = await api.chat(body);
+        } catch (e) {
+          // The edge gave up on the request (its ~60s ceiling), but the turn keeps settling
+          // SERVER-SIDE — recover it through the continue leg instead of erroring out.
+          if (!(e instanceof ApiError && (e.status === 504 || e.status === 502))) throw e;
+          res = { answer: "", citations: [], settled: false };
+        }
+        res = await settleTurn(res);
         if (res.view_intent && res.view_request) {
           // The Balto status message is on screen while this runs (still `sending`).
           await runBalto(res.view_request);
@@ -241,7 +255,10 @@ export function ChatDock({ client, analytics, embedded = false }: ChatDockProps)
             ? "Agents unavailable — the agent runtime isn't connected yet, so chat " +
               "is offline for now. Everything else keeps working; check back soon."
             : friendlyErrorMessage(e, "The agents couldn't answer that one. Please try again.");
-        setMsgs((m) => [...m, { who: "agent", text, error: true }]);
+        setMsgs((m) => {
+          const kept = m[m.length - 1]?.working ? m.slice(0, -1) : m;
+          return [...kept, { who: "agent", text, error: true }];
+        });
       } finally {
         setSending(false);
       }

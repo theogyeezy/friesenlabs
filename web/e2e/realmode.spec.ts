@@ -484,3 +484,40 @@ test("chat auto-continues an unsettled turn to the final cited answer — no hum
 
   expect(errors, `page errors: ${errors.join("\n")}`).toHaveLength(0);
 });
+
+test("chat recovers an edge-504 turn through /chat/continue — never an error wall", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+
+  // The edge can give up on a long initial request while the turn keeps settling
+  // server-side — the dock must recover via the continue leg, not error out.
+  await page.route("**/chat", (route) =>
+    route.fulfill({ status: 504, body: "Gateway Timeout" }),
+  );
+  await page.route("**/chat/continue", (route) =>
+    route.fulfill({
+      status: 200,
+      json: {
+        answer: "Onboarding takes five business days.",
+        citations: [{ claim: "Onboarding takes five business days.",
+                      source_ref: "demo:kb:onboarding#0", snippet: "Five business days." }],
+        pending_approvals: [], slots: {}, needs_disambiguation: [], delegations: [],
+        session_id: "s1", tenant_id: "t1", view_intent: false, view_request: null,
+        grounding_status: "grounded", retrieved_count: 1, settled: true,
+      },
+    }),
+  );
+
+  await page.goto("/?view=chat");
+  await expect(page.getByTestId("chat-dock")).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId("chat-input").fill("How long does onboarding take?");
+  await page.getByTestId("chat-send").click();
+
+  const reply = page.getByTestId("chat-msg-agent").last();
+  await expect(reply).toContainText("five business days", { timeout: 15_000 });
+  await expect(page.getByTestId("citation-source")).toContainText("demo:kb:onboarding#0");
+  const text = await bodyText(page);
+  expect(text).not.toContain("Something went wrong");
+
+  expect(errors, `page errors: ${errors.join("\n")}`).toHaveLength(0);
+});

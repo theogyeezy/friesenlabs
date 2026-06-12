@@ -254,3 +254,58 @@ def test_continue_drain_replays_missed_events_then_finishes_the_turn():
     assert out2["delegations"] == []
     # And NO user.message was sent by the continue (observe-only).
     r._client.beta.sessions.events.send.assert_called_once()
+
+
+# Live finding ROUND 4 (2026-06-12): the budget is only checkable when EVENTS arrive — a long
+# inference round emits nothing for 40+s, the stream wait blocks silently, and the request
+# sails past the 60s edge ceiling into a 504. Two guarantees:
+#   * the SDK client is built with a BOUNDED stream read timeout, so a silent wait wakes up
+#     in time to surface the turn unsettled (the continue leg picks it back up);
+#   * a reconnect-exhausted stream drop SURFACES unsettled instead of raising — under the
+#     async contract a recoverable in-flight turn must never become a customer-facing 500.
+
+class _DroppingStream:
+    """A stream whose iteration raises a connection-shaped failure (read timeout)."""
+
+    def __init__(self, events, exc):
+        self._events = list(events)
+        self._exc = exc
+
+    def __enter__(self):
+        def gen():
+            yield from self._events
+            raise self._exc
+        return gen()
+
+    def __exit__(self, *exc):
+        return False
+
+
+@pytest.mark.unit
+def test_reconnect_exhausted_drop_surfaces_unsettled_never_raises():
+    events = [
+        _ev(type="agent.message", id="m1",
+            content=[_ev(type="text", text="Routing this to Scout.")]),
+    ]
+    client_streams = [
+        _DroppingStream(events, TimeoutError("read timeout")),
+        _DroppingStream([], TimeoutError("read timeout")),  # reconnect drops too
+    ]
+    r = _managed([])
+    r._client.beta.sessions.events.stream.side_effect = client_streams
+    r._client.beta.sessions.events.list = lambda *a, **kw: iter([])
+    out = r.send_message(_session(r), "What can an AE approve?")
+    # Surfaced unsettled — recoverable via /chat/continue — never a RuntimeError/500.
+    assert out["answer"] == "Routing this to Scout."
+    assert out["pending_approvals"] == [{"status": "pending", "reason": "stream_interrupted"}]
+
+
+@pytest.mark.unit
+def test_client_is_built_with_a_bounded_stream_read_timeout():
+    import httpx
+
+    r = ManagedAgentsRuntime(api_key="test-key")
+    client = r._c()
+    t = client.timeout
+    assert isinstance(t, httpx.Timeout)
+    assert t.read is not None and t.read <= 30.0, t  # must wake up under the 60s edge ceiling

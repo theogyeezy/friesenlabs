@@ -36,6 +36,14 @@ ENV_TURN_SETTLE_SECONDS = "UPLIFT_TURN_SETTLE_SECONDS"
 # contract) — each request must clear the 60s edge ceilings with inference headroom.
 DEFAULT_TURN_SETTLE_SECONDS = 25.0
 
+# Bounded SSE read wait (round 4): the settle budget is only checkable when EVENTS arrive — a
+# long inference round emits nothing for 40+s and a silently-blocked stream wait sails the
+# request past the 60s edge ceiling into a 504. A bounded read timeout wakes the drain up
+# (classified as a stream drop -> reconnect/replay, or surface unsettled once the budget is
+# spent) so every request answers in time and the continue leg picks the turn back up.
+ENV_STREAM_READ_SECONDS = "UPLIFT_STREAM_READ_SECONDS"
+DEFAULT_STREAM_READ_SECONDS = 20.0
+
 # Reconnect-with-consolidation bound (the ratified brief's named risk: an SSE drop while a
 # custom_tool_use round is in flight is a documented deadlock). On a connection-shaped stream
 # failure mid-turn, `send_message` re-opens the session stream ONCE, replays the gap via
@@ -51,6 +59,15 @@ def _is_stream_drop(exc: BaseException) -> bool:
     is NOT a drop and propagates unchanged."""
     if isinstance(exc, (ConnectionError, TimeoutError)):
         return True
+    try:
+        import httpx  # noqa: PLC0415 — lazy on purpose
+
+        # The bounded stream read timeout (round 4) surfaces as httpx.ReadTimeout when the SDK
+        # hands the transport error through un-wrapped mid-iteration.
+        if isinstance(exc, (httpx.TimeoutException, httpx.TransportError)):
+            return True
+    except Exception:  # noqa: BLE001 — httpx absent: the builtin classes above still apply
+        pass
     try:
         from anthropic import APIConnectionError  # noqa: PLC0415 — lazy on purpose
     except Exception:  # SDK absent (offline test envs) — the builtin classes above still apply
@@ -157,12 +174,18 @@ class ManagedAgentsRuntime(AgentRuntime):
 
     def _c(self):
         if self._client is None:
+            import httpx  # noqa: PLC0415 — lazy on purpose (anthropic's own transport dep)
             from anthropic import Anthropic  # noqa: PLC0415 — lazy on purpose
 
+            read_s = float(os.environ.get(ENV_STREAM_READ_SECONDS, "") or
+                           DEFAULT_STREAM_READ_SECONDS)
             # VERIFY: beta namespace + header shape against the live SDK before use.
             self._client = Anthropic(
                 api_key=self._api_key,
                 default_headers={"anthropic-beta": MA_BETA_HEADER},
+                # Bounded read so a silent stream wait can never out-sit the edge ceiling
+                # (see ENV_STREAM_READ_SECONDS above); a fired timeout is a stream drop.
+                timeout=httpx.Timeout(connect=10.0, read=read_s, write=30.0, pool=10.0),
             )
         return self._client
 
@@ -577,17 +600,18 @@ class ManagedAgentsRuntime(AgentRuntime):
                     except Exception as exc:
                         if not _is_stream_drop(exc):
                             raise
-                        # Settle guard: a read-timeout on a session that is never going to
-                        # progress (wedged built-in call, worker dead) must SURFACE the open
-                        # work fail-closed once the budget is spent — not burn the reconnect
-                        # budget and raise a 500 at the customer.
-                        if self._clock() - turn_start >= self._settle_budget_s:
+                        # Settle guards: budget spent OR reconnects exhausted -> SURFACE the
+                        # turn unsettled (round 4) — under the async contract the continue leg
+                        # re-attaches and finishes it, so a recoverable in-flight turn must
+                        # never become a customer-facing 500 (the pre-continue code raised
+                        # here). The interrupted state is marked so the turn reads unsettled
+                        # even when no calls/idle were observed yet.
+                        if (self._clock() - turn_start >= self._settle_budget_s
+                                or reconnects >= MAX_STREAM_RECONNECTS):
+                            if not calls and not pending:
+                                pending.append(
+                                    {"status": "pending", "reason": "stream_interrupted"})
                             break
-                        if reconnects >= MAX_STREAM_RECONNECTS:
-                            raise RuntimeError(
-                                f"MA session {session.id} stream dropped again after "
-                                f"{reconnects} reconnect(s) — giving up (bounded retry)"
-                            ) from exc
                         reconnects += 1
                         continue  # re-open the stream, replay the gap, resume the drain
             break
