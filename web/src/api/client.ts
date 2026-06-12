@@ -867,6 +867,33 @@ export interface CortexHealth {
   drift: CortexDrift | null;
 }
 
+/** The raw GET /cortex/score?deal_id=<uuid> wire shape (mirror api/cortex_routes.py).
+ * Honest by construction — `score` is null whenever the champion hasn't logged a
+ * prediction for this deal, and the route answers 503 (no_registry/no_champion) or
+ * 400 (bad uuid) rather than ever inventing a number. status: "scored" (a real
+ * champion score) | "no_prediction" (champion exists, none logged for this deal) |
+ * "no_champion" | "no_registry" | "bad_request". */
+export interface CortexScoreResponse {
+  deal_id: string;
+  tenant_id: string;
+  status: "scored" | "no_prediction" | "no_champion" | "no_registry" | "bad_request" | (string & {});
+  score: number | null;
+  model_version: number | null;
+  /** The champion's registered training metrics; absent on the degraded shapes. */
+  champion_metrics?: Record<string, number>;
+}
+
+/** A USABLE Cortex score for one deal — only ever constructed when the champion
+ * has a real logged score (status "scored"). The client maps every honest empty
+ * state (no champion, no prediction, 503, bad request, transport error) to null
+ * so the UI renders NOTHING rather than a fabricated likelihood. */
+export interface CortexScore {
+  /** Conversion-likelihood score in [0, 1] (champion's most recent logged prediction). */
+  score: number;
+  /** The champion model version from the registry that produced the score. */
+  model_version: number;
+}
+
 // --- Billing invoices (GET /billing/invoices) ------------------------------
 /** One Stripe invoice row, normalized server-side from the tenant's customer. */
 export interface Invoice {
@@ -1986,6 +2013,44 @@ export class ApiClient {
       return { tenant_id: "demo", status: "no_registry", champion: null, model_count: 0, drift: null };
     }
     return this.request<CortexHealth>("GET", "/cortex/health");
+  }
+
+  /**
+   * GET /cortex/score?deal_id=<uuid>: the champion's conversion-likelihood score
+   * for one deal. Returns a usable {score, model_version} ONLY for a real logged
+   * champion score (status "scored"); every honest empty state — no champion / no
+   * registry (503), no prediction logged for this deal (200, score null), a bad
+   * uuid (400), the route not deployed (404), or any transport error — resolves to
+   * null. This method NEVER throws to the UI: a tenant without Cortex simply sees
+   * no badge, never an error or a fabricated number (the no-fabricated-numbers
+   * invariant, same as getCortexHealth). Callers fire it lazily, off the render
+   * path, so a slow/absent model never blocks a surface.
+   */
+  async getCortexScore(dealId: string): Promise<CortexScore | null> {
+    if (this.mock) {
+      // Demo builds have no champion: honest "no score" — the badge renders nothing.
+      return null;
+    }
+    try {
+      const data = await this.request<CortexScoreResponse>(
+        "GET",
+        `/cortex/score?deal_id=${encodeURIComponent(dealId)}`,
+      );
+      if (
+        typeof data.score === "number" &&
+        Number.isFinite(data.score) &&
+        typeof data.model_version === "number"
+      ) {
+        return { score: data.score, model_version: data.model_version };
+      }
+      // status "no_prediction" (200, score null) — champion exists but nothing
+      // logged for this deal yet: render nothing rather than a guessed number.
+      return null;
+    } catch {
+      // 503 (no_registry/no_champion), 400 (bad uuid), 404 (route not deployed),
+      // or a network failure — honest degradation, never surfaced as an error.
+      return null;
+    }
   }
 
   // --- CSV import (file upload) ----------------------------------------------
