@@ -60,8 +60,8 @@ app shell → real RLS-scoped tenant rows. Unauth `/api/*` → 401; **`/chat` is
   self-populate the corpus (Knowledge → Add document → `POST /knowledge/documents`, chunk→Titan
   embed→RLS upsert; the `INGEST_REAL_STORES` gate is applied), live citations carry real
   `ref_id`s (the `doc:0` placeholder bug is fixed), and every `/chat` turn reports
-  `grounding_status` + `retrieved_count`. The demo tenant's corpus seed is still pending for a
-  positive demo citation (see `TODO.md`).
+  `grounding_status` + `retrieved_count`. The demo tenant's corpus was SEEDED 2026-06-12 (26 kb docs,
+  Titan V2, one-off task; retrieval verified in-VPC — top hit `demo:kb:pricing-discount-authority#0`).
 - 🟙 **Domain:** friesenlabs.com on Route53 — the Squarespace NS cutover is **DONE** and the
   wildcard ACM cert is **ISSUED** (confirmed 2026-06-10). The apex+www Amplify domain association
   initially FAILED (CNAMEAlreadyExists): a stale us-east-2 Amplify app ("friesenlabs", branch

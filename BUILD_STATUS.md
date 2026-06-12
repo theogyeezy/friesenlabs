@@ -549,6 +549,20 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   usable + safe; RAG-embed IAM gap closed live.
 
 ## Lane Matt (app code) — log
+- 2026-06-12 — **Demo knowledge corpus SEEDED live (owner-run):** `seed_knowledge.py` executed
+  as a `uplift-migrate-oneoff` Fargate task on the live api image (`414e82c`) for the demo
+  tenant — **26 docs / 26 chunks embedded (Titan V2), exit 0**; retrieval verified by a second
+  in-VPC one-off through the production `PgRagClient` (query "what is the discount policy?" →
+  top hit `demo:kb:pricing-discount-authority#0` @0.487, RLS-scoped; demo inventory now 195
+  upload / 148 call / 132 email docs). Live `/chat` grounding now has a corpus to cite.
+  TWO bugs found by the run: (1) `scripts/demo/seed_knowledge.py` + `load_demo_tenant.py` had
+  no repo-root `sys.path` bootstrap (script execution puts `scripts/demo` on the path →
+  `ModuleNotFoundError: ingest` in the image; worked around with `PYTHONPATH=/app`, FIXED this
+  PR + parametrized subprocess regression tests). (2) OBSERVED + UNRESOLVED: the failed first
+  task reported container **exitCode 0 despite the traceback** — if reproducible, the
+  migrate-workflow's `[ "$CODE" = "0" ]` gates could false-green; worth a look before the next
+  schema migrate. Docs de-staled in the same PR (TODO seed items checked with evidence;
+  CLAUDE/README demo-seed notes updated).
 - 2026-06-11 — **Security-audit remediation batch (P0/P1/P2 from the release-readiness audit):**
   compliance floor moved INTO `Greenlight.propose` (worker/sidecar/playbook paths covered;
   unknown-action fail-closed; violations stored denied) + post-edit re-validation before the CAS

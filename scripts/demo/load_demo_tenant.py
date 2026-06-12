@@ -48,6 +48,9 @@ import sys
 # The committed fixture (generator output) — the single source of truth for what loads.
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
+# Script execution puts THIS directory on sys.path, not the repo root — bootstrap it so the
+# repo imports resolve when run as `python scripts/demo/load_demo_tenant.py` (one-off task).
+sys.path.insert(0, REPO_ROOT)
 DEFAULT_FIXTURE = os.path.join(HERE, "fixture", "demo_tenant.json")
 
 # documents wipe is scoped to the FIXTURE's own ref_id namespace, not all of demo:%, so a

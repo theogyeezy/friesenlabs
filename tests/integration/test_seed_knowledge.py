@@ -93,3 +93,32 @@ def test_knowledge_seeds_idempotently_and_round_trips():
     assert all(h["ref_id"].startswith("demo:kb:") for h in hits)
     assert all(h["source"] == "upload" and h["content"] for h in hits)
     assert rag.search(tenant_id=other, query="anything", limit=5) == [], "search is RLS-scoped"
+
+
+# --------------------------------------------------------------------------- script bootstrap
+# REGRESSION (live one-off run, 2026-06-12): `python scripts/demo/seed_knowledge.py` in the api
+# image died with ModuleNotFoundError: No module named 'ingest' — script execution puts the
+# SCRIPT'S directory on sys.path, not the repo root, and (unlike the other scripts/ entrypoints)
+# the demo seeders had no repo-root bootstrap. These run the scripts exactly as the one-off
+# Fargate task does and assert the failure is the honest no-DB refusal, never an import error.
+import subprocess  # noqa: E402
+import sys as _sys  # noqa: E402
+
+_REPO = ROOT
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("script", ["scripts/demo/seed_knowledge.py",
+                                    "scripts/demo/load_demo_tenant.py"])
+def test_script_execution_finds_repo_modules_without_pythonpath(script):
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("UPLIFT_DB_URL", "CRM_APP_SECRET_ARN", "DB_HOST",
+                        "INGEST_REAL_STORES", "PYTHONPATH", "TENANT_ID")}
+    proc = subprocess.run(
+        [_sys.executable, script, "--tenant", "00000000-0000-0000-0000-000000000000"],
+        cwd=_REPO, env=env, capture_output=True, text=True, timeout=60,
+    )
+    err = proc.stderr + proc.stdout
+    assert proc.returncode != 0  # no DB configured — it must refuse...
+    assert "No module named" not in err, err  # ...for the DB reason, never an import error
+    assert "no DB connection configured" in err, err
