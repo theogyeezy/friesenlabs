@@ -549,6 +549,22 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   usable + safe; RAG-embed IAM gap closed live.
 
 ## Lane Matt (app code) — log
+- 2026-06-12 — **First SCHEDULED playbook run LIVE-VERIFIED end-to-end + Cognito threat
+  protection ON (owner-approved, Matt's session):** activated a starter playbook
+  (pipeline-hygiene-scout instantiated via the live Studio API as the demo tenant, cron
+  `*/15`) — and the first tick produced "0 playbook run(s)": a SECOND firing bug, found live.
+  The Fargate dispatch container starts ~30-90s after the EventBridge tick, so the exact-minute
+  cron match against `datetime.now()` (15:01:10 for the 15:00 tick) missed on every run. Fixed
+  by #299 (TDD): `main()` floors now() to the quarter-hour tick (`_tick_floor`); the live
+  failure shape is pinned in unit tests. After the deploy, the 15:15Z tick FIRED the playbook:
+  real MA session → "dispatch complete: 1 playbook run(s) across 1 tenant(s)" → run persisted
+  (`schedule · */15 · pending`, P0-2 history live for a scheduled run) → 2 draft actions in
+  Greenlight with model-authored reasoning, 0 approved (draft-only HELD) →
+  `reused_registration: true` (P0-3, no crew leak). Playbook deactivated post-proof. Same
+  apply: **Cognito `PLUS` tier + threat protection `ENFORCED`** (owner-approved billing change,
+  REQ-012 items 2+4 — verified live via describe-user-pool). Ops note: a local-resolver DNS
+  staleness made friesenlabs.com serve Squarespace from THIS Mac only (world DNS verified
+  correct via 8.8.8.8/whois/pinned-IP probe — flush the local cache if it recurs).
 - 2026-06-12 — **Agentic chat settle loop (the "clanky chat" fix, owner-reported):** live
   browser test as the demo user proved the diagnosis — `/chat` returned at the FIRST
   `requires_action` idle with the coordinator's `search_rag` calls still unserved (worker race),

@@ -274,6 +274,13 @@ workspace-key-pool seeding.
   ticked at :12/:27/:42/:57 and matched nothing). Make `dispatch_scheduled` match "due since
   the last tick" (a 15-min window keyed off the previous run) so any cron minute works, and
   validate/op-hint quarter-hour minutes in the Studio until then.
+  **PARTIAL 2026-06-12 (#299): a SECOND live miss — Fargate starts ~30-90s after the tick, so
+  `datetime.now()` missed the tick minute on every run ("0 playbook run(s)" with an active
+  `*/15` playbook). `main()` now floors now() to the quarter-hour tick (`_tick_floor`), and a
+  scheduled run was LIVE-VERIFIED end-to-end (15:15Z tick → MA session → "1 playbook run(s)" →
+  run persisted `schedule · */15 · pending` → 2 Greenlight drafts, 0 approved →
+  `reused_registration: true`). Remaining scope: quarter-hour-only cron minutes still apply —
+  full window-matching + a Studio validation hint stay open.**
 - [ ] **Server-side module gating for /studio + /agents** — gated by the $39/mo agents module
   in the UI only (`shared/modules.py:40`); `api/routes_studio.py` never checks entitlements,
   so a tenant with the module off can drive the API directly — billing leakage once Phase-2
