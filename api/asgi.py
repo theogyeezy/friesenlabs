@@ -56,6 +56,7 @@ from api.usage_routes import UsageDeps
 from api.views import PgSavedViewStore, SavedViews
 from api.workflows_routes import WorkflowsDeps
 from conv.cache import TenantConversationCache
+from conv.router import HeuristicRouter
 from conv.session import Conversation
 from conv.synthesizer import AnthropicSynthesizer
 from conv.view_patcher import AnthropicViewPatcher
@@ -182,6 +183,9 @@ def make_conversation_factory(
             cortex=cortex,                  # persistent Cortex registry -> run_model scores live
             prediction_log=prediction_log,  # run_model logs each score -> predictions (flywheel)
             synthesizer=synthesizer,
+            # Tier-0 fast lane (conv/router.py): knowledge-shaped asks answer directly from
+            # the grounded RAG path in seconds — crew-biased, deterministic, offline.
+            router=HeuristicRouter(),
             spec_generator=spec_generator,  # default ctx.extra['generate_spec'] for build_view
             greenlight=greenlight,
             cost_recorder=cost_recorder,    # per-turn Anthropic token usage -> cost_events
