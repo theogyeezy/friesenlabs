@@ -12,8 +12,9 @@ import { test, expect, type Page } from "@playwright/test";
 //      DashboardView, Greenlight -> GreenlightQueue, Ask agents -> ChatDock),
 //   2. KPI/chart blocks show an explicit "No data yet" — never the offline
 //      demo fixture numbers (sampleLoadData stays mock-only),
-//   3. every other route renders the honest "isn't live yet" panel instead of
-//      an FLStore prototype screen, and no prototype chrome (fake badges,
+//   3. never-built routes are pruned from the nav entirely (no FLStore prototype
+//      screen is reachable), while graduated surfaces (Marketplace, Sell) route
+//      to their real ApiClient-backed views; no prototype chrome (fake badges,
 //      "5 agents online" rail, scripted notifications, onboarding) appears,
 //   4. /chat 503 renders "Agents unavailable" copy,
 //   5. loading spinners, "Inbox zero" / "No saved views yet" empty states,
@@ -112,13 +113,19 @@ test("real mode: non-API routes render the honest 'isn't live yet' panel, not th
     await expect(page.locator(".nav-item", { hasText: pruned })).toHaveCount(0);
   }
 
-  // Sell is still in the nav (gamification is on by default) but has no
-  // ApiClient-backed surface yet, so in real mode it must render the honest
-  // ComingSoon panel — never the FLStore prototype Sell screen with its fake
-  // streaks/leaderboard numbers.
+  // Sell is LIVE in real mode now: it routes (via the real module gate) to the
+  // ApiClient-backed SellView, NOT the FLStore prototype Sell screen and NOT a
+  // ComingSoon panel. With the points store inert (503) it shows the honest
+  // offline panel — never fabricated streaks/leaderboard numbers. (The full Sell
+  // states are exercised in sell.spec.ts.)
+  await page.route(
+    (url) => url.pathname.startsWith("/sell/"),
+    (route) => route.fulfill({ status: 503, json: { detail: "gamification is unavailable" } }),
+  );
   await page.locator(".nav-item", { hasText: "Sell" }).click();
-  await expect(page.getByTestId("coming-soon")).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByTestId("coming-soon")).toContainText("isn’t live yet");
+  await expect(page.getByTestId("sell-view")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId("sell-offline")).toBeVisible();
+  await expect(page.getByTestId("coming-soon")).toHaveCount(0);
 
   // Marketplace is LIVE in real mode now: the API-wired MarketplaceView (over
   // GET /studio/templates), NOT the FLStore prototype agent catalog and NOT a
