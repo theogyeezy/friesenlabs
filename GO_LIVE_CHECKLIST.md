@@ -63,12 +63,12 @@ Until this is done, a real paid signup gets charged then parks `provisioning_fai
 
 ## 6. Turn on ingest + connectors (= release Switchboard — the full ordered runbook is REQ-012)
 
-- [ ] **Migrate first:** one-off `api.migrate` with a fresh image — adds the `integration_sync_runs` table + grants (async "Sync now", the single-runner guard, sync history / last-synced). Isolation gate after.
-- [ ] **IAM deltas:** api task `secretsmanager:DeleteSecret` on `uplift/*/{hubspot,stripe,gohighlevel}*` (disconnect + account-delete vault purge); ingest task `secretsmanager:ListSecrets` (the `auto` tenant discovery). Verify #235's connector-write widening is APPLIED.
-- [ ] `ingest_schedule_enabled = true` + `ingest_tenants = "auto"` — `auto` discovers the tenant set from the vaulted slots, so a customer who connects in the panel is auto-enrolled (no hand-list; a comma list still works). The rule syncs `--source hubspot`; add per-source runs when stripe/gohighlevel tenants exist.
-- [ ] `INTEGRATIONS_REAL_SECRETS` (flag `api_integrations_real`) + `INGEST_REAL_STORES` on the api task for live connector connect/disconnect/sync + CSV-import landing in the CRM tables. (In-request sync risk is gone — API kicks are 202 + background + guarded.)
+- [x] **Migrate first:** DONE 2026-06-12 (Migrate workflow run 27395832294 — exit 0 + isolation PASS). one-off `api.migrate` with a fresh image — adds the `integration_sync_runs` table + grants (async "Sync now", the single-runner guard, sync history / last-synced). Isolation gate after.
+- [x] **IAM deltas:** APPLIED 2026-06-12 (deploy 27394841845, owner-approved). api task `secretsmanager:DeleteSecret` on `uplift/*/{hubspot,stripe,gohighlevel}*` (disconnect + account-delete vault purge); ingest task `secretsmanager:ListSecrets` (the `auto` tenant discovery). Verify #235's connector-write widening is APPLIED.
+- [x] APPLIED 2026-06-12: `ingest_schedule_enabled = true` + `ingest_tenants = "auto"` — `auto` discovers the tenant set from the vaulted slots, so a customer who connects in the panel is auto-enrolled (no hand-list; a comma list still works). The rule syncs `--source hubspot`; add per-source runs when stripe/gohighlevel tenants exist.
+- [x] APPLIED 2026-06-12: `INTEGRATIONS_REAL_SECRETS` (flag `api_integrations_real`) + `INGEST_REAL_STORES` on the api task for live connector connect/disconnect/sync + CSV-import landing in the CRM tables. (In-request sync risk is gone — API kicks are 202 + background + guarded.)
 - [ ] Live per-connector `# VERIFY` pass against the real vendor APIs on the first connect (HubSpot + Stripe self-confirmed in code; **GoHighLevel still needs a live verify** — incremental filter AND the new connect-probe endpoint). Also verify put/create/describe/delete_secret shapes + the REQ-008 ARN-suffix match.
-- [ ] **Bill the module:** minted DONE (test mode): `stripe_module_price_ids = { STRIPE_PRICE_ID_MODULE_INTEGRATION = "price_1ThHLBRCMItYjxIJAUlF0E1q" }` — staged in the machine-local `prod.auto.tfvars` with the other Switchboard flips; rides the next deploy. (Re-mint in LIVE mode at the live-keys cutover.)
+- [x] **Bill the module:** APPLIED 2026-06-12 (on the api task env); minted DONE (test mode): `stripe_module_price_ids = { STRIPE_PRICE_ID_MODULE_INTEGRATION = "price_1ThHLBRCMItYjxIJAUlF0E1q" }` — staged in the machine-local `prod.auto.tfvars` with the other Switchboard flips; rides the next deploy. (Re-mint in LIVE mode at the live-keys cutover.)
 
 ## 7. Turn on playbook automation
 

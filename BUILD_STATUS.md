@@ -549,6 +549,19 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   usable + safe; RAG-embed IAM gap closed live.
 
 ## Lane Matt (app code) — log
+- 2026-06-12 — **Switchboard RELEASED (REQ-012 executed end-to-end):** the $29/mo `integration`
+  module is live for customers. Owner-approved deploy 27394841845 applied the #253 IAM deltas
+  (connector Delete/Get on the api role, ListSecrets on ingest) + all four flips
+  (INTEGRATIONS_REAL_SECRETS, INGEST_REAL_STORES, nightly rule ENABLED, `ingest_tenants="auto"`)
+  + STRIPE_PRICE_ID_MODULE_INTEGRATION (test-mode Price `price_1ThHLBR…`, minted to match the
+  deployed test-mode plan prices) — api rolled to `uplift-api:414e82c`, healthz 200. NEW
+  **Migrate workflow** (`.github/workflows/migrate.yml`, #276 — one-off DB migrate + isolation
+  gate via the OIDC deploy role; no more laptop-AWS-session dependency) ran live:
+  `uplift-migrate-oneoff:5` → `api.migrate` exit 0 ("schema + roles loaded";
+  `integration_sync_runs` + grants) → isolation gate exit 0 ("[isolation] PASS — RLS enforced").
+  Live-verified: unauthed `/api/integrations` and `/api/integrations/{name}/syncs` answer 401
+  (mounted + gated). Remaining: REQ-012 step 5 — the first-connect live # VERIFY with a real
+  HubSpot/Stripe token (user), then the first nightly `auto` discovery run.
 - 2026-06-11 — **Agents & Studio audit P0s IMPLEMENTED (`feat/matt-agents-studio-p0s`):** all
   four release blockers from the morning's audit, TDD throughout (red→green per chunk).
   (1) `draft_email` now REQUIRES a model-authored `body` stored verbatim — the placeholder
