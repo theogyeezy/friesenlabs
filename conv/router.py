@@ -55,6 +55,16 @@ _KNOWLEDGE_SHAPE = re.compile(
 )
 
 
+# Corpus NOUNS — strong knowledge signals that survive opener typos ("waht is our discont
+# policy" misses the shape regex but plainly asks about a policy; owner-reported 2026-06-12).
+# Checked AFTER the crew markers, so action/CRM asks mentioning these still go to the crew.
+_CORPUS_NOUNS = re.compile(
+    r"\b(polic(y|ies)|terms|pricing|price list|playbook|onboarding|warranty|rate card|"
+    r"discount\w*|discont\w*|procedure|process for|faq)\b",
+    re.I,
+)
+
+
 class HeuristicRouter:
     """Deterministic, offline v1. Crew-biased: verbs and CRM-state markers win over shape."""
 
@@ -66,6 +76,6 @@ class HeuristicRouter:
             return CREW
         if _CRM_STATE.search(text):
             return CREW
-        if _KNOWLEDGE_SHAPE.match(text) or text.endswith("?"):
+        if _KNOWLEDGE_SHAPE.match(text) or text.endswith("?") or _CORPUS_NOUNS.search(text):
             return KNOWLEDGE
         return CREW
