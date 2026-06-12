@@ -413,6 +413,12 @@ variable "uplift_environment" {
   description = "UPLIFT_ENVIRONMENT on the API task + provisioning Lambda (REQ-012 item 3). 'prod' makes shared/config.is_prod() true so the SIGNUP_INTERNAL_BYPASS_DOMAINS-in-prod guard can actually refuse to boot."
 }
 
+variable "rbac_strict" {
+  type        = bool
+  default     = false # back-compat: empty cognito:groups => tenant-admin (pre-RBAC users keep working)
+  description = "REQ-013: when true, RBAC_STRICT=1 on the API task removes the empty-groups admin allowance — a group-less user is no longer auto-admin. Flip only after every functional user is assigned a group."
+}
+
 variable "cognito_threat_protection_mode" {
   type        = string
   default     = "ENFORCED" # adaptive auth + compromised-credential blocking on the tenant pool

@@ -228,6 +228,7 @@ module "api_service" {
   # REQ-012: item 3 (is_prod() arming), 8a (pinnable ADOT image), 8b (immutable root FS,
   # default-off), 8c (exec stays on, now audit-logged at the cluster).
   uplift_environment       = var.uplift_environment
+  rbac_strict              = var.rbac_strict
   adot_image               = var.adot_image
   readonly_root_filesystem = var.readonly_root_filesystem
   enable_ecs_exec          = var.enable_ecs_exec

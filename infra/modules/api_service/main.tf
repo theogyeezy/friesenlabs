@@ -206,6 +206,15 @@ variable "uplift_environment" {
   description = "Value for the UPLIFT_ENVIRONMENT task env var; shared/config.is_prod() gates prod-only safety refusals on it."
 }
 
+# Sec (REQ-013): RBAC strict mode. false (default) keeps the empty-groups=admin back-compat so
+# pre-RBAC users are unaffected; true sets RBAC_STRICT=1 so a group-less user is no longer auto-admin.
+# Flip ONLY after every functional user is in a group (provisioning bootstraps new first-users to admin).
+variable "rbac_strict" {
+  type        = bool
+  default     = false
+  description = "When true, sets RBAC_STRICT=1 on the API task — api.auth removes the empty-cognito:groups admin allowance."
+}
+
 # Sec (REQ-012 item 8a): the ADOT sidecar image. Default = the exact string the live task defs
 # carry today (zero-diff). Pin to a digest (public.ecr.aws/...@sha256:...) via tfvars — a
 # mutable :latest sidecar pulled at every task start is a supply-chain hole.
@@ -328,6 +337,11 @@ resource "aws_ecs_task_definition" "api" {
         var.cube_endpoint != "" ? [{ name = "CUBE_ENDPOINT", value = var.cube_endpoint }] : [],
         var.posthog_host != "" ? [{ name = "POSTHOG_HOST", value = var.posthog_host }] : [],
         var.integrations_real ? [{ name = "INTEGRATIONS_REAL_SECRETS", value = "1" }] : [],
+        # Sec (REQ-013): RBAC strict mode. Default OFF = the back-compat allowance (a user with
+        # NO cognito:groups is treated as tenant-admin, so pre-RBAC users keep working). Flip to
+        # 1 ONLY after every functional user has been assigned a group — then a group-less user is
+        # NO LONGER auto-admin. api.auth.is_tenant_admin reads exactly this.
+        var.rbac_strict ? [{ name = "RBAC_STRICT", value = "1" }] : [],
         # Connector OAuth flow config (non-secret): the public API base the provider redirect_uri is
         # built from (must route through the edge that stamps X-Origin-Verify — the SPA's /api path,
         # NOT the bare ALB), and where the callback returns the browser. Gated on the state-secret ARN
