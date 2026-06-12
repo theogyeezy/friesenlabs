@@ -565,6 +565,14 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   REQ-012 items 2+4 — verified live via describe-user-pool). Ops note: a local-resolver DNS
   staleness made friesenlabs.com serve Squarespace from THIS Mac only (world DNS verified
   correct via 8.8.8.8/whois/pinned-IP probe — flush the local cache if it recurs).
+- 2026-06-12 — **Settle loop ROUND 2 (post-deploy live re-test):** the first deploy still
+  clipped — `requires_action` can fire for a DELEGATED THREAD's upcoming work with ZERO
+  open calls on the stream (captured: `pending=[{reason: requires_action}]`,
+  paragraph-folding confirmed live). Settle v2 waits through requires_action regardless of
+  open calls (budget-bounded); a routed Greenlight proposal remains the one immediate stop;
+  stream-drop at exhausted budget surfaces fail-closed instead of raising; the wedged-
+  session placeholder signal is preserved at stream end. +2 live-sequence tests; full
+  pytest exit 0.
 - 2026-06-12 — **Agentic chat settle loop (the "clanky chat" fix, owner-reported):** live
   browser test as the demo user proved the diagnosis — `/chat` returned at the FIRST
   `requires_action` idle with the coordinator's `search_rag` calls still unserved (worker race),

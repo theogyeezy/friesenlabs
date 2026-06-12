@@ -147,3 +147,47 @@ def test_settle_never_waits_on_a_routed_greenlight_proposal():
     assert [p.get("tool_name") for p in out["pending_approvals"]] == ["send_email"]
     assert [(t["tool"], t["status"]) for t in out["tool_results"]] == [
         ("send_email", "queued_for_approval")]
+
+
+# Live finding ROUND 2 (post-deploy re-test, 2026-06-12): `requires_action` can fire for a
+# DELEGATED THREAD's upcoming work BEFORE any custom_tool_use reaches the stream — zero open
+# calls at the idle, so the v1 settle (which keyed on open calls) still returned early with
+# pending=[{reason: requires_action}]. Settle must wait through requires_action regardless of
+# open calls — UNLESS a routed Greenlight proposal is already pending (a legitimate stop).
+_THREAD_RACE_TURN = [
+    _ev(type="session.thread_created", agent_name="scout", session_thread_id="th_1"),
+    _ev(type="agent.message",
+        content=[_ev(type="text", text="Routing this to Scout.")]),
+    _ev(type="session.status_idle", stop_reason=_ev(type="requires_action")),  # NO open calls
+    _ev(type="agent.custom_tool_use", name="search_rag", input={"q": "policy"}, id="ctu_2"),
+    _ev(type="session.status_idle", stop_reason=_ev(type="requires_action")),  # call now open
+    _ev(type="user.custom_tool_result", custom_tool_use_id="ctu_2",
+        content=[_ev(type="text", text='{"status": "ok", "hits": []}')]),
+    _ev(type="agent.message",
+        content=[_ev(type="text", text="AEs can approve up to 10% on their own.")]),
+    _ev(type="session.status_idle", stop_reason=_ev(type="end_turn")),
+]
+
+
+@pytest.mark.unit
+def test_settle_waits_through_requires_action_with_no_open_calls_yet():
+    r = _managed(_THREAD_RACE_TURN)
+    out = r.send_message(_session(r), "What can an AE approve?")
+    assert out["pending_approvals"] == []
+    assert "AEs can approve up to 10%" in out["answer"]
+    assert [(t["tool"], t["status"]) for t in out["tool_results"]] == [("search_rag", "ok")]
+
+
+@pytest.mark.unit
+def test_budget_exhausted_no_open_calls_surfaces_requires_action_reason():
+    t = {"now": 0.0}
+
+    def clock():
+        t["now"] += 100.0
+        return t["now"]
+
+    r = _managed(_THREAD_RACE_TURN, clock=clock, settle_budget_s=45.0)
+    out = r.send_message(_session(r), "What can an AE approve?")
+    # Today's fail-closed shape for the no-open-calls case.
+    assert out["pending_approvals"] == [{"status": "pending", "reason": "requires_action"}]
+    assert "AEs can approve up to 10%" not in out["answer"]
