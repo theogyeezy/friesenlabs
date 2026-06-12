@@ -46,8 +46,19 @@ What remains is **owner-gated** (infra flips/seeding — see P0/P1 below), **web
   integration-test item below stays open for CI coverage.)_
 - [ ] **Chat polish (post fast-lane, 2026-06-12):** ~~persist the MA session id per tenant~~
   DONE (same day): `tenant_workspaces.session_id` + runtime resume with lazy ledger priming +
-  cache forget-on-terminated. Remaining: bound fast-lane citation snippets to ~320 chars (they
+  cache forget-on-terminated — PROVEN LIVE (the Vada Fenwick follow-up carried context across
+  a stalled turn + worker restart). Remaining: bound fast-lane citation snippets to ~320 chars (they
   carry the full chunk); optional Haiku router behind the `conv/router.py` seam; SSE streaming.
+- [ ] **Worker session discovery is STARTUP-BOUND (live finding, 2026-06-12, P1):** the SDK
+  `EnvironmentWorker` only attaches to sessions present at startup — every session created
+  after the worker last rolled gets NO tool service (turns stall silently until a worker
+  restart; deploy.yml rolls only the api). Fix: roll uplift-worker in deploy.yml (cheap), and/or
+  a periodic worker self-restart / SDK re-discovery (verify the SDK's discovery contract —
+  this may be an SDK beta gap worth reporting). Until fixed: restart the worker after deploys.
+- [ ] **Suppress the "documents couldn't verify" grounding note on CRM-answered crew turns** —
+  it renders under answers served from `read_crm` tool_results (live: the Vada Fenwick contact
+  answer), where the document corpus is irrelevant; skip the note when the turn carried served
+  CRM tool results.
 - [ ] **(was) Live-runtime citations (grounded RAG on the real coordinator path)** — `partial`
   - ~~Seed the demo tenant knowledge corpus~~ DONE 2026-06-12 (26 docs, retrieval verified in-VPC).
   - Add a live or near-live integration test that proves a populated corpus yields grounded citations through ManagedAgentsRuntime (current coverage is FakeRuntime/unit only).

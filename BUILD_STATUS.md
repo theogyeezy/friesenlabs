@@ -549,6 +549,18 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   usable + safe; RAG-embed IAM gap closed live.
 
 ## Lane Matt (app code) — log
+- 2026-06-12 — **CREW LANE LIVE-VERIFIED + the worker-discovery bug found (the Vada Fenwick
+  test):** the contact-lookup router fix deployed and the question correctly took the crew
+  lane — transport flawless (1 send + 10 auto-continues, all 200, zero 504s, zero nudges,
+  honest interim narration) — but the turn stalled: the WORKER's session discovery is
+  STARTUP-BOUND (the SDK EnvironmentWorker was streaming two morning-era sessions and never
+  picked up newer ones; deploy.yml rolls only the api service, so the worker had run for
+  hours). A `--force-new-deployment` on uplift-worker re-discovered immediately — it attached
+  to the persisted session, served the still-open `read_crm` calls, and the follow-up turn
+  answered with the real contact record (+1-737-555-0115, Round Rock Utility District) WITH
+  full context across the stall — the session-persistence feature proven live. Filed: worker
+  re-discovery (or roll the worker in deploy.yml); suppress the "documents couldn't verify"
+  note on turns answered from served CRM tool_results.
 - 2026-06-12 — **Playbook settle 120s -> 480s (option 1, owner-directed):** the 19:45Z live
   tick proved 120s covers a direct tool round-trip (Run-now at 45s served query_cube+read_crm)
   but NOT a delegation cycle — the coordinator delegated to scout and the sub-turn's calls were
