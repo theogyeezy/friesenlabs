@@ -662,12 +662,14 @@ _Last updated 2026-06-09. Synthesized from 5 dimension audits (frontend-auth, ai
 | ⛔ **Not live** | Cortex retrain pipeline; API → 2-task HA + autoscaling | authored `validate`-clean / cost-parked vs the $200 ceiling | cortex job unapplied; API-scale flip when the ceiling moves |
 | ✅ **Reconciled** | Terraform state | out-of-band SG rules imported; ECR back to IMMUTABLE; full plan = 0 change/destroy to live resources | — |
 | ✅ **Hardened** | Tenant isolation under concurrency | **critical** shared-connection cross-tenant leak FIXED (pooled per-request conns + `SET LOCAL`); proven on live Aurora (16 threads), CI real-Postgres, local. Aurora durability on. | — |
+| ✅ **Live & verified** | CRM-depth (#312): tasks, contact/company dedupe-merge, archived views, deal search, won/lost close reasons | deployed 2026-06-12 via **migrate-before-apply** (schema on the NEW image while old code served — migrate exit 0, isolation exit 0 — then api → `:353e57e` rev 29); `/tasks` list/create/complete + `close_reason` (queued in Greenlight → approved → persisted) **verified live** through the CloudFront edge | — |
 | 🟡 **Open** | Security-audit backlog | 27 findings (1 critical FIXED, 2 high [1 fixed], 7 med, 17 low) — see the Security audit section below | work the high/medium items |
 
 ## What is LIVE today (verified 2026-06-09)
 - **The product end-to-end, including login** — browser-verified: sign-in gate → Cognito Hosted UI (PKCE) → code exchange → app shell → real RLS-scoped tenant rows. Path: `browser → Amplify (real mode) → CloudFront (d1vw20lc120dpa.cloudfront.net) → ALB (HTTP) → arm64 Fargate API (1 task) → Aurora`.
 - Real Cognito JWKS auth (unauth → 401); **`/chat` is LIVE** — agent plane verified end-to-end 2026-06-10 (provision → chat → delegate → Greenlight, draft-only held). Demo user creds in Secrets Manager `uplift/demo-user`; tenant seeded via `scripts/seed_demo_tenant.py`.
 - VPC/NAT/SGs, IAM, Secrets, ECR (IMMUTABLE), S3, Aurora, Redis, Cognito (+Hosted UI domain), CloudTrail, Step Functions skeleton, ECS cluster, CloudFront API edge, Amplify Hosting. Terraform state in S3 (KMS), reconciled.
+- **CRM-depth (#312) — deployed 2026-06-12:** `tasks` table + `deals.close_reason` migrated first (new image, old code serving), then api rolled to `uplift-api:353e57e`. Tasks CRUD + the gated close-with-reason path verified live (BUILD_STATUS § CRM-depth deployed).
 
 ## What is PARKED / NOT REAL YET _(updated 2026-06-10 — most of the old parked list is now LIVE)_
 - **Domain/TLS cutover**: ~~parked~~ **DONE 2026-06-10** — NS delegated, wildcard cert ISSUED, **https://friesenlabs.com (apex+www) LIVE** on uplift-web, and the ALB TLS cutover executed (sweep) + verified: ALB 443 + real cert + 403-default origin-verify, api_cdn origin `api.friesenlabs.com` https-only:443, :80 redirect-only. Follow-on hardening still tracked below (drop the :80 SG rule #211, CF min-TLS #257); api_cdn retirement RECOMMEND-AGAINST (Lane Ship note).

@@ -1210,3 +1210,34 @@ tiered builders in isolated worktrees → 3-haiku refute-by-default panel → bo
   live in api/asgi.py. **Tests:** `test_sidecar.py` (engine: each kind, closed-skip, determinism,
   truncation) + `test_sidecar_routes.py` (503/401/grounded items/isolation-500/act-enqueues-draft/
   tenant-from-claim/409/unconfigured). Web typecheck + mock/real build green.
+
+## CRM-depth (#312) DEPLOYED LIVE — migrate-before-apply ordering — 2026-06-12
+- **Merged + deployed:** #312 (9 CRM-depth features: tasks, contact/company dedupe-merge, archived
+  views, deal search, won/lost close reasons) squash-merged as `353e57e` (branch updated + CI re-ran
+  green first — branch protection requires up-to-date). Deployed via the no-breakage ordering:
+  deploy.yml `build` pushed `uplift-api:353e57e` → **migrate.yml ran on the NEW image while the old
+  code still served** (one-off task def `uplift-migrate-oneoff:7`; **migrate exit 0, isolation exit 0**
+  — "[isolation] PASS — RLS enforced") → only then the apply gate was approved → api task def **rev 29
+  on `:353e57e`**, services-stable + edge healthz green (run 27432226222 attempt 5).
+- **Incident found + fixed en route — `PROD_AUTO_TFVARS_B64` drift:** the CI secret lacked the REQ-013
+  `worker_dedicated_sg`/`provisioning_lambda_dedicated_sg` flags (flipped live via local targeted
+  applies), so CI deploys planned a silent REVERT of the SG split. An earlier approved apply (a224425)
+  deleted the 5 worker/lambda egress+db SG rules at 16:59Z (worker + provisioning Lambda lost
+  Aurora/cube/egress reach ~75 min) then deadlocked 45 min destroying SGs whose releasing updates were
+  graph-ordered behind the destroys; a second identical run (294f22c, stale plan) was cancelled and its
+  orphaned S3 state lock removed. Fix: secret re-synced from the machine-local `infra/prod.auto.tfvars`
+  (the canonical carrier) → re-plan recreated the 5 rules (connectivity restored by the green apply),
+  zero SG destroys, and the REQ-013 `github_deploy_admin` detach re-converged. `rbac_strict=true`
+  (the parallel lane's flip) rode along on rev 29 — not reverted. `api_image` bumped to `:353e57e` in
+  BOTH the local tfvars and the secret post-deploy.
+- **Gotcha recorded:** `gh run rerun --failed` does NOT regenerate the plan — apply re-uses the saved
+  `deploy.tfplan` artifact → "Saved plan is stale" whenever state moved. Cancel + rerun ALL jobs to
+  re-plan at the SAME headSha (build skips re-push via the immutable-tag guard), keeping
+  migrate-SHA == apply-SHA.
+- **Live verification (through the real edge, PKCE demo JWT):** CloudFront `/healthz` 200 + SPA
+  `/api/healthz` 200; unauth `/tasks` → 401. `GET /tasks` 200 → `POST /tasks` 201 → `complete` set
+  `done_at` (RLS-scoped on Aurora). Close-reason e2e: `move-stage closed_won + reason` → **queued in
+  Greenlight** (gated `update_deal`, no error) → approved via `/approvals/{id}/decide` → deal re-read
+  shows `stage: closed_won` + the exact `close_reason` persisted. Worker 2/2, cube 1/1, rollouts
+  COMPLETED. SPA with the Tasks tab shipped via Amplify (jobs 309–311 SUCCEED). Direct
+  `api.friesenlabs.com` 403 = the origin-verify gate working as designed (not an outage).
