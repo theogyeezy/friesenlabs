@@ -1,4 +1,4 @@
-"""OAuth "connect with login" helpers for connectors — HubSpot + GoHighLevel + Microsoft 365.
+"""OAuth "connect with login" helpers for connectors — HubSpot + GoHighLevel + Microsoft 365 + Google.
 
 This is the small, dependency-free core of the OAuth flow. It changes only WHAT
 fills a tenant's vault slot (`uplift/{tenant_id}/{source}`): instead of a pasted
@@ -93,6 +93,11 @@ class OAuthProvider:
     # bodies (e.g. GoHighLevel's `user_type=Location`, which selects a
     # location-scoped token). Tuple-of-pairs so the dataclass stays hashable/frozen.
     token_extra: tuple[tuple[str, str], ...] = ()
+    # Extra params merged into the AUTHORIZE URL query (not the token POST) — e.g.
+    # Google's `access_type=offline` + `prompt=consent`, which are what make Google
+    # ISSUE a refresh_token (without them the first exchange returns access-only and
+    # the connector can never refresh). Tuple-of-pairs to stay hashable/frozen.
+    authorize_extra: tuple[tuple[str, str], ...] = ()
 
     @property
     def scope_str(self) -> str:
@@ -186,6 +191,31 @@ PROVIDERS: dict[str, OAuthProvider] = {
         # authorization-code grant even for confidential clients — we send the
         # S256 challenge at /authorize and the verifier at the token exchange.
         pkce=True,
+    ),
+    "google": OAuthProvider(
+        name="google",
+        # Google's standard web-server (authorization_code) OAuth 2.0 endpoints.
+        authorize_url="https://accounts.google.com/o/oauth2/v2/auth",
+        token_url="https://oauth2.googleapis.com/token",
+        # Read-only scopes for what the connector pulls — Calendar events and
+        # Contacts (People API). Gmail is DEFERRED (its scopes are "restricted" and
+        # require Google CASA security assessment — out of scope here). Calendar/
+        # Contacts are "sensitive" scopes: they need OAuth-consent-screen
+        # verification, NOT CASA. Read-only by design — Uplift never writes back.
+        scopes=(
+            "https://www.googleapis.com/auth/calendar.readonly",
+            "https://www.googleapis.com/auth/contacts.readonly",
+        ),
+        client_id_ref="uplift/oauth/google/client_id",
+        client_secret_ref="uplift/oauth/google/client_secret",
+        # Google supports (and we require) PKCE S256 on the web-server flow.
+        pkce=True,
+        # `access_type=offline` + `prompt=consent` are REQUIRED for Google to return
+        # a refresh_token: offline asks for one, and consent forces the consent
+        # screen again so Google RE-ISSUES it (Google only returns a refresh_token on
+        # the FIRST authorization for a user unless consent is forced). Without these
+        # the first exchange is access-only and the connector could never refresh.
+        authorize_extra=(("access_type", "offline"), ("prompt", "consent")),
     ),
 }
 
@@ -541,4 +571,8 @@ def build_authorize_url(provider: OAuthProvider, *, client_id: str, redirect_uri
     if code_challenge:
         params["code_challenge"] = code_challenge
         params["code_challenge_method"] = "S256"
+    # Provider-specific authorize-query extras (e.g. Google's access_type=offline +
+    # prompt=consent — what makes Google issue a refresh_token). Empty for providers
+    # that don't need them, so their authorize URL is byte-for-byte unchanged.
+    params.update(dict(provider.authorize_extra))
     return f"{provider.authorize_url}?{urllib.parse.urlencode(params)}"

@@ -158,6 +158,16 @@ KNOWN_INTEGRATIONS: dict[str, dict[str, Any]] = {
         "kind": "sync",
         "experimental": True,
     },
+    "google": {
+        "label": "Google (Calendar + Contacts)",
+        "category": "CRM & Marketing",
+        "description": "EXPERIMENTAL: sync calendar events and contacts from Google "
+                       "(Calendar + People APIs) via incremental sync tokens "
+                       "(read-only — Uplift never writes back). Gmail is not included.",
+        "source": "google",
+        "kind": "sync",
+        "experimental": True,
+    },
 }
 
 # 5MB upload cap for POST /integrations/csv/import (mirrored in
@@ -433,6 +443,12 @@ _PROBES: dict[str, dict[str, Any]] = {
     # OAuth callback stores a refreshable envelope and skips this verify path.
     "microsoft": {"url": "https://graph.microsoft.com/v1.0/me",
                   "headers": {}},
+    # One connection (page size 1) from the People API — the cheapest read a token
+    # with the contacts.readonly scope must hold (google.py). Probes a bare access
+    # token; the OAuth callback stores a refreshable envelope and skips this path.
+    "google": {"url": "https://people.googleapis.com/v1/people/me/connections"
+                      "?personFields=names&pageSize=1",
+               "headers": {}},
 }
 
 _PROBE_TIMEOUT_SECONDS = 8

@@ -63,10 +63,11 @@ def test_listing_carries_all_connectors_with_kind_and_experimental():
     r = _client().get("/integrations", headers=H)
     assert r.status_code == 200
     items = {i["name"]: i for i in r.json()["integrations"]}
-    assert set(items) == {"hubspot", "csv", "gohighlevel", "stripe", "salesforce", "microsoft"}
+    assert set(items) == {"hubspot", "csv", "gohighlevel", "stripe", "salesforce",
+                          "microsoft", "google"}
     assert items["csv"]["kind"] == "file"
-    experimental = {"gohighlevel", "salesforce", "microsoft"}
-    for name in ("hubspot", "gohighlevel", "stripe", "salesforce", "microsoft"):
+    experimental = {"gohighlevel", "salesforce", "microsoft", "google"}
+    for name in ("hubspot", "gohighlevel", "stripe", "salesforce", "microsoft", "google"):
         assert items[name]["kind"] == "sync"
         assert items[name]["experimental"] is (name in experimental)
     assert items["hubspot"]["experimental"] is False
