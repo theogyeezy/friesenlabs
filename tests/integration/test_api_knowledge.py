@@ -36,6 +36,7 @@ from api.control.greenlight import Greenlight
 from api.knowledge_routes import (
     MAX_Q_LEN,
     MAX_SEARCH_LIMIT,
+    MAX_SEARCH_OFFSET,
     REASON_CODE_EMBEDDER,
     REASON_CODE_SEARCH_ERROR,
     REASON_SEARCH_FAILED,
@@ -77,11 +78,11 @@ class FakeRag:
         self.calls.append(("list_document_inventory", tenant_id))
         return [dict(r) for r in self._inventory]
 
-    def search(self, *, tenant_id: str, query: str, limit: int):
-        self.calls.append(("search", tenant_id, query, limit))
+    def search(self, *, tenant_id: str, query: str, limit: int, offset: int = 0):
+        self.calls.append(("search", tenant_id, query, limit, offset))
         if self._search_error is not None:
             raise self._search_error
-        return [dict(h) for h in self._hits]
+        return [dict(h) for h in self._hits[offset:offset + limit]]
 
     def list_uploaded_documents(self, *, tenant_id: str):
         self.calls.append(("list_uploaded_documents", tenant_id))
@@ -201,7 +202,7 @@ def test_search_success_shape_snippet_and_score():
     # Only name+source+snippet+score leave — no embedding, no tenant_id, no raw row.
     assert all(set(h) == {"ref_id", "source", "snippet", "score"} for h in res)
     # Tenant-steered + limit passed through; search only (no other call).
-    assert rag.calls == [("search", "A", "negotiation deals", 5)]
+    assert rag.calls == [("search", "A", "negotiation deals", 5, 0)]
 
 
 @pytest.mark.integration
@@ -292,7 +293,25 @@ def test_search_q_too_long_is_422():
 def test_search_limit_clamped():
     rag = FakeRag(hits=_hits())
     _client(KnowledgeDeps(rag=rag)).get("/knowledge/search?q=hi&limit=9999", headers=H)
-    assert rag.calls == [("search", "A", "hi", MAX_SEARCH_LIMIT)]
+    assert rag.calls == [("search", "A", "hi", MAX_SEARCH_LIMIT, 0)]
+
+
+@pytest.mark.integration
+def test_search_offset_pages_the_ranked_scan():
+    # 3 seeded hits; limit=2 pages them: page 1 reports next_offset=2, page 2 is short -> end.
+    rag = FakeRag(hits=_hits())
+    client = _client(KnowledgeDeps(rag=rag))
+    p1 = client.get("/knowledge/search?q=hi&limit=2", headers=H).json()
+    assert [h["ref_id"] for h in p1["results"]] == ["deal-42", "call-7"]
+    assert p1["offset"] == 0 and p1["next_offset"] == 2
+    p2 = client.get("/knowledge/search?q=hi&limit=2&offset=2", headers=H).json()
+    assert [h["ref_id"] for h in p2["results"]] == ["u-1"]
+    assert p2["offset"] == 2 and p2["next_offset"] is None  # short page = the honest end
+    # Junk/negative offsets clamp to 0; runaway offsets clamp to the cap (never a 500).
+    ok = client.get("/knowledge/search?q=hi&offset=-9", headers=H).json()
+    assert ok["offset"] == 0
+    capped = client.get("/knowledge/search?q=hi&offset=999999", headers=H).json()
+    assert capped["offset"] == MAX_SEARCH_OFFSET
 
 
 # --------------------------------------------------------------------------- #

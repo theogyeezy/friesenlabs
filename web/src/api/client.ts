@@ -697,6 +697,10 @@ export interface KnowledgeSearchResponse {
   search_available: boolean;
   reason: string | null;
   reason_code?: string | null;
+  /** Paging into the ranked scan ("show more"): `next_offset` is null at the end of the
+   * corpus (or past the server's depth cap). Absent from an older API image = no paging. */
+  offset?: number;
+  next_offset?: number | null;
 }
 
 /** POST /knowledge/documents result — the customer document-add path (knowledge audit P0). */
@@ -2091,12 +2095,13 @@ export class ApiClient {
   /** GET /knowledge/search?q=: cosine search over the tenant's corpus (ref_id +
    * source + snippet + score). Degrades honestly to {search_available: false,
    * reason} when the Titan query embedder isn't reachable (env-key-gated). */
-  async searchKnowledge(query: string, limit?: number): Promise<KnowledgeSearchResponse> {
+  async searchKnowledge(query: string, limit?: number, offset?: number): Promise<KnowledgeSearchResponse> {
     if (this.mock) {
       return (await this.mockApi()).searchKnowledge(query, limit);
     }
     const params = new URLSearchParams({ q: query });
     if (limit !== undefined) params.set("limit", String(limit));
+    if (offset !== undefined && offset > 0) params.set("offset", String(offset));
     return this.request<KnowledgeSearchResponse>("GET", `/knowledge/search?${params.toString()}`);
   }
 

@@ -906,6 +906,8 @@ export class MockApi {
       search_available: true,
       reason: null,
       reason_code: null,
+      offset: 0,
+      next_offset: null,
     };
   }
 

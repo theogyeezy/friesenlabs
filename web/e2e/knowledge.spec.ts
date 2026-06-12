@@ -756,6 +756,37 @@ test("Enter continues markdown lists in the editor; an empty item exits the list
   await expect(content).toHaveValue("1. one\n2. two");
 });
 
+test("search pages with 'Show more results' and appends in place", async ({ page }) => {
+  const hit = (i: number) => ({
+    ref_id: `demo:doc:hit:${i}`, source: "hubspot",
+    snippet: `Result number ${i} about negotiation.`, score: 0.9 - i * 0.01,
+  });
+  await page.route(inventoryApi, (route) => route.fulfill({ json: INVENTORY }));
+  await page.route(searchApi, (route, request) => {
+    const u = new URL(request.url());
+    const off = Number(u.searchParams.get("offset") || "0");
+    // 12 ranked hits total; the default page size (8) splits them 8 + 4.
+    const all = Array.from({ length: 12 }, (_, i) => hit(i));
+    const slice = all.slice(off, off + 8);
+    return route.fulfill({
+      json: { query: "negotiation", results: slice, search_available: true, reason: null,
+              reason_code: null, offset: off,
+              next_offset: slice.length === 8 ? off + 8 : null },
+    });
+  });
+
+  await page.goto("/?view=knowledge");
+  await expect(page.getByTestId("knowledge-view")).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId("knowledge-search-input").fill("negotiation");
+  await page.getByTestId("knowledge-search-submit").click();
+
+  await expect(page.getByTestId("knowledge-result")).toHaveCount(8);
+  await page.getByTestId("knowledge-search-more").click();
+  // Appended in place — 12 rows now, and the short page ends the paging honestly.
+  await expect(page.getByTestId("knowledge-result")).toHaveCount(12);
+  await expect(page.getByTestId("knowledge-search-more")).toHaveCount(0);
+});
+
 // ---------------------------------------------------------------------------
 // Citation → knowledge page (chat grounds on pages; pages open from citations)
 // ---------------------------------------------------------------------------
