@@ -881,6 +881,20 @@ P1/P2 code items, and the full terraform authoring (REQ-013) — 5 parallel impl
 `terraform validate` green. Items below: [x] = code/tf complete (apply/flip = Lane Nick where
 noted); still-open boxes are owner-gated or live-verify only.
 
+**APPLIED LIVE 2026-06-12 (owner-directed; the per-item "Apply = Lane Nick" notes below are now
+done — canonical record: `infra/REQUESTS.md` REQ-013):** code shipped via PR #290 + deployed;
+REQ-013 infra applied — scoped deploy policy + **`AdministratorAccess` DETACHED** from
+`uplift-deploy` (`deploy_role_admin_fallback=false`); `ALLOW_ADMIN_USER_PASSWORD_AUTH` removed;
+`UPLIFT_ENVIRONMENT=prod`; Cognito threat-protection **ENFORCED** + `admin`/`member` groups;
+VPC flow logs + WAF logging + ECS-exec session logging live; **cube SG split** applied
+(dedicated worker/lambda SGs, sg_api self-:4000 rule gone). **RBAC strict LIVE** —
+`RBAC_STRICT=1` on the API task (PR #315), the owner account assigned to `admin`; verified
+end-to-end against the live API (fresh SRP login: `admin`→`GET /account/export` **200**,
+no-group→**403** honest message). All flips are in the 39-key tfvars-keys manifest (guarded by
+the #318 clobber-check), so deploys can't silently revert them. **Still owner-gated/deferred:**
+Aurora CMK (maintenance window), `adot_image` digest pin + `readonly_root_filesystem` (verify
+window), CAPTCHA (Turnstile site+secret), `RBAC_STRICT` for additional users (assign groups first).
+
 ### P0 — fix before real paying customers
 - [x] **[CRITICAL] Scope the GitHub OIDC deploy role off `AdministratorAccess`** **AUTHORED 2026-06-11: scoped `uplift-deploy-scoped` policy attached unconditionally; AdministratorAccess detach gated on `deploy_role_admin_fallback=false` after ONE proven scoped deploy (migration path + apply order in REQ-013). Apply = Lane Nick.** — `infra/modules/iam/main.tf:319-322`; trust policy is pinned to repo+branch+env (good) but a compromised workflow = full account takeover. Replace with a scoped deploy policy (ECS/ECR + exact-ARN `iam:PassRole`, CloudFront, state/asset S3, `uplift/*` SM read) or at minimum a permissions boundary. _(author either lane; apply Lane Nick)_
 - [x] **[HIGH] Drop `ALLOW_ADMIN_USER_PASSWORD_AUTH` from the prod SPA Cognito client** **AUTHORED 2026-06-11 (unconditional removal; optional confidential smoke client behind `create_smoke_test_client`, default off). Apply = Lane Nick.** — `infra/modules/auth/main.tf:74`; bypasses the Hosted-UI/PKCE design; smoke tests should use a separate non-public client. _(apply Lane Nick)_
