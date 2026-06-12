@@ -1,7 +1,7 @@
 """Unit: the connector registry (ingest/connectors/registry.py) + its wiring.
 
 Proves:
-  * the registry knows exactly hubspot | csv | gohighlevel | stripe | salesforce | microsoft
+  * the registry knows exactly hubspot | csv | gohighlevel | stripe | salesforce | microsoft | google
   * SYNC_SOURCES excludes csv (push import, no pull sync)
   * build_sync_connector constructs the right class per name, refuses csv and
     unknown names, and threads the injected client through
@@ -49,13 +49,16 @@ def _build(name, client=None):
 # --------------------------------------------------------------------------- shape
 @pytest.mark.unit
 def test_registry_knows_exactly_the_known_connectors():
-    assert set(REGISTRY) == {"hubspot", "csv", "gohighlevel", "stripe", "salesforce", "microsoft"}
+    assert set(REGISTRY) == {"hubspot", "csv", "gohighlevel", "stripe", "salesforce",
+                             "microsoft", "google"}
     # csv = file import; everything else is a pull sync
-    assert set(SYNC_SOURCES) == {"hubspot", "gohighlevel", "stripe", "salesforce", "microsoft"}
+    assert set(SYNC_SOURCES) == {"hubspot", "gohighlevel", "stripe", "salesforce",
+                                 "microsoft", "google"}
     assert REGISTRY["csv"].kind == "file"
     assert REGISTRY["gohighlevel"].experimental is True
     assert REGISTRY["salesforce"].experimental is True
     assert REGISTRY["microsoft"].experimental is True
+    assert REGISTRY["google"].experimental is True
     for name in ("hubspot", "stripe"):
         assert REGISTRY[name].experimental is False
 

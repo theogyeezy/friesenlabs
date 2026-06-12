@@ -1,5 +1,5 @@
 """Connector registry — ONE place that knows every source the ingestion plane
-speaks: hubspot | csv | gohighlevel | stripe | microsoft.
+speaks: hubspot | csv | gohighlevel | stripe | salesforce | microsoft | google.
 
 Two consumers:
   * ingest/run_sync.py builds sync connectors by name (`build_connector(name,
@@ -23,6 +23,7 @@ from typing import Any, Callable
 
 from .base import Connector
 from .gohighlevel import GoHighLevelConnector
+from .google import GoogleConnector
 from .hubspot import HubSpotConnector
 from .microsoft import MicrosoftConnector
 from .salesforce import SalesforceConnector
@@ -49,6 +50,18 @@ class _EmptyDeltaClient:
         pass
 
     def delta(self, resource: str, delta_link):
+        return [], ""
+
+
+class _EmptySyncClient:
+    """Offline stub for sync-token connectors (google) — every sync returns no
+    items and an empty syncToken, so a dry run exercises the full sync path with
+    zero records and zero network."""
+
+    def set_token(self, token: str) -> None:  # connector calls this in authenticate()
+        pass
+
+    def sync(self, resource: str, sync_token):
         return [], ""
 
 
@@ -80,6 +93,12 @@ def _real_microsoft_client():
     from .microsoft import MicrosoftGraphRestClient  # noqa: PLC0415 — lazy
 
     return MicrosoftGraphRestClient()
+
+
+def _real_google_client():
+    from .google import GoogleRestClient  # noqa: PLC0415 — lazy
+
+    return GoogleRestClient()
 
 
 @dataclass(frozen=True)
@@ -172,6 +191,21 @@ REGISTRY: dict[str, ConnectorSpec] = {
         connector_cls=MicrosoftConnector,
         real_client_factory=_real_microsoft_client,
         stub_client_factory=_EmptyDeltaClient,
+    ),
+    "google": ConnectorSpec(
+        name="google",
+        label="Google (Calendar + Contacts)",
+        category="CRM & Marketing",
+        description=(
+            "EXPERIMENTAL: sync calendar events and contacts from Google "
+            "(Calendar + People APIs) via incremental sync tokens "
+            "(read-only — Uplift never writes back). Gmail is not included."
+        ),
+        kind="sync",
+        experimental=True,
+        connector_cls=GoogleConnector,
+        real_client_factory=_real_google_client,
+        stub_client_factory=_EmptySyncClient,
     ),
 }
 
