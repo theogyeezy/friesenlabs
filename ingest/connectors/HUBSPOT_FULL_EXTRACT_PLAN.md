@@ -117,8 +117,10 @@ fix): `python -m api.migrate` loads `schema.sql` idempotently. Additive only.
   tenant_id, since)` is a real-mode-only driver. ADDITIVE — separate from `build_sync_connector`/the
   `--all` typed-vector path (untouched). 3 unit tests (token bypass, vault-auth reuse, real-mode gate);
   no regressions; ruff clean. DONE.
-- [ ] 8. **Full test pass**: `pytest tests/unit -q` green; `python -c` imports; no media/Files
-  calls anywhere (grep). Update `BUILD_STATUS.md` (own lane only).
+- [x] 8. **Full test pass** — `pytest tests/unit` = **2187 passed, 3 skipped** (DB-gated, run in CI);
+  imports OK; ruff clean across all new/touched files; no-media grep confirms the only `.read()` is
+  the JSON response body in `_get`/`_post` (never a file blob, never the Files API). `BUILD_STATUS.md`
+  build-log entry added (own lane). DONE.
 - [ ] 9. **PR**: open a PR (branch `feat/hubspot-full-extract`), get CI green (python/web/
   terraform/smoke). DO NOT merge/deploy without owner review — note in the PR that it needs
   the `crm_records` migration run via one-off task before the api rolls.

@@ -1289,3 +1289,33 @@ tiered builders in isolated worktrees → 3-haiku refute-by-default panel → bo
   shows `stage: closed_won` + the exact `close_reason` persisted. Worker 2/2, cube 1/1, rollouts
   COMPLETED. SPA with the Tasks tab shipped via Amplify (jobs 309–311 SUCCEED). Direct
   `api.friesenlabs.com` 403 = the origin-verify gate working as designed (not an outage).
+
+---
+
+## HubSpot full-extract connector — feat/hubspot-full-extract (loop-built, NOT merged/deployed)
+
+A full-fidelity HubSpot extract that lands EVERY property + every object type (standard +
+engagements + custom) + the association graph into a new generic `crm_records` JSONB table, for
+agents/Cortex/dashboards to map over. Also FIXES the incremental-sync `HTTPError` (the old
+connector sent an ISO-8601 Search filter; HubSpot wants epoch-millis). **No binary media** stored —
+file/media property values are kept as URL refs only (`properties._media_refs`); bytes are never
+fetched and the Files API is never called.
+
+Landed (additive; the existing typed contacts/companies/deals + vector path is untouched):
+- `db/schema.sql`/`db/roles.sql`: `crm_records` (uuid tenant_id, composite natural PK, FORCE RLS via
+  the DO-block array + belt-and-suspenders, gin + active indexes, soft-archive; crm_app
+  SELECT/INSERT/UPDATE, no DELETE). Applies via the `uplift-migrate-oneoff` one-off task.
+- `ingest/connectors/hubspot_full.py`: `HubSpotFullClient` (property discovery + media flagging,
+  object discovery incl. custom objects, paged `list_records` with the epoch-millis incremental
+  cursor + media-as-refs + association flattening) and `HubSpotFullConnector.sync()` (per-object-type
+  robust — one bad type is logged by exception TYPE only and skipped).
+- `ingest/sinks.py`: `PgCrmRecordsSink` (JSONB upsert, tenant via GUC `SET LOCAL`, SAVEPOINT row
+  isolation).
+- `ingest/connectors/registry.py` + `ingest/run_sync.py`: `build_hubspot_full_connector()` (reuses
+  the existing vault auth) + `run_full_extract()` driver.
+
+Tests: ~26 new unit tests (property/object discovery, pagination, epoch-millis filter, media-ref-only +
+no Files call, association flatten, sink upsert/RLS/savepoint, connector orchestration, wiring). Full
+`pytest tests/unit` = **2187 passed, 3 skipped** (DB-gated); ruff clean. **Owner-gated:** run the
+`crm_records` migration via the one-off task BEFORE the api rolls, then deploy. Path B (live HubSpot
+MCP for agent access) is items 10–12, next.
