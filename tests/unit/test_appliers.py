@@ -1,7 +1,7 @@
 """Unit: Greenlight applier dispatch."""
 import pytest
 
-from api.control.appliers import APPLIERS, apply_approved_action
+from api.control.appliers import APPLIERS, apply_approved_action, was_performed
 
 
 class SpyCrm:
@@ -85,3 +85,21 @@ def test_send_and_quote_are_record_only():
 def test_unknown_action_raises():
     with pytest.raises(ValueError, match="no applier"):
         apply_approved_action(None, "T1", {"action": "delete_everything"})
+
+
+@pytest.mark.unit
+def test_was_performed_is_the_honesty_signal():
+    # A record-only / draft-only send is NOT performed — it must never read as "sent".
+    record_only = apply_approved_action(None, "T1", {"action": "send_email"})
+    assert was_performed(record_only) is False
+
+    # A real CRM write IS performed.
+    crm = SpyCrm()
+    real = apply_approved_action(
+        crm, "T1", {"action": "update_deal", "deal_id": "d1", "changes": {"stage": "won"}}
+    )
+    assert was_performed(real) is True
+
+    # Honesty signal is the explicit flag, never the presence of a (truthy) result dict.
+    assert was_performed({"performed": False, "error": "ValueError"}) is False
+    assert was_performed({}) is False
