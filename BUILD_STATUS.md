@@ -549,6 +549,22 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   usable + safe; RAG-embed IAM gap closed live.
 
 ## Lane Matt (app code) — log
+- 2026-06-12 — **Security-audit remediation APPLIED LIVE (owner-directed, REQ-013 + RBAC strict).**
+  PR #290 (P0/P1/P2 code) merged + deployed. REQ-013 infra applied as targeted, plan-reviewed
+  steps: scoped deploy policy + **`AdministratorAccess` DETACHED** from `uplift-deploy` (after one
+  proven scoped deploy), `ALLOW_ADMIN_USER_PASSWORD_AUTH` removed, `UPLIFT_ENVIRONMENT=prod`,
+  Cognito threat-protection ENFORCED + `admin`/`member` groups, VPC flow logs + WAF logging +
+  ECS-exec session logging, **cube SG split** (worker/lambda on dedicated SGs, sg_api self-:4000
+  rule removed — worker re-rolled healthy). **RBAC strict LIVE:** `RBAC_STRICT=1` plumbed (PR #315)
+  + flipped on `uplift-api`; the owner account assigned to the `admin` Cognito group. **Verified
+  end-to-end on the real account against the live API** (fresh SRP login): `admin` group →
+  `GET /account/export` **200**; admin removed → **403** with the honest "requires a workspace
+  admin" message; membership restored + reconfirmed. All four flips are in the 39-key
+  `/uplift/live/tfvars-keys` manifest, so the #318 clobber-guard prevents a deploy from reverting
+  them. Status record: `infra/REQUESTS.md` REQ-013 (PRs #310/#317). Deferred (owner/window): Aurora
+  CMK, `adot_image` digest pin, `readonly_root_filesystem`, CAPTCHA Turnstile, broader-user RBAC.
+  _(Note for Lane Nick: README.md §security + CLAUDE.md status are stale — they still cite only the
+  2026-06-09 audit / "25 findings"; they're your single-writer files, flagging for your next pass.)_
 - 2026-06-12 — **Deploy-pipeline hardening SHIPPED (the incident pair):** deploy.yml gets a
   `concurrency: deploy-production` group (queued, never cancelled — four concurrent runs
   trampled the state lock + raced the immutable-tag gate tonight), and the tfvars CLOBBER
