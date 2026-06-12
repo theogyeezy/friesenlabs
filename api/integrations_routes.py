@@ -38,16 +38,18 @@ import dataclasses
 import json
 import logging
 import os
+import secrets as _csrf_secrets
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol, runtime_checkable
 
 from fastapi import (BackgroundTasks, Depends, FastAPI, File, Form, HTTPException,
                      UploadFile)
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
 from api.auth import TenantClaims
-from shared.config import ENV_INTEGRATIONS_REAL_SECRETS
+from shared.config import (ENV_INTEGRATIONS_REAL_SECRETS, ENV_OAUTH_APP_RETURN_URL,
+                           ENV_OAUTH_REDIRECT_BASE, ENV_OAUTH_STATE_SECRET)
 
 log = logging.getLogger("api.integrations")
 
@@ -262,6 +264,19 @@ class IntegrationsDeps:
     # a definitive 401/403) | None (could not verify: network/unknown shape).
     # None dep = no probing — credentials are stored unverified, like before.
     token_prober: Callable[[str, str], bool | None] | None = None
+    # READ-side vault seam (ingest.connectors.base.SecretProvider). The OAuth flow
+    # needs to READ the app's client_id/client_secret refs (uplift/oauth/{name}/*)
+    # to build the authorize URL + exchange codes. None = no reader -> the OAuth
+    # routes answer an honest 503 (never a fake redirect). Built only under
+    # INTEGRATIONS_REAL_SECRETS, same as the writer.
+    secret_reader: Any | None = None
+    # OAuth deployment wiring (state signing secret + redirect base + app return
+    # URL). All-empty = OAuth routes 503. Plain strings here so importing this
+    # module never needs ingest/ (the boot invariant); the OAuthConfig is built
+    # lazily inside the routes.
+    oauth_state_secret: str = ""
+    oauth_redirect_base: str = ""
+    oauth_app_return_url: str = ""
 
 
 def _real_secrets_mode() -> bool:
@@ -424,17 +439,37 @@ def probe_token(source: str, token: str) -> bool | None:
         return None
 
 
+def _build_secret_reader() -> Any | None:
+    """The read-side vault provider for the OAuth flow (resolves the app's
+    client_id/client_secret refs). Built ONLY under INTEGRATIONS_REAL_SECRETS, and
+    absence-tolerant: if ingest/ is not in the image (the boot invariant) there is
+    no reader and the OAuth routes answer their honest 503."""
+    if not _real_secrets_mode():
+        return None
+    try:
+        from ingest.connectors.base import Boto3SecretProvider  # noqa: PLC0415 — lazy: no boto3 at import
+    except ImportError:
+        return None
+    return Boto3SecretProvider()
+
+
 def build_integrations_deps() -> IntegrationsDeps:
-    """Env-built deps: real writer + token probe only under INTEGRATIONS_REAL_SECRETS;
-    real runner/importer only under the ingest plane's own INGEST_REAL_STORES; the
-    sync-run store whenever the task has a DB DSN. All-unset = all-None = every
+    """Env-built deps: real writer + token probe + OAuth reader only under
+    INTEGRATIONS_REAL_SECRETS; real runner/importer only under the ingest plane's
+    own INGEST_REAL_STORES; the sync-run store whenever the task has a DB DSN. The
+    OAuth state secret/redirect base come from their own deliberate env names —
+    any one missing = the OAuth routes stay 503. All-unset = all-None = every
     endpoint honest about being unconfigured."""
     real_secrets = _real_secrets_mode()
     writer = Boto3SecretWriter() if real_secrets else None
     return IntegrationsDeps(secret_writer=writer, sync_runner=_build_sync_runner(),
                             csv_importer=_build_csv_importer(),
                             sync_runs=_build_sync_run_store(),
-                            token_prober=probe_token if real_secrets else None)
+                            token_prober=probe_token if real_secrets else None,
+                            secret_reader=_build_secret_reader(),
+                            oauth_state_secret=os.environ.get(ENV_OAUTH_STATE_SECRET, ""),
+                            oauth_redirect_base=os.environ.get(ENV_OAUTH_REDIRECT_BASE, ""),
+                            oauth_app_return_url=os.environ.get(ENV_OAUTH_APP_RETURN_URL, ""))
 
 
 # --------------------------------------------------------------------------- #
@@ -463,6 +498,43 @@ def _result_dict(res: Any) -> dict:
         return res
     fields = ("pulled", "landed_rows", "chunks", "embedded", "skipped", "cursor")
     return {f: getattr(res, f) for f in fields if hasattr(res, f)}
+
+
+# --------------------------------------------------------------------------- #
+# OAuth "connect with login" helpers. The flow's core (provider registry, signed
+# state, token exchange/refresh) lives in ingest.connectors.oauth — imported
+# LAZILY + absence-tolerantly so the API still boots when ingest/ is absent from
+# the image (the boot invariant above): no module = the OAuth routes 503.
+# --------------------------------------------------------------------------- #
+def _oauth_module() -> Any | None:
+    try:
+        from ingest.connectors import oauth  # noqa: PLC0415 — lazy: import-safe (no network/AWS)
+    except ImportError:
+        return None
+    return oauth
+
+
+def _oauth_return(cfg: Any, name: str, *, ok: bool, reason: str | None = None) -> str:
+    """The app URL the callback redirects the browser back to, with a status flag
+    the SPA integrations page can render (?integration=hubspot&connected=1 or
+    &error=denied). No token material is ever placed in the URL."""
+    import urllib.parse  # noqa: PLC0415 — lazy, stdlib
+
+    base = cfg.return_url()
+    params = {"integration": name}
+    if ok:
+        params["connected"] = "1"
+    else:
+        params["error"] = reason or "failed"
+    sep = "&" if "?" in base else "?"
+    return f"{base}{sep}{urllib.parse.urlencode(params)}"
+
+
+def _is_secret_missing(exc: Exception) -> bool:
+    """Whether a secret-read failure means 'not provisioned' (-> honest 503) vs a
+    real provider/access error (-> 502). SecretNotFoundError subclasses KeyError;
+    a botocore/fake ResourceNotFoundException is caught by the inlined mirror."""
+    return isinstance(exc, KeyError) or _aws_not_found(exc)
 
 
 def mount_integrations(app: FastAPI, deps: IntegrationsDeps, current_tenant) -> None:
@@ -744,3 +816,134 @@ def mount_integrations(app: FastAPI, deps: IntegrationsDeps, current_tenant) -> 
                       claims.tenant_id, entity, type(exc).__name__)
             raise HTTPException(status_code=502, detail="csv import failed")
         return {"name": "csv", "report": _result_dict(report)}
+
+    # ----------------------------------------------------------------------- #
+    # OAuth "connect with login" — start + callback. Same vault slot, same
+    # gating as the pasted-key path; OAuth only changes WHAT fills the slot (an
+    # access+refresh token envelope) and adds a refresh path (in the connector).
+    # ----------------------------------------------------------------------- #
+    def _oauth_provider_or_error(name: str):
+        """Resolve (oauth_module, provider, OAuthConfig), enforcing the gating that
+        BOTH routes share. Raises an honest HTTPException (404/409/503) otherwise.
+        Returns a ready triple only when every piece is wired."""
+        _known_or_404(name)
+        oauth = _oauth_module()
+        if oauth is None:
+            raise HTTPException(status_code=503, detail=(
+                "OAuth connect is not available on this deployment "
+                "(the ingestion plane is not bundled in this image)"
+            ))
+        provider = oauth.get_provider(name)
+        if provider is None:
+            # A known integration that simply has no OAuth flow (csv/stripe/ghl):
+            # 409, point at the pasted-credentials path.
+            raise HTTPException(status_code=409, detail=(
+                f"{name} has no OAuth login flow — connect it via "
+                "POST /integrations/{name}/credentials"
+            ))
+        cfg = oauth.OAuthConfig(
+            state_secret=deps.oauth_state_secret,
+            redirect_base=deps.oauth_redirect_base,
+            app_return_url=deps.oauth_app_return_url,
+        )
+        if (not cfg.configured() or deps.secret_writer is None
+                or deps.secret_reader is None):
+            raise HTTPException(status_code=503, detail=(
+                "OAuth connect is not configured — set "
+                f"{ENV_INTEGRATIONS_REAL_SECRETS}, {ENV_OAUTH_STATE_SECRET} and "
+                f"{ENV_OAUTH_REDIRECT_BASE}, and register the provider app's "
+                f"client_id/client_secret in Secrets Manager ({provider.client_id_ref})"
+            ))
+        return oauth, provider, cfg
+
+    @app.get("/integrations/{name}/oauth/start")
+    def oauth_start(name: str, claims: TenantClaims = Depends(current_tenant)):
+        """Begin the OAuth dance: build the provider authorize URL with a SIGNED
+        state binding THIS tenant (THE TRUST RULE — tenant from the verified JWT,
+        encoded HMAC-signed into `state`), and return it. Honest 503 when OAuth is
+        unconfigured / the provider app creds are not registered."""
+        oauth, provider, cfg = _oauth_provider_or_error(name)
+        try:
+            client_id = deps.secret_reader.get_secret(provider.client_id_ref)
+        except Exception as exc:  # noqa: BLE001 — narrowed below; NEVER log the value
+            if _is_secret_missing(exc):
+                raise HTTPException(status_code=503, detail=(
+                    f"{name} OAuth app is not registered — its client_id is not in "
+                    "the vault yet (owner must register the provider app first)"
+                ))
+            log.error("integrations: oauth client_id read failed for %s (%s)",
+                      name, type(exc).__name__)
+            raise HTTPException(status_code=502, detail="oauth credential read failed")
+        # Signed state = HMAC(tenant_id + nonce + issued_at). The nonce is fresh
+        # entropy; the signature is the CSRF + tenant binding the callback trusts.
+        state = oauth.sign_state(claims.tenant_id, cfg.state_secret,
+                                 nonce=_csrf_secrets.token_urlsafe(16))
+        authorize_url = oauth.build_authorize_url(
+            provider, client_id=client_id,
+            redirect_uri=cfg.redirect_uri(name), state=state,
+        )
+        return {"name": name, "authorize_url": authorize_url}
+
+    @app.get("/integrations/{name}/oauth/callback")
+    def oauth_callback(name: str, code: str | None = None, state: str | None = None,
+                       error: str | None = None):
+        """Provider redirect target. UNAUTHENTICATED by necessity (a top-level
+        browser redirect carries no JWT) — the tenant is recovered from the SIGNED
+        state, which is the only identity this route trusts. Exchanges `code` for
+        tokens, stores the OAuth envelope in the tenant's vault slot, and redirects
+        back to the app. NEVER logs a token value."""
+        oauth, provider, cfg = _oauth_provider_or_error(name)
+        # User declined consent at the provider — not an error, send them back.
+        if error:
+            return RedirectResponse(
+                url=_oauth_return(cfg, name, ok=False, reason="denied"), status_code=302)
+        if not code or not state:
+            raise HTTPException(status_code=400, detail="missing code or state")
+        # Verify the signed state -> recover the tenant_id. A tampered or expired
+        # state is a hard 403: we will NOT act on an unsigned/forged tenant.
+        try:
+            tenant_id = oauth.verify_state(state, cfg.state_secret)
+        except oauth.StateError as exc:
+            log.warning("integrations: oauth callback rejected state for %s (%s)",
+                        name, type(exc).__name__)
+            raise HTTPException(status_code=403, detail="invalid or expired state")
+        try:
+            client_id = deps.secret_reader.get_secret(provider.client_id_ref)
+            client_secret = deps.secret_reader.get_secret(provider.client_secret_ref)
+        except Exception as exc:  # noqa: BLE001 — narrowed below; NEVER log the value
+            if _is_secret_missing(exc):
+                raise HTTPException(status_code=503, detail=(
+                    f"{name} OAuth app client credentials are not registered"))
+            log.error("integrations: oauth creds read failed for %s (%s)",
+                      name, type(exc).__name__)
+            raise HTTPException(status_code=502, detail="oauth credential read failed")
+        # Exchange the code for tokens (HTTP via oauth.post_form). A failure here
+        # is the provider's, not the tenant's — send them back with an error flag.
+        try:
+            tokens = oauth.exchange_code(
+                provider, code=code, redirect_uri=cfg.redirect_uri(name),
+                client_id=client_id, client_secret=client_secret,
+            )
+        except Exception as exc:  # noqa: BLE001 — TokenExchangeError carries no token material
+            log.error("integrations: oauth token exchange failed for tenant %s/%s (%s)",
+                      tenant_id, name, type(exc).__name__)
+            return RedirectResponse(
+                url=_oauth_return(cfg, name, ok=False, reason="exchange_failed"),
+                status_code=302)
+        # THE TRUST RULE: the vault slot is derived from the state-recovered (and
+        # thus WE-signed) tenant_id, never from any browser-supplied value.
+        ref = _tenant_secret_ref(tenant_id, KNOWN_INTEGRATIONS[name]["source"])
+        value = oauth.oauth_secret_value(
+            access_token=tokens["access_token"],
+            refresh_token=tokens["refresh_token"],
+            expires_at=tokens["expires_at"],
+        )
+        try:
+            deps.secret_writer.put_secret(ref, value)
+        except Exception as exc:  # noqa: BLE001 — surface; NEVER log the value/message
+            log.error("integrations: oauth token store failed for %s (%s)",
+                      ref, type(exc).__name__)
+            raise HTTPException(status_code=502, detail="secret store write failed")
+        log.info("integrations: oauth connected tenant=%s source=%s", tenant_id, name)
+        return RedirectResponse(
+            url=_oauth_return(cfg, name, ok=True), status_code=302)
