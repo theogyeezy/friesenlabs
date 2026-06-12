@@ -94,6 +94,21 @@ app shell → real RLS-scoped tenant rows. Unauth `/api/*` → 401; **`/chat` is
   remainders are now satisfied** (env-key → worker live 2/2; Stripe webhook secret + Anthropic
   admin key → signup go-live done; Squarespace NS delegated 2026-06-10 → cert ISSUED → TLS
   cutover executed by the sweep + verified).
+- ✅ **Security release-readiness audit + remediation LIVE (2026-06-11 audit → 2026-06-12 applied;
+  `docs/audits/security-audit-2026-06-11.md`, REQ-013):** 5 parallel deep-dives + Semgrep verified
+  the core invariants hold; the P0/P1/P2 fixes merged (#290) + deployed. Now live: **intra-tenant
+  RBAC** — a `cognito:groups` admin gate over the 8 privileged writes (kill switch, autonomy, billing
+  portal, modules, GDPR export/delete, settings, approval-decide; reads stay open), `RBAC_STRICT=1`
+  removes the empty-groups=admin back-compat, global kill-switch operators are user-granular, and
+  provisioning bootstraps a tenant's first user into `admin` (RBAC verified end-to-end on the live
+  API — admin→200, no-group→403). **Compliance floor moved into `Greenlight.propose`** (TCPA/CAN-SPAM
+  on every propose path + post-edit re-validation); **prompt-injection delimiters** around RAG/CRM/lead
+  content; **Vega chart-fragment allow-list** (3 mirrors). Edge/infra: the GitHub OIDC deploy role is
+  scoped (**`AdministratorAccess` detached**); `ALLOW_ADMIN_USER_PASSWORD_AUTH` removed; Cognito
+  advanced-security ENFORCED; VPC flow logs + WAF logging + ECS-exec session logging; cube SG split;
+  SPA CSP/security headers (`customHttp.yml`); Pg single-use email tokens; worker org-key guard;
+  PII-masked logs. **Still owner-gated/deferred:** Aurora CMK (window), ADOT digest pin + read-only
+  rootfs, Turnstile CAPTCHA (validators wired, site/secret pending), broader-user RBAC assignment.
 **Tooling:** `.claude/settings.json` enables the official-marketplace plugins so collaborators inherit
 them on clone+trust. Don't commit secrets to it.
 
