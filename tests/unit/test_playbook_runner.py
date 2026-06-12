@@ -332,3 +332,65 @@ def test_trace_and_persisted_record_carry_only_ma_id_tails():
     blob = str(rec.trace) + str(runs.list("tenant-a", pid)[0]["record"])
     assert full_coordinator not in blob, "full MA ids must never reach the trace/digest"
     assert full_coordinator[-6:] in str(rec.trace)  # the display tail is what surfaces
+
+
+# ------------------------------------------------------------------ digest split (audit follow-up)
+# Found live 2026-06-12: the digest dumped UNSERVED tool calls (even read-only read_crm /
+# query_cube) into actions_proposed, so a run read "pending" as if Greenlight drafts awaited a
+# human when none existed. The split: routed drafts (tool_name/proposal/approval) stay in
+# actions_proposed -> status "pending"; unserved open calls (tool) + wedged-session sentinels
+# (reason-only) land in calls_unserved -> status "incomplete" when that's all there is.
+_UNSERVED_READ = {"tool": "read_crm", "custom_tool_use_id": "ctu_9",
+                  "input": {"entity": "deals"}, "status": "pending"}
+_SENTINEL = {"status": "pending", "reason": "requires_action"}
+
+
+@pytest.mark.unit
+def test_unserved_reads_are_not_drafts_status_incomplete():
+    store = InMemoryPlaybookStore()
+    pid = _active_playbook(store)
+    rt = StubRuntime({"answer": "partial", "pending_approvals": [dict(_UNSERVED_READ)]})
+
+    rec = run(rt, store, "tenant-a", pid, {})
+
+    assert rec.actions_proposed == [], "an unserved read-only call is NOT a Greenlight draft"
+    assert rec.calls_unserved == [_UNSERVED_READ]
+    assert rec.status == "incomplete", "no drafts await a human — 'pending' would be a lie"
+    assert {"event": "call_unserved", "tool": "read_crm"} in [
+        {k: e[k] for k in ("event", "tool") if k in e} for e in rec.trace]
+
+
+@pytest.mark.unit
+def test_wedged_session_sentinels_land_in_calls_unserved():
+    store = InMemoryPlaybookStore()
+    pid = _active_playbook(store)
+    rt = StubRuntime({"answer": "", "pending_approvals": [dict(_SENTINEL)]})
+
+    rec = run(rt, store, "tenant-a", pid, {})
+    assert rec.actions_proposed == []
+    assert rec.calls_unserved == [_SENTINEL]
+    assert rec.status == "incomplete"
+
+
+@pytest.mark.unit
+def test_mixed_digest_drafts_dominate_status():
+    store = InMemoryPlaybookStore()
+    pid = _active_playbook(store)
+    rt = StubRuntime({"answer": "did some, proposed one",
+                      "pending_approvals": [dict(_ROUTED_SEND), dict(_UNSERVED_READ)]})
+
+    rec = run(rt, store, "tenant-a", pid, {})
+    assert rec.actions_proposed == [_ROUTED_SEND]      # the real draft, alone
+    assert rec.calls_unserved == [_UNSERVED_READ]      # the unserved read, split out
+    assert rec.status == "pending"                     # a human IS awaited -> pending wins
+
+
+@pytest.mark.unit
+def test_as_dict_carries_the_split():
+    store = InMemoryPlaybookStore()
+    pid = _active_playbook(store)
+    rt = StubRuntime({"answer": "x", "pending_approvals": [dict(_UNSERVED_READ)]})
+    d = run(rt, store, "tenant-a", pid, {}).as_dict()
+    assert d["calls_unserved"] == [_UNSERVED_READ]
+    assert d["actions_proposed"] == []
+    assert d["status"] == "incomplete"
