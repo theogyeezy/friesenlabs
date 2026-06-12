@@ -66,6 +66,7 @@ import {
   type SyncRun,
 } from "./client";
 import { Spinner } from "./Spinner";
+import { getValidIdToken } from "../auth/cognito";
 
 const { useState, useEffect, useCallback, useRef } = React;
 
@@ -246,14 +247,47 @@ function apiBaseURL(): string {
   return (env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 }
 
-// Send the browser to the provider's authorize page (full-page redirect). The
-// provider handles login + consent, then redirects back to the app via
-// /integrations/{name}/oauth/callback — the connection-status display reflects
-// "Connected" on return with no special handling here.
-function startOAuth(item: Integration): void {
-  window.location.assign(
+// Begin the OAuth dance. `GET /integrations/{name}/oauth/start` is AUTH-GATED —
+// it signs THIS tenant (from the verified JWT) into the OAuth `state`, then
+// returns { authorize_url }. So we must FETCH it WITH the bearer and only then
+// send the browser to the returned authorize_url. A bare full-page navigation to
+// /oauth/start carries no Authorization header and is rejected 401 "missing
+// bearer token" — that was the bug. The error path maps the documented statuses
+// (503 app-not-registered, 401 session expired) to honest copy; anything else
+// surfaces the server detail. On success we leave the SPA, so we never clear busy.
+async function startOAuth(item: Integration): Promise<void> {
+  const token = await getValidIdToken();
+  const res = await fetch(
     `${apiBaseURL()}/integrations/${encodeURIComponent(item.name)}/oauth/start`,
+    { headers: token ? { Authorization: `Bearer ${token}` } : {} },
   );
+  if (!res.ok) {
+    let detail = "";
+    try {
+      detail = ((await res.json()) as { detail?: string }).detail ?? "";
+    } catch {
+      /* non-JSON error body — fall through to the generic message */
+    }
+    throw new ApiError(res.status, detail || res.statusText);
+  }
+  const body = (await res.json()) as { authorize_url?: unknown };
+  if (typeof body.authorize_url !== "string" || body.authorize_url === "") {
+    throw new ApiError(502, "the server did not return an authorize_url");
+  }
+  window.location.assign(body.authorize_url);
+}
+
+// Map an OAuth-start failure to honest, human copy (mirrors connectErrorMessage).
+function oauthStartErrorMessage(e: unknown): string {
+  if (e instanceof ApiError) {
+    if (e.status === 503) {
+      return "This connector isn't ready to connect yet — its app credentials aren't registered on this deployment.";
+    }
+    if (e.status === 401) {
+      return "Your session expired. Please sign in again, then retry connecting.";
+    }
+  }
+  return friendlyErrorMessage(e, "Couldn't start the connection. Please try again.");
 }
 
 // ---------------------------------------------------------------------------
@@ -443,6 +477,20 @@ export function IntegrationsPanel({ client }: IntegrationsPanelProps) {
     },
     [api, tokens],
   );
+
+  // OAuth connect: fetch the signed authorize_url (authed) then redirect. Busy
+  // stays on through the redirect (we're leaving the SPA); only an error clears
+  // it and surfaces honest copy on the card.
+  const beginOAuth = useCallback(async (item: Integration) => {
+    setBusy((b) => ({ ...b, [item.name]: true }));
+    setMsg(item.name, null);
+    try {
+      await startOAuth(item); // navigates away on success
+    } catch (e) {
+      setMsg(item.name, { kind: "error", text: oauthStartErrorMessage(e) });
+      setBusy((b) => ({ ...b, [item.name]: false }));
+    }
+  }, []);
 
   // Poll the run (202 path) until it leaves "running" — then report the
   // recorded counts and silently refresh the list (last_sync/status). Past
@@ -953,7 +1001,7 @@ export function IntegrationsPanel({ client }: IntegrationsPanelProps) {
                       data-testid="int-oauth-btn"
                       data-provider={item.name}
                       disabled={isBusy}
-                      onClick={() => startOAuth(item)}
+                      onClick={() => void beginOAuth(item)}
                       style={primaryBtn}
                     >
                       Connect with {oauthProviderLabel(item)}
