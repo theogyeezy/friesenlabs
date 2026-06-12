@@ -1,7 +1,7 @@
 """Unit: the connector registry (ingest/connectors/registry.py) + its wiring.
 
 Proves:
-  * the registry knows exactly hubspot | csv | gohighlevel | stripe
+  * the registry knows exactly hubspot | csv | gohighlevel | stripe | salesforce
   * SYNC_SOURCES excludes csv (push import, no pull sync)
   * build_sync_connector constructs the right class per name, refuses csv and
     unknown names, and threads the injected client through
@@ -26,6 +26,7 @@ from ingest.connectors.registry import (
     build_sync_connector,
     get_spec,
 )
+from ingest.connectors.salesforce import SalesforceConnector
 from ingest.connectors.stripe_data import StripeDataConnector
 from ingest.pipeline import InMemoryRawSink, InMemoryStructuredSink
 
@@ -47,19 +48,21 @@ def _build(name, client=None):
 
 # --------------------------------------------------------------------------- shape
 @pytest.mark.unit
-def test_registry_knows_exactly_the_four_connectors():
-    assert set(REGISTRY) == {"hubspot", "csv", "gohighlevel", "stripe"}
-    assert set(SYNC_SOURCES) == {"hubspot", "gohighlevel", "stripe"}  # csv = file import
+def test_registry_knows_exactly_the_five_connectors():
+    assert set(REGISTRY) == {"hubspot", "csv", "gohighlevel", "stripe", "salesforce"}
+    # csv = file import (excluded from pull syncs)
+    assert set(SYNC_SOURCES) == {"hubspot", "gohighlevel", "stripe", "salesforce"}
     assert REGISTRY["csv"].kind == "file"
     assert REGISTRY["gohighlevel"].experimental is True
+    assert REGISTRY["salesforce"].experimental is True
     for name in ("hubspot", "stripe"):
         assert REGISTRY[name].experimental is False
 
 
 @pytest.mark.unit
 def test_get_spec_unknown_name_raises():
-    with pytest.raises(KeyError, match="salesforce"):
-        get_spec("salesforce")
+    with pytest.raises(KeyError, match="zendesk"):
+        get_spec("zendesk")
 
 
 @pytest.mark.unit
@@ -67,6 +70,7 @@ def test_build_constructs_the_right_connector_class():
     assert isinstance(_build("hubspot"), HubSpotConnector)
     assert isinstance(_build("gohighlevel"), GoHighLevelConnector)
     assert isinstance(_build("stripe"), StripeDataConnector)
+    assert isinstance(_build("salesforce"), SalesforceConnector)
 
 
 @pytest.mark.unit
@@ -81,7 +85,7 @@ def test_build_refuses_csv_and_unknown_names():
     with pytest.raises(ValueError, match="csv/import"):
         _build("csv")
     with pytest.raises(KeyError):
-        _build("salesforce")
+        _build("zendesk")
 
 
 @pytest.mark.unit
@@ -123,7 +127,7 @@ def test_cli_source_flag_validated(capsys, monkeypatch):
     monkeypatch.delenv("INGEST_REAL_STORES", raising=False)
     # unknown source = argparse usage error (exit 2)
     with pytest.raises(SystemExit) as exc:
-        run_sync.main(["--tenant", TENANT, "--source", "salesforce"])
+        run_sync.main(["--tenant", TENANT, "--source", "zendesk"])
     assert exc.value.code == 2
     # a valid non-default source dry-runs clean
     assert run_sync.main(["--tenant", TENANT, "--source", "gohighlevel"]) == 0

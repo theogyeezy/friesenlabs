@@ -128,6 +128,16 @@ KNOWN_INTEGRATIONS: dict[str, dict[str, Any]] = {
         "kind": "sync",
         "experimental": True,
     },
+    "salesforce": {
+        "label": "Salesforce",
+        "category": "CRM & Marketing",
+        "description": "EXPERIMENTAL: sync accounts, contacts, leads, opportunities and "
+                       "activities from Salesforce via OAuth + SOQL (read-only — Uplift "
+                       "never writes back).",
+        "source": "salesforce",
+        "kind": "sync",
+        "experimental": True,
+    },
     "stripe": {
         "label": "Stripe (revenue data)",
         "category": "Payments & Revenue",
@@ -949,15 +959,17 @@ def mount_integrations(app: FastAPI, deps: IntegrationsDeps, current_tenant) -> 
         # THE TRUST RULE: the vault slot is derived from the state-recovered (and
         # thus WE-signed) tenant_id, never from any browser-supplied value.
         ref = _tenant_secret_ref(tenant_id, KNOWN_INTEGRATIONS[name]["source"])
-        # GoHighLevel returns the chosen location/company on the token response;
-        # persist them so the connector can make location-level calls. Providers
-        # that don't (HubSpot) pass None and the envelope is unchanged.
+        # GoHighLevel returns the chosen location/company on the token response and
+        # Salesforce returns the per-org instance_url; persist them so the connector
+        # can make org/location-level calls. Providers that don't (HubSpot) pass None
+        # and the envelope is unchanged.
         value = oauth.oauth_secret_value(
             access_token=tokens["access_token"],
             refresh_token=tokens["refresh_token"],
             expires_at=tokens["expires_at"],
             location_id=tokens.get("location_id"),
             company_id=tokens.get("company_id"),
+            instance_url=tokens.get("instance_url"),
         )
         try:
             deps.secret_writer.put_secret(ref, value)

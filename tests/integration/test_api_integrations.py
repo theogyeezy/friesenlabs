@@ -289,6 +289,6 @@ def test_sync_fails_closed_502_when_credential_check_errors():
 def test_unknown_integration_404():
     client = _client(IntegrationsDeps(secret_writer=RecordingWriter(),
                                       sync_runner=lambda t, n: SyncResult()))
-    assert client.post("/integrations/salesforce/credentials",
+    assert client.post("/integrations/zendesk/credentials",
                        json={"token": "x"}, headers=H).status_code == 404
-    assert client.post("/integrations/salesforce/sync", headers=H).status_code == 404
+    assert client.post("/integrations/zendesk/sync", headers=H).status_code == 404
