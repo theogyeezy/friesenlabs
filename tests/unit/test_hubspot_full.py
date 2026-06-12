@@ -54,3 +54,36 @@ def test_get_requires_a_token():
     c = HubSpotFullClient()  # no set_token
     with pytest.raises(RuntimeError, match="no token"):
         c._get("/crm/v3/properties/contacts")
+
+
+# --- object discovery (item 3) ------------------------------------------- #
+_SCHEMAS_FIXTURE = {
+    "results": [
+        {"name": "pet", "fullyQualifiedName": "p12345_pet", "objectTypeId": "2-12345"},
+        {"name": "property", "fullyQualifiedName": "p12345_property", "objectTypeId": "2-67890"},
+    ],
+}
+
+
+def test_discover_object_types_unions_standard_engagements_and_custom():
+    types = _client_with(_SCHEMAS_FIXTURE).discover_object_types()
+    # standard objects + engagements present
+    for t in ("contacts", "companies", "deals", "tickets", "calls", "notes", "tasks"):
+        assert t in types
+    # custom objects appended by fullyQualifiedName
+    assert "p12345_pet" in types and "p12345_property" in types
+    # stable, de-duplicated
+    assert len(types) == len(set(types))
+
+
+def test_discover_object_types_tolerates_schemas_failure():
+    c = HubSpotFullClient()
+    c.set_token("t")
+
+    def boom(path, params=None):  # e.g. 403 no schemas scope
+        raise RuntimeError("no schemas scope")
+
+    c._get = boom  # type: ignore[assignment]
+    types = c.discover_object_types()
+    assert "contacts" in types and "notes" in types  # standard+engagements still returned
+    assert "p12345_pet" not in types                 # customs absent, but no crash

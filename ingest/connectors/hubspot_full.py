@@ -21,6 +21,11 @@ HUBSPOT_API_BASE = "https://api.hubapi.com"
 # reference (URL/id) as text but NEVER download the bytes (the no-media-blobs guardrail).
 _MEDIA_FIELD_TYPES = frozenset({"file"})
 
+# Standard CRM objects + engagements, addressable directly at /crm/v3/objects/{type} and
+# /crm/v3/properties/{type}. Custom objects are discovered at runtime from /crm/v3/schemas.
+_STANDARD_OBJECT_TYPES = ("contacts", "companies", "deals", "tickets", "products", "line_items", "quotes")
+_ENGAGEMENT_OBJECT_TYPES = ("calls", "emails", "meetings", "notes", "tasks")
+
 
 @dataclass(frozen=True)
 class PropertySet:
@@ -75,3 +80,23 @@ class HubSpotFullClient:
             if prop.get("fieldType") in _MEDIA_FIELD_TYPES or prop.get("type") in _MEDIA_FIELD_TYPES:
                 media.add(name)
         return PropertySet(names=tuple(names), media=frozenset(media))
+
+    # -- item 3: object discovery ----------------------------------------- #
+    def discover_object_types(self) -> tuple[str, ...]:
+        """Every object type to extract: the standard objects + engagements (constants) UNION
+        the tenant's custom objects from ``GET /crm/v3/schemas`` (identified by
+        ``fullyQualifiedName``). Custom objects are OPTIONAL — if the schemas call fails (missing
+        scope / no custom objects), the extract still runs over the standard set rather than
+        dying. Order is stable (standard, then engagements, then customs); no duplicates."""
+        types: list[str] = [*_STANDARD_OBJECT_TYPES, *_ENGAGEMENT_OBJECT_TYPES]
+        seen = set(types)
+        try:
+            data = self._get("/crm/v3/schemas")
+        except Exception:  # noqa: BLE001 — custom objects are optional; a missing scope must not kill the extract
+            return tuple(types)
+        for schema in data.get("results", []):
+            name = schema.get("fullyQualifiedName") or schema.get("name") or schema.get("objectTypeId")
+            if name and name not in seen:
+                seen.add(name)
+                types.append(name)
+        return tuple(types)

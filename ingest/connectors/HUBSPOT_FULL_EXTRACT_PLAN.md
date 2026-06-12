@@ -88,8 +88,10 @@ fix): `python -m api.migrate` loads `schema.sql` idempotently. Additive only.
   `GET /crm/v3/properties/{type}`, flagging `fieldType/type == 'file'` as media (URL-ref-only).
   4 unit tests in `tests/unit/test_hubspot_full.py` (lists all, flags media only, empty, token
   required); ruff clean. DONE.
-- [ ] 3. **Object discovery** helper (`_discover_object_types()`): constant standard +
-  engagement list ∪ custom objects from `/schemas`. Unit test with mocked `/schemas`.
+- [x] 3. **Object discovery** — `discover_object_types()`: standard objects + engagements
+  (constants) ∪ custom objects from `GET /crm/v3/schemas` (by `fullyQualifiedName`); tolerant of
+  a schemas-call failure (falls back to standard set). 2 unit tests (union + failure tolerance);
+  ruff clean. DONE.
 - [ ] 4. **Full-extract record pull** (`list_records(object_type, since)`): all properties,
   paginated, incremental via epoch-millis Search filter; associations attached. Unit tests:
   pagination (2 pages), incremental filter value is epoch-millis, media props kept as
