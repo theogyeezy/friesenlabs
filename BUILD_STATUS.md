@@ -1034,3 +1034,39 @@ tiered builders in isolated worktrees → 3-haiku refute-by-default panel → bo
   live in api/asgi.py. **Tests:** `test_sidecar.py` (engine: each kind, closed-skip, determinism,
   truncation) + `test_sidecar_routes.py` (503/401/grounded items/isolation-500/act-enqueues-draft/
   tenant-from-claim/409/unconfigured). Web typecheck + mock/real build green.
+
+## Sell (gamification) — SHIPPED — 2026-06-12 (WAVE A–E)
+- **What it is:** a real-mode gamification surface — a rep's level/XP/streak, the tenant leaderboard,
+  and ledger-backed quests, all derived from real selling activity (no fabricated scores). The fifth
+  Sell wave (this one) is the final wiring + handoff verification; A–D built the stack.
+- **Data foundation (WAVE A):** `api/gamify_stores.py` — `PgMemberStore` (the per-tenant roster) +
+  `PgPointsStore` (the **append-only `points_ledger`**), both over the SAME `crm_app` DSN with
+  per-op `SET LOCAL` RLS. In-memory fakes back the unit tests.
+- **Rules + close-scoring (WAVE B):** `shared/gamify_rules.py` (pure display rules: `points_for`,
+  `level_progress`, `streak_from_days`) + **close-scoring per Cognito user** — an approved in-app
+  stage move that ACTUALLY lands a deal in `closed_won` credits the acting `claims.sub` a ledger
+  event (api/app.py), and **member-upsert-on-auth** refreshes the caller's roster row on every authed
+  request. Identity is the verified JWT only (THE TRUST RULE) — never a header/body.
+- **Routes (WAVE C):** `api/sell_routes.py::mount_sell` — `GET /sell/me · /sell/leaderboard ·
+  /sell/quests` + `POST /sell/nudge`. Claims-bound; leaderboard strips the internal `tenant_id` and
+  trips a defense-in-depth isolation 500 on any leaked row (the /views pattern); the nudge is
+  **draft-only** — it rides THIS app's existing Greenlight queue as a `send_email` proposal, never
+  sends. **Inert by default:** every read answers an honest **503** when no points store is wired.
+- **Frontend (WAVE D, PR #285):** `web/src/api/SellView.tsx` mounts on route `sell` in **real mode
+  behind the real entitlement gate** (`routeEnabled("sell")`, i.e. the `sell` module in
+  `GET /account/modules`) — NOT the mock `gamifyOn` toggle (which now only governs the walled-off
+  mock prototype `web/src/screens/sell.tsx`). The module is in both catalogs: `shared/modules.py`
+  (`sell`, $25/mo, route `sell`) and its TS mirror `web/src/modules.ts` (parity-tested).
+- **Final wiring (WAVE E, this PR):** verified the module is coherent end-to-end — catalog ↔ mounted
+  route ↔ entitlement gate ↔ web mirror all agree. `mount_sell` is called in `api/app.py` with the
+  full `ApiDeps` bag; `api/asgi.py` wires the real `PgMemberStore`/`PgPointsStore` into
+  `ApiDeps.members`/`points` from the `crm_app` DSN (None → inert no-op, honest 503) — already in
+  place, confirmed, no change needed. Added `tests/unit/test_sell_module_coherence.py` (7 tests):
+  the `sell` module gates exactly route `sell`, the entitlement gate has teeth (route present only
+  when enabled), `create_app` actually mounts all four `/sell/*` endpoints + their `/api` aliases,
+  reads are inert-503 without a store and 200 with one, and the web mirror lists `sell`.
+- **Owner-gated (last mile):** the `members` + `points_ledger` schema (roles/grants/RLS) must be
+  **applied live against Aurora** — same as the other FLEETAGENT tables, via the
+  `uplift-migrate-oneoff` task-def family + the isolation gate. Until then the live `/sell/*` reads
+  answer their honest 503 (the feature is dark, never broken). No new infra; no new env beyond the
+  optional `STRIPE_PRICE_ID_MODULE_SELL` (module billing stays inert until the owner mints the Price).
