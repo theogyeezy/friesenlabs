@@ -159,6 +159,23 @@ class EditContactBody(BaseModel):
     company_id: str | None = None
 
 
+class CreateCompanyBody(BaseModel):
+    name: str
+    domain: str | None = None
+
+
+class EditCompanyBody(BaseModel):
+    name: str | None = None
+    domain: str | None = None
+
+
+class CreateActivityBody(BaseModel):
+    """Log a CRM activity (note/call/email/task) on a contact — a direct user write, not an agent
+    send (no external delivery), so it does NOT route through Greenlight."""
+    kind: str = "note"
+    body: str
+
+
 def mount_contacts(app: FastAPI, deps: ContactsDeps, current_tenant) -> None:
     """Mount the /contacts + /companies routes on `app`, authed via `current_tenant` (the same
     verified-claims dependency every other authed route uses)."""
@@ -295,3 +312,79 @@ def mount_contacts(app: FastAPI, deps: ContactsDeps, current_tenant) -> None:
             claims.tenant_id,
         )
         return {"company": company, "contacts": contacts, "deals": deals}
+
+    @app.post("/companies", status_code=201)
+    def create_company(body: CreateCompanyBody, claims: TenantClaims = Depends(current_tenant)):
+        crm = _require_reader(deps)
+        name = (body.name or "").strip()
+        if not name:
+            raise HTTPException(status_code=422, detail="name must be non-empty")
+        row = crm.insert_company(
+            tenant_id=claims.tenant_id, name=name, domain=(body.domain or "").strip() or None
+        )
+        return {"company": row}
+
+    @app.patch("/companies/{company_id}")
+    def edit_company(company_id: str, body: EditCompanyBody,
+                     claims: TenantClaims = Depends(current_tenant)):
+        crm = _require_reader(deps)
+        coid = _valid_id_or_404(company_id, kind="company")
+        changes: dict = {}
+        if body.name is not None:
+            name = body.name.strip()
+            if not name:
+                raise HTTPException(status_code=422, detail="name must be non-empty when provided")
+            changes["name"] = name
+        if body.domain is not None:
+            changes["domain"] = body.domain.strip() or None
+        if not changes:
+            raise HTTPException(status_code=422, detail="at least one field must be provided")
+        try:
+            return crm.update_company_fields(
+                tenant_id=claims.tenant_id, company_id=coid, changes=changes
+            )
+        except ValueError as exc:
+            if "not found" in str(exc):
+                raise HTTPException(status_code=404, detail="no such company")
+            raise HTTPException(status_code=422, detail=str(exc))
+
+    @app.post("/contacts/{contact_id}/activities", status_code=201)
+    def log_contact_activity(contact_id: str, body: CreateActivityBody,
+                             claims: TenantClaims = Depends(current_tenant)):
+        crm = _require_reader(deps)
+        cid = _valid_id_or_404(contact_id, kind="contact")
+        if crm.get_contact_directory(tenant_id=claims.tenant_id, contact_id=cid) is None:
+            raise HTTPException(status_code=404, detail="no such contact")
+        text = (body.body or "").strip()
+        if not text:
+            raise HTTPException(status_code=422, detail="body must be non-empty")
+        row = crm.insert_activity(
+            tenant_id=claims.tenant_id, kind=(body.kind or "note").strip() or "note",
+            body=text, contact_id=cid,
+        )
+        return {"activity": row}
+
+    def _archive(table: str, kind: str, entity_id: str, archived: bool, claims):
+        crm = _require_reader(deps)
+        eid = _valid_id_or_404(entity_id, kind=kind)
+        try:
+            return crm.set_archived(tenant_id=claims.tenant_id, table=table,
+                                    entity_id=eid, archived=archived)
+        except ValueError:
+            raise HTTPException(status_code=404, detail=f"no such {kind}")
+
+    @app.post("/contacts/{contact_id}/archive")
+    def archive_contact(contact_id: str, claims: TenantClaims = Depends(current_tenant)):
+        return _archive("contacts", "contact", contact_id, True, claims)
+
+    @app.post("/contacts/{contact_id}/unarchive")
+    def unarchive_contact(contact_id: str, claims: TenantClaims = Depends(current_tenant)):
+        return _archive("contacts", "contact", contact_id, False, claims)
+
+    @app.post("/companies/{company_id}/archive")
+    def archive_company(company_id: str, claims: TenantClaims = Depends(current_tenant)):
+        return _archive("companies", "company", company_id, True, claims)
+
+    @app.post("/companies/{company_id}/unarchive")
+    def unarchive_company(company_id: str, claims: TenantClaims = Depends(current_tenant)):
+        return _archive("companies", "company", company_id, False, claims)

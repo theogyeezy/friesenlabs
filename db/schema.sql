@@ -765,6 +765,16 @@ ALTER TABLE tenant_settings ADD COLUMN IF NOT EXISTS notification_prefs jsonb NO
 -- enabled module is a Stripe subscription item in the Phase-2 "selection sets the price" billing.
 ALTER TABLE tenant_settings ADD COLUMN IF NOT EXISTS enabled_modules jsonb NOT NULL DEFAULT '[]'::jsonb;
 
+-- CRM soft-archive: archived_at marks a deal/contact/company as archived (hidden from the board +
+-- directories, which filter `archived_at IS NULL`) without deleting it — reversible via
+-- POST .../unarchive. NULL = active. Same tenant-scoped FORCE'd RLS + SET LOCAL discipline.
+ALTER TABLE deals     ADD COLUMN IF NOT EXISTS archived_at timestamptz;
+ALTER TABLE contacts  ADD COLUMN IF NOT EXISTS archived_at timestamptz;
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS archived_at timestamptz;
+CREATE INDEX IF NOT EXISTS idx_deals_active     ON deals     (tenant_id) WHERE archived_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_contacts_active  ON contacts  (tenant_id) WHERE archived_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_companies_active ON companies (tenant_id) WHERE archived_at IS NULL;
+
 -- ---------------------------------------------------------------------------
 -- integration_sync_runs — explicit RLS statements (belt and suspenders with the DO block
 -- above, same convention as playbooks/predictions: the FORCE requirement stays greppable).

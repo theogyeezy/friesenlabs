@@ -332,3 +332,65 @@ def test_update_contact_fields_company_id_clear_to_null(monkeypatch):
     # Both name and company_id are bound; company_id=None becomes SQL NULL.
     assert params == ("Max", None, "ct-2")
     assert out["updated"] == {"name": "Max", "company_id": None}
+
+
+@pytest.mark.unit
+def test_insert_company_set_local_and_binds(monkeypatch):
+    pool = FakePool(one={"id": "co-1", "name": "Acme", "domain": "acme.com", "created_at": None})
+    _patch_pool(monkeypatch, pool)
+    crm = PgCrmClient("postgresql://crm_app@h/db")
+    out = crm.insert_company(tenant_id="T1", name="Acme", domain="acme.com")
+    assert pool.log[0][0].startswith("SET LOCAL app.current_tenant") and pool.log[0][1] == ("T1",)
+    ins_sql, params = pool.log[1]
+    assert ins_sql.startswith("INSERT INTO companies (tenant_id, name, domain)")
+    assert params == ("T1", "Acme", "acme.com")
+    assert out["name"] == "Acme"
+
+
+@pytest.mark.unit
+def test_insert_company_blank_domain_becomes_null(monkeypatch):
+    pool = FakePool(one={"id": "co-1", "name": "Acme", "domain": None, "created_at": None})
+    _patch_pool(monkeypatch, pool)
+    crm = PgCrmClient("postgresql://crm_app@h/db")
+    crm.insert_company(tenant_id="T1", name="Acme", domain="  ")
+    assert pool.log[1][1] == ("T1", "Acme", None)
+
+
+@pytest.mark.unit
+def test_update_deal_fields_relink_binds_company_and_contact(monkeypatch):
+    pool = FakePool(one={"id": "d-1", "title": "x", "stage": "new", "amount": None,
+                         "company_id": "co-9", "contact_id": "ct-9", "created_at": None})
+    _patch_pool(monkeypatch, pool)
+    crm = PgCrmClient("postgresql://crm_app@h/db")
+    crm.update_deal_fields(tenant_id="T1", deal_id="d-1",
+                           changes={"company_id": "co-9", "contact_id": "ct-9"})
+    update_sql, params = pool.log[1]
+    assert "company_id = %s" in update_sql and "contact_id = %s" in update_sql
+    assert "tenant_id =" not in update_sql
+    assert params == ("co-9", "ct-9", "d-1")
+
+
+@pytest.mark.unit
+def test_set_archived_deal_sets_now_and_clears_null(monkeypatch):
+    pool = FakePool(one={"id": "d-1", "archived_at": None})
+    _patch_pool(monkeypatch, pool)
+    crm = PgCrmClient("postgresql://crm_app@h/db")
+    crm.set_archived(tenant_id="T1", table="deals", entity_id="d-1", archived=True)
+    sql, params = pool.log[1]
+    assert sql.startswith("UPDATE deals SET archived_at = now() WHERE id = %s")
+    assert params == ("d-1",)
+    # restore path uses NULL
+    pool2 = FakePool(one={"id": "d-1", "archived_at": None})
+    _patch_pool(monkeypatch, pool2)
+    crm2 = PgCrmClient("postgresql://crm_app@h/db")
+    crm2.set_archived(tenant_id="T1", table="contacts", entity_id="ct-1", archived=False)
+    assert pool2.log[1][0].startswith("UPDATE contacts SET archived_at = NULL WHERE id = %s")
+
+
+@pytest.mark.unit
+def test_set_archived_rejects_unknown_table(monkeypatch):
+    pool = FakePool(one=None)
+    _patch_pool(monkeypatch, pool)
+    crm = PgCrmClient("postgresql://crm_app@h/db")
+    with pytest.raises(ValueError):
+        crm.set_archived(tenant_id="T1", table="users", entity_id="x", archived=True)
