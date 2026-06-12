@@ -212,6 +212,59 @@ test("connect: masked input, token-only body, status flips from the API response
   expect(text).not.toContain(TOKEN);
 });
 
+test("oauth: HubSpot offers a 'Connect with login' redirect; paste-key is the Advanced fallback", async ({ page }) => {
+  await page.route("**/integrations", (route) => route.fulfill({ json: LIST_NOT_CONNECTED }));
+  // Intercept the full-page OAuth redirect so the test doesn't actually leave for
+  // a provider — the assert is that the browser navigates to the start endpoint.
+  await page.route("**/integrations/hubspot/oauth/start", (route) =>
+    route.fulfill({ contentType: "text/html", body: "<!doctype html><title>authorize</title>ok" }),
+  );
+
+  await page.goto("/?view=integrations");
+  await expect(page.getByTestId("integration-item")).toBeVisible({ timeout: 15_000 });
+
+  // HubSpot is OAuth-capable (no oauth_available flag in the payload -> the
+  // graceful-degrade default treats "hubspot" as capable): a primary login button.
+  const oauthBtn = page.getByTestId("int-oauth-btn");
+  await expect(oauthBtn).toBeVisible();
+  await expect(oauthBtn).toContainText("Connect with HubSpot");
+  await expect(oauthBtn).toHaveAttribute("data-provider", "hubspot");
+
+  // The paste-an-API-key path is still present, demoted to an Advanced fallback.
+  await expect(page.getByTestId("int-connect-btn")).toContainText("Advanced: paste an API key instead");
+
+  // Clicking the login button is a full-page redirect to the OAuth start endpoint.
+  await oauthBtn.click();
+  await page.waitForURL("**/integrations/hubspot/oauth/start", { timeout: 15_000 });
+});
+
+test("oauth: a connector that advertises oauth_available:false shows only the paste-key path", async ({ page }) => {
+  // A non-hubspot sync connector that explicitly opts out of OAuth: no button,
+  // never a broken one — just the existing "Connect" (paste-key) flow.
+  const PIPEDRIVE = {
+    name: "pipedrive",
+    label: "Pipedrive",
+    category: "CRM",
+    description: "Sync deals and contacts from Pipedrive.",
+    connected: false as boolean | null,
+    status: "not_connected",
+    oauth_available: false,
+  };
+  await page.route("**/integrations", (route) =>
+    route.fulfill({
+      json: { integrations: [PIPEDRIVE], secrets_configured: true, sync_configured: true, csv_import_configured: true },
+    }),
+  );
+
+  await page.goto("/?view=integrations");
+  await expect(page.getByTestId("integration-item")).toBeVisible({ timeout: 15_000 });
+
+  await expect(page.getByTestId("int-oauth-btn")).toHaveCount(0);
+  // The paste-key entry point keeps its plain "Connect" label (primary, not demoted).
+  await expect(page.getByTestId("int-connect-btn")).toContainText("Connect");
+  await expect(page.getByTestId("int-connect-btn")).not.toContainText("Advanced");
+});
+
 test("connect 503 -> 'not configured on this deployment' copy, no fake success", async ({ page }) => {
   await page.route("**/integrations", (route) => route.fulfill({ json: LIST_NOT_CONNECTED }));
   await page.route("**/integrations/*/credentials", (route) =>
