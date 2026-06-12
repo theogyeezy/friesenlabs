@@ -168,6 +168,16 @@ KNOWN_INTEGRATIONS: dict[str, dict[str, Any]] = {
         "kind": "sync",
         "experimental": True,
     },
+    "pipedrive": {
+        "label": "Pipedrive",
+        "category": "CRM & Marketing",
+        "description": "EXPERIMENTAL: sync persons, organizations, deals and activities "
+                       "from Pipedrive via OAuth + the API v2 incremental endpoints "
+                       "(read-only — Uplift never writes back).",
+        "source": "pipedrive",
+        "kind": "sync",
+        "experimental": True,
+    },
 }
 
 # 5MB upload cap for POST /integrations/csv/import (mirrored in
@@ -990,9 +1000,10 @@ def mount_integrations(app: FastAPI, deps: IntegrationsDeps, current_tenant) -> 
         # THE TRUST RULE: the vault slot is derived from the state-recovered (and
         # thus WE-signed) tenant_id, never from any browser-supplied value.
         ref = _tenant_secret_ref(tenant_id, KNOWN_INTEGRATIONS[name]["source"])
-        # GoHighLevel returns the chosen location/company on the token response and
-        # Salesforce returns the per-org instance_url; persist them so the connector
-        # can make org/location-level calls. Providers that don't (HubSpot) pass None
+        # GoHighLevel returns the chosen location/company on the token response,
+        # Salesforce returns the per-org instance_url, and Pipedrive returns the
+        # per-company api_domain; persist them so the connector can make
+        # org/location/company-level calls. Providers that don't (HubSpot) pass None
         # and the envelope is unchanged.
         value = oauth.oauth_secret_value(
             access_token=tokens["access_token"],
@@ -1001,6 +1012,7 @@ def mount_integrations(app: FastAPI, deps: IntegrationsDeps, current_tenant) -> 
             location_id=tokens.get("location_id"),
             company_id=tokens.get("company_id"),
             instance_url=tokens.get("instance_url"),
+            api_domain=tokens.get("api_domain"),
         )
         try:
             deps.secret_writer.put_secret(ref, value)

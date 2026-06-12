@@ -1,5 +1,6 @@
 """Connector registry — ONE place that knows every source the ingestion plane
-speaks: hubspot | csv | gohighlevel | stripe | salesforce | microsoft | google.
+speaks: hubspot | csv | gohighlevel | stripe | salesforce | microsoft | google |
+pipedrive.
 
 Two consumers:
   * ingest/run_sync.py builds sync connectors by name (`build_connector(name,
@@ -26,6 +27,7 @@ from .gohighlevel import GoHighLevelConnector
 from .google import GoogleConnector
 from .hubspot import HubSpotConnector
 from .microsoft import MicrosoftConnector
+from .pipedrive import PipedriveConnector
 from .salesforce import SalesforceConnector
 from .stripe_data import StripeDataConnector
 
@@ -99,6 +101,12 @@ def _real_google_client():
     from .google import GoogleRestClient  # noqa: PLC0415 — lazy
 
     return GoogleRestClient()
+
+
+def _real_pipedrive_client():
+    from .pipedrive import PipedriveRestClient  # noqa: PLC0415 — lazy
+
+    return PipedriveRestClient()
 
 
 @dataclass(frozen=True)
@@ -206,6 +214,20 @@ REGISTRY: dict[str, ConnectorSpec] = {
         connector_cls=GoogleConnector,
         real_client_factory=_real_google_client,
         stub_client_factory=_EmptySyncClient,
+    ),
+    "pipedrive": ConnectorSpec(
+        name="pipedrive",
+        label="Pipedrive",
+        category="CRM & Marketing",
+        description=(
+            "EXPERIMENTAL: sync persons, organizations, deals and activities from "
+            "Pipedrive via OAuth + the API v2 incremental endpoints "
+            "(read-only — Uplift never writes back)."
+        ),
+        kind="sync",
+        experimental=True,
+        connector_cls=PipedriveConnector,
+        real_client_factory=_real_pipedrive_client,
     ),
 }
 
