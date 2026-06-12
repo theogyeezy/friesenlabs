@@ -329,7 +329,14 @@ Record-only PROVEN live: approving the seeded `issue_quote` returned
 `record_only` applier — `api/control/appliers.py`), and Resend's send log is EMPTY (0 emails
 ever, checked via the platform key). Compliance is stricter than expected: a human cannot
 approve a non-CAN-SPAM draft at all (decide-time 422). Follow-ups:
-- [ ] **Seeded demo approvals aren't applier-shaped** (`scripts/seed_demo_tenant.py`) —
+- [x] **Seeded demo approvals aren't applier-shaped** (`scripts/seed_demo_tenant.py`) —
+  **DONE 2026-06-12 (#309/#311 + live repair): `build_demo_approvals` emits applier-shaped
+  payloads (real deal ids + `changes`; full body WITH unsubscribe), shapes pinned by
+  `test_seed_approval_shapes.py` against the REAL compliance choke point + appliers; the
+  approvals wipe was also removed (crm_app has DELETE revoked — it would crash). LIVE: the 3
+  stuck sends DENIED, 3 fresh drafts inserted via one-off shim (bound to real live deals) and
+  approve-verified — send/quote `performed:false` record-only, update_deal `performed:true`
+  (the Saltgrass deal moved to negotiation), Resend log still 0 emails ever.** —
   `update_deal` seeds carry `deal`/`field` (no `deal_id`/`changes`) → approve = contained
   `KeyError`, `performed: false`; `send_email` seeds carry `body_preview` (no `body`) → the
   CAN-SPAM check can never pass AND the edit guard (correctly) refuses the novel `body` key,

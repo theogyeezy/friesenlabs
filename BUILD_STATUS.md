@@ -549,6 +549,17 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   usable + safe; RAG-embed IAM gap closed live.
 
 ## Lane Matt (app code) — log
+- 2026-06-12 — **Seed shapes FIXED + the full Greenlight approve path PROVEN live (#309/#311):**
+  `build_demo_approvals` now emits APPLIER-shaped drafts (real deal uuids + `changes`; full email
+  body WITH an unsubscribe line; issue_quote mirrors the tool shape), module import-safe, shapes
+  pinned in CI against the real compliance choke point + appliers; the approvals wipe was removed
+  (crm_app has DELETE revoked — a re-seed would have crashed). LIVE repair on the demo tenant:
+  3 stuck seeded sends DENIED via the API; 3 fresh drafts inserted via a one-off shim generated
+  FROM `build_demo_approvals` (resolved to REAL live deals — the live CRM's 60 deals don't match
+  the script's titles, so the shim falls back to live rows). Approve-verified end-to-end:
+  **send_email APPROVED (CAN-SPAM passes with the unsubscribe line) → `performed: false` —
+  record-only; issue_quote same; update_deal → `performed: true` and the live deal (Saltgrass
+  Hotel Collective) actually moved to `negotiation`; Resend send log still 0 emails ever.**
 - 2026-06-12 — **Greenlight approve-verification LIVE (owner-directed, Matt's session):** decided
   the demo tenant's 6 pending drafts against the live API. **Record-only PROVEN:** approving
   `issue_quote` → `performed: false — "draft-only until provider go-live"`; `send_email` maps to
