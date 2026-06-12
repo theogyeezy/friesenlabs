@@ -240,7 +240,10 @@ workspace-key-pool seeding.
   fire-and-forget `BackgroundDispatcher` (creates never block on an agent run); the Studio
   banners inert schedule/event playbooks from the new `dispatch` state in
   `GET /studio/playbooks`. The schedule leg stays owner-gated: flip `playbook_dispatch_enabled`
-  AND stamp `PLAYBOOK_DISPATCH_ENABLED=1` on the api task (GO_LIVE_CHECKLIST §7).** — none of
+  AND stamp `PLAYBOOK_DISPATCH_ENABLED=1` on the api task (GO_LIVE_CHECKLIST §7).
+  **SCHEDULE LEG FLIPPED + LIVE-VERIFIED 2026-06-12 (one flag does both since #289; rule
+  ENABLED on quarter-hour-aligned cron #296; the 08:15Z tick logged "dispatch complete …
+  across 1 tenant(s)" — see GO_LIVE §7 for the full flip record).** — none of
   the 5 shipped templates ever runs
   automatically: 4 are schedule-triggered (EventBridge leg applied-DISABLED + empty static
   tenant list — the flip itself is owner-gated, tracked), 1 is event-triggered and the event
@@ -253,7 +256,14 @@ workspace-key-pool seeding.
 - [ ] **Tenant discovery for scheduled dispatch** — `PLAYBOOK_DISPATCH_TENANTS` is a
   hand-maintained static tfvar (`infra/variables.tf:370-374`); every new signup needs a
   terraform edit or their schedules silently never fire (exit 0). Discover tenants with
-  active schedule-playbooks from the DB instead.
+  active schedule-playbooks from the DB instead. _(Live since 2026-06-12 with the demo tenant
+  hand-listed — the gap is now production-real, not theoretical.)_
+- [ ] **Dispatcher window-matching** (found live during the 2026-06-12 flip) — `cron_due`
+  matches the playbook cron to the EXACT tick minute, so only crons on minutes 0/15/30/45
+  can ever fire under the quarter-hour rule (#296 aligned the ticks; `rate(15 minutes)`
+  ticked at :12/:27/:42/:57 and matched nothing). Make `dispatch_scheduled` match "due since
+  the last tick" (a 15-min window keyed off the previous run) so any cron minute works, and
+  validate/op-hint quarter-hour minutes in the Studio until then.
 - [ ] **Server-side module gating for /studio + /agents** — gated by the $39/mo agents module
   in the UI only (`shared/modules.py:40`); `api/routes_studio.py` never checks entitlements,
   so a tenant with the module off can drive the API directly — billing leakage once Phase-2

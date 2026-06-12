@@ -549,6 +549,24 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   usable + safe; RAG-embed IAM gap closed live.
 
 ## Lane Matt (app code) — log
+- 2026-06-12 — **Playbook scheduler FLIPPED ON + live-verified (owner-approved, Matt's session):**
+  GO_LIVE §7 executed end-to-end via the deploy pipeline. One flag drives both legs since #289
+  (`playbook_dispatch_enabled` → the EventBridge rule AND `PLAYBOOK_DISPATCH_ENABLED=1` on the
+  api task, so Studio honesty can't drift); tfvars staged `true` + the demo tenant
+  (`f0930caa…`, the one provisioned `custom:tenant_id` in Cognito) → secret → deploy → reviewed
+  plans → owner-approved applies. **Verified live: rule ENABLED on `cron(0/15 * * * ? *)`, api
+  rev 17 carries the env, edge healthz 200, and the 08:15Z aligned tick logged "dispatch
+  complete: 0 playbook run(s) across 1 tenant(s)".** Three blockers found + fixed en route:
+  (1) #294 — #290's ECS-exec audit policy keyed `count` off apply-time ARNs → every plan died
+  "Invalid count argument", and its first failed apply DEREGISTERED the api task def mid-run
+  (service kept serving; next apply restored rev 16) — count now rides the static
+  `enable_ecs_exec` flag; (2) #295 — deploy retries on an unchanged SHA died on the immutable
+  ECR tag → build now skips when the image exists (retries idempotent); (3) #296 — `rate(15
+  minutes)` ticks (:12/:27/:42/:57) NEVER match the dispatcher's exact-minute cron check, so
+  the minute-0 starter templates could never fire → quarter-hour-aligned cron schedule
+  (dispatcher window-matching filed as the durable P1). Also pinned
+  `cognito_threat_protection_mode = "OFF"` in tfvars: #290's ENFORCED default 400s on the live
+  ESSENTIALS pool tier (enabling it = a billing decision, PLUS tier + mode in one apply).
 - 2026-06-12 — **Demo knowledge corpus SEEDED live (owner-run):** `seed_knowledge.py` executed
   as a `uplift-migrate-oneoff` Fargate task on the live api image (`414e82c`) for the demo
   tenant — **26 docs / 26 chunks embedded (Titan V2), exit 0**; retrieval verified by a second
