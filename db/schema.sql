@@ -400,6 +400,51 @@ CREATE UNIQUE INDEX IF NOT EXISTS integration_sync_runs_one_running
 CREATE INDEX IF NOT EXISTS integration_sync_runs_latest_idx
     ON integration_sync_runs (tenant_id, source, started_at DESC);
 
+-- ---------------------------------------------------------------------------
+-- members — the Sell (gamification) ROSTER: one row per workspace user that has acted, keyed by
+-- the stable Cognito subject (user_id text). Backs the leaderboard's display names + first/last
+-- activity. `display_name` / `role` are denormalized copies kept fresh on upsert (no FK to a
+-- users table — identity lives in Cognito, not Aurora). RLS-FORCEd tenant table: tenant_id is
+-- mandatory (part of the PRIMARY KEY, anchoring the per-op SET LOCAL policy) and the table is in
+-- the tenant_tables array below; crm_app gets full DML in roles.sql (the fresh-load grant gap —
+-- schema.sql runs before roles.sql). A member row IS mutable/removable (a user leaves the
+-- workspace), unlike the append-only points ledger below.
+-- NOTE: declared BEFORE the RLS DO block (any table named in its tenant_tables array must already
+-- exist or a fresh load — CI psql ON_ERROR_STOP=1 — aborts; same ordering as usage_counters above).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS members (
+    tenant_id    uuid NOT NULL,
+    user_id      text NOT NULL,           -- stable Cognito subject (NEVER a header/body value)
+    display_name text,
+    role         text,
+    first_seen   timestamptz NOT NULL DEFAULT now(),
+    last_seen    timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, user_id)
+);
+
+-- ---------------------------------------------------------------------------
+-- points_ledger — the Sell (gamification) APPEND-ONLY points trail: one immutable row per scored
+-- event ({tenant_id, user_id, event_type, points, deal_id?, occurred_at}). The leaderboard +
+-- per-user summary are SUM aggregates over this table — never a mutable running total, so a
+-- mis-scored event is corrected by appending a compensating row, never by editing history.
+-- `deal_id` is the OPTIONAL deal an event credits (nullable; e.g. a login streak credits no deal).
+-- RLS-FORCEd tenant table (mandatory tenant_id; in the tenant_tables array below); crm_app gets
+-- SELECT/INSERT ONLY in roles.sql (NO UPDATE/DELETE — immutable audit, exactly like traces/
+-- cost_events). NOTE: declared BEFORE the RLS DO block, same ordering reason as members above.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS points_ledger (
+    id          uuid NOT NULL DEFAULT gen_random_uuid(),
+    tenant_id   uuid NOT NULL,
+    user_id     text,
+    event_type  text,
+    points      int,
+    deal_id     uuid,                      -- OPTIONAL: the deal this event credits (nullable)
+    occurred_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (id)
+);
+CREATE INDEX IF NOT EXISTS points_ledger_tenant_user_idx
+    ON points_ledger (tenant_id, user_id, occurred_at);
+
 -- ===========================================================================
 -- ROW LEVEL SECURITY — apply the identical pattern to every tenant-scoped table.
 -- The DO block keeps it DRY and guarantees no table is missed (and never without FORCE).
@@ -411,7 +456,7 @@ DECLARE
         'documents', 'companies', 'contacts', 'deals', 'activities',
         'saved_views', 'approvals', 'traces', 'ingest_cursor', 'tenant_workspaces',
         'tenant_settings', 'playbooks', 'playbook_runs', 'predictions', 'usage_counters', 'cost_events', 'onboarding_state',
-        'integration_sync_runs'
+        'integration_sync_runs', 'members', 'points_ledger'
     ];
 BEGIN
     FOREACH t IN ARRAY tenant_tables LOOP
@@ -728,5 +773,40 @@ ALTER TABLE integration_sync_runs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE integration_sync_runs FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON integration_sync_runs;
 CREATE POLICY tenant_isolation ON integration_sync_runs
+    USING (tenant_id = current_setting('app.current_tenant', true)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.current_tenant', true)::uuid);
+
+-- ---------------------------------------------------------------------------
+-- Sell (gamification) attribution columns (appended per the Matt-append rule; idempotent — both
+-- are ADD COLUMN IF NOT EXISTS so api.migrate re-runs safely on fresh AND live databases). These
+-- attach an ACTOR (the stable Cognito subject) to the existing CRM rows so the points ledger can
+-- credit who worked a deal / logged an activity. Nullable + un-backfilled: pre-existing rows have
+-- no actor, and that is fine (they simply score nothing). The columns live on the already-FORCE'd
+-- RLS deals/activities tables, so they inherit tenant scoping with no new policy.
+--   deals.owner_user_id     — the member who owns/works the deal (leaderboard "deals advanced").
+--   activities.actor_user_id — the member who performed the activity (leaderboard "calls logged").
+-- ---------------------------------------------------------------------------
+ALTER TABLE deals ADD COLUMN IF NOT EXISTS owner_user_id text;
+ALTER TABLE activities ADD COLUMN IF NOT EXISTS actor_user_id text;
+
+-- ---------------------------------------------------------------------------
+-- members — explicit RLS statements (belt and suspenders with the DO block above, same
+-- convention as integration_sync_runs/playbooks/predictions: the FORCE requirement stays greppable).
+-- ---------------------------------------------------------------------------
+ALTER TABLE members ENABLE ROW LEVEL SECURITY;
+ALTER TABLE members FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON members;
+CREATE POLICY tenant_isolation ON members
+    USING (tenant_id = current_setting('app.current_tenant', true)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.current_tenant', true)::uuid);
+
+-- ---------------------------------------------------------------------------
+-- points_ledger — explicit RLS statements (belt and suspenders with the DO block above, same
+-- convention as members above).
+-- ---------------------------------------------------------------------------
+ALTER TABLE points_ledger ENABLE ROW LEVEL SECURITY;
+ALTER TABLE points_ledger FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON points_ledger;
+CREATE POLICY tenant_isolation ON points_ledger
     USING (tenant_id = current_setting('app.current_tenant', true)::uuid)
     WITH CHECK (tenant_id = current_setting('app.current_tenant', true)::uuid);
