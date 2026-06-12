@@ -590,7 +590,13 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   run's unserved `read_crm`/`query_cube` reading as "awaiting approval") is pinned in unit
   tests; Studio renders the split ("tools unserved" chip + honest Run-now notice; e2e asserts
   the incomplete row NEVER reads "awaiting approval"). Backend 2147 passed; web
-  typecheck + 6/6 studio e2e.
+  typecheck + 6/6 studio e2e. **LIVE-VERIFIED post-deploy (18:59Z, api on the #322 image):
+  a Run-now reproduced the exact motivating case — the worker left `query_cube`+`read_crm`
+  unserved in the drain window — and the record now reads `status: incomplete`,
+  `actions_proposed: []`, `calls_unserved: [query_cube, read_crm]`, trace
+  `call_unserved ×2`; registration reused; history row carries the split. NOTE: that's the
+  SECOND live sighting of worker drain-window latency on read-only calls (the open P1) —
+  the new digest now makes it visible instead of masking it as "pending".**
 - 2026-06-12 — **Deploy-pipeline hardening SHIPPED (the incident pair):** deploy.yml gets a
   `concurrency: deploy-production` group (queued, never cancelled — four concurrent runs
   trampled the state lock + raced the immutable-tag gate tonight), and the tfvars CLOBBER
