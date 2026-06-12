@@ -149,3 +149,80 @@ def test_search_live_returns_bounded_records():
         "contacts": [{"id": "1", "firstName": "Ada"}]}
     recs = c.search_live("contacts", q="ada", location_id="loc-1")
     assert len(recs) == 1 and recs[0].properties["firstName"] == "Ada"
+
+
+# --- connector orchestration (item 3) ------------------------------------ #
+from types import SimpleNamespace  # noqa: E402
+
+from ingest.connectors.gohighlevel_full import GoHighLevelFullConnector  # noqa: E402
+from ingest.connectors.hubspot_full import Record  # noqa: E402 — source-agnostic record shape
+
+
+class _FakeClient:
+    def __init__(self, types, records):
+        self._types = types
+        self._records = records          # {object_type: [Record,...] | Exception}
+        self.calls = []                  # (object_type, location_id, since)
+        self.discover_called = False
+
+    def discover_object_types(self):
+        self.discover_called = True
+        return self._types
+
+    def list_records(self, object_type, *, location_id=None, since=None):
+        self.calls.append((object_type, location_id, since))
+        recs = self._records.get(object_type, [])
+        if isinstance(recs, Exception):
+            raise recs
+        return iter(recs)
+
+
+class _FakeSink:
+    def __init__(self):
+        self.batches = []
+        self.last_report = SimpleNamespace(errors=[])
+
+    def upsert_records(self, tenant_id, records):
+        recs = list(records)
+        self.batches.append((tenant_id, recs))
+        return len(recs)
+
+
+def test_connector_lands_each_object_type_and_forwards_location():
+    client = _FakeClient(
+        ("contacts", "opportunities"),
+        {"contacts": [Record("contacts", "1", {}, {}, None)],
+         "opportunities": [Record("opportunities", "2", {}, {}, None)]},
+    )
+    sink = _FakeSink()
+    res = GoHighLevelFullConnector(client, sink).sync("tenant-A", location_id="loc-1")
+    assert res.pulled == 2 and res.landed == 2
+    assert res.by_type == {"contacts": 1, "opportunities": 1}
+    assert res.failed_types == []
+    assert all(t == "tenant-A" for t, _ in sink.batches)   # tenant-scoped
+    assert client.calls[0][1] == "loc-1"                    # location forwarded
+
+
+def test_connector_skips_a_failing_object_type():
+    client = _FakeClient(
+        ("contacts", "weird_custom"),
+        {"contacts": [Record("contacts", "1", {}, {}, None)],
+         "weird_custom": RuntimeError("404 bad custom object")},
+    )
+    res = GoHighLevelFullConnector(client, _FakeSink()).sync("t", location_id="loc-1")
+    assert res.by_type == {"contacts": 1}
+    assert res.failed_types == ["weird_custom"]
+    assert res.landed == 1
+
+
+def test_connector_honors_object_types_override():
+    client = _FakeClient(("SHOULD_NOT_USE",), {"contacts": [Record("contacts", "1", {}, {}, None)]})
+    res = GoHighLevelFullConnector(client, _FakeSink()).sync("t", object_types=("contacts",))
+    assert res.by_type == {"contacts": 1}
+    assert client.discover_called is False
+
+
+def test_connector_forwards_since():
+    client = _FakeClient(("contacts",), {"contacts": []})
+    GoHighLevelFullConnector(client, _FakeSink()).sync("t", location_id="loc-1", since="1700000000000")
+    assert client.calls[0][2] == "1700000000000"

@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterator
 
-from .hubspot_full import Record, _to_millis
+from .hubspot_full import FullSyncResult, Record, _to_millis
 
 log = logging.getLogger("ingest.connectors.gohighlevel_full")
 
@@ -226,3 +226,38 @@ class GoHighLevelFullClient:
         page = self._get(self._list_path(object_type), params, version=_VERSION.get(object_type, _DEFAULT_VERSION))
         rows = page.get(self._list_key(object_type)) or page.get("records") or []
         return [_normalize(object_type, raw) for raw in rows]
+
+
+class GoHighLevelFullConnector:
+    """Drives the GHL full extract: for every object type (discovered or supplied), pull every
+    record (all fields incl. flattened customFields, associations, media as refs) and UPSERT into
+    ``crm_records`` via :class:`ingest.sinks.PgCrmRecordsSink` (constructed with ``source='gohighlevel'``).
+    ROBUST: one object type that fails (a bad scope, a 4xx on an odd custom object) is logged by
+    exception TYPE only (no token/PII) and SKIPPED so the rest of the extract still lands. The
+    ``client`` must already carry the tenant's token + chosen location (``set_credentials``);
+    location-scoped. Additive — lands full-fidelity ``crm_records`` alongside everything else.
+    """
+
+    def __init__(self, client: "GoHighLevelFullClient", sink) -> None:
+        self._client = client
+        self._sink = sink
+
+    def sync(self, tenant_id: str, *, location_id: str | None = None,
+             since: int | str | None = None,
+             object_types: tuple[str, ...] | None = None) -> FullSyncResult:
+        types = object_types if object_types is not None else self._client.discover_object_types()
+        result = FullSyncResult()
+        for object_type in types:
+            try:
+                records = list(self._client.list_records(
+                    object_type, location_id=location_id, since=since))
+            except Exception as exc:  # noqa: BLE001 — one bad object type must not kill the extract; type only (no PII)
+                log.warning("gohighlevel full: object_type %s pull failed (%s) — skipped",
+                            object_type, type(exc).__name__)
+                result.failed_types.append(object_type)
+                continue
+            result.pulled += len(records)
+            landed = self._sink.upsert_records(tenant_id, records)
+            result.landed += landed
+            result.by_type[object_type] = landed
+        return result

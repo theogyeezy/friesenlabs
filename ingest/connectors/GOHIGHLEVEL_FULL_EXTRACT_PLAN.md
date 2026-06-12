@@ -60,9 +60,12 @@ merges (the crm_records migration is shared — no second migration).
   pulls `associations`; `search_live()` bounded. Reuses the source-agnostic `Record`. 9 unit tests
   (pagination, epoch-millis seed, 429 retry, Version header, token-required, discovery×2, normalize,
   search); ruff clean. Remaining non-contacts paths/versions stay `# VERIFY`. DONE.
-- [ ] 3. **`GoHighLevelFullConnector`** + sink wiring: reuse `PgCrmRecordsSink(source='gohighlevel')`;
-  `sync(tenant_id, *, since, location_id, object_types)` per-object-type ROBUST (skip a bad type,
-  log by exception TYPE only — no PII). Unit tests (lands per type, skips failing type).
+- [x] 3. **`GoHighLevelFullConnector`** — DONE. `sync(tenant_id, *, location_id, since, object_types)`
+  orchestrates discover → per-type `list_records` → `PgCrmRecordsSink.upsert_records`, reusing the
+  shared `FullSyncResult`; per-object-type try/except (a bad type logged by exception TYPE only — no
+  PII — and SKIPPED). Lands the source-agnostic `crm_records` (`source='gohighlevel'`) alongside the
+  existing path. 4 unit tests (lands per type + forwards location, skips failing type, honors
+  override, forwards since); ruff clean. DONE.
 - [ ] 4. **Registry + run_sync**: `registry.build_gohighlevel_full_connector(...)` reusing the
   existing GHL vault auth (`GoHighLevelConnector.authenticate` resolves token + location_id); extend
   `run_full_extract` (or add a sibling) to drive GHL. Backwards-compatible. Unit tests.
