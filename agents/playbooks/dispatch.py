@@ -217,6 +217,26 @@ class BackgroundDispatcher:
 # --------------------------------------------------------------------------- #
 ENV_DISPATCH_TENANTS = "PLAYBOOK_DISPATCH_TENANTS"
 
+# Settle budgets for playbook turns (the worker drain-window latency P1, observed live twice:
+# the chat-tuned 25s default starved the worker's poll+serve+model-continue cycle, ending runs
+# "incomplete" with unserved read-only calls). The scheduled leg (one-off task) and the event
+# leg (background thread) have NO http edge -> a generous 120s; manual Run-now rides the API
+# request through CloudFront/ALB 60s ceilings -> 45s with headroom. Both env-overridable.
+ENV_PLAYBOOK_SETTLE = "UPLIFT_PLAYBOOK_SETTLE_SECONDS"
+ENV_RUNNOW_SETTLE = "UPLIFT_RUNNOW_SETTLE_SECONDS"
+DEFAULT_PLAYBOOK_SETTLE_SECONDS = 120.0
+DEFAULT_RUNNOW_SETTLE_SECONDS = 45.0
+
+
+def playbook_settle_seconds() -> float:
+    """Drain budget for scheduled/event playbook turns (no http edge — wait for the worker)."""
+    return float(os.environ.get(ENV_PLAYBOOK_SETTLE, "") or DEFAULT_PLAYBOOK_SETTLE_SECONDS)
+
+
+def runnow_settle_seconds() -> float:
+    """Drain budget for the HTTP-bound manual Run-now (must clear the 60s edge ceilings)."""
+    return float(os.environ.get(ENV_RUNNOW_SETTLE, "") or DEFAULT_RUNNOW_SETTLE_SECONDS)
+
 # Account states whose tenant is live enough to own (active) schedule playbooks. A row only gains
 # a tenant_id once the Provisioner mints it (Step 55), so PROVISIONING/ACTIVE are exactly the
 # already-tenanted, dispatchable rows; CREATED/…/PROVISIONING_FAILED carry no tenant_id and are
@@ -309,7 +329,9 @@ def _build_runner(dsn: str | None):
                                  status="error", trigger={"kind": event.kind, "name": event.name},
                                  error="tenant not provisioned (no environment_id)")
             runtime = get_runtime({"runtime": "managed", "api_key": api_key,
-                                   "environment_id": env_id})
+                                   "environment_id": env_id,
+                                   # no http edge on the scheduled leg — wait for the worker
+                                   "settle_budget_s": playbook_settle_seconds()})
             return runner_mod.run(runtime, store, tenant_id, playbook_id, event,
                                   environment_id=env_id, vault_id=row.get("vault_id"),
                                   run_store=run_store)

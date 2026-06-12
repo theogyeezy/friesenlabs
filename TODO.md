@@ -373,7 +373,16 @@ approve a non-CAN-SPAM draft at all (decide-time 422). Follow-ups:
   so run status "pending" suggests Greenlight drafts where none exist. Split unserved-call
   entries from routed drafts in `RunRecord` (e.g. `calls_unserved` vs `actions_proposed`) and
   surface the difference in the Studio runs panel.
-- [ ] **Worker didn't serve read-only calls within the scheduled run's drain window** — the
+- [x] **Worker didn't serve read-only calls within the scheduled run's drain window** —
+  **ROOT-CAUSED + FIXED 2026-06-12: the chat-tuned 25s settle default
+  (`DEFAULT_TURN_SETTLE_SECONDS`, edge-bounded by design) starved the worker's
+  poll+serve+model-continue cycle on playbook turns (both live sightings surfaced at exactly
+  +25s). `get_runtime` now passes `settle_budget_s` through, and each playbook leg gets its
+  own: scheduled (one-off task) + event (background thread) = 120s
+  (`UPLIFT_PLAYBOOK_SETTLE_SECONDS`); HTTP-bound Run-now = 45s under the 60s edge ceilings
+  (`UPLIFT_RUNNOW_SETTLE_SECONDS`). Chat keeps its default + async continue-leg. If Run-now
+  still clips occasionally, the 202-async run pattern (the integrations "Sync now" shape) is
+  the durable follow-up.** — the
   same two `read_crm`/`query_cube` calls were still open when `send_message` returned.
   Investigate worker claim latency on dispatch-initiated sessions (2/2 polling at the time).
 ## Switchboard customer-readiness audit — TODOs (2026-06-11, Lane Matt)
