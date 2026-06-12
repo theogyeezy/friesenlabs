@@ -83,8 +83,11 @@ fix): `python -m api.migrate` loads `schema.sql` idempotently. Additive only.
   to `db/schema.sql` + crm_app `SELECT/INSERT/UPDATE` (no DELETE) to `db/roles.sql`. Validated:
   `pytest tests/unit/test_sql_schema.py` green (static pglast SQL/RLS-contract gate). Applied via
   one-off task at deploy time (NOT CI). DONE.
-- [ ] 2. **Property discovery** helper (`_discover_properties(object_type)`) + unit test
-  with a mocked `/properties` response (incl. a `file`-type property flagged as media).
+- [x] 2. **Property discovery** — `HubSpotFullClient.discover_properties()` in
+  `ingest/connectors/hubspot_full.py` returns a `PropertySet(names, media)` from
+  `GET /crm/v3/properties/{type}`, flagging `fieldType/type == 'file'` as media (URL-ref-only).
+  4 unit tests in `tests/unit/test_hubspot_full.py` (lists all, flags media only, empty, token
+  required); ruff clean. DONE.
 - [ ] 3. **Object discovery** helper (`_discover_object_types()`): constant standard +
   engagement list ∪ custom objects from `/schemas`. Unit test with mocked `/schemas`.
 - [ ] 4. **Full-extract record pull** (`list_records(object_type, since)`): all properties,
