@@ -393,3 +393,115 @@ def test_discover_db_tenants_is_inert_without_a_dsn():
     from agents.playbooks.dispatch import discover_db_tenants
 
     assert discover_db_tenants(None) == []  # no store -> safe no-op, no driver import attempted
+
+
+# --------------------------------------------------------------------------- #
+# Tick-floor (found live 2026-06-12): EventBridge fires at :00/:15/:30/:45 but
+# the Fargate container starts ~30-90s later, so matching the cron against
+# datetime.now() misses the tick minute EVERY time (the 15:00 tick evaluated at
+# 15:01:10 -> '*/15 * * * *' never matched; "0 playbook run(s)"). main() must
+# match against the tick the run belongs to: now floored to the 15-min boundary.
+# --------------------------------------------------------------------------- #
+def test_tick_floor_recovers_the_scheduled_minute():
+    from datetime import datetime, timezone
+
+    from agents.playbooks.dispatch import _tick_floor
+
+    t = lambda h, m, s: datetime(2026, 6, 12, h, m, s, 123456, tzinfo=timezone.utc)  # noqa: E731
+    assert _tick_floor(t(15, 1, 10)) == t(15, 0, 0).replace(microsecond=0)   # the live miss
+    assert _tick_floor(t(8, 16, 8)) == t(8, 15, 0).replace(microsecond=0)    # first enabled tick
+    assert _tick_floor(t(15, 14, 59)) == t(15, 0, 0).replace(microsecond=0)  # extreme jitter
+    assert _tick_floor(t(15, 15, 0)) == t(15, 15, 0).replace(microsecond=0)  # exact boundary
+    assert _tick_floor(t(23, 59, 59)) == t(23, 45, 0).replace(microsecond=0)
+
+
+def test_quarter_hour_cron_fires_under_startup_jitter():
+    """The end-to-end shape of the live failure: an ACTIVE '*/15' playbook + a dispatcher
+    evaluated 70 seconds after the tick MUST still run it (via the floored tick time)."""
+    from datetime import datetime, timezone
+
+    from agents.playbooks.dispatch import PlaybookDispatcher, _tick_floor
+    from agents.playbooks.runner import TriggerEvent  # noqa: F401 — signature parity
+    from agents.playbooks.store import InMemoryPlaybookStore
+
+    store = InMemoryPlaybookStore()
+    row = store.create("t-1", {
+        "name": "Quarter-hour scout", "trigger": {"kind": "schedule", "schedule": "*/15 * * * *"},
+        "roster": [{"agent": "scout", "tools": ["read_crm"]}], "autonomy": "L1",
+        "greenlight": {"side_effects": "always_ask"},
+    })
+    store.set_status("t-1", row["id"], "active")
+    ran = []
+    dispatcher = PlaybookDispatcher(store, lambda tid, pid, ev: ran.append((tid, pid)) or
+                                    type("R", (), {"playbook_id": pid, "status": "ok"})())
+
+    container_start = datetime(2026, 6, 12, 15, 1, 10, tzinfo=timezone.utc)
+    dispatcher.dispatch_scheduled("t-1", now=_tick_floor(container_start))
+    assert ran == [("t-1", row["id"])], "the floored tick must fire the quarter-hour cron"
+
+
+# --------------------------------------------------------------------------- #
+# Window-matching (the durable fix behind #296/#299): each tick OWNS the 15-min
+# window ending at its floored boundary — (tick-15m, tick]. Windows partition
+# time exactly, so ANY cron minute fires (not just 0/15/30/45), exactly once,
+# with no persisted cursor and no double-fire across consecutive ticks.
+# --------------------------------------------------------------------------- #
+def _window_fixture(cron):
+    from agents.playbooks.dispatch import PlaybookDispatcher
+    from agents.playbooks.store import InMemoryPlaybookStore
+
+    store = InMemoryPlaybookStore()
+    row = store.create("t-1", {
+        "name": "win", "trigger": {"kind": "schedule", "schedule": cron},
+        "roster": [{"agent": "scout", "tools": ["read_crm"]}], "autonomy": "L1",
+        "greenlight": {"side_effects": "always_ask"},
+    })
+    store.set_status("t-1", row["id"], "active")
+    ran = []
+    disp = PlaybookDispatcher(store, lambda tid, pid, ev: ran.append(ev) or
+                              type("R", (), {"playbook_id": pid, "status": "ok"})())
+    return disp, ran
+
+
+def test_any_minute_cron_fires_on_the_covering_tick():
+    from datetime import datetime, timezone
+
+    disp, ran = _window_fixture("7 * * * *")  # minute 7 — impossible under exact-minute match
+    t = lambda m: datetime(2026, 6, 12, 16, m, tzinfo=timezone.utc)  # noqa: E731
+    disp.dispatch_scheduled("t-1", now=t(0))    # window (15:45, 16:00] — no
+    assert ran == []
+    disp.dispatch_scheduled("t-1", now=t(15))   # window (16:00, 16:15] covers 16:07 — fires
+    assert len(ran) == 1 and ran[0].kind == "schedule"
+    disp.dispatch_scheduled("t-1", now=t(30))   # window (16:15, 16:30] — no double-fire
+    assert len(ran) == 1
+
+
+def test_boundary_minute_fires_exactly_once_across_consecutive_ticks():
+    from datetime import datetime, timezone
+
+    disp, ran = _window_fixture("30 13 * * *")
+    t = lambda h, m: datetime(2026, 6, 12, h, m, tzinfo=timezone.utc)  # noqa: E731
+    disp.dispatch_scheduled("t-1", now=t(13, 30))  # window (13:16..13:30] includes 13:30 — fires
+    disp.dispatch_scheduled("t-1", now=t(13, 45))  # window (13:31..13:45] excludes 13:30 — no
+    assert len(ran) == 1
+
+
+def test_every_minute_cron_fires_once_per_tick_not_fifteen_times():
+    from datetime import datetime, timezone
+
+    disp, ran = _window_fixture("* * * * *")
+    disp.dispatch_scheduled("t-1", now=datetime(2026, 6, 12, 16, 15, tzinfo=timezone.utc))
+    assert len(ran) == 1, "a window with many matching minutes still fires the playbook ONCE"
+
+
+def test_window_crosses_midnight_and_dow_correctly():
+    from datetime import datetime, timezone
+
+    # 23:59 on Friday June 12 belongs to the Saturday 00:00 tick's window.
+    disp, ran = _window_fixture("59 23 * * 5")  # Friday-only, minute 59
+    disp.dispatch_scheduled("t-1", now=datetime(2026, 6, 13, 0, 0, tzinfo=timezone.utc))
+    assert len(ran) == 1, "the midnight tick must evaluate pre-midnight minutes on THEIR own date"
+    # And the same tick must NOT fire a Saturday-only 00:00 cron twice... sanity: it fires once.
+    disp2, ran2 = _window_fixture("0 0 * * 6")  # Saturday-only, minute 0
+    disp2.dispatch_scheduled("t-1", now=datetime(2026, 6, 13, 0, 0, tzinfo=timezone.utc))
+    assert len(ran2) == 1

@@ -41,8 +41,20 @@ What remains is **owner-gated** (infra flips/seeding — see P0/P1 below), **web
 
 ### Chat & agent plane (Balto, citations, tools)
 - [ ] **Live-runtime citations (grounded RAG on the real coordinator path)** — `partial`
-  - Seed the demo tenant knowledge corpus (RAG embeddings) so live chat returns >=1 grounded citation.
+  - ~~Seed the demo tenant knowledge corpus~~ DONE 2026-06-12 (26 docs, retrieval verified in-VPC).
   - Add a live or near-live integration test that proves a populated corpus yields grounded citations through ManagedAgentsRuntime (current coverage is FakeRuntime/unit only).
+  - ~~Turns ended at the first `requires_action` idle~~ FIXED (settle loop): the live browser
+    test showed turns returning "I've asked Scout — I'll report back" while the worker was
+    seconds from serving the reads, forcing a human nudge AND skipping grounding (unserved
+    reads in `pending`). `send_message` now drains through `requires_action` within a
+    wall-clock budget (`UPLIFT_TURN_SETTLE_SECONDS`, default 45s under the 60s edge ceilings);
+    fail-closed unchanged on exhaustion/worker-down.
+- [ ] **Streaming/async chat turns** — ~~holds the HTTP request / clips at 60s~~ the ASYNC TURN
+  CONTRACT shipped (2026-06-12, after a live 504 at the edge ceiling): `/chat` returns
+  `settled:false`, `POST /chat/continue` re-drains the SAME session (events.list replay, deduped)
+  across short requests, ChatDock auto-continues with progressive narration — zero human nudges.
+  Remaining (optional polish): SSE streaming instead of polling; multi-task api stickiness
+  (the in-flight Conversation cache is per-process — fine at the current single api task).
 - [ ] **NL refine of an existing saved view (POST /views/{id}/refine)** — `not-wired`
   - Wire a real view_patcher (an agent-runtime spec patcher, analogous to AnthropicSpecGenerator) into build_app() ApiDeps so POST /views/{id}/refine works, or remove the route if NL-refine is deferred.
   - Add a real-mode test for view refine once wired.
@@ -264,6 +276,13 @@ workspace-key-pool seeding.
   ticked at :12/:27/:42/:57 and matched nothing). Make `dispatch_scheduled` match "due since
   the last tick" (a 15-min window keyed off the previous run) so any cron minute works, and
   validate/op-hint quarter-hour minutes in the Studio until then.
+  **PARTIAL 2026-06-12 (#299): a SECOND live miss — Fargate starts ~30-90s after the tick, so
+  `datetime.now()` missed the tick minute on every run ("0 playbook run(s)" with an active
+  `*/15` playbook). `main()` now floors now() to the quarter-hour tick (`_tick_floor`), and a
+  scheduled run was LIVE-VERIFIED end-to-end (15:15Z tick → MA session → "1 playbook run(s)" →
+  run persisted `schedule · */15 · pending` → 2 Greenlight drafts, 0 approved →
+  `reused_registration: true`). Remaining scope: quarter-hour-only cron minutes still apply —
+  full window-matching + a Studio validation hint stay open.**
 - [ ] **Server-side module gating for /studio + /agents** — gated by the $39/mo agents module
   in the UI only (`shared/modules.py:40`); `api/routes_studio.py` never checks entitlements,
   so a tenant with the module off can drive the API directly — billing leakage once Phase-2
@@ -303,6 +322,35 @@ workspace-key-pool seeding.
   `screens/agents.tsx` "Add tool"/"Get more skills…" are toast-only dead ends; paid skills'
   "Get · $X" installs free with no payment path (`screens/studio.tsx:88`); unguarded
   `await askClaude` (`screens/studio.tsx:218`); autonomy/status toggles are local-state-only.
+
+### Found live during the 2026-06-12 Greenlight approve-verification (Lane Matt)
+Record-only PROVEN live: approving the seeded `issue_quote` returned
+`performed: false — "draft-only until provider go-live"` (`send_email` maps to the SAME
+`record_only` applier — `api/control/appliers.py`), and Resend's send log is EMPTY (0 emails
+ever, checked via the platform key). Compliance is stricter than expected: a human cannot
+approve a non-CAN-SPAM draft at all (decide-time 422). Follow-ups:
+- [x] **Seeded demo approvals aren't applier-shaped** (`scripts/seed_demo_tenant.py`) —
+  **DONE 2026-06-12 (#309/#311 + live repair): `build_demo_approvals` emits applier-shaped
+  payloads (real deal ids + `changes`; full body WITH unsubscribe), shapes pinned by
+  `test_seed_approval_shapes.py` against the REAL compliance choke point + appliers; the
+  approvals wipe was also removed (crm_app has DELETE revoked — it would crash). LIVE: the 3
+  stuck sends DENIED, 3 fresh drafts inserted via one-off shim (bound to real live deals) and
+  approve-verified — send/quote `performed:false` record-only, update_deal `performed:true`
+  (the Saltgrass deal moved to negotiation), Resend log still 0 emails ever.** —
+  `update_deal` seeds carry `deal`/`field` (no `deal_id`/`changes`) → approve = contained
+  `KeyError`, `performed: false`; `send_email` seeds carry `body_preview` (no `body`) → the
+  CAN-SPAM check can never pass AND the edit guard (correctly) refuses the novel `body` key,
+  so they are PERMANENTLY un-approvable (deny is the only exit). Re-seed with applier-shaped
+  payloads (`deal_id`+`changes`; full `body` with an unsubscribe line) or mark seeds
+  display-only and exclude them from decide.
+- [ ] **Runner digest overstates "pending"** — `actions_proposed` includes UNSERVED READ-ONLY
+  calls (the 15:15Z scheduled run's two entries were `read_crm`/`query_cube`, `approval: None`),
+  so run status "pending" suggests Greenlight drafts where none exist. Split unserved-call
+  entries from routed drafts in `RunRecord` (e.g. `calls_unserved` vs `actions_proposed`) and
+  surface the difference in the Studio runs panel.
+- [ ] **Worker didn't serve read-only calls within the scheduled run's drain window** — the
+  same two `read_crm`/`query_cube` calls were still open when `send_message` returned.
+  Investigate worker claim latency on dispatch-initiated sessions (2/2 polling at the time).
 ## Switchboard customer-readiness audit — TODOs (2026-06-11, Lane Matt)
 
 From a release-readiness audit of the `integration` module ($29/mo, gates `integrations`;

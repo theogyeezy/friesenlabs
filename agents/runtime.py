@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import abc
 import json
+import os
+import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from shared.config import MA_BETA_HEADER
 
@@ -21,6 +23,26 @@ from shared.config import MA_BETA_HEADER
 DELEGATION_DEPTH = 1          # no nested sub-teams
 MAX_AGENTS_PER_ROSTER = 20
 MAX_CONCURRENT_THREADS = 25
+
+# SETTLE budget (the agentic-turn fix, 2026-06-12): one turn may keep draining past a
+# `requires_action` idle for this many wall-clock seconds (from the start of the turn) while
+# the EnvironmentWorker serves the open read-only calls. Without it the turn returned at the
+# FIRST requires_action — seconds before the worker answered — so the customer got "I've asked
+# Scout, I'll report back" as the final answer and had to nudge the chat to harvest the result
+# (live demo-tenant finding). On exhaustion the turn fails closed exactly as before. The
+# default must clear the edge's 60s CloudFront-origin-read/ALB-idle ceilings with headroom.
+ENV_TURN_SETTLE_SECONDS = "UPLIFT_TURN_SETTLE_SECONDS"
+# Per-REQUEST: a turn that needs longer settles across /chat/continue requests (the async turn
+# contract) — each request must clear the 60s edge ceilings with inference headroom.
+DEFAULT_TURN_SETTLE_SECONDS = 25.0
+
+# Bounded SSE read wait (round 4): the settle budget is only checkable when EVENTS arrive — a
+# long inference round emits nothing for 40+s and a silently-blocked stream wait sails the
+# request past the 60s edge ceiling into a 504. A bounded read timeout wakes the drain up
+# (classified as a stream drop -> reconnect/replay, or surface unsettled once the budget is
+# spent) so every request answers in time and the continue leg picks the turn back up.
+ENV_STREAM_READ_SECONDS = "UPLIFT_STREAM_READ_SECONDS"
+DEFAULT_STREAM_READ_SECONDS = 20.0
 
 # Reconnect-with-consolidation bound (the ratified brief's named risk: an SSE drop while a
 # custom_tool_use round is in flight is a documented deadlock). On a connection-shaped stream
@@ -37,6 +59,15 @@ def _is_stream_drop(exc: BaseException) -> bool:
     is NOT a drop and propagates unchanged."""
     if isinstance(exc, (ConnectionError, TimeoutError)):
         return True
+    try:
+        import httpx  # noqa: PLC0415 — lazy on purpose
+
+        # The bounded stream read timeout (round 4) surfaces as httpx.ReadTimeout when the SDK
+        # hands the transport error through un-wrapped mid-iteration.
+        if isinstance(exc, (httpx.TimeoutException, httpx.TransportError)):
+            return True
+    except Exception:  # noqa: BLE001 — httpx absent: the builtin classes above still apply
+        pass
     try:
         from anthropic import APIConnectionError  # noqa: PLC0415 — lazy on purpose
     except Exception:  # SDK absent (offline test envs) — the builtin classes above still apply
@@ -119,6 +150,8 @@ class ManagedAgentsRuntime(AgentRuntime):
         self,
         api_key: str | None = None,
         environment_id: str | None = None,
+        clock: Callable[[], float] | None = None,
+        settle_budget_s: float | None = None,
     ):
         self._api_key = api_key
         self._client = None  # built lazily; import never needs the network
@@ -129,15 +162,30 @@ class ManagedAgentsRuntime(AgentRuntime):
         # `events.list` replays the FULL session log, so dedupe must span turns on this instance
         # (one runtime per conversation in prod — bounded by the conversation's lifetime).
         self._seen_event_ids: dict[str, set[str]] = {}
+        # SETTLE (the agentic-turn fix, 2026-06-12): how long one turn may keep draining past a
+        # `requires_action` idle while the worker serves the open calls. Wall-clock from the
+        # start of send_message; on exhaustion the turn fails closed exactly as before. The
+        # default must clear the edge's 60s CloudFront-origin/ALB-idle ceilings with headroom.
+        self._clock = clock or time.monotonic
+        if settle_budget_s is None:
+            settle_budget_s = float(os.environ.get(ENV_TURN_SETTLE_SECONDS, "") or
+                                    DEFAULT_TURN_SETTLE_SECONDS)
+        self._settle_budget_s = settle_budget_s
 
     def _c(self):
         if self._client is None:
+            import httpx  # noqa: PLC0415 — lazy on purpose (anthropic's own transport dep)
             from anthropic import Anthropic  # noqa: PLC0415 — lazy on purpose
 
+            read_s = float(os.environ.get(ENV_STREAM_READ_SECONDS, "") or
+                           DEFAULT_STREAM_READ_SECONDS)
             # VERIFY: beta namespace + header shape against the live SDK before use.
             self._client = Anthropic(
                 api_key=self._api_key,
                 default_headers={"anthropic-beta": MA_BETA_HEADER},
+                # Bounded read so a silent stream wait can never out-sit the edge ceiling
+                # (see ENV_STREAM_READ_SECONDS above); a fired timeout is a stream drop.
+                timeout=httpx.Timeout(connect=10.0, read=read_s, write=30.0, pool=10.0),
             )
         return self._client
 
@@ -333,8 +381,22 @@ class ManagedAgentsRuntime(AgentRuntime):
         )
 
     def send_message(self, session, message) -> dict:
-        """One turn against the live session as the real event-stream flow:
-        stream-first -> send -> drain-to-idle. THIS ADAPTER EXECUTES NO TOOLS — the deployed
+        return self._drain(session, message)
+
+    def continue_drain(self, session) -> dict:
+        """Re-attach to an in-flight turn WITHOUT sending a user message (the async turn
+        contract, 2026-06-12): a delegation-heavy turn can't settle inside one HTTP request
+        under the edge's 60s ceiling, so the client continues it across short requests. The
+        continue leg replays everything the session emitted while no request was attached
+        (`events.list`, deduped by the per-session ledger — the same consolidation machinery
+        the reconnect path uses) and then streams on until settle/budget. Observe-only:
+        nothing is sent, nothing executes here."""
+        return self._drain(session, None)
+
+    def _drain(self, session, message) -> dict:
+        """One request's drain against the live session as the real event-stream flow:
+        stream-first -> send (initial leg only) -> drain-to-idle. THIS ADAPTER EXECUTES NO
+        TOOLS — the deployed
         EnvironmentWorker is the single executor (docs/decisions/custom-tool-execution-path.md;
         see the class docstring). The drain OBSERVES the worker's round-trip on the session
         event stream:
@@ -389,6 +451,8 @@ class ManagedAgentsRuntime(AgentRuntime):
         usage_out = 0
         usage_model: str | None = None
         reconnects = 0
+        turn_start = self._clock()  # settle budget anchor (see the requires_action branch)
+        last_stop: str | None = None  # the most recent idle's stop reason (settle observability)
         seen = self._seen_event_ids.setdefault(session.id, set())
 
         def _accumulate_usage(event) -> None:
@@ -471,13 +535,26 @@ class ManagedAgentsRuntime(AgentRuntime):
                 # open calls as pending and return — fail closed, never execute in-process.
                 # The session stays blocked; worker recovery / approval flows resolve it
                 # out-of-band. Every other idle ends the turn.
-                stop = self._stop_reason_type(event)
+                nonlocal last_stop
+                stop = last_stop = self._stop_reason_type(event)
                 if stop == "retries_exhausted":
                     raise RuntimeError(
                         f"MA session {session.id} idle after retries_exhausted"
                         + (f" — errors: {errors}" if errors else "")
                     )
                 if stop == "requires_action":
+                    # SETTLE: requires_action means the session expects EXTERNAL progress —
+                    # the worker serving open calls, or a delegated specialist thread whose
+                    # tool calls haven't even reached the stream yet (live round-2 finding:
+                    # the idle can fire with ZERO open calls while Scout's searches are still
+                    # being scheduled). Keep draining within the budget instead of ending the
+                    # turn on a race the customer experiences as "I'll report back" + silence.
+                    # A routed Greenlight proposal is the one legitimate requires_action stop
+                    # (draft-only approval IS the next action) — never wait on it. On budget
+                    # exhaustion fail closed exactly as before (worker down / wedged session).
+                    routed_stop = any(p.get("tool_name") for p in pending)
+                    if not routed_stop and self._clock() - turn_start < self._settle_budget_s:
+                        return False
                     if calls:
                         pending.extend(calls)
                         calls.clear()
@@ -494,7 +571,7 @@ class ManagedAgentsRuntime(AgentRuntime):
             with client.beta.sessions.events.stream(
                 session_id=session.id, extra_headers=self._beta_headers()
             ) as stream:
-                if reconnects == 0:
+                if reconnects == 0 and message is not None:
                     client.beta.sessions.events.send(
                         session_id=session.id,
                         events=[{
@@ -523,21 +600,34 @@ class ManagedAgentsRuntime(AgentRuntime):
                     except Exception as exc:
                         if not _is_stream_drop(exc):
                             raise
-                        if reconnects >= MAX_STREAM_RECONNECTS:
-                            raise RuntimeError(
-                                f"MA session {session.id} stream dropped again after "
-                                f"{reconnects} reconnect(s) — giving up (bounded retry)"
-                            ) from exc
+                        # Settle guards: budget spent OR reconnects exhausted -> SURFACE the
+                        # turn unsettled (round 4) — under the async contract the continue leg
+                        # re-attaches and finishes it, so a recoverable in-flight turn must
+                        # never become a customer-facing 500 (the pre-continue code raised
+                        # here). The interrupted state is marked so the turn reads unsettled
+                        # even when no calls/idle were observed yet.
+                        if (self._clock() - turn_start >= self._settle_budget_s
+                                or reconnects >= MAX_STREAM_RECONNECTS):
+                            if not calls and not pending:
+                                pending.append(
+                                    {"status": "pending", "reason": "stream_interrupted"})
+                            break
                         reconnects += 1
                         continue  # re-open the stream, replay the gap, resume the drain
             break
         # Defensive: anything still open at stream end surfaces (never silently dropped).
         pending.extend(calls)
+        # A stream that ENDED while we were settle-waiting on a no-calls requires_action keeps
+        # the honest blocked-session signal (the pre-settle contract for wedged sessions).
+        if not pending and last_stop == "requires_action":
+            pending.append({"status": "pending", "reason": "requires_action"})
         return {
             "session_id": session.id,
             "tenant_id": session.tenant_id,
             "delegations": delegations,
-            "answer": "".join(answer_parts),
+            # Paragraph-fold the narration: a settled turn carries the coordinator's interim
+            # messages AND the final answer — jammed ""-joins read as one mangled sentence.
+            "answer": "\n\n".join(p.strip() for p in answer_parts if p and p.strip()),
             "pending_approvals": pending,
             "tool_results": tool_results,
             # Observed token usage for cost attribution (0/0 when the stream emitted none).
@@ -606,6 +696,11 @@ class FakeRuntime(AgentRuntime):
             "delegations": [self.agents[a].name for a in roster if a in self.agents],
             "answer": f"[fake] handled: {message}",
         }
+
+    def continue_drain(self, session) -> dict:
+        # The fake settles every turn in one round — a continue finds nothing in flight.
+        return {"session_id": session.id, "tenant_id": session.tenant_id,
+                "delegations": [], "answer": "", "pending_approvals": [], "tool_results": []}
 
 
 def get_runtime(config: dict[str, Any] | None = None) -> AgentRuntime:

@@ -223,9 +223,14 @@ test("connect: masked input, token-only body, status flips from the API response
 
 test("oauth: HubSpot offers a 'Connect with login' redirect; paste-key is the Advanced fallback", async ({ page }) => {
   await page.route("**/integrations", (route) => route.fulfill({ json: LIST_NOT_CONNECTED }));
-  // Intercept the full-page OAuth redirect so the test doesn't actually leave for
-  // a provider — the assert is that the browser navigates to the start endpoint.
+  // /oauth/start is AUTH-GATED: it signs the tenant into the state and returns the
+  // provider authorize_url as JSON. The panel fetches it (with the bearer) and then
+  // redirects the browser to that URL. Mock the JSON, and the authorize page itself,
+  // so the test neither needs a real token nor actually leaves for the provider.
   await page.route("**/integrations/hubspot/oauth/start", (route) =>
+    route.fulfill({ json: { name: "hubspot", authorize_url: "https://app.hubspot.com/oauth/authorize?client_id=test&state=signed" } }),
+  );
+  await page.route("https://app.hubspot.com/oauth/authorize**", (route) =>
     route.fulfill({ contentType: "text/html", body: "<!doctype html><title>authorize</title>ok" }),
   );
 
@@ -242,9 +247,9 @@ test("oauth: HubSpot offers a 'Connect with login' redirect; paste-key is the Ad
   // The paste-an-API-key path is still present, demoted to an Advanced fallback.
   await expect(page.getByTestId("int-connect-btn")).toContainText("Advanced: paste an API key instead");
 
-  // Clicking the login button is a full-page redirect to the OAuth start endpoint.
+  // Clicking fetches the signed start URL, then redirects to the provider's authorize page.
   await oauthBtn.click();
-  await page.waitForURL("**/integrations/hubspot/oauth/start", { timeout: 15_000 });
+  await page.waitForURL("https://app.hubspot.com/oauth/authorize**", { timeout: 15_000 });
 });
 
 test("oauth: GoHighLevel offers a 'Connect with login' redirect; paste-key is the Advanced fallback", async ({ page }) => {
@@ -253,9 +258,12 @@ test("oauth: GoHighLevel offers a 'Connect with login' redirect; paste-key is th
       json: { integrations: [GOHIGHLEVEL], secrets_configured: true, sync_configured: true, csv_import_configured: true },
     }),
   );
-  // Intercept the full-page OAuth redirect so the test doesn't actually leave for
-  // a provider — the assert is that the browser navigates to the start endpoint.
+  // /oauth/start is AUTH-GATED and returns the provider authorize_url as JSON; the
+  // panel fetches it (with the bearer) and then redirects to that URL.
   await page.route("**/integrations/gohighlevel/oauth/start", (route) =>
+    route.fulfill({ json: { name: "gohighlevel", authorize_url: "https://marketplace.gohighlevel.com/oauth/chooselocation?client_id=test&state=signed" } }),
+  );
+  await page.route("https://marketplace.gohighlevel.com/oauth/chooselocation**", (route) =>
     route.fulfill({ contentType: "text/html", body: "<!doctype html><title>authorize</title>ok" }),
   );
 
@@ -272,9 +280,9 @@ test("oauth: GoHighLevel offers a 'Connect with login' redirect; paste-key is th
   // The paste-an-API-key path is still present, demoted to an Advanced fallback.
   await expect(page.getByTestId("int-connect-btn")).toContainText("Advanced: paste an API key instead");
 
-  // Clicking the login button is a full-page redirect to the OAuth start endpoint.
+  // Clicking fetches the signed start URL, then redirects to the provider's authorize page.
   await oauthBtn.click();
-  await page.waitForURL("**/integrations/gohighlevel/oauth/start", { timeout: 15_000 });
+  await page.waitForURL("https://marketplace.gohighlevel.com/oauth/chooselocation**", { timeout: 15_000 });
 });
 
 test("oauth: a connector that advertises oauth_available:false shows only the paste-key path", async ({ page }) => {

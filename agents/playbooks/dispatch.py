@@ -27,7 +27,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from agents.playbooks import STATUS_ACTIVE
@@ -62,6 +62,17 @@ def _expand_field(field: str, lo: int, hi: int) -> set[int]:
             raise ValueError(f"cron field out of range [{lo},{hi}]: {field!r}")
         out.update(range(start, end + 1, step))
     return out
+
+
+def _tick_floor(now: datetime, *, minutes: int = 15) -> datetime:
+    """The EventBridge tick this dispatcher run belongs to: ``now`` floored to the rule's
+    quarter-hour boundary. The Fargate container starts ~30-90s AFTER the tick fires, so
+    matching the cron against ``datetime.now()`` misses the tick minute every time (live
+    2026-06-12: the 15:00 tick evaluated at 15:01:10 → ``*/15 * * * *`` never matched —
+    "0 playbook run(s)"). Flooring recovers the scheduled minute regardless of start jitter;
+    correct while startup latency stays under the 15-minute interval, and exact because the
+    rule itself is quarter-aligned (infra ``cron(0/15 * * * ? *)``, #296)."""
+    return now.replace(minute=(now.minute // minutes) * minutes, second=0, microsecond=0)
 
 
 def cron_due(expr: str, now: datetime) -> bool:
@@ -125,16 +136,32 @@ class PlaybookDispatcher:
     def _active(self, tenant_id: str) -> list[dict]:
         return [r for r in self.store.list(tenant_id) if r.get("status") == STATUS_ACTIVE]
 
+    # The dispatch interval: each tick OWNS the window (tick - WINDOW, tick]. Must equal the
+    # EventBridge rule cadence (infra cron(0/15 ...)) — consecutive ticks then partition time
+    # exactly, so any cron minute fires on exactly one tick (never zero under exact-minute
+    # matching, never twice across adjacent windows).
+    WINDOW_MINUTES = 15
+
     def dispatch_scheduled(self, tenant_id: str, *, now: datetime | None = None) -> list[RunRecord]:
-        """Run every ACTIVE schedule-playbook for ``tenant_id`` whose cron is due at ``now``."""
+        """Run every ACTIVE schedule-playbook for ``tenant_id`` due in the window ending at ``now``.
+
+        ``now`` is the tick this run belongs to (``main()`` passes the FLOORED quarter-hour —
+        see ``_tick_floor``); the playbook fires if its cron matches ANY minute in
+        ``(now - WINDOW_MINUTES, now]`` — once per tick, however many window minutes match
+        (an every-minute cron is one run per tick, not fifteen). Each candidate minute is a
+        full datetime, so windows that cross midnight evaluate date/day-of-week on the minute's
+        OWN day. Stateless by design: a missed tick (EventBridge/task failure) skips its window
+        rather than replaying it — same posture as the rest of the scheduler.
+        """
         now = now or datetime.now(timezone.utc)
+        window = [now - timedelta(minutes=k) for k in range(self.WINDOW_MINUTES)]
         records: list[RunRecord] = []
         for row in self._active(tenant_id):
             trig = self._trigger(row["definition"])
             if trig.get("kind") != "schedule":
                 continue
             cron = trig.get("schedule") or ""
-            if not cron_due(cron, now):
+            if not any(cron_due(cron, minute) for minute in window):
                 continue
             ev = TriggerEvent(kind="schedule", name=cron)
             records.append(self.run_playbook(tenant_id, row["id"], ev))
@@ -334,7 +361,9 @@ def main(argv: list[str] | None = None) -> int:
 
     store, run_playbook = _build_runner(dsn)
     dispatcher = PlaybookDispatcher(store, run_playbook)
-    now = datetime.now(timezone.utc)
+    # Match against the TICK time, not container-start time (see _tick_floor — startup
+    # jitter otherwise misses the scheduled minute on every single run).
+    now = _tick_floor(datetime.now(timezone.utc))
     total = 0
     for tenant_id in tenants:
         try:

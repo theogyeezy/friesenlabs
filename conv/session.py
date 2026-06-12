@@ -96,6 +96,9 @@ class Turn:
     # retrieved_count: chunks retrieval returned; None whenever retrieval didn't run.
     grounding_status: str | None = None
     retrieved_count: int | None = None
+    # Async turn contract: False while delegation/tool round-trips are still in flight — the
+    # client keeps the spinner and calls POST /chat/continue until settled (no human nudge).
+    settled: bool = True
 
     def as_dict(self) -> dict:
         return {
@@ -111,6 +114,7 @@ class Turn:
             "view_request": self.view_request,
             "grounding_status": self.grounding_status,
             "retrieved_count": self.retrieved_count,
+            "settled": self.settled,
         }
 
 
@@ -387,8 +391,23 @@ class Conversation:
         """
         del action_kwargs  # facade-only (see docstring) — nothing is invoked in this layer
 
+        self._last_message = message  # continue_turn grounds against the ORIGINAL question
         resp = self._send_to_runtime(message)
+        return self._coordinator_turn(resp, message, slots, ambiguous)
 
+    def continue_turn(self) -> Turn:
+        """Re-drain the in-flight turn (the async turn contract, 2026-06-12): a delegation-heavy
+        turn can't settle inside one HTTP request under the edge's 60s ceiling, so POST
+        /chat/continue picks the SAME session back up — no new user message, the runtime replays
+        whatever the session emitted in between (deduped) and streams on. Grounding runs against
+        the original question once the turn settles. With nothing in flight this returns a
+        settled, empty-answer turn (the client simply stops continuing)."""
+        message = getattr(self, "_last_message", "") or ""
+        resp = self.runtime.continue_drain(self.session)
+        self._record_cost(resp)
+        return self._coordinator_turn(resp, message, {}, [])
+
+    def _coordinator_turn(self, resp, message, slots, ambiguous) -> Turn:
         # Executor-served calls this turn (worker / self-hosted loop) — recorded for the trace;
         # the results were fed back into the session by the executor, nothing re-runs.
         for tr in resp.get("tool_results") or []:
@@ -415,9 +434,13 @@ class Conversation:
         # uncited claim is never surfaced as grounded. When the coordinator produced no prose,
         # the grounded extract stands in. Action turns skip retrieval entirely (no needless
         # vector search + synthesizer call per approval round-trip).
+        # SETTLED: nothing in pending except routed Greenlight proposals (which are a
+        # legitimate stop — draft-only approval is the next action). An unserved/blocked entry
+        # means the turn is still in flight; the client continues it via POST /chat/continue.
+        settled = not any(isinstance(p, dict) and not p.get("tool_name") for p in pending)
         grounding_status: str | None = None
         retrieved_count: int | None = None
-        if not pending:
+        if not pending and message:
             if self.rag is not None:
                 grounded = self._grounded_answer(message)
                 citations = [c.as_dict() for c in grounded.citations if c.source_ref]
@@ -430,7 +453,7 @@ class Conversation:
                 # "silent degraded mode" finding): never leave the customer guessing whether
                 # retrieval ran. Action turns keep None (retrieval deliberately skipped).
                 grounding_status = "unavailable"
-        if not answer and pending:
+        if not answer and pending and settled:
             answer = "Prepared an action for your approval."
         return Turn(
             answer=answer,
@@ -443,6 +466,7 @@ class Conversation:
             tenant_id=self.tenant_id,
             grounding_status=grounding_status,
             retrieved_count=retrieved_count,
+            settled=settled,
         )
 
     def _handle_action(self, message, action_name, tool_cls, slots, ambiguous, action_kwargs) -> Turn:

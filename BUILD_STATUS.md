@@ -549,6 +549,91 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   usable + safe; RAG-embed IAM gap closed live.
 
 ## Lane Matt (app code) — log
+- 2026-06-12 — **Seed shapes FIXED + the full Greenlight approve path PROVEN live (#309/#311):**
+  `build_demo_approvals` now emits APPLIER-shaped drafts (real deal uuids + `changes`; full email
+  body WITH an unsubscribe line; issue_quote mirrors the tool shape), module import-safe, shapes
+  pinned in CI against the real compliance choke point + appliers; the approvals wipe was removed
+  (crm_app has DELETE revoked — a re-seed would have crashed). LIVE repair on the demo tenant:
+  3 stuck seeded sends DENIED via the API; 3 fresh drafts inserted via a one-off shim generated
+  FROM `build_demo_approvals` (resolved to REAL live deals — the live CRM's 60 deals don't match
+  the script's titles, so the shim falls back to live rows). Approve-verified end-to-end:
+  **send_email APPROVED (CAN-SPAM passes with the unsubscribe line) → `performed: false` —
+  record-only; issue_quote same; update_deal → `performed: true` and the live deal (Saltgrass
+  Hotel Collective) actually moved to `negotiation`; Resend send log still 0 emails ever.**
+- 2026-06-12 — **Greenlight approve-verification LIVE (owner-directed, Matt's session):** decided
+  the demo tenant's 6 pending drafts against the live API. **Record-only PROVEN:** approving
+  `issue_quote` → `performed: false — "draft-only until provider go-live"`; `send_email` maps to
+  the SAME `record_only` applier, and **Resend's send log is EMPTY (0 emails ever — checked with
+  the platform key)**, so nothing has ever left the building. Compliance proved STRICTER than
+  record-only: the 3 seeded `send_email` drafts are un-approvable at decide time (422 `CAN-SPAM:
+  missing unsubscribe mechanism`) — and un-fixable by edit, because the seeds carry
+  `body_preview` not `body` and the edit guard correctly refuses novel keys. The 2 seeded
+  `update_deal` drafts approved but the applier KeyError'd (seeds carry `deal`/`field`, not
+  `deal_id`/`changes`) — CONTAINED, recorded `performed: false`, no corruption. All three
+  seed-shape issues filed in TODO. **Correction to the earlier scheduled-run note:** the 15:15Z
+  run's two "pending" entries were UNSERVED READ-ONLY calls (`read_crm`/`query_cube`,
+  `approval: None`) surfaced in the run digest — NOT Greenlight drafts (all 6 queue items were
+  June 6-8 seeds); the draft-only invariant held regardless (nothing executed). Runner-digest
+  pending-overstatement + worker drain-window latency filed as follow-ups.
+- 2026-06-12 — **Settle round 4 — bounded stream reads + 504 recovery (live re-test 504'd
+  again):** the settle budget is only checkable when EVENTS arrive — a 40s+ silent inference
+  round blocked the stream wait past the 60s edge ceiling. Fixes: the MA client is built with a
+  bounded SSE read timeout (`UPLIFT_STREAM_READ_SECONDS`, default 20s; httpx timeouts classified
+  as stream drops), a reconnect-exhausted/budget-spent drop SURFACES the turn unsettled
+  (`stream_interrupted`) instead of raising — /chat/continue re-attaches — and ChatDock treats
+  an edge 502/504 as "turn still settling server-side" and recovers through the continue leg
+  (never the error wall). One deliberate contract update: the legacy second-drop raise is now
+  the surfaced-unsettled shape. TDD (+4 tests); full pytest exit 0; realmode Playwright 14/14.
+- 2026-06-12 — **Async turn contract (settle round 3 — the live 504):** holding one request
+  can't clear the 60s CloudFront/ALB ceilings (a delegation-heavy live turn 504'd mid-settle).
+  Shipped the durable shape: `ManagedAgentsRuntime.continue_drain` re-attaches to the in-flight
+  session observe-only (events.list replay + per-session dedupe ledger — the existing
+  consolidation machinery), per-REQUEST settle budget (default now 25s), `Turn.settled`,
+  `POST /chat/continue` (same auth/kill-switch posture), and ChatDock auto-continues unsettled
+  turns with progressive narration — ONE user action, zero nudges, any turn length. Honesty
+  upgrade: an UNSERVED side-effecting call no longer renders the false "Prepared an action for
+  your approval." copy (it claimed a draft that hadn't landed) — unsettled turns continue
+  instead; 3 legacy tests updated deliberately. TDD throughout (runtime continue/dedupe, conv
+  settled+continue_turn grounding against the original question, API leg, e2e auto-continue).
+  Full pytest exit 0 · typecheck/builds/node units · realmode+knowledge Playwright 23/23.
+- 2026-06-12 — **First SCHEDULED playbook run LIVE-VERIFIED end-to-end + Cognito threat
+  protection ON (owner-approved, Matt's session):** activated a starter playbook
+  (pipeline-hygiene-scout instantiated via the live Studio API as the demo tenant, cron
+  `*/15`) — and the first tick produced "0 playbook run(s)": a SECOND firing bug, found live.
+  The Fargate dispatch container starts ~30-90s after the EventBridge tick, so the exact-minute
+  cron match against `datetime.now()` (15:01:10 for the 15:00 tick) missed on every run. Fixed
+  by #299 (TDD): `main()` floors now() to the quarter-hour tick (`_tick_floor`); the live
+  failure shape is pinned in unit tests. After the deploy, the 15:15Z tick FIRED the playbook:
+  real MA session → "dispatch complete: 1 playbook run(s) across 1 tenant(s)" → run persisted
+  (`schedule · */15 · pending`, P0-2 history live for a scheduled run) → 2 draft actions in
+  Greenlight with model-authored reasoning, 0 approved (draft-only HELD) →
+  `reused_registration: true` (P0-3, no crew leak). Playbook deactivated post-proof. Same
+  apply: **Cognito `PLUS` tier + threat protection `ENFORCED`** (owner-approved billing change,
+  REQ-012 items 2+4 — verified live via describe-user-pool). Ops note: a local-resolver DNS
+  staleness made friesenlabs.com serve Squarespace from THIS Mac only (world DNS verified
+  correct via 8.8.8.8/whois/pinned-IP probe — flush the local cache if it recurs).
+- 2026-06-12 — **Settle loop ROUND 2 (post-deploy live re-test):** the first deploy still
+  clipped — `requires_action` can fire for a DELEGATED THREAD's upcoming work with ZERO
+  open calls on the stream (captured: `pending=[{reason: requires_action}]`,
+  paragraph-folding confirmed live). Settle v2 waits through requires_action regardless of
+  open calls (budget-bounded); a routed Greenlight proposal remains the one immediate stop;
+  stream-drop at exhausted budget surfaces fail-closed instead of raising; the wedged-
+  session placeholder signal is preserved at stream end. +2 live-sequence tests; full
+  pytest exit 0.
+- 2026-06-12 — **Agentic chat settle loop (the "clanky chat" fix, owner-reported):** live
+  browser test as the demo user proved the diagnosis — `/chat` returned at the FIRST
+  `requires_action` idle with the coordinator's `search_rag` calls still unserved (worker race),
+  so the customer got "I've asked Scout — I'll report back" as the final answer, needed a human
+  nudge to harvest the result, and grounding/citations were skipped (unserved reads in
+  `pending_approvals`; captured response: `pending=[search_rag×3], grounding_status=null`).
+  Fix (TDD, 5 new unit tests): `ManagedAgentsRuntime.send_message` now keeps draining through
+  `requires_action` while open calls are the worker's to serve, bounded by a wall-clock settle
+  budget (`UPLIFT_TURN_SETTLE_SECONDS`, default 45s — under the 60s CloudFront-origin/ALB
+  ceilings, both verified); on exhaustion / worker-down / stream-end the fail-closed surface is
+  byte-identical to before; routed Greenlight proposals never wait (approval is a legitimate
+  stop). Narration now paragraph-folds (was jammed `"".join`). Settled knowledge turns leave
+  `pending` empty → the grounding/citation pass runs again. Full pytest exit 0. Follow-up filed:
+  SSE/async turns for the >60s long tail.
 - 2026-06-12 — **Playbook scheduler FLIPPED ON + live-verified (owner-approved, Matt's session):**
   GO_LIVE §7 executed end-to-end via the deploy pipeline. One flag drives both legs since #289
   (`playbook_dispatch_enabled` → the EventBridge rule AND `PLAYBOOK_DISPATCH_ENABLED=1` on the

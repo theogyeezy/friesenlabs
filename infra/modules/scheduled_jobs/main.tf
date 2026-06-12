@@ -45,11 +45,12 @@ variable "dispatch_enabled" {
 }
 variable "dispatch_schedule" {
   type = string
-  # ALIGNED quarter-hour ticks (:00/:15/:30/:45), NOT rate(15 minutes): the dispatcher matches a
-  # playbook's cron to the EXACT tick minute (agents/playbooks/dispatch.py cron_due), and rate()
-  # ticks at an arbitrary offset set by enable time — live ticks landed at :12/:27/:42/:57, so a
-  # minute-0 cron (all four schedule starter templates) would NEVER fire. Playbook crons must use
-  # minutes 0/15/30/45 until the dispatcher learns window-matching (tracked in TODO).
+  # ALIGNED quarter-hour ticks (:00/:15/:30/:45), NOT rate(15 minutes): rate() ticks at an
+  # arbitrary offset set by enable time (live ticks landed at :12/:27/:42/:57). The dispatcher
+  # WINDOW-matches — each tick owns (tick-15m, tick], so ANY cron minute fires exactly once —
+  # but the window length (PlaybookDispatcher.WINDOW_MINUTES) must equal this cadence and the
+  # ticks must stay boundary-aligned (main() floors container-start jitter to the quarter-hour).
+  # Change cadence here and WINDOW_MINUTES together, or windows gap/overlap.
   default = "cron(0/15 * * * ? *)"
 }
 variable "playbook_dispatch_tenants" {

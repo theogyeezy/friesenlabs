@@ -44,6 +44,7 @@ module "iam" {
     data.aws_secretsmanager_secret.platform_stripe.arn,
     data.aws_secretsmanager_secret.platform_resend.arn,
     data.aws_secretsmanager_secret.platform_posthog.arn, # REQ-006
+    data.aws_secretsmanager_secret.oauth_state.arn,      # OAuth connect: inject OAUTH_STATE_SECRET
   ]
   cognito_user_pool_arn = local.cognito_pool_arn
   # REQ-012 item 1: the scoped deploy policy is attached unconditionally; admin stays only
@@ -65,6 +66,11 @@ data "aws_secretsmanager_secret" "platform_resend" {
 }
 data "aws_secretsmanager_secret" "platform_posthog" {
   name = "friesenlabs/platform/shared/posthog-project-key"
+}
+# OAuth state-signing HMAC secret (created out-of-band, Lane Nick CLI) — referenced for the
+# connector OAuth flow's `OAUTH_STATE_SECRET`, never managed here.
+data "aws_secretsmanager_secret" "oauth_state" {
+  name = "uplift/oauth/state-secret"
 }
 
 module "secrets" {
@@ -194,6 +200,7 @@ module "api_service" {
   posthog_key_arn                = data.aws_secretsmanager_secret.platform_posthog.arn
   posthog_host                   = var.posthog_host
   integrations_real              = var.api_integrations_real
+  oauth_state_secret_arn         = data.aws_secretsmanager_secret.oauth_state.arn
   ingest_real                    = var.api_ingest_real
   # Schedule-leg honesty: same root flag that enables the EventBridge dispatcher below, so the
   # Studio's "scheduling enabled" state can never disagree with the rule it describes.
