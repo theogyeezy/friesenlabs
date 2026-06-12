@@ -10,9 +10,13 @@ The product code is built, tested, and on `main`; nothing below needs new code. 
 - **Workflow:** `.github/workflows/deploy.yml` — `workflow_dispatch` (run it from the GitHub Actions UI or `gh workflow run deploy.yml`).
 - **Config source:** the live tfvars are the **`PROD_AUTO_TFVARS_B64`** GitHub Actions secret (base64), materialized to `prod.auto.tfvars` inside the run. The committed `infra/envs/prod.tfvars` is an **empty template — do NOT apply with it.**
 - **Gate:** the apply job is the `production` environment with a **manual-approval** rule (approver: theogyeezy).
-- **Editing a flag = edit the canonical `prod.auto.tfvars` (gitignored, on the machine that set the secret) → re-encode → re-set the secret → run the workflow → approve.**
+- **Editing a flag = edit the canonical `prod.auto.tfvars` (gitignored, on the machine that set the secret) → set the secret VIA THE GUARDED SCRIPT → run the workflow → approve.**
   ```bash
-  base64 -i infra/prod.auto.tfvars | gh secret set PROD_AUTO_TFVARS_B64
+  # The ONLY supported way to set the secret — the clobber guard (key-name manifest in SSM
+  # /uplift/live/tfvars-keys) blocks a file that lost another lane's staged flags (the
+  # 2026-06-12 incident: a raw re-encode reverted the live SG migration). Deliberate
+  # removals: --allow-remove flag1,flag2. deploy.yml re-checks the materialized tfvars too.
+  python3 scripts/ops/set_tfvars_secret.py infra/prod.auto.tfvars
   gh workflow run deploy.yml      # then approve the apply when it hits the gate
   ```
 - ⚠️ **Do NOT `terraform apply` from a laptop** with the empty template or no tfvars — it computes a destructive plan that reverts the whole live deployment. If the canonical `prod.auto.tfvars` is lost, reconstruct it from the live task def first: `aws ecs describe-task-definition --task-definition uplift-api --query 'taskDefinition.containerDefinitions[0].{env:environment,secrets:secrets}'`.

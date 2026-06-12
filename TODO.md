@@ -324,11 +324,11 @@ workspace-key-pool seeding.
   `await askClaude` (`screens/studio.tsx:218`); autonomy/status toggles are local-state-only.
 
 ### Deploy-pipeline hardening (found 2026-06-12 during the window-match rollout, Lane Matt)
-- [ ] **`deploy.yml` needs a `concurrency:` group** — four concurrent deploy runs trampled the
+- [x] **`deploy.yml` needs a `concurrency:` group** **DONE (deploy-production group, queued not cancelled).** — four concurrent deploy runs trampled the
   terraform state lock (412 PreconditionFailed) and raced the immutable-tag build gate (two
   runs both saw "no image", both built, second push failed). `concurrency: { group: deploy,
   cancel-in-progress: false }` serializes them.
-- [ ] **tfvars-secret clobber guard** — the canonical `prod.auto.tfvars` was re-encoded into
+- [x] **tfvars-secret clobber guard** **DONE: `scripts/ops/set_tfvars_secret.py` (the blessed setter; key-name manifest in SSM `/uplift/live/tfvars-keys`) + a deploy.yml pre-plan check on the materialized tfvars; manifest bootstrapped live (39 keys) and the incident shape verified BLOCKED. `ssm:*` added to the scoped deploy policy (also unblocks the /uplift/live/* params once admin detaches).** — the canonical `prod.auto.tfvars` was re-encoded into
   `PROD_AUTO_TFVARS_B64` without another lane's staged flags (REQ-013 dedicated SGs), making
   four deploys silently plan a REVERT of live security posture (45-min Lambda-ENI hangs).
   Add a pre-encode check (e.g. `scripts/ops/tfvars_diff.py` comparing the file against the
