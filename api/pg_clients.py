@@ -452,10 +452,16 @@ class PgRagClient(_PgTenantClient):
     # becomes a LIKE pattern — belt and suspenders.
 
     def list_uploaded_documents(self, *, tenant_id: str) -> list[dict]:
-        """One row per uploaded document, newest first: ref prefix, a bounded head of the raw
+        """One row per uploaded DOCUMENT, newest first: ref prefix, a bounded head of the raw
         original (title line + the start of the body — never the full content), embedded chunk
         count, and created/updated stamps. Legacy uploads (pre-raw-row) come back with
-        raw_head None — listable and deletable, not editable."""
+        raw_head None — listable and deletable, not editable.
+
+        A "document" is a CHUNKED family — at least one member ref carries a `#` suffix
+        (`#0..#n` chunks / `#raw`). Single-row corpus shadows that also ride source='upload'
+        (the demo fixture's `demo:doc:act:N` activity notes; any future connector one-liners)
+        are retrieval fodder, NOT pages — without the HAVING they'd flood the rail as junk
+        read-only entries."""
         with self._tx(tenant_id) as cur:
             cur.execute(
                 "SELECT split_part(ref_id, '#', 1) AS ref,"
@@ -463,8 +469,10 @@ class PgRagClient(_PgTenantClient):
                 " COUNT(*) FILTER (WHERE embedding IS NOT NULL) AS chunk_count,"
                 " MIN(created_at) AS created_at, MAX(created_at) AS updated_at "
                 "FROM documents WHERE source = %s "
-                "GROUP BY 1 ORDER BY MAX(created_at) DESC, 1",
-                ("%" + _RAW_SUFFIX, _RAW_HEAD_LEN, _UPLOAD_SOURCE),
+                "GROUP BY 1 "
+                "HAVING COUNT(*) FILTER (WHERE ref_id LIKE %s) > 0 "
+                "ORDER BY MAX(created_at) DESC, 1",
+                ("%" + _RAW_SUFFIX, _RAW_HEAD_LEN, _UPLOAD_SOURCE, "%#%"),
             )
             rows = _dict_rows(cur)
         return [
