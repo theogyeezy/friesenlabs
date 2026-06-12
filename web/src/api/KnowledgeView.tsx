@@ -166,9 +166,25 @@ type EditorState =
 
 export interface KnowledgeViewProps {
   client?: ApiClient;
+  /** Open this page on mount / when it changes (the in-shell citation → page path).
+   * The `?doc=` URL param covers the same need for standalone/deep-link mounts. */
+  initialPageRef?: string | null;
+  /** Called once after `initialPageRef` is applied, so the owner can clear its state
+   * (a later remount must not re-open a page the user already navigated away from). */
+  onInitialPageConsumed?: () => void;
 }
 
-export function KnowledgeView({ client }: KnowledgeViewProps) {
+/** The `?doc=` deep-link target, read ONCE at module use (mount): every knowledge page is
+ * linkable as /?view=knowledge&doc=<ref> — citations in standalone chat ride this. */
+function docParamRef(): string | null {
+  try {
+    return new URLSearchParams(window.location.search).get("doc");
+  } catch {
+    return null;
+  }
+}
+
+export function KnowledgeView({ client, initialPageRef, onInitialPageConsumed }: KnowledgeViewProps) {
   const api = client ?? defaultClient();
   const [data, setData] = useState<KnowledgeInventoryResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -261,6 +277,29 @@ export function KnowledgeView({ client }: KnowledgeViewProps) {
     void load();
     void loadPages();
   }, [load, loadPages]);
+
+  // Citation → page. Two paths: the in-shell PROP (consumed-and-cleared by the owner, so
+  // re-clicking the same citation is a fresh null→ref transition and opens again), and the
+  // ?doc= deep-link param (once, on mount). openPage 404s honestly if the ref isn't a page.
+  const docParamApplied = useRef(false);
+  useEffect(() => {
+    if (initialPageRef) {
+      setEditor({ mode: "closed" });
+      void openPage(initialPageRef);
+      onInitialPageConsumed?.();
+      return;
+    }
+    if (!docParamApplied.current) {
+      docParamApplied.current = true;
+      const target = docParamRef();
+      if (target) {
+        setEditor({ mode: "closed" });
+        void openPage(target);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps — fires per prop change only;
+    // re-running on openPage recreation must not re-open a page the user navigated away from.
+  }, [initialPageRef]);
 
   const openPage = useCallback(
     async (refId: string) => {
