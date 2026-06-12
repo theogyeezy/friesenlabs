@@ -549,6 +549,12 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   usable + safe; RAG-embed IAM gap closed live.
 
 ## Lane Matt (app code) — log
+- 2026-06-12 — **Settle round 5 — the cache proxy hid continue_turn (live 501):** with rounds
+  1-4 deployed, the live turn finally came back 200/unsettled in time — and `POST /chat/continue`
+  501'd: prod's `conversation_factory` returns the `CachedConversation` proxy (conv/cache.py),
+  which only exposed `send()`, so the route's capability guard fired. The proxy now passes
+  `continue_turn()` through under the SAME per-tenant turn lock (terminated session → rebuild →
+  settled-empty continue, the client stops). TDD (+1 proxy test); full pytest exit 0.
 - 2026-06-12 — **Seed shapes FIXED + the full Greenlight approve path PROVEN live (#309/#311):**
   `build_demo_approvals` now emits APPLIER-shaped drafts (real deal uuids + `changes`; full email
   body WITH an unsubscribe line; issue_quote mirrors the tool shape), module import-safe, shapes
