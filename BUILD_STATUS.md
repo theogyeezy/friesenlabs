@@ -549,6 +549,23 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   usable + safe; RAG-embed IAM gap closed live.
 
 ## Lane Matt (app code) — log
+- 2026-06-12 — **Dispatcher window-matching SHIPPED + live-verified (#314); deploy-pipeline
+  incident handled (owner session):** each tick now owns the 15-min window ending at its floored
+  boundary — windows partition time, so ANY cron minute fires exactly once (TDD: off-quarter,
+  boundary-no-double-fire, once-per-tick for `* * * * *`, midnight/DOW crossing). LIVE PROOF:
+  an active `7,22,37,52 * * * *` playbook (impossible under exact-minute match; old-image ticks
+  logged "0 runs" as the control) fired on the first new-image tick — 18:00Z → MA session →
+  "1 playbook run(s)" → run history `schedule · 7,22,37,52 · pending`, registration reused;
+  test playbook deactivated after. **Incident en route (cross-lane):** my 16:40Z tfvars-secret
+  write CLOBBERED the security lane's REQ-013 dedicated-SG flags (my local file predated them)
+  → four subsequent deploys unknowingly tried to REVERT the live SG migration and hung/failed
+  on the 45-min Lambda-ENI wait (runs 27429875909/27430132575/27430354813/27432930814). The
+  lane restored the flags in the canonical file; I re-encoded the secret, rejected my
+  stale-plan run, and the gate caught the revert before approval. NOTE for the security lane:
+  run 27432930814's apply carried the revert plan — the next deploy on the repaired secret
+  re-applies the dedicated SGs in the fast direction (create+repoint, no deletes); verify the
+  Lambda/worker SG state after it. ALSO FILED: deploy.yml has no `concurrency:` group — four
+  concurrent runs trampled the state lock + raced the immutable-tag build gate tonight.
 - 2026-06-12 — **Settle round 5 — the cache proxy hid continue_turn (live 501):** with rounds
   1-4 deployed, the live turn finally came back 200/unsettled in time — and `POST /chat/continue`
   501'd: prod's `conversation_factory` returns the `CachedConversation` proxy (conv/cache.py),

@@ -270,7 +270,7 @@ workspace-key-pool seeding.
   terraform edit or their schedules silently never fire (exit 0). Discover tenants with
   active schedule-playbooks from the DB instead. _(Live since 2026-06-12 with the demo tenant
   hand-listed — the gap is now production-real, not theoretical.)_
-- [ ] **Dispatcher window-matching** (found live during the 2026-06-12 flip) — `cron_due`
+- [x] **Dispatcher window-matching** **DONE 2026-06-12 (#299 tick-floor + #314 window) + LIVE-VERIFIED: an active `7,22,37,52 * * * *` playbook (off-quarter minutes, impossible under exact-minute match — the 17:15Z/17:45Z old-image ticks logged "0 runs" as the control) FIRED on the first new-image tick (18:00Z → "1 playbook run(s)"; run history `schedule · 7,22,37,52`, registration reused). Any cron minute now fires exactly once per tick; WINDOW_MINUTES is documented as coupled to the EventBridge cadence. The Studio cron op-hint is now unnecessary.** (found live during the 2026-06-12 flip) — `cron_due`
   matches the playbook cron to the EXACT tick minute, so only crons on minutes 0/15/30/45
   can ever fire under the quarter-hour rule (#296 aligned the ticks; `rate(15 minutes)`
   ticked at :12/:27/:42/:57 and matched nothing). Make `dispatch_scheduled` match "due since
@@ -322,6 +322,17 @@ workspace-key-pool seeding.
   `screens/agents.tsx` "Add tool"/"Get more skills…" are toast-only dead ends; paid skills'
   "Get · $X" installs free with no payment path (`screens/studio.tsx:88`); unguarded
   `await askClaude` (`screens/studio.tsx:218`); autonomy/status toggles are local-state-only.
+
+### Deploy-pipeline hardening (found 2026-06-12 during the window-match rollout, Lane Matt)
+- [ ] **`deploy.yml` needs a `concurrency:` group** — four concurrent deploy runs trampled the
+  terraform state lock (412 PreconditionFailed) and raced the immutable-tag build gate (two
+  runs both saw "no image", both built, second push failed). `concurrency: { group: deploy,
+  cancel-in-progress: false }` serializes them.
+- [ ] **tfvars-secret clobber guard** — the canonical `prod.auto.tfvars` was re-encoded into
+  `PROD_AUTO_TFVARS_B64` without another lane's staged flags (REQ-013 dedicated SGs), making
+  four deploys silently plan a REVERT of live security posture (45-min Lambda-ENI hangs).
+  Add a pre-encode check (e.g. `scripts/ops/tfvars_diff.py` comparing the file against the
+  live task-def env + SG wiring, or a flags-manifest the encode script asserts against).
 
 ### Found live during the 2026-06-12 Greenlight approve-verification (Lane Matt)
 Record-only PROVEN live: approving the seeded `issue_quote` returned
