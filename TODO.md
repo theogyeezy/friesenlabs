@@ -438,6 +438,84 @@ items are documented postures (audit doc § "Documented postures"), not code.
 - [x] Thread `approval_id`/`decided_by` into the applier signature for downstream audit/Cortex
   feedback tie-in.
 
+## Knowledge customer-readiness audit — TODOs (2026-06-11, Lane Matt)
+
+From a 4-pass audit (API+DB · web UI · ingest+seeding · RAG/grounding), every claim
+spot-checked against source; knowledge test suites green locally (31 passed, 1 skipped —
+needs `UPLIFT_TEST_DB_URL`). Full report: `docs/audits/knowledge-audit-2026-06-11.md`.
+**Update 2026-06-12: the three P0s below SHIPPED in #251 and are deployed live**
+(api `uplift-api:414e82c`; upload gate INGEST_REAL_STORES applied with REQ-012).
+P1/P2 remain open. Original verdict at audit time:
+**Verdict: architecturally sound, not customer-ready** — tenancy/RLS, the citation invariant,
+and honest degraded states are all correct; the gaps are product-completeness. Items already
+tracked elsewhere in this file (seed the corpus, enable the scheduler, live-citation test,
+connector VERIFY/IAM, batch-embed live run) are NOT repeated below.
+
+### P0 — before paying customers
+- [x] **Give customers a path to a populated corpus** _(implemented in #251)_ — the knowledge API is read-only, the
+  ingest scheduler is DISABLED, and seeding is operator-only, yet the empty state
+  (`web/src/api/KnowledgeView.tsx:347-350`) promises the corpus "fills in automatically."
+  Either ship a tenant-scoped document-add path (upload/paste → the existing
+  chunk→embed→upsert pipeline) or make the auto-ingest promise real per tenant and point the
+  empty state at connecting sources. Until one of these exists the tab is permanently empty
+  for every real customer.
+- [x] **Fix placeholder citation refs on the live path** _(implemented in #251)_ — `conv/rag.py:106` `_normalize`
+  checks `ref`/`id` but live `PgRagClient.search` returns **`ref_id`**
+  (`api/pg_clients.py:330-337`), so every live citation reads `doc:0`-style positional refs
+  and `source="rag"` discards the real source. One-line fix (`or hit.get("ref_id")` + carry
+  the hit's source) + a regression test using the live hit shape (FakeRag fixtures returning
+  `ref` keys are why tests miss it).
+- [x] **Make grounding observable** _(implemented in #251)_ — empty retrieval yields "No supporting material found."
+  with zero citations, indistinguishable from a refusal; `Turn.as_dict()`
+  (`conv/session.py:87-99`) drops the `dropped` claims and no retrieval evidence is returned.
+  Add `grounding_status` (`grounded` / `no_sources_found` / `synthesis_unavailable`) +
+  `retrieved_count` to `/chat` responses; render in `ChatDock`; structured-log dropped claims.
+
+### P1 — soon after
+- [ ] **Differentiate degrade reasons + stop silent degraded modes** — every embed failure
+  reads "search model not configured" (`api/knowledge_routes.py:139-146`, type-only WARNING);
+  UI says "warming up" even for permanent config gaps (`KnowledgeView.tsx:318-329`);
+  `AnthropicSynthesizer` swallows client-build failures unlogged
+  (`conv/synthesizer.py:136-139`); the worker boots silently with `rag=None`
+  (`worker/worker.py:170-177`). Reason codes (transient vs unconfigured), matching UI copy,
+  startup log for degraded worker mode.
+- [ ] **Embedding cost/rate-limit controls** — per-text sync Titan embeds with no
+  backoff/circuit-breaker/cost accounting (`ingest/embed.py:71-90`); `batch_embed` silently
+  falls back to sync when env unset (`ingest/embed.py:253-257`). Add throttle backoff + cost
+  logging (extend the existing Anthropic cost-attribution pattern), and warn loudly on the
+  batch→sync fallback for large corpora.
+- [ ] **Report partial-sync failures** — `sync_tenant` continues past failed chunks with no
+  partial status / failed-chunk count (`ingest/pipeline.py:96-149`); re-runs heal it but ops
+  can't see it. Return `status=partial` + counts; add a fails-on-5th-chunk test.
+- [ ] **Answer/citation coherence on live knowledge turns** — displayed prose is the
+  coordinator's; citations come from an independent `_grounded_answer` synthesis
+  (`conv/session.py:403-407`), so claims may not match the prose. Merge/dedupe or render the
+  grounded claims as their own block.
+- [ ] **Onboarding never touches knowledge** — `STEP_IDS` (`api/onboarding_routes.py:51`) has
+  no knowledge step and `/onboarding/load-sample` seeds CRM only. Seed a small sample corpus
+  with load-sample (reuse `agents/knowledge_seed`). _(The empty-state half is DONE in #251 —
+  it now guides the customer to add a document / connect sources instead of the false
+  "fills in automatically" promise.)_
+- [ ] **Unprovisioned ≠ rolling-out** — DSN-unwired `GET /knowledge` is a bare 404
+  (`knowledge_routes.py:78-81`) the UI renders as "rolling out" + refresh forever
+  (`KnowledgeView.tsx:136-143`). Carry a reason code; distinct copy.
+
+### P2 — hygiene
+- [ ] Search pagination/total (`MAX_SEARCH_LIMIT=25`, no offset/total_hits in
+  `api/knowledge_routes.py`).
+- [ ] Embedding-dim assert at search time (upsert validates 1024, search assumes —
+  `api/pg_clients.py:317-337`).
+- [ ] Fix the stale `ingest/run_sync.py:~172` docstring ("structured sink stays IN-MEMORY in
+  both modes" — false since #231).
+- [ ] Test gaps: real-DB empty-tenant `/knowledge` integration test; `PgCrmStructuredSink`
+  cross-tenant isolation integration test; cursor advancement/tenant-scoping tests; CSV-import
+  unit tests; knowledge module-gating e2e; positive-row assertion in the isolation-test ANN
+  probe (`scripts/isolation_test.py:87-96`).
+- [ ] _Disproven during audit (do not re-file): `limit=abc` 500s (FastAPI 422s it); chat UI
+  missing citations (`ChatDock.tsx:320-336` renders them); run_sync hardcoding the in-memory
+  CRM sink (`default_structured_sink()` is gated-real)._
+
+
 ## FLEETAGENT session follow-ups (2026-06-11)
 
 - [x] Live DB migrate (new schema: workspace_keys/leads/playbooks/predictions + tenant_settings
