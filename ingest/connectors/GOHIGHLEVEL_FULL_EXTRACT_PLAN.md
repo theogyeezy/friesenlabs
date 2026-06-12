@@ -33,14 +33,24 @@ merges (the crm_records migration is shared — no second migration).
   (mirror google/microsoft/pipedrive connectors' `_MAX_RETRIES` pattern; HubSpot's didn't have it).
 - **Media** (call recordings / conversation attachments): URL refs only, never the bytes.
 
+## Grounded API (item 1 — from GHL marketplace docs + a 269-tool community MCP server + a contacts-pagination write-up; sources at bottom)
+- **Host / auth:** `https://services.leadconnectorhq.com`; `Authorization: Bearer <token>`; **location-scoped** — every list call takes `locationId` (from the OAuth envelope's `location_id`).
+- **Pagination (uniform):** `limit` (max **100**, default 20) + `startAfter` + `startAfterId`; the response returns the next cursors at `meta.startAfter` / `meta.startAfterId` — loop until they're absent. (NOT HubSpot's `after`.)
+- **Contacts — GROUNDED:** `GET /contacts/` · `Version: 2021-07-28` · params `locationId,limit,startAfter,startAfterId`.
+- **Conversations** `Version: 2021-04-15` (host call recordings/transcripts → media: URL refs only, never bytes).
+- **Objects to extract ("everything"):** contacts, opportunities, conversations, calendars/appointments, tasks + notes (under contacts), products, payments, invoices, **custom objects**, + the **Associations** graph. (Community MCP covers ~269 tools across these.)
+- **Custom Objects = v3 API:** sub-APIs *Object Schema* (`/docs/ghl/objects/object-schema`), *Records*, *Search Object Records*; Bearer (sub-account or Private Integration Token). Use Object Schema to DISCOVER custom objects + their fields, then Records/Search to pull.
+- **Custom Fields:** *Custom Fields V2 API* (fields + folders) covers Custom Objects + Company; contacts/opportunities custom fields ride the object's inline `customFields` array (flatten both into `properties`).
+- **Associations API** exists (relationship mapping) → the `crm_records.associations` graph.
+- **Rate limits:** 100 req/10s burst + **200k/day per location** → ADD 429/Retry-After backoff.
+- **STILL `# VERIFY` on first live run** (SPA docs blocked exact paths): per-Version + exact path for opportunities / calendars / custom-object records+schema / associations; the per-object incremental field (`dateUpdated` contacts vs `updatedAt` opportunities — confirm each); the custom-objects v3 schema/search paths; the 429 body shape. Item 2 codes these as a per-resource map with `# VERIFY` markers (far fewer than the old connector's blanket guess).
+
 ## Checklist (the loop works these in order)
-- [ ] 1. **Ground the GHL v2 API (research — NO code).** Via `WebFetch` on developers.gohighlevel.com
-  + marketplace.gohighlevel.com/docs, enumerate and RECORD IN THIS FILE (a "Grounded API" section):
-  the standard object list + each list/search endpoint + its `Version` header; custom-object discovery
-  (`GET /objects/` or the schemas endpoint) + how to list a custom object's records; custom-field
-  shapes (v2 Custom-Fields API vs the inline `customFields` array); pagination params; the
-  per-object last-updated field for incremental; rate-limit + 429 shape. This REPLACES the
-  experimental connector's `# VERIFY` guesses — everything below builds on it.
+- [x] 1. **Ground the GHL v2 API** — DONE. Researched the GHL marketplace docs + a 269-tool community
+  MCP server + a contacts-pagination write-up; recorded the **Grounded API** section above (host/auth,
+  uniform `startAfter`/`startAfterId` pagination, contacts endpoint+Version, the full object list incl.
+  custom objects + associations, custom-fields shapes, rate limits). Remaining unknowns are a SHORT
+  `# VERIFY` list (vs the old connector's blanket guess) for item 2 to encode as a per-resource map.
 - [ ] 2. **`GoHighLevelFullClient`** (`ingest/connectors/gohighlevel_full.py`): `_get` with the
   per-resource `Version` header + **429/Retry-After backoff**; `discover_object_types()` (standard
   list ∪ custom objects); `discover_fields(object_type)` (ALL fields incl. custom, flag file/media);
@@ -70,3 +80,10 @@ merges (the crm_records migration is shared — no second migration).
 ## Follow-on (NOT this loop)
 - Agent field-mapping across BOTH sources (HubSpot + GHL `crm_records`) → Cortex features.
 - Multi-location agencies (loop locations per tenant).
+
+## Sources (item 1 research)
+- GHL Custom Objects API (v3): https://marketplace.gohighlevel.com/docs/ghl/objects/custom-objects-api/index.html
+- GHL Custom Fields V2 API: https://marketplace.gohighlevel.com/docs/ghl/custom-fields/custom-fields-v-2-api/
+- Contacts pagination (exact params/cursors): https://medium.com/@tuguidragos/fetch-all-gohighlevel-contacts-with-n8n-api-pagination-explained-25621d6e6976
+- Community GHL MCP (269 tools — object coverage): https://github.com/mastanley13/GoHighLevel-MCP
+- Official developer docs (SPA — verify paths live): https://developers.gohighlevel.com
