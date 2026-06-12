@@ -76,6 +76,27 @@ What remains is **owner-gated** (infra flips/seeding — see P0/P1 below), **web
   across short requests, ChatDock auto-continues with progressive narration — zero human nudges.
   Remaining (optional polish): SSE streaming instead of polling; multi-task api stickiness
   (the in-flight Conversation cache is per-process — fine at the current single api task).
+  - ~~Orphan-consumed turn wedge~~ FIXED (round 7, live matrix 2026-06-12): a /chat whose
+    client died (closed tab) keeps draining server-side, marks every event seen, and loses
+    the response — every later continue read a silent idle stream and surfaced
+    `stream_interrupted` forever (observed live: 10+ continues on a session idle for
+    minutes). A zero-progress drop on a log ending at a non-`requires_action` idle now
+    force-replays the tail past the ledger and settles with the real answer.
+- [ ] **One shared MA session per tenant — concurrent turns interfere** _(live matrix finding
+  2026-06-12, sev medium)_: two browser tabs (or two users) of the same tenant interleave
+  `user.message`s into the SAME coordinator session. Turns serialize on the tenant turn lock
+  (a second tab's continue blocks >57s → edge 504s), and one request's drain consumes another
+  turn's final events (the answer lands in the wrong/no response — the continue priming marks
+  through the LAST user.message, which may be the other tab's). Fix direction: per-conversation
+  sessions (session-per-chat-thread keyed in `tenant_workspaces`/a new table) or a turn-id
+  watermark so drains only consume their own turn's events.
+- [ ] **"Queue it for my approval" never reaches the Greenlight queue** _(live matrix finding
+  2026-06-12, sev medium)_: the crew staged the Vada Fenwick follow-up via `draft_email`
+  (compose-only; returned a draft object) so `/approvals` stayed empty — the user has no
+  Greenlight item to approve, and the draft also auto-generates its body rather than carrying
+  the agent-approved wording. Either route `draft_email` output into a `send_email`
+  queued_for_approval proposal (draft-only held), or teach the coordinator to finish the
+  flow with the gated `send_email` so the approval queue is the single surface.
 - [ ] **NL refine of an existing saved view (POST /views/{id}/refine)** — `not-wired`
   - Wire a real view_patcher (an agent-runtime spec patcher, analogous to AnthropicSpecGenerator) into build_app() ApiDeps so POST /views/{id}/refine works, or remove the route if NL-refine is deferred.
   - Add a real-mode test for view refine once wired.
