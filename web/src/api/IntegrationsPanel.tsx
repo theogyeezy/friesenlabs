@@ -18,11 +18,11 @@
 //      in the vault; the existing connection-status display then reflects
 //      "Connected" with no special client handling. This path shows only when the
 //      connector advertises OAuth — feature-detected from the integrations list
-//      (an optional `oauth_available` flag); until the API ships that flag, only
-//      "hubspot" is treated as OAuth-capable (graceful degrade). The pattern is
-//      generic, so stripe/gohighlevel/pipedrive reuse it the moment the flag
-//      turns on for them. A connector without OAuth simply shows path 2 — never a
-//      broken button.
+//      (an optional `oauth_available` flag); until the API ships that flag, the
+//      connectors known to support it ("hubspot", "gohighlevel") are treated as
+//      OAuth-capable (graceful degrade). The pattern is generic, so stripe/
+//      pipedrive reuse it the moment the flag turns on for them. A connector
+//      without OAuth simply shows path 2 — never a broken button.
 //   2. "Advanced: paste an API key instead" (fallback): a masked token input
 //      POSTs to /integrations/{name}/credentials. The token is write-only — held
 //      transiently
@@ -215,15 +215,23 @@ const OAUTH_PROVIDER_LABEL: Record<string, string> = {
   pipedrive: "Pipedrive",
 };
 
-// Feature-detect whether a connector offers the browser-OAuth path. The API may
-// add an `oauth_available` boolean to each integration in the list response;
-// until it does, only "hubspot" is known to support it (graceful degrade). This
-// reads the optional field without widening the shared client type, keeping this
-// file disjoint from client.ts.
+// Connectors known to support the browser-OAuth path before the API advertises
+// it explicitly. The API may add an `oauth_available` boolean to each integration
+// in the list response; until it does for a given connector, these names are
+// treated as OAuth-capable (graceful degrade). HubSpot and GoHighLevel ship the
+// `/integrations/{name}/oauth/start` redirect on the API, so both lead with the
+// one-click login button.
+const OAUTH_DEFAULT_CONNECTORS = new Set(["hubspot", "gohighlevel"]);
+
+// Feature-detect whether a connector offers the browser-OAuth path. This reads
+// the optional `oauth_available` field — the server's word is authoritative when
+// present (so a connector can explicitly opt out) — and otherwise falls back to
+// the known-capable default set above. Reading the optional field this way keeps
+// this file disjoint from client.ts (no shared-type widening).
 function oauthAvailable(item: Integration): boolean {
   const flag = (item as { oauth_available?: unknown }).oauth_available;
   if (typeof flag === "boolean") return flag;
-  return item.name === "hubspot";
+  return OAUTH_DEFAULT_CONNECTORS.has(item.name);
 }
 
 function oauthProviderLabel(item: Integration): string {
