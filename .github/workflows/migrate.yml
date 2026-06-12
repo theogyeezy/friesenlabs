@@ -1,0 +1,115 @@
+# One-off DB migrate + isolation gate, through the SAME OIDC deploy role the
+# pipeline uses — replaces the local-CLI runbook step (infra/RUNBOOK.md "one-off
+# tasks") so a migrate never depends on a laptop AWS session again.
+#
+# What it does (the proven uplift-migrate-oneoff pattern, REQ-002/REQ-012):
+#   1. clone the latest uplift-migrate-oneoff task def with ONLY the image
+#      swapped to whatever the live uplift-api service currently runs
+#   2. RunTask `python -m api.migrate` (idempotent: schema.sql + roles.sql) and
+#      FAIL the job unless it exits 0
+#   3. RunTask the tenant-isolation gate (scripts/isolation_test.py as crm_app,
+#      UPLIFT_REQUIRE_DB=1 — a hard PASS/FAIL, never a silent skip) and FAIL
+#      the job unless it exits 0
+#   4. print both tasks' log tails into the job output
+#
+# Manual dispatch only. Mutations are additive + idempotent by construction
+# (CREATE TABLE IF NOT EXISTS / convergent GRANTs); the isolation gate after is
+# the same hard check CI runs against a fresh Postgres.
+name: Migrate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  CLUSTER: uplift-cluster
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Register one-off task def on the live api image
+        id: td
+        run: |
+          set -euo pipefail
+          IMG=$(aws ecs describe-task-definition --task-definition uplift-api \
+                  --query 'taskDefinition.containerDefinitions[0].image' --output text)
+          echo "live api image: $IMG"
+          aws ecs describe-task-definition --task-definition uplift-migrate-oneoff \
+            --query taskDefinition > td.json
+          jq --arg img "$IMG" '
+            .containerDefinitions[0].image = $img
+            | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
+                  .compatibilities, .registeredAt, .registeredBy, .deregisteredAt)
+          ' td.json > td-new.json
+          ARN=$(aws ecs register-task-definition --cli-input-json file://td-new.json \
+                  --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "registered: $ARN"
+          echo "arn=$ARN" >> "$GITHUB_OUTPUT"
+          # Network config: the SAME subnets/SG the live api service runs in.
+          aws ecs describe-services --cluster "$CLUSTER" --services uplift-api \
+            --query 'services[0].networkConfiguration' > netcfg.json
+          # Log destination for the tails below.
+          jq -r '.containerDefinitions[0] |
+                 .logConfiguration.options["awslogs-group"] + " " +
+                 .logConfiguration.options["awslogs-stream-prefix"] + " " + .name' td-new.json > logmeta.txt
+
+      - name: Run api.migrate (schema + roles, idempotent)
+        run: |
+          set -euo pipefail
+          CONTAINER=$(awk '{print $3}' logmeta.txt)
+          CMD='["python","-m","api.migrate"]'
+          TASK=$(aws ecs run-task --cluster "$CLUSTER" \
+            --task-definition '${{ steps.td.outputs.arn }}' \
+            --launch-type FARGATE \
+            --network-configuration file://netcfg.json \
+            --overrides "{\"containerOverrides\":[{\"name\":\"$CONTAINER\",\"command\":$CMD}]}" \
+            --query 'tasks[0].taskArn' --output text)
+          echo "migrate task: $TASK"
+          aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$TASK"
+          CODE=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK" \
+            --query 'tasks[0].containers[0].exitCode' --output text)
+          GROUP=$(awk '{print $1}' logmeta.txt); PREFIX=$(awk '{print $2}' logmeta.txt)
+          ID=${TASK##*/}
+          echo "--- migrate log tail ---"
+          aws logs get-log-events --log-group-name "$GROUP" \
+            --log-stream-name "$PREFIX/$CONTAINER/$ID" --limit 60 \
+            --query 'events[].message' --output text || true
+          echo "--- migrate exit code: $CODE ---"
+          [ "$CODE" = "0" ]
+
+      - name: Run the tenant-isolation gate (hard PASS required)
+        run: |
+          set -euo pipefail
+          CONTAINER=$(awk '{print $3}' logmeta.txt)
+          # UPLIFT_DB_URL is composed IN-CONTAINER from the task's own DB env +
+          # secrets (libpq keyword form — robust to special chars, and the
+          # password never appears in workflow logs or the ECS API call).
+          CMD='["sh","-c","UPLIFT_DB_URL=\"host=$DB_HOST dbname=$DB_NAME user=$DB_USER password=$DB_PASS\" UPLIFT_REQUIRE_DB=1 python scripts/isolation_test.py"]'
+          TASK=$(aws ecs run-task --cluster "$CLUSTER" \
+            --task-definition '${{ steps.td.outputs.arn }}' \
+            --launch-type FARGATE \
+            --network-configuration file://netcfg.json \
+            --overrides "{\"containerOverrides\":[{\"name\":\"$CONTAINER\",\"command\":$CMD}]}" \
+            --query 'tasks[0].taskArn' --output text)
+          echo "isolation task: $TASK"
+          aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$TASK"
+          CODE=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK" \
+            --query 'tasks[0].containers[0].exitCode' --output text)
+          GROUP=$(awk '{print $1}' logmeta.txt); PREFIX=$(awk '{print $2}' logmeta.txt)
+          ID=${TASK##*/}
+          echo "--- isolation log tail ---"
+          aws logs get-log-events --log-group-name "$GROUP" \
+            --log-stream-name "$PREFIX/$CONTAINER/$ID" --limit 60 \
+            --query 'events[].message' --output text || true
+          echo "--- isolation exit code: $CODE ---"
+          [ "$CODE" = "0" ]
