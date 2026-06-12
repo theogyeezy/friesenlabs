@@ -114,18 +114,12 @@ const APPROVALS_SEED = [
 const NAV = [
   { id: "dashboard", label: "Command Center", icon: "grid" },
   { id: "sell",      label: "Sell",           icon: "trophy" },
-  { id: "frontline", label: "Frontline",      icon: "inbox" },
   { id: "workflows", label: "Workflows",      icon: "workflow" },
   { id: "approvals", label: "Greenlight",     icon: "checkCircle", badge: "3", badgeAmber: true },
 ];
 const NAV_CRM = [
   { id: "crm",       label: "Pipeline",       icon: "users", badge: "11" },
   { id: "contacts",  label: "Contacts",       icon: "users" },
-  { id: "billing",   label: "Billing",        icon: "trend" },
-  { id: "calendar",  label: "Calendar",       icon: "calendar" },
-  { id: "reviews",   label: "Reputation",     icon: "spark" },
-  { id: "templates", label: "Templates",      icon: "note" },
-  { id: "email",     label: "Email",          icon: "mail" },
 ];
 const NAV_AGENTS = [
   { id: "agents", label: "Agents", icon: "spark" },

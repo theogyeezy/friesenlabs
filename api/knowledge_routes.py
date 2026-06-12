@@ -140,8 +140,13 @@ def mount_knowledge(app: FastAPI, deps: KnowledgeDeps, current_tenant) -> None:
             hits = rag.search(tenant_id=claims.tenant_id, query=query, limit=n)
         except Exception as exc:  # noqa: BLE001 — the query embedder (Bedrock/Titan) is env-key
             # gated on the live task; any embed/model failure degrades to an honest 200, never a
-            # 500 and never a leaked AWS error string. Log the TYPE only (it can carry detail).
-            log.warning("knowledge: search failed (%s)", type(exc).__name__)
+            # 500 and never a leaked AWS error string. The WIRE response stays generic
+            # (search_available:false + REASON_SEARCH_UNAVAILABLE); but the SERVER LOG must carry
+            # the REAL reason (message + traceback), not just the exception type — otherwise an
+            # operator can't tell a missing Bedrock key from a model error from a Postgres outage.
+            # The log is server-only (never returned to the tenant), so detail here is safe.
+            log.warning("knowledge: search failed for tenant %s: %s: %s",
+                        claims.tenant_id, type(exc).__name__, exc, exc_info=True)
             return {"query": query, "results": [], "search_available": False,
                     "reason": REASON_SEARCH_UNAVAILABLE}
         results = [
