@@ -64,6 +64,7 @@ from api.account_routes import AccountDeps
 from api.status_routes import StatusDeps
 from api.modules_routes import ModulesDeps
 from api.pg_settings import PgSettingsStore
+from api.settings_routes import SettingsDeps
 from api.routes_studio import StudioDeps, build_studio_deps
 from shared.config import (
     ENV_ANTHROPIC_API_KEY,
@@ -543,6 +544,10 @@ def build_app():
         # can read the enabled set; GET degrades to the default catalog if the column predates the
         # live migrate. (account_delete + settings stay inert by their own gates.)
         modules=ModulesDeps(store=PgSettingsStore(dsn), billing=module_billing) if dsn else ModulesDeps(),
+        # GET/PUT /account/settings — persisted workspace name + notification prefs. Wired LIVE
+        # (PgSettingsStore over tenant_settings, the SAME store ModulesDeps rides) so the panel
+        # stops answering its inert 503; the all-None SettingsDeps() default stands only with no DSN.
+        settings=SettingsDeps(store=PgSettingsStore(dsn)) if dsn else SettingsDeps(),
         # GET /public/status — per-subsystem readiness. The "api" component is always operational
         # (this endpoint answered); these probes report whether each subsystem is WIRED on this
         # deployment (the API process is up + its dep is configured), not a deep liveness ping —

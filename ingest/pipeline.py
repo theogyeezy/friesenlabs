@@ -23,6 +23,7 @@ asserted on upsert — no cross-tenant mixing.
 from __future__ import annotations
 
 import hashlib
+import logging
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Callable, Protocol, runtime_checkable
@@ -31,6 +32,8 @@ from . import EMBEDDING_DIM
 from .chunk import Chunk, chunk_record
 from .connectors.base import Connector, NormalizedRecord
 from .embed import embed as default_embed
+
+log = logging.getLogger("ingest.pipeline")
 
 
 # --------------------------------------------------------------------------- #
@@ -75,8 +78,21 @@ class SyncResult:
     chunks: int = 0
     embedded: int = 0     # how many chunks were actually embedded (new/changed)
     skipped: int = 0      # unchanged chunks not re-embedded
+    failed: int = 0       # chunks whose embed/upsert FAILED mid-sync (partial-corpus signal)
     cursor: str | None = None
     stored_ref_ids: list[str] = field(default_factory=list)
+    failed_ref_ids: list[str] = field(default_factory=list)  # which docs failed (for retry/visibility)
+
+    @property
+    def partial(self) -> bool:
+        """True when at least one doc failed to embed/upsert — the corpus is INCOMPLETE for this
+        run. Callers (run_sync) must treat a partial sync as a non-clean outcome, never silent."""
+        return self.failed > 0
+
+    @property
+    def status(self) -> str:
+        """A one-word run status for logs/metrics: 'partial' when any doc failed, else 'ok'."""
+        return "partial" if self.partial else "ok"
 
 
 def _content_hash(text: str) -> str:
@@ -119,6 +135,8 @@ def sync_tenant(
     max_cursor = since
     for rec in records:
         if rec.tenant_id != tenant_id:
+            # A cross-tenant record is a HARD security failure, never a recoverable per-doc skip —
+            # it aborts the whole sync (no partial path can paper over a tenancy violation).
             raise ValueError(
                 f"cross-tenant record {rec.ref_id}: {rec.tenant_id} != {tenant_id}"
             )
@@ -134,18 +152,37 @@ def sync_tenant(
                 # Identical content already embedded — skip (incremental win).
                 result.skipped += 1
                 continue
-            vec = embedder(ch.content)
-            if len(vec) != EMBEDDING_DIM:
-                raise ValueError(
-                    f"embedder returned dim {len(vec)} != {EMBEDDING_DIM}"
-                )
-            store.upsert(tenant_id, source, ref, ch.content, vec, new_hash)
+            # A transient embed/upsert failure (Bedrock throttle, a bad-dim response, a DB blip)
+            # must NOT sink the whole corpus sync OR be silently swallowed. Record it as a FAILED
+            # doc and keep going so the rest of the corpus still lands; the failed refs are reported
+            # for retry/visibility, and (below) the cursor is held back so they're re-pulled next run.
+            try:
+                vec = embedder(ch.content)
+                if len(vec) != EMBEDDING_DIM:
+                    raise ValueError(f"embedder returned dim {len(vec)} != {EMBEDDING_DIM}")
+                store.upsert(tenant_id, source, ref, ch.content, vec, new_hash)
+            except Exception:  # noqa: BLE001 — per-doc isolation; the run reports partial, not crash
+                result.failed += 1
+                result.failed_ref_ids.append(ref)
+                log.warning("ingest: doc %s (source=%s) failed to embed/upsert; continuing "
+                            "(reported as partial)", ref, source, exc_info=True)
+                continue
             result.embedded += 1
             result.stored_ref_ids.append(ref)
 
-    if max_cursor and max_cursor != since:
+    # Cursor honesty: advance the high-water ONLY on a fully-clean run. If ANY doc failed, hold the
+    # cursor at `since` so the next sync re-pulls this window and retries the failed docs (the docs
+    # that already succeeded skip cheaply via the content-hash check). Advancing past a failure
+    # would silently drop the failed docs from the corpus forever — exactly what this fix prevents.
+    if not result.partial and max_cursor and max_cursor != since:
         cursor_store.set(tenant_id, source, max_cursor)
-    result.cursor = max_cursor
+        result.cursor = max_cursor
+    else:
+        result.cursor = since
+    if result.partial:
+        log.warning("ingest: sync for tenant %s source %s is PARTIAL — %d embedded, %d failed "
+                    "(%d skipped); cursor held at %r for retry",
+                    tenant_id, source, result.embedded, result.failed, result.skipped, since)
     return result
 
 

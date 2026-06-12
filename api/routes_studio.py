@@ -59,6 +59,15 @@ _NO_REGISTRAR_REASON = (
 # Display tail for registered Managed Agents ids — the api/agents_routes.py contract.
 ID_TAIL_LEN = 6
 
+# The app route-id the Studio surface lives under (shared.modules: the "agents" module gates the
+# "studio" route). A tenant whose enabled-module set doesn't surface this route is not entitled to
+# /studio/* and gets an honest 403 (not a 404 — the surface exists, the tenant just hasn't bought it).
+STUDIO_ROUTE_ID = "studio"
+_NOT_ENTITLED_DETAIL = (
+    "the Agents module is not enabled for this workspace — enable it in Settings → Your suite "
+    "to use Agent Studio"
+)
+
 
 def _id_tail(value: Any) -> str | None:
     if not isinstance(value, str) or not value:
@@ -96,6 +105,14 @@ class StudioDeps:
     #     alongside the dispatcher it hands to deals/contacts routes).
     scheduling_enabled: bool = False
     events_enabled: bool = False
+    # Per-tenant module entitlement reader (PgSettingsStore-shaped: get_modules(tenant_id) ->
+    # list[str] | None). The Studio surface belongs to the "agents" module (shared.modules), so a
+    # tenant that has turned that module OFF must not reach /studio/* — the server enforces the
+    # entitlement here, not just the web nav gate. None (the default) -> enforcement is INERT: a
+    # task without the store wired can't know the entitlement, so it degrades OPEN (mirrors the web
+    # gate's degrade-open on a 503/404 and the inert-default contract) — never a false 403. Wiring
+    # the real PgSettingsStore lives in api/asgi.py (noted for the boss; not edited here).
+    modules_store: Any | None = None
 
 
 def build_studio_deps() -> StudioDeps:
@@ -126,6 +143,36 @@ def _require_store(deps: StudioDeps) -> Any:
     if deps.store is None:
         raise HTTPException(status_code=503, detail=_UNCONFIGURED_DETAIL)
     return deps.store
+
+
+def _require_module_entitlement(deps: StudioDeps, tenant_id: str) -> None:
+    """Server-side module-entitlement guard for /studio/* (the audit's honest-403): refuse when the
+    tenant's enabled-module set doesn't surface the Studio route. Mirrors shared.modules.enabled_routes
+    exactly (the same normalization the web gate consumes via GET /account/modules) so the server can
+    never drift open from what the catalog says.
+
+    Degrade-OPEN, never falsely closed:
+      * no modules_store wired on this task -> can't know the entitlement -> allow (the inert-default
+        contract; the web gate likewise degrades open on a 503/404). Real enforcement turns on when
+        api/asgi.py passes the PgSettingsStore (noted in the PR for the boss).
+      * a store read failure (e.g. the enabled_modules column predates the live migrate) -> allow +
+        log, exactly like modules_routes' resilient GET — a transient store error must never lock a
+        paying tenant out of a surface they own.
+    A tenant with a row that genuinely omits the module -> honest 403.
+    """
+    store = getattr(deps, "modules_store", None)
+    if store is None:
+        return
+    from shared.modules import default_enabled, enabled_routes, normalize_enabled  # noqa: PLC0415
+
+    try:
+        stored = store.get_modules(tenant_id)
+    except Exception:  # noqa: BLE001 — resilient like modules_routes' GET: never hard-fail on a read
+        log.warning("studio: module-entitlement read failed; allowing (degrade-open)", exc_info=True)
+        return
+    enabled = default_enabled() if stored is None else normalize_enabled(stored)
+    if STUDIO_ROUTE_ID not in enabled_routes(enabled):
+        raise HTTPException(status_code=403, detail=_NOT_ENTITLED_DETAIL)
 
 
 def _resolve_registrar(deps: StudioDeps, tenant_id: str):
@@ -194,8 +241,14 @@ def mount_studio(app: FastAPI, deps: StudioDeps, current_tenant) -> None:
     """Mount the /studio routes on `app`, authed via `current_tenant` (the same verified-claims
     dependency every other authed route uses)."""
 
+    def entitled_tenant(claims: TenantClaims = Depends(current_tenant)) -> TenantClaims:
+        """Auth (verified claims) + the module-entitlement guard in one dependency, so EVERY
+        /studio/* route enforces the "agents" module without each handler repeating the check."""
+        _require_module_entitlement(deps, claims.tenant_id)
+        return claims
+
     @app.get("/studio/templates")
-    def list_studio_templates(claims: TenantClaims = Depends(current_tenant)):
+    def list_studio_templates(claims: TenantClaims = Depends(entitled_tenant)):
         # Committed JSON, identical for every tenant — but still authed (the Studio is an
         # app surface, not a public one). No store required.
         from agents.playbooks.templates import list_templates  # noqa: PLC0415 — lazy
@@ -203,7 +256,7 @@ def mount_studio(app: FastAPI, deps: StudioDeps, current_tenant) -> None:
         return {"templates": list_templates()}
 
     @app.get("/studio/playbooks")
-    def list_playbooks(claims: TenantClaims = Depends(current_tenant)):
+    def list_playbooks(claims: TenantClaims = Depends(entitled_tenant)):
         store = _require_store(deps)
         rows = store.list(claims.tenant_id)
         return {
@@ -217,14 +270,14 @@ def mount_studio(app: FastAPI, deps: StudioDeps, current_tenant) -> None:
         }
 
     @app.post("/studio/playbooks", status_code=201)
-    def create_playbook(body: PlaybookBody, claims: TenantClaims = Depends(current_tenant)):
+    def create_playbook(body: PlaybookBody, claims: TenantClaims = Depends(entitled_tenant)):
         store = _require_store(deps)
         _validate_or_422(body.definition)
         row = store.create(claims.tenant_id, body.definition, created_by=claims.sub)
         return _serialize(row, claims)
 
     @app.get("/studio/playbooks/{playbook_id}")
-    def get_playbook(playbook_id: str, claims: TenantClaims = Depends(current_tenant)):
+    def get_playbook(playbook_id: str, claims: TenantClaims = Depends(entitled_tenant)):
         store = _require_store(deps)
         row = store.get(claims.tenant_id, playbook_id)
         if row is None:
@@ -234,7 +287,7 @@ def mount_studio(app: FastAPI, deps: StudioDeps, current_tenant) -> None:
 
     @app.put("/studio/playbooks/{playbook_id}")
     def update_playbook(playbook_id: str, body: PlaybookBody,
-                        claims: TenantClaims = Depends(current_tenant)):
+                        claims: TenantClaims = Depends(entitled_tenant)):
         store = _require_store(deps)
         row = store.get(claims.tenant_id, playbook_id)
         if row is None:
@@ -250,7 +303,7 @@ def mount_studio(app: FastAPI, deps: StudioDeps, current_tenant) -> None:
         return _serialize(updated, claims)
 
     @app.delete("/studio/playbooks/{playbook_id}")
-    def delete_playbook(playbook_id: str, claims: TenantClaims = Depends(current_tenant)):
+    def delete_playbook(playbook_id: str, claims: TenantClaims = Depends(entitled_tenant)):
         store = _require_store(deps)
         row = store.get(claims.tenant_id, playbook_id)
         if row is None:
@@ -262,7 +315,7 @@ def mount_studio(app: FastAPI, deps: StudioDeps, current_tenant) -> None:
         return {"deleted": True, "id": str(playbook_id)}
 
     @app.post("/studio/templates/{template_id}/instantiate", status_code=201)
-    def instantiate_template(template_id: str, claims: TenantClaims = Depends(current_tenant)):
+    def instantiate_template(template_id: str, claims: TenantClaims = Depends(entitled_tenant)):
         store = _require_store(deps)
         from agents.playbooks.templates import get_template  # noqa: PLC0415 — lazy
 
@@ -277,7 +330,7 @@ def mount_studio(app: FastAPI, deps: StudioDeps, current_tenant) -> None:
         return _serialize(row, claims)
 
     @app.post("/studio/playbooks/{playbook_id}/activate")
-    def activate_playbook_route(playbook_id: str, claims: TenantClaims = Depends(current_tenant)):
+    def activate_playbook_route(playbook_id: str, claims: TenantClaims = Depends(entitled_tenant)):
         store = _require_store(deps)
         row = store.get(claims.tenant_id, playbook_id)
         if row is None:
@@ -339,7 +392,7 @@ def mount_studio(app: FastAPI, deps: StudioDeps, current_tenant) -> None:
         return out
 
     @app.post("/studio/playbooks/{playbook_id}/deactivate")
-    def deactivate_playbook_route(playbook_id: str, claims: TenantClaims = Depends(current_tenant)):
+    def deactivate_playbook_route(playbook_id: str, claims: TenantClaims = Depends(entitled_tenant)):
         store = _require_store(deps)
         row = store.get(claims.tenant_id, playbook_id)
         if row is None:
@@ -350,7 +403,7 @@ def mount_studio(app: FastAPI, deps: StudioDeps, current_tenant) -> None:
         return _serialize(updated, claims)
 
     @app.post("/studio/playbooks/{playbook_id}/run")
-    def run_playbook_route(playbook_id: str, claims: TenantClaims = Depends(current_tenant)):
+    def run_playbook_route(playbook_id: str, claims: TenantClaims = Depends(entitled_tenant)):
         """Manual 'Run now' trigger for an active playbook.
 
         Tenant comes ONLY from the verified claim (THE TRUST RULE). The runner routes every
@@ -401,7 +454,7 @@ def mount_studio(app: FastAPI, deps: StudioDeps, current_tenant) -> None:
 
     @app.get("/studio/playbooks/{playbook_id}/runs")
     def list_playbook_runs(playbook_id: str, limit: int = 50,
-                           claims: TenantClaims = Depends(current_tenant)):
+                           claims: TenantClaims = Depends(entitled_tenant)):
         """Run history for one playbook (audit P0-2) — newest first, bounded. The rows are the
         runner-persisted RunRecord digests: status, trigger, surfaced draft proposals. Tenant
         from the verified claim only; absent and another tenant's playbook are the same 404."""
