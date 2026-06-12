@@ -51,6 +51,16 @@ def _leaderboard_out(row: dict) -> dict:
     }
 
 
+def _event_out(row: dict) -> dict:
+    """One scored ledger event in the wire shape (the /sell/me streak + today-progress source)."""
+    return {
+        "user_id": _as_str(row.get("user_id")),
+        "event_type": row.get("event_type"),
+        "points": int(row.get("points") or 0),
+        "occurred_at": _as_iso(row.get("occurred_at")),
+    }
+
+
 # --------------------------------------------------------------------------- #
 # Members
 # --------------------------------------------------------------------------- #
@@ -164,6 +174,43 @@ class PgPointsStore(_PgTenantClient):
             "events": int(row.get("events") or 0),
         }
 
+    def user_events(self, tenant_id, user_id: str, since=None) -> list[dict]:
+        """One user's scored events ({user_id, event_type, points, occurred_at}), newest first —
+        what the /sell/me surface derives a streak + today-progress from. RLS-scoped via SET LOCAL.
+
+        `since` is an OPTIONAL inclusive lower bound on occurred_at (a timestamptz / ISO string);
+        when None the whole history is returned."""
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "SELECT user_id, event_type, points, occurred_at FROM points_ledger "
+                "WHERE user_id = %s "
+                "  AND (%s::timestamptz IS NULL OR occurred_at >= %s::timestamptz) "
+                "ORDER BY occurred_at DESC",
+                (user_id, since, since),
+            )
+            rows = _dict_rows(cur)
+        return [_event_out(r) for r in rows]
+
+    def leaderboard_rows(self, tenant_id, since=None) -> list[dict]:
+        """Like `leaderboard`, but each row is STAMPED with its tenant_id (independently from the
+        ledger) so an API route can run a defense-in-depth tenant re-check before stripping the
+        internal id from the wire. RLS-scoped via SET LOCAL — the tenant_id can only ever be the
+        scoped one, but the field makes a silent leak fail loud at the boundary, not propagate."""
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "SELECT p.tenant_id AS tenant_id, p.user_id AS user_id, "
+                "       m.display_name AS display_name, "
+                "       COALESCE(SUM(p.points), 0) AS points, COUNT(*) AS events "
+                "FROM points_ledger p "
+                "LEFT JOIN members m ON m.tenant_id = p.tenant_id AND m.user_id = p.user_id "
+                "WHERE (%s::timestamptz IS NULL OR p.occurred_at >= %s::timestamptz) "
+                "GROUP BY p.tenant_id, p.user_id, m.display_name "
+                "ORDER BY points DESC, events DESC",
+                (since, since),
+            )
+            rows = _dict_rows(cur)
+        return [{"tenant_id": _as_str(r.get("tenant_id")), **_leaderboard_out(r)} for r in rows]
+
 
 # --------------------------------------------------------------------------- #
 # Offline in-memory fakes — the default offline path + the test doubles.
@@ -268,3 +315,20 @@ class InMemoryPointsStore:
             points += int(r.get("points") or 0)
             events += 1
         return {"user_id": user_id, "points": points, "events": events}
+
+    def user_events(self, tenant_id, user_id: str, since=None) -> list[dict]:
+        scoped = []
+        for r in self.rows:
+            if r["tenant_id"] != str(tenant_id) or str(r.get("user_id")) != str(user_id):
+                continue
+            occurred_at = r.get("occurred_at")
+            if since is not None and occurred_at is not None and occurred_at < since:
+                continue
+            scoped.append(_event_out(r))
+        # Newest first; events with no occurred_at sort last (None -> "").
+        scoped.sort(key=lambda e: e["occurred_at"] or "", reverse=True)
+        return scoped
+
+    def leaderboard_rows(self, tenant_id, since=None) -> list[dict]:
+        return [{"tenant_id": str(tenant_id), **r}
+                for r in self.leaderboard(tenant_id, since=since)]

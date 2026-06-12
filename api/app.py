@@ -619,6 +619,13 @@ def create_app(deps: ApiDeps) -> FastAPI:
     from api.routes_control import mount_control
     mount_control(app, deps, current_tenant)
 
+    # Authed per-tenant Sell (gamification) surface — GET /sell/me · /sell/leaderboard · /sell/quests
+    # + POST /sell/nudge. Claims-bound like everything above (tenant + user from the verified JWT).
+    # Always mounted: the reads answer an honest 503 when deps.points is inert (the default), and the
+    # nudge rides THIS app's Greenlight as a draft-only proposal. api/asgi.py wires the real stores.
+    from api.sell_routes import mount_sell
+    mount_sell(app, deps, current_tenant)
+
     # Authed per-tenant view-data resolution (POST /views/{id}/data — the web data-loader's
     # dependency). Claims-bound like everything above; loads the saved view RLS-scoped, runs each
     # panel's CubeQuery through deps.cube carrying the verified-claim tenant (THE TRUST RULE), and
