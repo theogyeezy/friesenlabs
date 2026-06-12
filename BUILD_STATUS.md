@@ -549,6 +549,21 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   usable + safe; RAG-embed IAM gap closed live.
 
 ## Lane Matt (app code) — log
+- 2026-06-12 — **Greenlight approve-verification LIVE (owner-directed, Matt's session):** decided
+  the demo tenant's 6 pending drafts against the live API. **Record-only PROVEN:** approving
+  `issue_quote` → `performed: false — "draft-only until provider go-live"`; `send_email` maps to
+  the SAME `record_only` applier, and **Resend's send log is EMPTY (0 emails ever — checked with
+  the platform key)**, so nothing has ever left the building. Compliance proved STRICTER than
+  record-only: the 3 seeded `send_email` drafts are un-approvable at decide time (422 `CAN-SPAM:
+  missing unsubscribe mechanism`) — and un-fixable by edit, because the seeds carry
+  `body_preview` not `body` and the edit guard correctly refuses novel keys. The 2 seeded
+  `update_deal` drafts approved but the applier KeyError'd (seeds carry `deal`/`field`, not
+  `deal_id`/`changes`) — CONTAINED, recorded `performed: false`, no corruption. All three
+  seed-shape issues filed in TODO. **Correction to the earlier scheduled-run note:** the 15:15Z
+  run's two "pending" entries were UNSERVED READ-ONLY calls (`read_crm`/`query_cube`,
+  `approval: None`) surfaced in the run digest — NOT Greenlight drafts (all 6 queue items were
+  June 6-8 seeds); the draft-only invariant held regardless (nothing executed). Runner-digest
+  pending-overstatement + worker drain-window latency filed as follow-ups.
 - 2026-06-12 — **Settle round 4 — bounded stream reads + 504 recovery (live re-test 504'd
   again):** the settle budget is only checkable when EVENTS arrive — a 40s+ silent inference
   round blocked the stream wait past the 60s edge ceiling. Fixes: the MA client is built with a
