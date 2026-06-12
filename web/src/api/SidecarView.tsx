@@ -50,9 +50,13 @@ function money(cents: number | null): string | null {
 export interface SidecarViewProps {
   client?: ApiClient;
   onOpenGreenlight?: () => void;
+  /** Optional callbacks to open a deal or contact panel in the shell. When
+   * absent the entity chip falls back to a plain display (no link). */
+  onOpenDeal?: (id: string) => void;
+  onOpenContact?: (id: string) => void;
 }
 
-export function SidecarView({ client, onOpenGreenlight }: SidecarViewProps) {
+export function SidecarView({ client, onOpenGreenlight, onOpenDeal, onOpenContact }: SidecarViewProps) {
   const api = client ?? defaultClient();
 
   const [loading, setLoading] = useState(true);
@@ -78,7 +82,7 @@ export function SidecarView({ client, onOpenGreenlight }: SidecarViewProps) {
       setTruncated(res.truncated);
       setBusy({});
     } catch (e) {
-      if (e instanceof ApiError && e.status === 503) {
+      if (e instanceof ApiError && (e.status === 503 || e.status === 404)) {
         setUnavailable(true);
       } else {
         setLoadError(friendlyErrorMessage(e));
@@ -113,7 +117,7 @@ export function SidecarView({ client, onOpenGreenlight }: SidecarViewProps) {
   if (loading) {
     return (
       <div data-testid="sidecar-loading" style={{ ...card, ...muted, display: "flex", gap: 10, alignItems: "center" }}>
-        <Spinner /> Looking across your tools…
+        <Spinner testid="sidecar-spinner" /> Looking across your tools…
       </div>
     );
   }
@@ -128,7 +132,7 @@ export function SidecarView({ client, onOpenGreenlight }: SidecarViewProps) {
 
   if (loadError) {
     return (
-      <div data-testid="sidecar-error" style={{ ...card }}>
+      <div data-testid="sidecar-error" role="alert" style={{ ...card }}>
         <div style={{ marginBottom: 10 }}>{loadError}</div>
         <button style={primaryBtn} onClick={() => void load()}>Try again</button>
       </div>
@@ -154,27 +158,66 @@ export function SidecarView({ client, onOpenGreenlight }: SidecarViewProps) {
       {suggestions.map((s) => {
         const state = busy[s.id];
         const val = money(s.value_at_stake);
+        // Determine if there's a callback for this entity type.
+        const openEntityCb =
+          s.entity_type === "deal" ? onOpenDeal :
+          s.entity_type === "contact" ? onOpenContact :
+          undefined;
+        const entityLinkLabel =
+          s.entity_type === "deal" ? "View deal →" :
+          s.entity_type === "contact" ? "View contact →" :
+          null;
         return (
           <div key={s.id} data-testid={`sidecar-suggestion-${s.id}`} style={{ ...card, display: "flex", gap: 14, alignItems: "flex-start" }}>
             <div style={{ flex: 1 }}>
               <div style={{ fontWeight: 660, fontSize: 14.5 }}>{s.title}</div>
               <div style={{ ...muted, fontSize: 13, marginTop: 3 }}>{s.detail}</div>
-              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-                <span style={{ ...muted, fontSize: 11, textTransform: "uppercase", letterSpacing: ".04em" }}>
-                  {s.entity_type}
-                </span>
+              <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center" }}>
+                {openEntityCb && entityLinkLabel ? (
+                  <button
+                    data-testid={`sidecar-entity-link-${s.id}`}
+                    style={{
+                      ...muted,
+                      fontSize: 11,
+                      textTransform: "uppercase",
+                      letterSpacing: ".04em",
+                      background: "none",
+                      border: "none",
+                      cursor: "pointer",
+                      padding: 0,
+                      textDecoration: "underline",
+                    }}
+                    onClick={() => openEntityCb(s.entity_id)}
+                  >
+                    {entityLinkLabel}
+                  </button>
+                ) : (
+                  <span style={{ ...muted, fontSize: 11, textTransform: "uppercase", letterSpacing: ".04em" }}>
+                    {s.entity_type}
+                  </span>
+                )}
                 {val && <span style={{ fontSize: 11.5, fontWeight: 600 }}>· {val}</span>}
               </div>
             </div>
             <div style={{ flexShrink: 0 }}>
               {state === "queued" ? (
-                <button
-                  data-testid={`sidecar-queued-${s.id}`}
-                  style={{ ...primaryBtn, background: "transparent", color: "var(--ink, #2a2622)", border: "1px solid var(--line, #e3ddd3)" }}
-                  onClick={onOpenGreenlight}
-                >
-                  Queued ✓ — view in Greenlight
-                </button>
+                onOpenGreenlight ? (
+                  <button
+                    data-testid={`sidecar-queued-${s.id}`}
+                    style={{ ...primaryBtn, background: "transparent", color: "var(--ink, #2a2622)", border: "1px solid var(--line, #e3ddd3)" }}
+                    onClick={onOpenGreenlight}
+                  >
+                    Queued ✓ — view in Greenlight
+                  </button>
+                ) : (
+                  <a
+                    data-testid={`sidecar-queued-${s.id}`}
+                    href="/?view=greenlight"
+                    style={{ ...primaryBtn, background: "transparent", color: "var(--ink, #2a2622)", border: "1px solid var(--line, #e3ddd3)", display: "inline-block", textDecoration: "none" }}
+                  >
+                    Queued ✓ — view in Greenlight
+                  </a>
+                )
               ) : (
                 <button
                   data-testid={`sidecar-accept-${s.id}`}
@@ -196,7 +239,7 @@ export function SidecarView({ client, onOpenGreenlight }: SidecarViewProps) {
         </div>
       )}
       {actError && (
-        <div data-testid="sidecar-act-error" style={{ ...card, color: "var(--rose, #b4413b)", fontSize: 13 }}>
+        <div data-testid="sidecar-act-error" role="alert" style={{ ...card, color: "var(--rose, #b4413b)", fontSize: 13 }}>
           {actError}
         </div>
       )}
