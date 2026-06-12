@@ -510,10 +510,13 @@ class ManagedAgentsRuntime(AgentRuntime):
             if m:
                 usage_model = m
 
-        def handle(event) -> bool:
+        def handle(event, force=False) -> bool:
             """Process ONE session event (live stream or replay); True = the turn is over.
             Events carrying a server id are deduped against the per-session ledger, so a
-            replayed/overlapping event is processed exactly once."""
+            replayed/overlapping event is processed exactly once. `force` is the
+            finished-turn recovery path ONLY (round 7): the tail events are final and
+            already ledger-seen, so both the budget check and the dedupe skip are bypassed —
+            this is local re-processing of a turn the session completed, not waiting."""
             # BUDGET ON EVERY EVENT (round 6): a BUSY session emitting ordinary events for
             # minutes never hits a requires_action idle or a stream drop, so checking the
             # budget only there let the drain ride the whole turn past the 60s edge ceiling
@@ -521,7 +524,7 @@ class ManagedAgentsRuntime(AgentRuntime):
             # The moment the per-request budget is spent the turn surfaces UNSETTLED. The
             # check runs BEFORE the dedupe ledger records this event, so the continue leg
             # (fresh budget) re-reads it from events.list and nothing is lost.
-            if self._clock() - turn_start >= self._settle_budget_s:
+            if not force and self._clock() - turn_start >= self._settle_budget_s:
                 if not calls and not pending:
                     pending.append({"status": "pending", "reason": "settle_budget"})
                 else:
@@ -530,7 +533,7 @@ class ManagedAgentsRuntime(AgentRuntime):
                 return True
             eid = getattr(event, "id", None)
             if eid is not None:
-                if eid in seen:
+                if not force and eid in seen:
                     return False  # already processed (reconnect replay / stream-list overlap)
                 seen.add(eid)
             _accumulate_usage(event)  # additive cost observation — dedup-safe (runs post-seen)
@@ -613,6 +616,37 @@ class ManagedAgentsRuntime(AgentRuntime):
                 return True
             return False
 
+        def _finished_tail_recovered() -> bool:
+            """ZERO-PROGRESS drop wedge (round 7, live matrix run 2026-06-12): a /chat
+            request whose client died (closed tab) keeps draining server-side as an orphan —
+            it marks every event seen and its response is lost with the connection. Each
+            later continue then replays nothing, reads a silent stream on an already-idle
+            session, and surfaces stream_interrupted forever. If the session's event log
+            ENDS at a non-requires_action idle the turn is already OVER: force-replay the
+            tail (everything after the last user.message) past the dedupe ledger so the
+            finished answer and any routed approvals reach THIS request, and settle. A
+            requires_action tail keeps the honest unsettled signal — the worker still owes
+            a result and the next continue will observe it."""
+            try:
+                events = list(client.beta.sessions.events.list(
+                    session_id=session.id, extra_headers=self._beta_headers()))
+            except Exception:
+                return False  # can't tell — keep the recoverable unsettled surface
+            if not events:
+                return False
+            tail_stop = events[-1]
+            if getattr(tail_stop, "type", None) != "session.status_idle":
+                return False
+            if self._stop_reason_type(tail_stop) == "requires_action":
+                return False
+            marks = [i for i, e in enumerate(events)
+                     if getattr(e, "type", None) == "user.message"]
+            start = (marks[-1] + 1) if marks else 0
+            for event in events[start:]:
+                if handle(event, force=True):
+                    break
+            return True
+
         done = False
         while True:
             # Stream-FIRST, then send: the SSE stream only delivers events emitted after it
@@ -650,6 +684,14 @@ class ManagedAgentsRuntime(AgentRuntime):
                     except Exception as exc:
                         if not _is_stream_drop(exc):
                             raise
+                        # Round 7: a drop with ZERO progress this drain (nothing replayed,
+                        # nothing open, no text) on a session whose log ends at a finished
+                        # idle is the orphan-consumed wedge — recover the finished turn
+                        # instead of surfacing stream_interrupted forever.
+                        if (not calls and not pending and not answer_parts
+                                and not tool_results and _finished_tail_recovered()):
+                            done = True
+                            break
                         # Settle guards: budget spent OR reconnects exhausted -> SURFACE the
                         # turn unsettled (round 4) — under the async contract the continue leg
                         # re-attaches and finishes it, so a recoverable in-flight turn must
