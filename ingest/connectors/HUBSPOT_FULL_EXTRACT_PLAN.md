@@ -78,9 +78,11 @@ fix): `python -m api.migrate` loads `schema.sql` idempotently. Additive only.
   the Files API. Embedding step skips `_media_refs` + binary-looking values.
 
 ## Checklist (the loop works these in order)
-- [ ] 1. **Migration first.** Add the `crm_records` table + RLS + indexes + grants to
-  `db/schema.sql` and `db/roles.sql` (crm_app grants). `python -c "import ..."` sanity;
-  note: apply via one-off task is a separate deploy step, NOT in CI.
+- [x] 1. **Migration first.** Added the `crm_records` table (uuid tenant_id, composite natural
+  PK, FORCE RLS via the DO-block array + belt-and-suspenders, gin/active indexes, soft-archive)
+  to `db/schema.sql` + crm_app `SELECT/INSERT/UPDATE` (no DELETE) to `db/roles.sql`. Validated:
+  `pytest tests/unit/test_sql_schema.py` green (static pglast SQL/RLS-contract gate). Applied via
+  one-off task at deploy time (NOT CI). DONE.
 - [ ] 2. **Property discovery** helper (`_discover_properties(object_type)`) + unit test
   with a mocked `/properties` response (incl. a `file`-type property flagged as media).
 - [ ] 3. **Object discovery** helper (`_discover_object_types()`): constant standard +
@@ -103,9 +105,25 @@ fix): `python -m api.migrate` loads `schema.sql` idempotently. Additive only.
   terraform/smoke). DO NOT merge/deploy without owner review — note in the PR that it needs
   the `crm_records` migration run via one-off task before the api rolls.
 
+## Path B — HubSpot MCP (live agent access) — DO BOTH (user, sequenced after the extract core)
+The extract above feeds ML/dashboards/grounding (the moat). Path B adds **live** agent access +
+write-actions via MCP, so agents can fetch/act on HubSpot in real time without waiting on a sync.
+Build after the extract core (items 1–9) is green.
+- [ ] 10. **HubSpot MCP server** (`mcp/hubspot/` or vendor HubSpot's official server): expose
+  read tools (search/get contacts/companies/deals/engagements, list properties/schemas) backed by
+  the SAME per-tenant vaulted OAuth token (reuse `HubSpotConnector` auth/refresh). Read-only first;
+  write-actions (create/update) behind Greenlight. NO media blobs (URL refs only). Unit-test the
+  tool schemas + token threading with mocked HubSpot responses.
+- [ ] 11. **Wire into the agent plane** as a per-tenant tool source (token injected from the vault
+  per session; THE TRUST RULE — tenant from the JWT, never the request). Read tools auto-run;
+  write tools route through the `api/control` Greenlight gate. Test the per-tenant isolation.
+- [ ] 12. **Expose in chat/Studio**: agents can call "ask HubSpot live"; surface results with
+  citations. Honest empty/error states. Test the end-to-end tool-call path (mocked).
+
 ## Follow-on (separate, NOT this loop)
 - Phase 4 — agent field-mapping: an agent reads discovered schema + sample `crm_records` →
-  maps HubSpot fields to the Uplift model + proposes Cortex features.
+  maps HubSpot fields to the Uplift model + proposes Cortex features (uses BOTH the resident
+  extract and the live MCP introspection).
 
 ## Guardrails
 - Additive only; no destructive SQL. RLS FORCE + crm_app non-owner (isolation must hold).

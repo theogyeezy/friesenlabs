@@ -470,6 +470,28 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE INDEX IF NOT EXISTS idx_tasks_open ON tasks (tenant_id, due_at)
     WHERE done_at IS NULL AND archived_at IS NULL;
 
+-- crm_records — full-fidelity connector extract (HubSpot full-extract & beyond). A generic JSONB
+-- bag per CRM object: EVERY property + the association graph, for ANY object_type (standard objects,
+-- engagements, custom objects). Sits ALONGSIDE the typed contacts/companies/deals tables (those stay
+-- populated for the structured UI). Media (audio/photo/video) is stored as URL refs only under
+-- properties._media_refs — never the bytes. Composite natural PK (no surrogate sequence to grant).
+-- Soft-archive parity (archived_at). CREATE'd BEFORE the RLS DO block so the block can FORCE it (it
+-- is in the tenant_tables array); explicit belt-and-suspenders RLS is appended at the end of file.
+CREATE TABLE IF NOT EXISTS crm_records (
+    tenant_id     uuid        NOT NULL,
+    source        text        NOT NULL,                     -- 'hubspot'
+    object_type   text        NOT NULL,                     -- 'contacts','deals','calls','p_custom', ...
+    source_ref_id text        NOT NULL,                     -- provider object id
+    properties    jsonb       NOT NULL DEFAULT '{}'::jsonb, -- full property bag; media as URL refs only
+    associations  jsonb       NOT NULL DEFAULT '{}'::jsonb, -- { toObjectType: [ids] }
+    updated_at    timestamptz,                              -- provider last-modified
+    archived_at   timestamptz,                              -- soft-archive (parity w/ typed tables)
+    synced_at     timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, source, object_type, source_ref_id)
+);
+CREATE INDEX IF NOT EXISTS crm_records_active_idx ON crm_records (tenant_id, object_type) WHERE archived_at IS NULL;
+CREATE INDEX IF NOT EXISTS crm_records_props_gin  ON crm_records USING gin (properties);
+
 -- ===========================================================================
 -- ROW LEVEL SECURITY — apply the identical pattern to every tenant-scoped table.
 -- The DO block keeps it DRY and guarantees no table is missed (and never without FORCE).
@@ -481,7 +503,7 @@ DECLARE
         'documents', 'companies', 'contacts', 'deals', 'activities',
         'saved_views', 'approvals', 'traces', 'ingest_cursor', 'tenant_workspaces',
         'tenant_settings', 'playbooks', 'playbook_runs', 'predictions', 'usage_counters', 'cost_events', 'onboarding_state',
-        'integration_sync_runs', 'members', 'points_ledger', 'tasks'
+        'integration_sync_runs', 'members', 'points_ledger', 'tasks', 'crm_records'
     ];
 BEGIN
     FOREACH t IN ARRAY tenant_tables LOOP
@@ -873,5 +895,17 @@ ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tasks FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON tasks;
 CREATE POLICY tenant_isolation ON tasks
+    USING (tenant_id = current_setting('app.current_tenant', true)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.current_tenant', true)::uuid);
+
+-- ---------------------------------------------------------------------------
+-- crm_records — explicit RLS statements (belt and suspenders with the DO block above, same
+-- convention as tasks/points_ledger). The CREATE TABLE + indexes live BEFORE the DO block so
+-- the block can FORCE it; these idempotent statements keep the FORCE requirement greppable.
+-- ---------------------------------------------------------------------------
+ALTER TABLE crm_records ENABLE ROW LEVEL SECURITY;
+ALTER TABLE crm_records FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON crm_records;
+CREATE POLICY tenant_isolation ON crm_records
     USING (tenant_id = current_setting('app.current_tenant', true)::uuid)
     WITH CHECK (tenant_id = current_setting('app.current_tenant', true)::uuid);
