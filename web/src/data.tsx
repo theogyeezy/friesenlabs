@@ -120,6 +120,7 @@ const NAV = [
 const NAV_CRM = [
   { id: "crm",       label: "Pipeline",       icon: "users", badge: "11" },
   { id: "contacts",  label: "Contacts",       icon: "users" },
+  { id: "tasks",     label: "Tasks",          icon: "checkCircle" },
 ];
 const NAV_AGENTS = [
   { id: "agents", label: "Agents", icon: "spark" },

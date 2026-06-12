@@ -188,6 +188,21 @@ REVOKE DELETE ON integration_sync_runs FROM crm_app;
 -- ---------------------------------------------------------------------------
 GRANT SELECT, INSERT, UPDATE, DELETE ON members TO crm_app;
 GRANT SELECT, INSERT ON points_ledger TO crm_app;
+
+-- ---------------------------------------------------------------------------
+-- tasks (CRM follow-up reminders — RLS-FORCEd tenant table; see schema.sql). EXPLICIT grant for
+-- the same fresh-load reason as the blocks above: schema.sql creates the table BEFORE roles.sql's
+-- ALTER DEFAULT PRIVILEGES runs, so crm_app has ZERO privileges on it until this line lands —
+-- without it task create/list/complete permission-deny.
+--   SELECT/INSERT/UPDATE: the API INSERTs a task, lists open/overdue/done rows, and UPDATEs it to
+--   mark done / re-schedule / archive. NO DELETE: a task is completed or soft-archived
+--   (archived_at), never erased by the app — same reversible soft-delete as the other CRM entities.
+-- ---------------------------------------------------------------------------
+GRANT SELECT, INSERT, UPDATE ON tasks TO crm_app;
+-- The ALTER DEFAULT PRIVILEGES block above hands DELETE to crm_app on tables created later by the
+-- migration role. Revoke it explicitly so the soft-delete-not-erase intent is not silently
+-- superseded, and a roles.sql re-run converges a grant-history live DB to this design.
+REVOKE DELETE ON tasks FROM crm_app;
 -- The ALTER DEFAULT PRIVILEGES block above hands UPDATE + DELETE to crm_app on tables created
 -- later by the migration role — including points_ledger. Revoke the unintended privileges
 -- explicitly so the append-only intent is not silently superseded, and a roles.sql re-run

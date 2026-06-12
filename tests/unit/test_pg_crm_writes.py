@@ -394,3 +394,199 @@ def test_set_archived_rejects_unknown_table(monkeypatch):
     crm = PgCrmClient("postgresql://crm_app@h/db")
     with pytest.raises(ValueError):
         crm.set_archived(tenant_id="T1", table="users", entity_id="x", archived=True)
+
+
+# --------------------------------------------------------------------------- #
+# tasks (CRM-depth #14) — reminders with due dates. Every method SET LOCALs the
+# tenant, binds values, and never hand-writes a tenant WHERE filter.
+# --------------------------------------------------------------------------- #
+@pytest.mark.unit
+def test_insert_task_set_local_bind_params_no_tenant_filter(monkeypatch):
+    pool = FakePool(one={
+        "id": "tk-1", "tenant_id": "T1", "title": "Call back",
+        "due_at": None, "done_at": None, "archived_at": None,
+        "contact_id": "ct-1", "deal_id": None, "created_by": "uA", "created_at": None,
+    })
+    _patch_pool(monkeypatch, pool)
+    crm = PgCrmClient("postgresql://crm_app@h/db")
+
+    out = crm.insert_task(tenant_id="T1", title="Call back", due_at="2026-06-20T00:00:00Z",
+                          contact_id="ct-1", created_by="uA")
+
+    sql = _sql(pool)
+    assert sql[0].startswith("SET LOCAL app.current_tenant")
+    assert pool.log[0][1] == ("T1",)
+    insert_sql, params = pool.log[1]
+    assert insert_sql.startswith("INSERT INTO tasks")
+    assert "VALUES (%s,%s,%s,%s,%s,%s)" in insert_sql
+    assert "tenant_id =" not in insert_sql
+    # tenant, title, due, contact (deal None), created_by
+    assert params == ("T1", "Call back", "2026-06-20T00:00:00Z", "ct-1", None, "uA")
+    assert "Call back" not in insert_sql
+    # the read-back SELECT joins the display labels
+    assert pool.log[2][0].startswith("SELECT t.id, t.tenant_id")
+    assert out["id"] == "tk-1" and out["contact_id"] == "ct-1"
+    assert "tenant_id" in out  # carried for the route's _checked_rows strip
+
+
+@pytest.mark.unit
+def test_insert_task_blank_title_raises(monkeypatch):
+    pool = FakePool(one=None)
+    _patch_pool(monkeypatch, pool)
+    crm = PgCrmClient("postgresql://crm_app@h/db")
+    with pytest.raises(ValueError):
+        crm.insert_task(tenant_id="T1", title="   ")
+
+
+@pytest.mark.unit
+def test_insert_task_blank_links_normalize_to_null(monkeypatch):
+    pool = FakePool(one={"id": "tk-2", "tenant_id": "T1", "title": "x",
+                         "due_at": None, "done_at": None, "archived_at": None,
+                         "contact_id": None, "deal_id": None, "created_by": None,
+                         "created_at": None})
+    _patch_pool(monkeypatch, pool)
+    crm = PgCrmClient("postgresql://crm_app@h/db")
+    crm.insert_task(tenant_id="T1", title="x", contact_id="", deal_id="", due_at="")
+    _, params = pool.log[1]
+    assert params == ("T1", "x", None, None, None, None)
+
+
+@pytest.mark.unit
+def test_list_tasks_open_scope_filters_and_orders(monkeypatch):
+    pool = FakePool(one=None)
+    _patch_pool(monkeypatch, pool)
+    crm = PgCrmClient("postgresql://crm_app@h/db")
+    crm.list_tasks(tenant_id="T1", scope="open", limit=10, offset=0)
+    sql = _sql(pool)
+    assert sql[0].startswith("SET LOCAL app.current_tenant")
+    list_sql, params = pool.log[1]
+    assert "FROM tasks t" in list_sql
+    assert "t.archived_at IS NULL" in list_sql
+    assert "t.done_at IS NULL" in list_sql
+    assert "ORDER BY overdue DESC" in list_sql
+    assert "tenant_id =" not in list_sql
+    assert params == (10, 0)
+
+
+@pytest.mark.unit
+def test_list_tasks_overdue_scope_adds_past_due_clause(monkeypatch):
+    pool = FakePool(one=None)
+    _patch_pool(monkeypatch, pool)
+    crm = PgCrmClient("postgresql://crm_app@h/db")
+    crm.list_tasks(tenant_id="T1", scope="overdue")
+    list_sql, _ = pool.log[1]
+    assert "t.due_at < now()" in list_sql
+    assert "t.done_at IS NULL" in list_sql
+
+
+@pytest.mark.unit
+def test_list_tasks_done_scope_orders_by_done_at(monkeypatch):
+    pool = FakePool(one=None)
+    _patch_pool(monkeypatch, pool)
+    crm = PgCrmClient("postgresql://crm_app@h/db")
+    crm.list_tasks(tenant_id="T1", scope="done")
+    list_sql, _ = pool.log[1]
+    assert "t.done_at IS NOT NULL" in list_sql
+    assert "ORDER BY t.done_at DESC NULLS LAST" in list_sql
+
+
+@pytest.mark.unit
+def test_list_tasks_archived_scope(monkeypatch):
+    pool = FakePool(one=None)
+    _patch_pool(monkeypatch, pool)
+    crm = PgCrmClient("postgresql://crm_app@h/db")
+    crm.list_tasks(tenant_id="T1", scope="archived")
+    list_sql, _ = pool.log[1]
+    assert "t.archived_at IS NOT NULL" in list_sql
+
+
+@pytest.mark.unit
+def test_list_tasks_narrows_by_contact_and_deal(monkeypatch):
+    pool = FakePool(one=None)
+    _patch_pool(monkeypatch, pool)
+    crm = PgCrmClient("postgresql://crm_app@h/db")
+    crm.list_tasks(tenant_id="T1", scope="all", contact_id="ct-1", deal_id="d-9",
+                   limit=5, offset=2)
+    list_sql, params = pool.log[1]
+    assert "t.contact_id = %s" in list_sql
+    assert "t.deal_id = %s" in list_sql
+    assert params == ("ct-1", "d-9", 5, 2)
+
+
+@pytest.mark.unit
+def test_set_task_done_uses_now_or_null(monkeypatch):
+    pool = FakePool(one={"id": "tk-1", "tenant_id": "T1", "title": "x",
+                         "due_at": None, "done_at": None, "archived_at": None,
+                         "contact_id": None, "deal_id": None, "created_by": None,
+                         "created_at": None})
+    _patch_pool(monkeypatch, pool)
+    crm = PgCrmClient("postgresql://crm_app@h/db")
+    crm.set_task_done(tenant_id="T1", task_id="tk-1", done=True)
+    assert pool.log[1][0].startswith("UPDATE tasks SET done_at = now() WHERE id = %s")
+    assert pool.log[1][1] == ("tk-1",)
+
+    pool2 = FakePool(one={"id": "tk-1", "tenant_id": "T1", "title": "x",
+                          "due_at": None, "done_at": None, "archived_at": None,
+                          "contact_id": None, "deal_id": None, "created_by": None,
+                          "created_at": None})
+    _patch_pool(monkeypatch, pool2)
+    crm2 = PgCrmClient("postgresql://crm_app@h/db")
+    crm2.set_task_done(tenant_id="T1", task_id="tk-1", done=False)
+    assert pool2.log[1][0].startswith("UPDATE tasks SET done_at = NULL WHERE id = %s")
+
+
+@pytest.mark.unit
+def test_set_task_done_missing_row_raises(monkeypatch):
+    pool = FakePool(one=None)
+    _patch_pool(monkeypatch, pool)
+    crm = PgCrmClient("postgresql://crm_app@h/db")
+    with pytest.raises(ValueError):
+        crm.set_task_done(tenant_id="T1", task_id="nope", done=True)
+
+
+@pytest.mark.unit
+def test_update_task_fields_allowlist_and_bind(monkeypatch):
+    pool = FakePool(one={"id": "tk-1", "tenant_id": "T1", "title": "Renamed",
+                         "due_at": None, "done_at": None, "archived_at": None,
+                         "contact_id": None, "deal_id": None, "created_by": None,
+                         "created_at": None})
+    _patch_pool(monkeypatch, pool)
+    crm = PgCrmClient("postgresql://crm_app@h/db")
+    out = crm.update_task_fields(tenant_id="T1", task_id="tk-1",
+                                 changes={"title": "Renamed", "due_at": None})
+    update_sql, params = pool.log[1]
+    assert update_sql.startswith("UPDATE tasks SET title = %s, due_at = %s")
+    assert "tenant_id =" not in update_sql
+    assert params == ("Renamed", None, "tk-1")
+    assert out["updated"] == {"title": "Renamed", "due_at": None}
+
+
+@pytest.mark.unit
+def test_update_task_fields_rejects_unknown_field(monkeypatch):
+    pool = FakePool(one=None)
+    _patch_pool(monkeypatch, pool)
+    crm = PgCrmClient("postgresql://crm_app@h/db")
+    with pytest.raises(ValueError):
+        crm.update_task_fields(tenant_id="T1", task_id="tk-1", changes={"done_at": "now"})
+
+
+@pytest.mark.unit
+def test_set_archived_supports_tasks(monkeypatch):
+    pool = FakePool(one={"id": "tk-1", "archived_at": "2026-06-12T00:00:00+00:00"})
+    _patch_pool(monkeypatch, pool)
+    crm = PgCrmClient("postgresql://crm_app@h/db")
+    out = crm.set_archived(tenant_id="T1", table="tasks", entity_id="tk-1", archived=True)
+    assert pool.log[1][0].startswith("UPDATE tasks SET archived_at = now() WHERE id = %s")
+    assert out["archived"] is True
+
+
+@pytest.mark.unit
+def test_count_open_tasks_filtered_aggregate(monkeypatch):
+    pool = FakePool(one={"open_count": 3, "overdue_count": 1})
+    _patch_pool(monkeypatch, pool)
+    crm = PgCrmClient("postgresql://crm_app@h/db")
+    out = crm.count_open_tasks(tenant_id="T1")
+    count_sql, _ = pool.log[1]
+    assert "FROM tasks WHERE archived_at IS NULL" in count_sql
+    assert "FILTER (WHERE done_at IS NULL)" in count_sql
+    assert out == {"open_count": 3, "overdue_count": 1}

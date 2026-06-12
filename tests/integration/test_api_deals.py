@@ -72,9 +72,18 @@ class FakeDealsReader:
             ],
         }
 
-    def list_deals_board(self, *, tenant_id, limit=500):
+    def list_deals_board(self, *, tenant_id, limit=500, q=None, archived_only=False):
         self.calls.append(("list", tenant_id))
-        return [dict(r) for r in self.rows.get(tenant_id, [])]
+        rows = [dict(r) for r in self.rows.get(tenant_id, [])]
+        # The fake has no archived rows seeded, so the archived view is honestly empty.
+        if archived_only:
+            return []
+        if q:
+            term = q.lower()
+            rows = [r for r in rows
+                    if term in (r.get("title") or "").lower()
+                    or term in (r.get("company_name") or "").lower()]
+        return rows
 
     def get_deal_board(self, *, tenant_id, deal_id):
         self.calls.append(("get", tenant_id, deal_id))
@@ -216,7 +225,7 @@ def test_list_unknown_stage_grouped_into_appended_column_never_dropped():
 @pytest.mark.integration
 def test_list_tenant_mismatch_fails_loud_500():
     class LeakyReader(FakeDealsReader):
-        def list_deals_board(self, *, tenant_id, limit=500):
+        def list_deals_board(self, *, tenant_id, limit=500, q=None, archived_only=False):
             return [dict(r) for r in self.rows["B"]]  # simulated RLS failure
 
     client, _, _ = _client(DealsDeps(crm=LeakyReader()))

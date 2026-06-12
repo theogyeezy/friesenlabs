@@ -443,6 +443,62 @@ export interface CreateDealResponse {
   deal: { id: string; name: string | null; stage: string; amount: number | null };
 }
 
+// ---------------------------------------------------------------------------
+// Tasks / reminders (CRM-depth #14) — mirror api/tasks_routes.py shapes.
+// No tenant_id anywhere — the server derives it from the verified claim.
+// ---------------------------------------------------------------------------
+export interface TaskRow {
+  id: string;
+  title: string;
+  due_at: string | null;
+  done_at: string | null;
+  done: boolean;
+  overdue: boolean | null;
+  archived_at: string | null;
+  contact_id: string | null;
+  deal_id: string | null;
+  contact_name: string | null;
+  deal_title: string | null;
+  created_by: string | null;
+  created_at: string | null;
+}
+export type TaskScope = "open" | "overdue" | "done" | "all" | "archived";
+export interface ListTasksParams {
+  scope?: TaskScope;
+  contact_id?: string;
+  deal_id?: string;
+  limit?: number;
+  offset?: number;
+}
+export interface ListTasksResponse {
+  tasks: TaskRow[];
+  count: number;
+  has_more: boolean;
+  limit: number;
+  offset: number;
+  scope: TaskScope;
+  open_count: number;
+  overdue_count: number;
+}
+export interface CreateTaskBody {
+  title: string;
+  due_at?: string | null;
+  contact_id?: string | null;
+  deal_id?: string | null;
+}
+export interface EditTaskBody {
+  title?: string | null;
+  due_at?: string | null;
+}
+export interface TaskResponse {
+  task: TaskRow;
+}
+export interface EditTaskResponse {
+  id: string;
+  updated: Record<string, unknown>;
+  task: TaskRow;
+}
+
 /** Response from PATCH /deals/{id}. */
 export interface EditDealResponse {
   id: string;
@@ -1820,6 +1876,72 @@ export class ApiClient {
     if (this.mock) return { id, archived, archived_at: archived ? new Date().toISOString() : null };
     const verb = archived ? "archive" : "unarchive";
     return this.request<ArchiveResponse>("POST", `/${entity}/${encodeURIComponent(id)}/${verb}`);
+  }
+
+  // --- tasks / reminders (authed; direct user write, never Greenlight) ---------
+
+  /** GET /tasks: the tenant's tasks for a scope (open/overdue/done/all/archived),
+   * optionally narrowed to one contact or deal. open_count/overdue_count ride along
+   * for the nav badge. */
+  async listTasks(params: ListTasksParams = {}): Promise<ListTasksResponse> {
+    if (this.mock) {
+      return (await this.mockApi()).listTasks(params);
+    }
+    const qs = new URLSearchParams();
+    if (params.scope) qs.set("scope", params.scope);
+    if (params.contact_id) qs.set("contact_id", params.contact_id);
+    if (params.deal_id) qs.set("deal_id", params.deal_id);
+    if (params.limit !== undefined) qs.set("limit", String(params.limit));
+    if (params.offset !== undefined) qs.set("offset", String(params.offset));
+    const s = qs.toString();
+    return this.request<ListTasksResponse>("GET", `/tasks${s ? `?${s}` : ""}`);
+  }
+
+  /** POST /tasks: create a follow-up task. Body carries title + optional due date and
+   * contact/deal links ONLY (no tenant_id — the trust rule). Returns 201 + the task. */
+  async createTask(body: CreateTaskBody): Promise<TaskResponse> {
+    if (this.mock) {
+      return {
+        task: {
+          id: `mock-task-${Date.now()}`, title: body.title, due_at: body.due_at ?? null,
+          done_at: null, done: false, overdue: false, archived_at: null,
+          contact_id: body.contact_id ?? null, deal_id: body.deal_id ?? null,
+          contact_name: null, deal_title: null, created_by: null, created_at: null,
+        },
+      };
+    }
+    return this.request<TaskResponse>("POST", "/tasks", body);
+  }
+
+  /** PATCH /tasks/{id}: edit title and/or due date (a blank due_at clears it). */
+  async updateTask(taskId: string, body: EditTaskBody): Promise<EditTaskResponse> {
+    if (this.mock) {
+      return { id: taskId, updated: body as Record<string, unknown>,
+               task: { id: taskId, title: body.title ?? "", due_at: body.due_at ?? null,
+                       done_at: null, done: false, overdue: false, archived_at: null,
+                       contact_id: null, deal_id: null, contact_name: null, deal_title: null,
+                       created_by: null, created_at: null } };
+    }
+    return this.request<EditTaskResponse>("PATCH", `/tasks/${encodeURIComponent(taskId)}`, body);
+  }
+
+  /** POST /tasks/{id}/complete | /reopen: flip the task's done state. */
+  async setTaskDone(taskId: string, done: boolean): Promise<TaskResponse> {
+    if (this.mock) {
+      return { task: { id: taskId, title: "", due_at: null,
+                       done_at: done ? new Date().toISOString() : null, done,
+                       overdue: false, archived_at: null, contact_id: null, deal_id: null,
+                       contact_name: null, deal_title: null, created_by: null, created_at: null } };
+    }
+    const verb = done ? "complete" : "reopen";
+    return this.request<TaskResponse>("POST", `/tasks/${encodeURIComponent(taskId)}/${verb}`);
+  }
+
+  /** POST /tasks/{id}/archive | /unarchive: soft-archive (reversible) a task. */
+  async setTaskArchived(taskId: string, archived: boolean): Promise<ArchiveResponse> {
+    if (this.mock) return { id: taskId, archived, archived_at: archived ? new Date().toISOString() : null };
+    const verb = archived ? "archive" : "unarchive";
+    return this.request<ArchiveResponse>("POST", `/tasks/${encodeURIComponent(taskId)}/${verb}`);
   }
 
   // --- agent crew (authed, read-only) ------------------------------------------

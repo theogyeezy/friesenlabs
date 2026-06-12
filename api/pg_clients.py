@@ -239,6 +239,32 @@ def _normalize_activity_write_row(row: dict) -> dict:
     }
 
 
+def _normalize_task_row(row: dict) -> dict:
+    """One CRM task row → API JSON. `done`/`overdue` are derived booleans so the client never
+    re-implements the open/overdue/done logic; `overdue` is computed in SQL (due_at < now() AND
+    not done) when present, else falls back to None. `contact_name`/`deal_title` are the optional
+    LEFT-JOINed display labels (None when unlinked or not selected)."""
+    done_at = _as_iso(row.get("done_at"))
+    return {
+        "id": _as_str(row.get("id")),
+        # tenant_id rides along so the route's defense-in-depth check (the _checked_rows pattern)
+        # can fail-loud on any cross-tenant leak before stripping it from the payload.
+        "tenant_id": _as_str(row.get("tenant_id")),
+        "title": row.get("title"),
+        "due_at": _as_iso(row.get("due_at")),
+        "done_at": done_at,
+        "done": done_at is not None,
+        "overdue": bool(row.get("overdue")) if row.get("overdue") is not None else None,
+        "archived_at": _as_iso(row.get("archived_at")),
+        "contact_id": _as_str(row.get("contact_id")),
+        "deal_id": _as_str(row.get("deal_id")),
+        "contact_name": row.get("contact_name"),
+        "deal_title": row.get("deal_title"),
+        "created_by": row.get("created_by"),
+        "created_at": _as_iso(row.get("created_at")),
+    }
+
+
 class _PgTenantClient:
     """Shared connection plumbing — the `PgApprovalStore` pattern (pool + per-op SET LOCAL txn).
 
@@ -920,7 +946,7 @@ class PgCrmClient(_PgTenantClient):
             "company": _normalize_company_write_row(row),
         }
 
-    _ARCHIVABLE_TABLES = {"deals", "contacts", "companies"}
+    _ARCHIVABLE_TABLES = {"deals", "contacts", "companies", "tasks"}
 
     def set_archived(self, *, tenant_id: str, table: str, entity_id: str, archived: bool) -> dict:
         """Soft-archive (or restore) a CRM entity by setting/clearing `archived_at`. Archived rows
@@ -944,6 +970,160 @@ class PgCrmClient(_PgTenantClient):
             "archived": archived,
             "archived_at": _as_iso(row.get("archived_at")),
         }
+
+    # ----------------------------------------------------------------- tasks (reminders)
+    # CRM follow-up tasks with due dates (CRM-depth #14). Tenant from the verified claim via
+    # SET LOCAL; identifiers are bound params and the table is fixed (`tasks`), never input-built.
+    _TASK_UPDATE_COLUMNS = {"title": "title", "due_at": "due_at"}
+
+    # The SELECT list shared by every task read: the raw row + the LEFT-JOINed display labels +
+    # the SQL-computed `overdue` flag (past due AND still open). RLS scopes every joined table.
+    _TASK_SELECT = (
+        "SELECT t.id, t.tenant_id, t.title, t.due_at, t.done_at, t.archived_at, "
+        "t.contact_id, t.deal_id, t.created_by, t.created_at, "
+        "(t.due_at IS NOT NULL AND t.due_at < now() AND t.done_at IS NULL) AS overdue, "
+        "c.name AS contact_name, d.title AS deal_title "
+        "FROM tasks t "
+        "LEFT JOIN contacts c ON c.id = t.contact_id "
+        "LEFT JOIN deals d ON d.id = t.deal_id "
+    )
+
+    def insert_task(self, *, tenant_id: str, title: str, due_at: str | None = None,
+                    contact_id: str | None = None, deal_id: str | None = None,
+                    created_by: str | None = None) -> dict:
+        """Insert one CRM follow-up task. `title` is required; `due_at` (ISO string, cast to
+        timestamptz by PG) and the contact_id/deal_id links are optional. A blank link is
+        normalized to NULL (an empty string is not a valid uuid). RLS-scoped; the contact/deal
+        composite FKs are the last line of defense (the route validates existence first)."""
+        clean_title = (title or "").strip()
+        if not clean_title:
+            raise ValueError("task title is required")
+        contact = str(contact_id).strip() if contact_id else ""
+        deal = str(deal_id).strip() if deal_id else ""
+        due = (due_at or "").strip() or None
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "INSERT INTO tasks (tenant_id, title, due_at, contact_id, deal_id, created_by) "
+                "VALUES (%s,%s,%s,%s,%s,%s) RETURNING id",
+                (str(tenant_id), clean_title, due, contact or None, deal or None, created_by),
+            )
+            new = _dict_one(cur)
+            if new is None:
+                raise RuntimeError("task insert returned no row")
+            cur.execute(self._TASK_SELECT + "WHERE t.id = %s", (_as_str(new.get("id")),))
+            row = _dict_one(cur)
+        if row is None:
+            raise RuntimeError("task insert read-back returned no row")
+        return _normalize_task_row(row)
+
+    def list_tasks(self, *, tenant_id: str, scope: str = "open",
+                   contact_id: str | None = None, deal_id: str | None = None,
+                   limit: int = DEFAULT_CRM_LIMIT, offset: int = 0) -> list[dict]:
+        """List tasks for the tenant, RLS-scoped. `scope` selects the surface:
+        - 'open'    : not done, not archived (overdue first, then soonest due, then newest)
+        - 'overdue' : open AND past due
+        - 'done'    : completed (not archived), most-recently-completed first
+        - 'all'     : every non-archived task
+        - 'archived': the soft-archived tasks
+        Optional contact_id/deal_id narrow to a drawer's tasks. Identifiers are bound params."""
+        n = _clamp_limit(limit, DEFAULT_CRM_LIMIT)
+        off = _clamp_offset(offset)
+        scope = str(scope or "open").strip().lower()
+        where = []
+        params: list[Any] = []
+        if scope == "archived":
+            where.append("t.archived_at IS NOT NULL")
+        else:
+            where.append("t.archived_at IS NULL")
+            if scope == "open":
+                where.append("t.done_at IS NULL")
+            elif scope == "overdue":
+                where.append("t.done_at IS NULL AND t.due_at IS NOT NULL AND t.due_at < now()")
+            elif scope == "done":
+                where.append("t.done_at IS NOT NULL")
+            # 'all' adds no done/overdue filter
+        if contact_id:
+            where.append("t.contact_id = %s")
+            params.append(str(contact_id))
+        if deal_id:
+            where.append("t.deal_id = %s")
+            params.append(str(deal_id))
+        # Ordering: completed lists newest-done first; open/overdue/all surface the most urgent
+        # work first (overdue, then soonest due with NULLs last, then newest-created as a tiebreak).
+        order = ("ORDER BY t.done_at DESC NULLS LAST, t.created_at DESC"
+                 if scope == "done"
+                 else "ORDER BY overdue DESC, t.due_at ASC NULLS LAST, t.created_at DESC")
+        params.extend([n, off])
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                self._TASK_SELECT + "WHERE " + " AND ".join(where) + " " + order
+                + " LIMIT %s OFFSET %s",
+                tuple(params),
+            )
+            return [_normalize_task_row(r) for r in _dict_rows(cur)]
+
+    def get_task(self, *, tenant_id: str, task_id: str) -> dict | None:
+        """One task by id (+ joined display labels), or None when RLS yields no row."""
+        with self._tx(tenant_id) as cur:
+            cur.execute(self._TASK_SELECT + "WHERE t.id = %s", (str(task_id),))
+            row = _dict_one(cur)
+        return _normalize_task_row(row) if row else None
+
+    def count_open_tasks(self, *, tenant_id: str) -> dict:
+        """Open + overdue task counts for the tenant (the nav badge). RLS-scoped; no joins."""
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "SELECT count(*) FILTER (WHERE done_at IS NULL) AS open_count, "
+                "count(*) FILTER (WHERE done_at IS NULL AND due_at IS NOT NULL "
+                "AND due_at < now()) AS overdue_count "
+                "FROM tasks WHERE archived_at IS NULL"
+            )
+            row = _dict_one(cur) or {}
+        return {
+            "open_count": int(row.get("open_count") or 0),
+            "overdue_count": int(row.get("overdue_count") or 0),
+        }
+
+    def update_task_fields(self, *, tenant_id: str, task_id: str, changes: dict) -> dict:
+        """Update allow-listed task fields (title/due_at). `due_at` may be set to null to clear the
+        date. RLS-scoped. Raises ValueError('task not found...') when no row is visible (-> 404)."""
+        items, _ = self._change_items(changes, self._TASK_UPDATE_COLUMNS)
+        if not items:
+            raise ValueError("changes must include at least one writable task field")
+        set_sql = ", ".join(f"{column} = %s" for _, column, _ in items)
+        params = [value for _, _, value in items]
+        params.append(str(task_id))
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                f"UPDATE tasks SET {set_sql} WHERE id = %s RETURNING id",
+                tuple(params),
+            )
+            updated = _dict_one(cur)
+            if updated is None:
+                raise ValueError("task not found or not visible")
+            cur.execute(self._TASK_SELECT + "WHERE t.id = %s", (str(task_id),))
+            row = _dict_one(cur)
+        return {
+            "id": _as_str(row.get("id")),
+            "updated": {key: changes[key] for key, _, _ in items},
+            "task": _normalize_task_row(row),
+        }
+
+    def set_task_done(self, *, tenant_id: str, task_id: str, done: bool) -> dict:
+        """Mark a task complete (done_at = now()) or reopen it (done_at = NULL). RLS-scoped.
+        Raises ValueError (-> route 404) when no row is visible."""
+        value_sql = "now()" if done else "NULL"
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                f"UPDATE tasks SET done_at = {value_sql} WHERE id = %s RETURNING id",
+                (str(task_id),),
+            )
+            updated = _dict_one(cur)
+            if updated is None:
+                raise ValueError("task not found or not visible")
+            cur.execute(self._TASK_SELECT + "WHERE t.id = %s", (str(task_id),))
+            row = _dict_one(cur)
+        return _normalize_task_row(row)
 
     def insert_deal(self, *, tenant_id: str, company_id: str, name: str,
                     stage: str, amount: float | int | None,

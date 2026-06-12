@@ -445,6 +445,31 @@ CREATE TABLE IF NOT EXISTS points_ledger (
 CREATE INDEX IF NOT EXISTS points_ledger_tenant_user_idx
     ON points_ledger (tenant_id, user_id, occurred_at);
 
+-- ---------------------------------------------------------------------------
+-- tasks — CRM follow-up reminders with due dates (CRM-depth #14). A task is a piece of work to
+-- do ("Call back Tuesday"), optionally linked to a contact and/or a deal so it surfaces on those
+-- drawers. due_at drives overdue/upcoming sorting; done_at NULL = open, non-NULL = completed.
+-- archived_at gives the same reversible soft-delete as the other CRM entities. RLS-FORCEd tenant
+-- table (mandatory tenant_id; in the tenant_tables array below) — declared BEFORE the RLS DO block
+-- so the array entry can ENABLE/FORCE it; crm_app gets SELECT/INSERT/UPDATE in roles.sql (no
+-- DELETE: a task is completed or archived, never erased by the app). The contact_id/deal_id FKs
+-- are made composite same-tenant in the FK DO block below (cross-tenant FK defense).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tasks (
+    id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id   uuid NOT NULL,
+    contact_id  uuid REFERENCES contacts (id),
+    deal_id     uuid REFERENCES deals (id),
+    title       text NOT NULL,
+    due_at      timestamptz,
+    done_at     timestamptz,
+    archived_at timestamptz,
+    created_by  text,
+    created_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_open ON tasks (tenant_id, due_at)
+    WHERE done_at IS NULL AND archived_at IS NULL;
+
 -- ===========================================================================
 -- ROW LEVEL SECURITY — apply the identical pattern to every tenant-scoped table.
 -- The DO block keeps it DRY and guarantees no table is missed (and never without FORCE).
@@ -456,7 +481,7 @@ DECLARE
         'documents', 'companies', 'contacts', 'deals', 'activities',
         'saved_views', 'approvals', 'traces', 'ingest_cursor', 'tenant_workspaces',
         'tenant_settings', 'playbooks', 'playbook_runs', 'predictions', 'usage_counters', 'cost_events', 'onboarding_state',
-        'integration_sync_runs', 'members', 'points_ledger'
+        'integration_sync_runs', 'members', 'points_ledger', 'tasks'
     ];
 BEGIN
     FOREACH t IN ARRAY tenant_tables LOOP
@@ -657,6 +682,18 @@ BEGIN
         ALTER TABLE activities ADD CONSTRAINT activities_tenant_deal_fkey
             FOREIGN KEY (tenant_id, deal_id) REFERENCES deals (tenant_id, id);
     END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                   WHERE conname = 'tasks_tenant_contact_fkey'
+                     AND conrelid = 'tasks'::regclass) THEN
+        ALTER TABLE tasks ADD CONSTRAINT tasks_tenant_contact_fkey
+            FOREIGN KEY (tenant_id, contact_id) REFERENCES contacts (tenant_id, id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                   WHERE conname = 'tasks_tenant_deal_fkey'
+                     AND conrelid = 'tasks'::regclass) THEN
+        ALTER TABLE tasks ADD CONSTRAINT tasks_tenant_deal_fkey
+            FOREIGN KEY (tenant_id, deal_id) REFERENCES deals (tenant_id, id);
+    END IF;
 
     -- Retire the cross-tenant-capable single-column FKs (default psql names from the inline
     -- REFERENCES above). Dropped only after every composite FK exists in this transaction —
@@ -668,6 +705,8 @@ BEGIN
     ALTER TABLE deals      DROP CONSTRAINT IF EXISTS deals_contact_id_fkey;
     ALTER TABLE activities DROP CONSTRAINT IF EXISTS activities_contact_id_fkey;
     ALTER TABLE activities DROP CONSTRAINT IF EXISTS activities_deal_id_fkey;
+    ALTER TABLE tasks      DROP CONSTRAINT IF EXISTS tasks_contact_id_fkey;
+    ALTER TABLE tasks      DROP CONSTRAINT IF EXISTS tasks_deal_id_fkey;
 END $$;
 
 -- playbooks — explicit ENABLE/FORCE + policy (belt and suspenders with the DO block above;
@@ -823,5 +862,16 @@ ALTER TABLE points_ledger ENABLE ROW LEVEL SECURITY;
 ALTER TABLE points_ledger FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON points_ledger;
 CREATE POLICY tenant_isolation ON points_ledger
+    USING (tenant_id = current_setting('app.current_tenant', true)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.current_tenant', true)::uuid);
+
+-- ---------------------------------------------------------------------------
+-- tasks — explicit RLS statements (belt and suspenders with the DO block above, same
+-- convention as members/points_ledger above).
+-- ---------------------------------------------------------------------------
+ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tasks FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON tasks;
+CREATE POLICY tenant_isolation ON tasks
     USING (tenant_id = current_setting('app.current_tenant', true)::uuid)
     WITH CHECK (tenant_id = current_setting('app.current_tenant', true)::uuid);

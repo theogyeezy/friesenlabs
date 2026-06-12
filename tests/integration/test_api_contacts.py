@@ -95,6 +95,10 @@ class FakeDirectoryReader:
                  "created_at": "2026-06-01T00:00:00+00:00"},
             ],
         }
+        # Deals this CONTACT is directly attached to (deals.contact_id), surfaced on the
+        # contact drawer alongside the company's open deals. Empty by default — the relevant
+        # tests seed their own as needed.
+        self.contact_deals: dict = {}
         self.activities = {
             ("A", CONTACT_A1): [
                 {"id": "act-1", "kind": "call", "body": "Walked Dana through the security review.",
@@ -111,8 +115,11 @@ class FakeDirectoryReader:
         needle = q.lower()
         return any((row.get(f) or "").lower().find(needle) >= 0 for f in fields)
 
-    def list_contacts_directory(self, *, tenant_id, q=None, limit=50, offset=0):
+    def list_contacts_directory(self, *, tenant_id, q=None, limit=50, offset=0,
+                                archived_only=False):
         self.calls.append(("list_contacts", tenant_id, q, limit, offset))
+        if archived_only:
+            return []  # the fake seeds no archived rows -> archived view honestly empty
         rows = [dict(r) for r in self.contacts.get(tenant_id, [])
                 if self._matches(r, ("name", "email"), q)]
         return rows[offset:offset + limit]
@@ -128,12 +135,19 @@ class FakeDirectoryReader:
         self.calls.append(("contact_activities", tenant_id, contact_id))
         return [dict(a) for a in self.activities.get((tenant_id, contact_id), [])]
 
+    def list_contact_deals(self, *, tenant_id, contact_id, limit=50):
+        self.calls.append(("contact_deals", tenant_id, contact_id))
+        return [dict(d) for d in self.contact_deals.get((tenant_id, contact_id), [])]
+
     def list_company_open_deals(self, *, tenant_id, company_id, limit=50):
         self.calls.append(("company_open_deals", tenant_id, company_id))
         return [dict(d) for d in self.open_deals.get((tenant_id, company_id), [])]
 
-    def list_companies_directory(self, *, tenant_id, q=None, limit=50, offset=0):
+    def list_companies_directory(self, *, tenant_id, q=None, limit=50, offset=0,
+                                 archived_only=False):
         self.calls.append(("list_companies", tenant_id, q, limit, offset))
+        if archived_only:
+            return []  # the fake seeds no archived rows -> archived view honestly empty
         rows = [dict(r) for r in self.companies.get(tenant_id, [])
                 if self._matches(r, ("name", "domain"), q)]
         return rows[offset:offset + limit]
@@ -297,7 +311,8 @@ def test_list_contacts_pagination_clamps_and_has_more():
 @pytest.mark.integration
 def test_list_contacts_tenant_mismatch_fails_loud_500():
     class LeakyReader(FakeDirectoryReader):
-        def list_contacts_directory(self, *, tenant_id, q=None, limit=50, offset=0):
+        def list_contacts_directory(self, *, tenant_id, q=None, limit=50, offset=0,
+                                    archived_only=False):
             return [dict(r) for r in self.contacts["B"]]  # simulated RLS failure
 
     client = _client(ContactsDeps(crm=LeakyReader()))
@@ -393,7 +408,8 @@ def test_list_companies_q_cap_422_and_smuggled_tenant_ignored():
 @pytest.mark.integration
 def test_list_companies_tenant_mismatch_fails_loud_500():
     class LeakyReader(FakeDirectoryReader):
-        def list_companies_directory(self, *, tenant_id, q=None, limit=50, offset=0):
+        def list_companies_directory(self, *, tenant_id, q=None, limit=50, offset=0,
+                                     archived_only=False):
             return [dict(r) for r in self.companies["B"]]
 
     client = _client(ContactsDeps(crm=LeakyReader()))
@@ -461,7 +477,8 @@ def test_contacts_write_surface_is_exactly_create_and_edit():
 
 @pytest.mark.integration
 def test_read_paths_use_only_the_seven_readers():
-    # Every recorded read call is one of the seven allow-listed directory reads.
+    # Every recorded read call is one of the allow-listed directory reads (the original
+    # seven plus contact_deals — the contact drawer's own-deals section, CRM-depth #10).
     reader = FakeDirectoryReader()
     client = _client(ContactsDeps(crm=reader))
     client.get("/contacts", headers=H)
@@ -469,5 +486,5 @@ def test_read_paths_use_only_the_seven_readers():
     client.get("/companies", headers=H)
     client.get(f"/companies/{COMPANY_A1}", headers=H)
     allowed = {"list_contacts", "get_contact", "contact_activities", "company_open_deals",
-               "list_companies", "get_company", "company_contacts"}
+               "list_companies", "get_company", "company_contacts", "contact_deals"}
     assert {c[0] for c in reader.calls} <= allowed

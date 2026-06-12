@@ -51,6 +51,7 @@ const DashboardView = React.lazy(() => import("./api/DashboardView"));
 const IntegrationsPanel = React.lazy(() => import("./api/IntegrationsPanel"));
 const PipelineBoard = React.lazy(() => import("./api/PipelineBoard"));
 const ContactsDirectory = React.lazy(() => import("./api/ContactsDirectory"));
+const TasksView = React.lazy(() => import("./api/TasksView"));
 const AgentsRoster = React.lazy(() => import("./api/AgentsRoster"));
 const WorkflowsView = React.lazy(() => import("./api/WorkflowsView"));
 const ReportsView = React.lazy(() => import("./api/ReportsView"));
@@ -223,6 +224,12 @@ function Root() {
       return (
         <Gated seam>
           <React.Suspense fallback={null}><ContactsDirectory /></React.Suspense>
+        </Gated>
+      );
+    case "tasks":
+      return (
+        <Gated seam>
+          <React.Suspense fallback={null}><TasksView /></React.Suspense>
         </Gated>
       );
     case "agents":

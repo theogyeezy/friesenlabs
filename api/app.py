@@ -34,6 +34,7 @@ from api.control.types import Action
 from api.contacts_routes import ContactsDeps
 from api.cortex_routes import CortexDeps
 from api.deals_routes import DealsDeps
+from api.tasks_routes import TasksDeps
 from api.sidecar_routes import SidecarDeps
 from api.integrations_routes import IntegrationsDeps, build_integrations_deps
 from api.knowledge_routes import KnowledgeDeps
@@ -105,6 +106,11 @@ class ApiDeps:
     # a DB pool; api/asgi.py is the ONLY real wiring (the same PgCrmClient instance). Pass None
     # to skip mounting the routes entirely.
     contacts: ContactsDeps | None = field(default_factory=ContactsDeps)
+    # /tasks deps (the real CRM tasks/reminders surface). Same inert-default contract as `deals`/
+    # `contacts`: the all-None stub mounts honest-503 routes and constructing deps never opens a DB
+    # pool; api/asgi.py is the ONLY real wiring (the same PgCrmClient instance the directory + board
+    # ride). Pass None to skip mounting the routes entirely.
+    tasks: TasksDeps | None = field(default_factory=TasksDeps)
     # /sidecar deps (the real Sidecar agentic layer — grounded next-action suggestions over the
     # tenant's CRM, accept enqueues a Greenlight draft). Same inert-default contract as `deals`:
     # the all-None stub mounts honest-503 routes and opens no DB pool; api/asgi.py wires the same
@@ -609,6 +615,13 @@ def create_app(deps: ApiDeps) -> FastAPI:
     if deps.contacts is not None:
         from api.contacts_routes import mount_contacts
         mount_contacts(app, deps.contacts, current_tenant)
+
+    # Authed per-tenant CRM tasks/reminders (the real Tasks surface). Claims-bound; a direct user
+    # write (no agent send), so it does NOT route through Greenlight. Unconfigured deps answer
+    # honest 503s, never invented rows.
+    if deps.tasks is not None:
+        from api.tasks_routes import mount_tasks
+        mount_tasks(app, deps.tasks, current_tenant)
 
     # Authed per-tenant agent crew (the real Agents tab). Claims-bound, READ-ONLY: the roster
     # comes from the owned definitions + the trusted tool registry; provisioned MA ids ride
