@@ -220,11 +220,15 @@ ENV_DISPATCH_TENANTS = "PLAYBOOK_DISPATCH_TENANTS"
 # Settle budgets for playbook turns (the worker drain-window latency P1, observed live twice:
 # the chat-tuned 25s default starved the worker's poll+serve+model-continue cycle, ending runs
 # "incomplete" with unserved read-only calls). The scheduled leg (one-off task) and the event
-# leg (background thread) have NO http edge -> a generous 120s; manual Run-now rides the API
-# request through CloudFront/ALB 60s ceilings -> 45s with headroom. Both env-overridable.
+# leg (background thread) have NO http edge -> 480s: the 19:45Z live tick proved 120s covers a
+# direct tool round-trip but NOT a DELEGATION cycle (coordinator -> scout sub-turn -> tools ->
+# resume); 8 minutes still clears the 15-minute tick cadence with margin. Manual Run-now rides
+# the API request through CloudFront/ALB 60s ceilings -> 45s with headroom (a delegating run
+# surfaces `incomplete` + a settle_budget sentinel there — the honest answer until the
+# 202-async Run-now lands). Both env-overridable.
 ENV_PLAYBOOK_SETTLE = "UPLIFT_PLAYBOOK_SETTLE_SECONDS"
 ENV_RUNNOW_SETTLE = "UPLIFT_RUNNOW_SETTLE_SECONDS"
-DEFAULT_PLAYBOOK_SETTLE_SECONDS = 120.0
+DEFAULT_PLAYBOOK_SETTLE_SECONDS = 480.0
 DEFAULT_RUNNOW_SETTLE_SECONDS = 45.0
 
 
