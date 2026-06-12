@@ -146,6 +146,7 @@ class Conversation:
         cortex: Any = None,
         prediction_log: Any = None,
         synthesizer: Any = None,
+        router: Any = None,
         spec_generator: Any = None,
         disambiguator: Any = None,
         greenlight: Any = None,
@@ -169,6 +170,10 @@ class Conversation:
         # RLS-scoped predictions table (the worker covers the live MA path; this covers in-process).
         self.prediction_log = prediction_log
         self.synthesizer = synthesizer
+        # Tier-0 router (conv/router.py): decides knowledge-fast-lane vs crew BEFORE any MA
+        # session round-trip. None (default) = no fast path, every real-runtime turn goes to
+        # the coordinator exactly as before. Crew-biased by contract.
+        self.router = router
         # Default view-spec generator for build_view (ctx.extra['generate_spec']); None preserves
         # build_view's explicit raise — a missing generator is a programming error, not a mode.
         self.spec_generator = spec_generator
@@ -358,6 +363,15 @@ class Conversation:
         # only. On any real runtime (ManagedAgentsRuntime) the coordinator picks the tools; its
         # custom_tool_use events drive the routing below.
         if not isinstance(self.runtime, FakeRuntime):
+            # TIER-0 FAST PATH (the Moveworks front door, 2026-06-12): a knowledge-shaped ask
+            # is answered DIRECTLY by the grounded RAG path — seconds, citations, settled —
+            # without ever touching the MA session (no coordinator inference, no delegation,
+            # no worker round-trips). The router is crew-biased: actions/research/CRM-state
+            # asks (and anything ambiguous) still go to the coordinator. Trade-off, by
+            # design: fast-lane turns don't enter the MA session history.
+            if (self.router is not None and self.rag is not None
+                    and self.router.route(message) == "knowledge"):
+                return self._handle_knowledge_direct(message, slots, ambiguous)
             return self._handle_coordinator(message, slots, ambiguous, action_kwargs)
 
         action_name, tool_cls = self._match_action(message)
@@ -365,6 +379,22 @@ class Conversation:
             return self._handle_action(message, action_name, tool_cls, slots, ambiguous, action_kwargs)
 
         return self._handle_knowledge(message, slots, ambiguous)
+
+    def _handle_knowledge_direct(self, message, slots, ambiguous) -> Turn:
+        """Tier-0: answer a knowledge ask straight from the grounded RAG path (the same
+        citation-invariant conv.rag.answer every lane uses) — no runtime round-trip at all."""
+        grounded = self._grounded_answer(message)
+        return Turn(
+            answer=grounded.answer,
+            citations=[c.as_dict() for c in grounded.citations if c.source_ref],
+            slots=slots,
+            needs_disambiguation=ambiguous,
+            session_id=self.session.id,
+            tenant_id=self.tenant_id,
+            grounding_status=grounded.status,
+            retrieved_count=grounded.retrieved_count,
+            settled=True,
+        )
 
     def _handle_coordinator(self, message, slots, ambiguous, action_kwargs) -> Turn:
         """Real-runtime turn: tool selection comes from the COORDINATOR, never a local regex —

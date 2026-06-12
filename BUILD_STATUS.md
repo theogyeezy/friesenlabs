@@ -549,6 +549,15 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   usable + safe; RAG-embed IAM gap closed live.
 
 ## Lane Matt (app code) — log
+- 2026-06-12 — **Tier-0 knowledge fast lane (the Moveworks front door, owner-directed):**
+  knowledge-shaped asks now answer DIRECTLY from the grounded RAG path in seconds — no MA
+  session round-trip at all (the live "discount policy" turn took 3+ minutes through
+  coordinator→margo→scout→critic). New `conv/router.py` (HeuristicRouter — deterministic,
+  offline, CREW-BIASED: action/research/CRM-state asks and anything ambiguous still go to the
+  coordinator; an LLM classifier can swap in behind the same seam). Wired in
+  `make_conversation_factory`; `router=None` keeps the status quo (FakeRuntime facade
+  untouched). Trade-off by design: fast-lane turns skip the MA session history. TDD: 14 router
+  + 4 fast-path tests; full pytest exit 0.
 - 2026-06-12 — **Settle round 6 — budget on EVERY event (steady-window 504 root cause):** the
   budget was only checked at requires_action idles + stream drops; a BUSY session emitting
   ordinary events for minutes hits neither, so the drain rode the whole turn past the 60s edge
