@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import abc
 import json
+import os
+import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from shared.config import MA_BETA_HEADER
 
@@ -21,6 +23,16 @@ from shared.config import MA_BETA_HEADER
 DELEGATION_DEPTH = 1          # no nested sub-teams
 MAX_AGENTS_PER_ROSTER = 20
 MAX_CONCURRENT_THREADS = 25
+
+# SETTLE budget (the agentic-turn fix, 2026-06-12): one turn may keep draining past a
+# `requires_action` idle for this many wall-clock seconds (from the start of the turn) while
+# the EnvironmentWorker serves the open read-only calls. Without it the turn returned at the
+# FIRST requires_action — seconds before the worker answered — so the customer got "I've asked
+# Scout, I'll report back" as the final answer and had to nudge the chat to harvest the result
+# (live demo-tenant finding). On exhaustion the turn fails closed exactly as before. The
+# default must clear the edge's 60s CloudFront-origin-read/ALB-idle ceilings with headroom.
+ENV_TURN_SETTLE_SECONDS = "UPLIFT_TURN_SETTLE_SECONDS"
+DEFAULT_TURN_SETTLE_SECONDS = 45.0
 
 # Reconnect-with-consolidation bound (the ratified brief's named risk: an SSE drop while a
 # custom_tool_use round is in flight is a documented deadlock). On a connection-shaped stream
@@ -119,6 +131,8 @@ class ManagedAgentsRuntime(AgentRuntime):
         self,
         api_key: str | None = None,
         environment_id: str | None = None,
+        clock: Callable[[], float] | None = None,
+        settle_budget_s: float | None = None,
     ):
         self._api_key = api_key
         self._client = None  # built lazily; import never needs the network
@@ -129,6 +143,15 @@ class ManagedAgentsRuntime(AgentRuntime):
         # `events.list` replays the FULL session log, so dedupe must span turns on this instance
         # (one runtime per conversation in prod — bounded by the conversation's lifetime).
         self._seen_event_ids: dict[str, set[str]] = {}
+        # SETTLE (the agentic-turn fix, 2026-06-12): how long one turn may keep draining past a
+        # `requires_action` idle while the worker serves the open calls. Wall-clock from the
+        # start of send_message; on exhaustion the turn fails closed exactly as before. The
+        # default must clear the edge's 60s CloudFront-origin/ALB-idle ceilings with headroom.
+        self._clock = clock or time.monotonic
+        if settle_budget_s is None:
+            settle_budget_s = float(os.environ.get(ENV_TURN_SETTLE_SECONDS, "") or
+                                    DEFAULT_TURN_SETTLE_SECONDS)
+        self._settle_budget_s = settle_budget_s
 
     def _c(self):
         if self._client is None:
@@ -389,6 +412,7 @@ class ManagedAgentsRuntime(AgentRuntime):
         usage_out = 0
         usage_model: str | None = None
         reconnects = 0
+        turn_start = self._clock()  # settle budget anchor (see the requires_action branch)
         seen = self._seen_event_ids.setdefault(session.id, set())
 
         def _accumulate_usage(event) -> None:
@@ -479,6 +503,13 @@ class ManagedAgentsRuntime(AgentRuntime):
                     )
                 if stop == "requires_action":
                     if calls:
+                        # SETTLE: open calls are the WORKER's to serve and it typically answers
+                        # within seconds — keep draining (the worker's user.custom_tool_result
+                        # resumes the session) instead of ending the turn on a race the customer
+                        # experiences as "I'll report back" + silence. Budget-bounded: on
+                        # exhaustion fail closed exactly as before (worker down / unknown tool).
+                        if self._clock() - turn_start < self._settle_budget_s:
+                            return False
                         pending.extend(calls)
                         calls.clear()
                     elif not pending:
@@ -537,7 +568,9 @@ class ManagedAgentsRuntime(AgentRuntime):
             "session_id": session.id,
             "tenant_id": session.tenant_id,
             "delegations": delegations,
-            "answer": "".join(answer_parts),
+            # Paragraph-fold the narration: a settled turn carries the coordinator's interim
+            # messages AND the final answer — jammed ""-joins read as one mangled sentence.
+            "answer": "\n\n".join(p.strip() for p in answer_parts if p and p.strip()),
             "pending_approvals": pending,
             "tool_results": tool_results,
             # Observed token usage for cost attribution (0/0 when the stream emitted none).
