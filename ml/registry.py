@@ -7,7 +7,7 @@ Two registry families share one protocol (register / champion / versions / chall
 set_champion / promote), so `evaluate_and_gate` + `ml.retrain.retrain_tenant` accept either:
 
 - `InMemoryRegistry` — the offline/test fake (process-local, nothing durable).
-- `PersistentRegistry` — durable + tenant-scoped (TODO AI/P2): `S3Registry` (prod; boto3 imported
+- `PersistentRegistry` — durable + tenant-scoped: `S3Registry` (prod; boto3 imported
   lazily on first blob access) with `LocalFsRegistry` as the dev/tests fallback. A champion
   promoted in one process loads in another. Construction is wired via `registry_from_env()` —
   the seam the worker (`build_clients_from_env`, clients["cortex"]) and the API conversation
