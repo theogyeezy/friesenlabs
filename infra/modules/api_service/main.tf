@@ -109,6 +109,15 @@ variable "ingest_real" {
   type    = bool
   default = false
 }
+# Playbook schedule-leg honesty flag (GO_LIVE_CHECKLIST §7): stamps PLAYBOOK_DISPATCH_ENABLED=1
+# on the api task so GET /studio/playbooks reports scheduling_enabled and the Studio stops
+# bannering schedule playbooks as "trigger not enabled yet". Flip it in the SAME apply that
+# enables the EventBridge dispatcher (playbook_dispatch_enabled at root) — it is display
+# honesty only; the dispatcher itself runs as the scheduled one-off task, not in the API.
+variable "playbook_dispatch_enabled" {
+  type    = bool
+  default = false
+}
 # Signup-plane PLAIN (non-secret) config: Stripe Hosted-Checkout price ids (price_..., public
 # identifiers, not secret-shaped) + redirect URLs, the Resend from-address, the verification-link
 # base, and the internal-bypass domain list. All read by shared/config.py at call time; safe ""
@@ -264,6 +273,9 @@ resource "aws_ecs_task_definition" "api" {
         # async/202 path; in-request syncs are gone). Deliberate, separate flip from the
         # secrets switch above.
         var.ingest_real ? [{ name = "INGEST_REAL_STORES", value = "1" }] : [],
+        # Playbook schedule-leg honesty (GO_LIVE §7): tells api/routes_studio the EventBridge
+        # dispatcher is live so the Studio stops bannering schedule playbooks as inert.
+        var.playbook_dispatch_enabled ? [{ name = "PLAYBOOK_DISPATCH_ENABLED", value = "1" }] : [],
         # Signup-plane plain config + Cortex registry (see local.plain_env above) — sorted-by-name
         # map iteration keeps the rendered task def deterministic.
         [for k, v in local.plain_env : { name = k, value = v }]
