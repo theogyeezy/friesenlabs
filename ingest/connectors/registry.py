@@ -24,6 +24,7 @@ from typing import Any, Callable
 from .base import Connector
 from .gohighlevel import GoHighLevelConnector
 from .hubspot import HubSpotConnector
+from .salesforce import SalesforceConnector
 from .stripe_data import StripeDataConnector
 
 
@@ -48,6 +49,12 @@ def _real_gohighlevel_client():
     from .gohighlevel import GoHighLevelRestClient  # noqa: PLC0415 — lazy
 
     return GoHighLevelRestClient()
+
+
+def _real_salesforce_client():
+    from .salesforce import SalesforceRestClient  # noqa: PLC0415 — lazy
+
+    return SalesforceRestClient()
 
 
 def _real_stripe_client():
@@ -105,6 +112,20 @@ REGISTRY: dict[str, ConnectorSpec] = {
         experimental=True,
         connector_cls=GoHighLevelConnector,
         real_client_factory=_real_gohighlevel_client,
+    ),
+    "salesforce": ConnectorSpec(
+        name="salesforce",
+        label="Salesforce",
+        category="CRM & Marketing",
+        description=(
+            "EXPERIMENTAL: sync accounts, contacts, leads, opportunities and "
+            "activities from Salesforce via OAuth + SOQL (read-only — Uplift "
+            "never writes back)."
+        ),
+        kind="sync",
+        experimental=True,
+        connector_cls=SalesforceConnector,
+        real_client_factory=_real_salesforce_client,
     ),
     "stripe": ConnectorSpec(
         name="stripe",

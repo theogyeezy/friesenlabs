@@ -1,8 +1,8 @@
-"""Integration: the /integrations registry surface — hubspot|csv|gohighlevel|stripe.
+"""Integration: the /integrations registry surface — hubspot|csv|gohighlevel|stripe|salesforce.
 
 Proves (on top of tests/integration/test_api_integrations.py, which covers the
 hubspot reference flows):
-  * GET /integrations lists all four connectors with kind/experimental and a
+  * GET /integrations lists all connectors with kind/experimental and a
     per-tenant status per connector
   * csv is a FILE connector: no vault slot (status "available" only when the
     importer is wired), credentials POST answers 409, sync POST answers 409
@@ -59,16 +59,18 @@ def _client(integrations=None):
 
 # --------------------------------------------------------------------------- listing
 @pytest.mark.integration
-def test_listing_carries_all_four_connectors_with_kind_and_experimental():
+def test_listing_carries_all_connectors_with_kind_and_experimental():
     r = _client().get("/integrations", headers=H)
     assert r.status_code == 200
     items = {i["name"]: i for i in r.json()["integrations"]}
-    assert set(items) == {"hubspot", "csv", "gohighlevel", "stripe"}
+    assert set(items) == {"hubspot", "csv", "gohighlevel", "stripe", "salesforce"}
     assert items["csv"]["kind"] == "file"
     assert items["gohighlevel"]["experimental"] is True
-    for name in ("hubspot", "gohighlevel", "stripe"):
+    assert items["salesforce"]["experimental"] is True
+    for name in ("hubspot", "gohighlevel", "stripe", "salesforce"):
         assert items[name]["kind"] == "sync"
-        assert items[name]["experimental"] is (name == "gohighlevel")
+    assert items["hubspot"]["experimental"] is False
+    assert items["stripe"]["experimental"] is False
 
 
 @pytest.mark.integration

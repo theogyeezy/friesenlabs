@@ -26,13 +26,15 @@ Four things live here, none of which touch the network at import time:
      :func:`post_form` (stdlib urllib, lazy) so tests monkeypatch one seam and
      make ZERO live calls. Token VALUES are never logged.
   4. PKCE (:func:`generate_pkce_pair`) for providers that require it
-     (`provider.pkce` — GoHighLevel/LeadConnector). The `/start` route generates a
-     code_verifier, sends only the S256 code_challenge to the provider, and carries
-     the verifier INSIDE the signed `state` (the callback is unauthenticated, so
-     the signed state is the only safe place to stash it). The verifier rides the
-     token exchange. GoHighLevel's token response also carries locationId/companyId
-     (the location the user chose at `chooselocation`); those are persisted in the
-     vault envelope so the connector can make location-level API calls.
+     (`provider.pkce` — GoHighLevel/LeadConnector + Salesforce). The `/start` route
+     generates a code_verifier, sends only the S256 code_challenge to the provider,
+     and carries the verifier INSIDE the signed `state` (the callback is
+     unauthenticated, so the signed state is the only safe place to stash it). The
+     verifier rides the token exchange. GoHighLevel's token response also carries
+     locationId/companyId (the location the user chose at `chooselocation`) and
+     Salesforce's carries `instance_url` (the tenant's per-org API host); those are
+     persisted in the vault envelope so the connector can make org/location-level
+     API calls without a second round trip.
 """
 from __future__ import annotations
 
@@ -114,6 +116,24 @@ PROVIDERS: dict[str, OAuthProvider] = {
         ),
         client_id_ref="uplift/oauth/hubspot/client_id",
         client_secret_ref="uplift/oauth/hubspot/client_secret",
+    ),
+    "salesforce": OAuthProvider(
+        name="salesforce",
+        # Salesforce web-server (authorization_code) flow. login.salesforce.com is
+        # the production login host; sandboxes use test.salesforce.com (a per-tenant
+        # override is a follow-up — see the connector module docstring).
+        authorize_url="https://login.salesforce.com/services/oauth2/authorize",
+        token_url="https://login.salesforce.com/services/oauth2/token",
+        # `api` grants REST/SOQL access; `refresh_token` is required for Salesforce
+        # to ISSUE a refresh token (offline access). Read-only by design — Uplift
+        # never writes back. (`api` is broad; a narrower per-object scope set is not
+        # offered by Salesforce — object access is governed by the connected app's
+        # profile/permission-set instead.)
+        scopes=("api", "refresh_token"),
+        client_id_ref="uplift/oauth/salesforce/client_id",
+        client_secret_ref="uplift/oauth/salesforce/client_secret",
+        # Salesforce supports (and we require) PKCE S256 on the web-server flow.
+        pkce=True,
     ),
     "gohighlevel": OAuthProvider(
         name="gohighlevel",
@@ -255,15 +275,18 @@ TOKEN_TYPE = "oauth"
 
 
 def oauth_secret_value(*, access_token: str, refresh_token: str, expires_at: int,
-                       location_id: str | None = None, company_id: str | None = None) -> str:
+                       location_id: str | None = None, company_id: str | None = None,
+                       instance_url: str | None = None) -> str:
     """Serialize the OAuth token set into the JSON string stored in the vault slot.
 
     `token_type:"oauth"` is the discriminator the connector uses to tell an OAuth
     envelope apart from a legacy pasted bare token (a plain string). For
     GoHighLevel/LeadConnector the token response also carries the chosen
-    `location_id`/`company_id`; they are persisted (when present) so the connector
-    can make location-level API calls without a second round trip. HubSpot passes
-    neither, so its envelope is byte-for-byte unchanged.
+    `location_id`/`company_id`, and Salesforce carries `instance_url` (the tenant's
+    per-org API host — every subsequent REST/SOQL call uses it as the base host);
+    they are persisted (when present) so the connector can make org/location-level
+    API calls without a second round trip. HubSpot passes none of them, so its
+    envelope is byte-for-byte unchanged.
     """
     obj = {
         "access_token": access_token,
@@ -275,6 +298,8 @@ def oauth_secret_value(*, access_token: str, refresh_token: str, expires_at: int
         obj["location_id"] = str(location_id)
     if company_id:
         obj["company_id"] = str(company_id)
+    if instance_url:
+        obj["instance_url"] = str(instance_url)
     return json.dumps(obj, separators=(",", ":"))
 
 
@@ -392,6 +417,13 @@ def _tokens_from_response(resp: dict, *, fallback_refresh: str | None = None,
         out["location_id"] = str(location_id)
     if company_id:
         out["company_id"] = str(company_id)
+    # Salesforce returns `instance_url` (the tenant's per-org API host) on BOTH the
+    # code exchange and the refresh response — capture it so every subsequent REST/
+    # SOQL call targets the right org host. Providers that don't send it leave
+    # `out` unchanged.
+    instance_url = resp.get("instance_url") or resp.get("instanceUrl")
+    if instance_url:
+        out["instance_url"] = str(instance_url)
     return out
 
 
