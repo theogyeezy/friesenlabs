@@ -39,7 +39,10 @@ _CREW_VERBS = re.compile(
 # the crew's read tools, not the document corpus.
 _CRM_STATE = re.compile(
     r"\b(how is|how's|what should|status of|doing\b|account\b|deal\b|deals\b|lead\b|leads\b|"
-    r"pipeline\b|quota\b|forecast\b|this week|last week|today)\b",
+    r"pipeline\b|quota\b|forecast\b|this week|last week|today|"
+    # Contact lookups are CRM data, not corpus (live miss, owner-reported 2026-06-12):
+    # "what is X's phone number" must reach the crew's read_crm, not the knowledge lane.
+    r"phone|mobile\b|cell\b|contact info|email address)\b",
     re.I,
 )
 
