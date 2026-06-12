@@ -299,3 +299,70 @@ test("empty tenant renders the honest empty state, not a fake board", async ({ p
   await expect(page.getByTestId("pipeline-count")).toContainText("0 open deals");
   await expect(page.getByTestId("deal-card")).toHaveCount(0);
 });
+
+test("Cortex score: a real champion score renders the conversion-likelihood badge", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+
+  await page.route("**/deals", (route) => route.fulfill({ json: board([DEAL_A]) }));
+  await page.route("**/deals/*", (route) => route.fulfill({ json: DETAIL_A }));
+  // GET /cortex/score?deal_id=<uuid> for the open deal — a real logged score.
+  await page.route("**/cortex/score**", (route) =>
+    route.fulfill({
+      json: {
+        deal_id: DEAL_A.id,
+        tenant_id: "t-1",
+        status: "scored",
+        score: 0.73,
+        model_version: 4,
+      },
+    }),
+  );
+
+  await page.goto("/?view=pipeline");
+  await expect(page.getByTestId("deal-card").first()).toBeVisible({ timeout: 15_000 });
+  await page.locator(`[data-deal-id="${DEAL_A.id}"]`).click();
+  await expect(page.getByTestId("deal-drawer")).toBeVisible({ timeout: 15_000 });
+
+  const badge = page.getByTestId("cortex-score-badge");
+  await expect(badge).toBeVisible({ timeout: 15_000 });
+  await expect(badge).toContainText("73%");
+  await expect(badge).toContainText("likely to convert");
+
+  expect(errors, `page errors: ${errors.join("\n")}`).toHaveLength(0);
+});
+
+test("Cortex score: no champion (503) renders NOTHING — honest degradation, no error", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+
+  await page.route("**/deals", (route) => route.fulfill({ json: board([DEAL_A]) }));
+  await page.route("**/deals/*", (route) => route.fulfill({ json: DETAIL_A }));
+  // The honest no_champion shape: 503 with score null — the client maps it to null.
+  await page.route("**/cortex/score**", (route) =>
+    route.fulfill({
+      status: 503,
+      json: {
+        deal_id: DEAL_A.id,
+        tenant_id: "t-1",
+        status: "no_champion",
+        score: null,
+        model_version: null,
+      },
+    }),
+  );
+
+  await page.goto("/?view=pipeline");
+  await expect(page.getByTestId("deal-card").first()).toBeVisible({ timeout: 15_000 });
+  await page.locator(`[data-deal-id="${DEAL_A.id}"]`).click();
+  await expect(page.getByTestId("deal-drawer")).toBeVisible({ timeout: 15_000 });
+
+  // The drawer loads fully, but NO badge and NO error — Cortex simply isn't surfaced.
+  await expect(page.getByTestId("drawer-title")).toContainText("Birchwood platform expansion");
+  await expect(page.getByTestId("cortex-score-badge")).toHaveCount(0);
+  const text = await bodyText(page);
+  expect(text).not.toMatch(/API \d+/);
+  expect(text).not.toContain("no_champion");
+
+  expect(errors, `page errors: ${errors.join("\n")}`).toHaveLength(0);
+});
