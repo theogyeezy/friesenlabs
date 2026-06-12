@@ -48,6 +48,7 @@ from api.deals_routes import DealsDeps
 from api.sidecar_routes import SidecarDeps
 from api.knowledge_routes import KnowledgeDeps, build_doc_ingestor
 from api.pg_clients import PgControlSettingsStore, PgCrmClient, PgRagClient
+from api.gamify_stores import PgMemberStore, PgPointsStore
 from api.limits import PlanResolver, TenantLimitsMiddleware
 from api.usage import PgCostRecorder, PgPlanLookup, PgUsageStore
 from api.usage_routes import UsageDeps
@@ -293,6 +294,11 @@ def build_app():
         usage_store: Any = PgUsageStore(client=crm)
         cost_recorder: Any = PgCostRecorder(client=crm)
         plan_lookup: Any = PgPlanLookup(client=crm)
+        # Sell (gamification): the roster + the append-only points ledger over the SAME crm_app DSN
+        # (per-op SET LOCAL RLS). members backs member-upsert-on-auth (every authed request refreshes
+        # the caller's roster row); points backs the close-scoring hook (a closed_won credit).
+        members_store: Any = PgMemberStore(dsn)
+        points_store: Any = PgPointsStore(dsn)
         # Governed metrics: live only when CUBE_ENDPOINT + CUBEJS_API_SECRET_VALUE are BOTH
         # injected (api_cube_env flag). None only when both are unset; endpoint-without-secret
         # (cube_endpoint wired, flag not yet flipped — the live state at this commit) yields the
@@ -316,6 +322,8 @@ def build_app():
         usage_store = None      # no DSN -> /usage answers a zeroed shape; quota gate is inert
         cost_recorder = None
         plan_lookup = None
+        members_store = None    # no DSN -> member-upsert-on-auth is a no-op (honest, inert)
+        points_store = None     # no DSN -> close-scoring is a no-op (honest, inert)
         executor = lambda action: {"status": "noop"}  # noqa: E731 — unconfigured: today's stub
 
     # /chat factory needs BOTH the DB (workspace rows + tool clients) and the org Anthropic key
@@ -466,6 +474,10 @@ def build_app():
         greenlight=greenlight,
         saved_views=saved_views,
         cube=cube,  # backs POST /views/{id}/data (cube_data_routes); None -> honest 503
+        # Sell (gamification): the roster (member-upsert-on-auth) + the points ledger (close-scoring).
+        # None with no DSN -> both seams are inert no-ops.
+        members=members_store,
+        points=points_store,
         conversation_factory=conversation_factory,
         autonomy_config=autonomy_config,
         executor=executor,

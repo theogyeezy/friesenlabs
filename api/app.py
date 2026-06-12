@@ -39,6 +39,7 @@ from api.integrations_routes import IntegrationsDeps, build_integrations_deps
 from api.knowledge_routes import KnowledgeDeps
 from api.views import SavedViews
 from api.workflows_routes import WorkflowsDeps
+from shared.gamify_rules import DEAL_CLOSED_WON, points_for
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +182,14 @@ class ApiDeps:
     # None (default) OR a wired-but-unconfigured client -> the data route answers an honest 503
     # (never fake rows). api/asgi.py wires the env-built cube_client_from_env() instance here.
     cube: Any | None = None
+    # Sell (gamification) stores — the roster + the append-only points ledger (api/gamify_stores.py).
+    # Both INERT by default (None): `members` None -> member-upsert-on-auth is a no-op; `points`
+    # None -> close-scoring is a no-op. api/asgi.py wires the real PgMemberStore/PgPointsStore on
+    # the SAME crm_app DSN every live surface rides (one pool, per-op SET LOCAL RLS). `members`
+    # backs member-upsert-on-auth (threaded into make_current_tenant); `points` backs the
+    # close-scoring hook in the approval-decide path (credits the initiating user on closed_won).
+    members: Any | None = None
+    points: Any | None = None
 
 
 # --- request bodies (note: NONE carry tenant_id — the trust rule forbids it) ---
@@ -218,9 +227,52 @@ class ActionBody(BaseModel):
     discount: float | None = None
 
 
+def _maybe_score_close(deps: "ApiDeps", decided: dict, apply_result: dict) -> None:
+    """Sell (gamification) close-scoring hook: credit the INITIATING user with deal.closed_won
+    points when an approved in-app stage move ACTUALLY lands a deal in closed_won.
+
+    The initiator is the approval's `agent` — stamped from the verified JWT `sub` at propose time
+    (api/deals_routes move-stage sets agent=claims.sub), NOT the approver (decided_by). The applier
+    is only handed `decided_by`, so the initiator's sub is read here, where the approval row still
+    carries it. (Greenlight is the only path a board stage move to closed_won takes — update_deal is
+    ALWAYS_ASK; see the PR notes.)
+
+    GUARDED + INERT: a no-op when no points store is wired (deps.points is None), when the apply
+    didn't really happen (performed=false), or when the move wasn't into closed_won. ANY failure is
+    swallowed — scoring must NEVER affect the approval outcome (the CRM write already succeeded)."""
+    points_store = getattr(deps, "points", None)
+    if points_store is None:
+        return
+    try:
+        if not was_performed(apply_result):
+            return
+        proposed = decided.get("proposed_action") or {}
+        if proposed.get("action") != "update_deal":
+            return
+        if (proposed.get("changes") or {}).get("stage") != "closed_won":
+            return
+        user_id = decided.get("agent")
+        if not user_id:
+            return
+        points = points_for(DEAL_CLOSED_WON)
+        if points <= 0:
+            return
+        points_store.append({
+            "tenant_id": str(decided.get("tenant_id")),
+            "user_id": str(user_id),
+            "event_type": DEAL_CLOSED_WON,
+            "points": points,
+            "deal_id": proposed.get("deal_id"),
+        })
+    except Exception:  # noqa: BLE001 — scoring must NEVER affect the approval outcome
+        logger.exception("close-scoring failed (tenant scoped); credit skipped")
+
+
 def create_app(deps: ApiDeps) -> FastAPI:
     app = FastAPI(title="Uplift control plane")
-    current_tenant = make_current_tenant(deps.verifier)
+    # member-upsert-on-auth rides the shared verified-JWT dependency: deps.members None (the default)
+    # keeps it a no-op, so the unauth path and every non-asgi constructor are unchanged.
+    current_tenant = make_current_tenant(deps.verifier, member_store=deps.members)
 
     @app.get("/healthz")
     def healthz():
@@ -323,6 +375,10 @@ def create_app(deps: ApiDeps) -> FastAPI:
                 decided["proposed_action"].get("action"),
                 apply_result.get("reason") or "applier reported performed=false",
             )
+
+        # Sell close-scoring: an approved in-app move that actually landed closed_won credits the
+        # initiating user (guarded + inert; never affects the approval response — see helper).
+        _maybe_score_close(deps, decided, apply_result)
 
         # Step 3 — the audit update. The CRM write HAS happened by now; a failure writing the
         # audit row must NEVER be recorded (or reported) as performed: false. Log loudly and
