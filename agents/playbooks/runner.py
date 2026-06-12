@@ -137,7 +137,9 @@ class PlaybookRunner:
     live (same beta/MA gate as activation). ``store`` is the tenant-scoped ``PlaybookStore``
     (RLS-scoped reads; THE TRUST RULE binds the tenant upstream). ``environment_id`` / ``vault_id``
     are the playbook's tenant's persisted ids (resolved by the caller); the runner never rebuilds
-    them per run.
+    them per run. ``vault_id`` here is a FALLBACK — when the loaded playbook row carries its own
+    persisted ``vault_id`` (per-workspace vault isolation), that wins; this constructor value only
+    applies when the row has none (a row predating the column, or a caller resolving it out-of-band).
     """
 
     def __init__(
@@ -281,9 +283,16 @@ class PlaybookRunner:
             # ONE session per run, bound to THIS tenant's persisted environment (per-tenant,
             # never instance-global). The tenant in session metadata is what the worker pushes
             # into app.current_tenant (RLS) when it serves a tool.
+            #
+            # The PLAYBOOK ROW is the source of truth for vault_id (per-workspace vault isolation):
+            # the persisted column rides into create_session so the session attaches the tenant's
+            # vault. self.vault_id (the constructor-injected value) is the fallback for a caller
+            # that resolves the vault out-of-band (e.g. the scheduler) and a row that predates the
+            # column — so a session is never silently vault-less when a vault IS known.
+            vault_id = row.get("vault_id") or self.vault_id
             session = self.runtime.create_session(
                 coordinator_id, tenant_id=tenant_id,
-                vault_id=self.vault_id, environment_id=self.environment_id,
+                vault_id=vault_id, environment_id=self.environment_id,
             )
             record.trace.append({"event": "session", "session_id_tail": self._tail(session.id)})
 

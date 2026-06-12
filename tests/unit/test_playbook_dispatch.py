@@ -331,3 +331,65 @@ def test_background_dispatcher_contains_inner_failures():
     bg = BackgroundDispatcher(_BoomInner())
     assert bg.dispatch_event("t-A", "lead.created") == []  # never raises into the request
     time.sleep(0.05)  # let the thread die — nothing to assert beyond "no crash"
+
+
+# --------------------------------------------------------------------------- #
+# Tenant resolution: DB discovery replaces the static tfvar list so a new signup
+# gets scheduled playbooks without a terraform edit. Offline — the `discover`
+# seam is injected, so these never touch a database.
+# --------------------------------------------------------------------------- #
+def _ns(tenant=None):
+    import argparse
+    return argparse.Namespace(tenant=tenant, schedule=True)
+
+
+@pytest.mark.unit
+def test_explicit_tenant_args_win_and_skip_discovery():
+    from agents.playbooks.dispatch import _resolve_tenants
+
+    called = []
+
+    def discover(dsn):
+        called.append(dsn)
+        return ["db-tenant"]
+
+    out = _resolve_tenants(_ns(tenant=["x", " y ", "x"]), dsn="dsn", discover=discover)
+    assert out == ["x", "y"]      # deduped + trimmed, in order
+    assert called == []           # explicit args short-circuit discovery entirely
+
+
+@pytest.mark.unit
+def test_db_discovery_is_unioned_with_the_static_env_list(monkeypatch):
+    from agents.playbooks import dispatch
+    from agents.playbooks.dispatch import _resolve_tenants
+
+    monkeypatch.setenv(dispatch.ENV_DISPATCH_TENANTS, "legacy-a, legacy-b")
+    out = _resolve_tenants(_ns(), dsn="dsn",
+                           discover=lambda dsn: ["legacy-b", "new-signup"])  # overlap dedupes
+    assert out == ["legacy-a", "legacy-b", "new-signup"]
+
+
+@pytest.mark.unit
+def test_db_discovery_alone_picks_up_new_signups(monkeypatch):
+    from agents.playbooks import dispatch
+    from agents.playbooks.dispatch import _resolve_tenants
+
+    monkeypatch.delenv(dispatch.ENV_DISPATCH_TENANTS, raising=False)
+    out = _resolve_tenants(_ns(), dsn="dsn", discover=lambda dsn: ["fresh-tenant"])
+    assert out == ["fresh-tenant"]  # no tfvar entry needed
+
+
+@pytest.mark.unit
+def test_resolution_is_inert_with_no_env_and_no_discovery(monkeypatch):
+    from agents.playbooks import dispatch
+    from agents.playbooks.dispatch import _resolve_tenants
+
+    monkeypatch.delenv(dispatch.ENV_DISPATCH_TENANTS, raising=False)
+    assert _resolve_tenants(_ns(), dsn=None, discover=lambda dsn: []) == []
+
+
+@pytest.mark.unit
+def test_discover_db_tenants_is_inert_without_a_dsn():
+    from agents.playbooks.dispatch import discover_db_tenants
+
+    assert discover_db_tenants(None) == []  # no store -> safe no-op, no driver import attempted
