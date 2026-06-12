@@ -740,6 +740,9 @@ test("Enter continues markdown lists in the editor; an empty item exits the list
   const content = page.getByTestId("knowledge-add-content");
   await content.fill("- first");
   await content.press("Enter");
+  // Wait for the continuation commit BEFORE typing on (the assertion auto-retries) —
+  // otherwise a slow CI render races the next keystrokes into the wrong caret position.
+  await expect(content).toHaveValue("- first\n- ");
   await content.pressSequentially("second");
   await expect(content).toHaveValue("- first\n- second");
 
@@ -752,6 +755,7 @@ test("Enter continues markdown lists in the editor; an empty item exits the list
   // Ordered lists increment.
   await content.fill("1. one");
   await content.press("Enter");
+  await expect(content).toHaveValue("1. one\n2. ");
   await content.pressSequentially("two");
   await expect(content).toHaveValue("1. one\n2. two");
 });
