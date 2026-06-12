@@ -358,6 +358,15 @@ class _PgTenantClient:
             self._putconn(conn)
 
 
+class EmbedderUnavailable(RuntimeError):
+    """The QUERY embedder (Bedrock/Titan, env-key-gated on the live task) failed — raised
+    from PgRagClient._embed as a TYPED boundary (knowledge audit P1) so the route layer can
+    tell "search model isn't reachable" (calm 'warming up' copy) apart from a real search
+    failure (DB down — a retryable error) WITHOUT sniffing exception strings. Subclasses
+    RuntimeError, so every existing broad `except Exception` caller (conv/rag, agents tools)
+    behaves exactly as before."""
+
+
 class PgRagClient(_PgTenantClient):
     """pgvector cosine search over `documents` (tenant-scoped via RLS).
 
@@ -368,7 +377,8 @@ class PgRagClient(_PgTenantClient):
 
     `embedder` is a callable `str -> list[float]` injected at construction (a fake in tests).
     When omitted, the real Titan V2 embedder (`ingest.embed.embed`) is imported lazily at CALL
-    time — never at import.
+    time — never at import. Embed failures surface as EmbedderUnavailable; everything after
+    the embed (the DB read) raises as-is.
     """
 
     def __init__(self, dsn: str | None = None, *,
@@ -378,10 +388,13 @@ class PgRagClient(_PgTenantClient):
         self._embedder = embedder
 
     def _embed(self, query: str) -> list[float]:
-        if self._embedder is not None:
-            return self._embedder(query)
-        from ingest.embed import embed  # noqa: PLC0415 — lazy; Bedrock only at call time
-        return embed(query)
+        try:
+            if self._embedder is not None:
+                return self._embedder(query)
+            from ingest.embed import embed  # noqa: PLC0415 — lazy; Bedrock only at call time
+            return embed(query)
+        except Exception as exc:
+            raise EmbedderUnavailable(str(exc)) from exc
 
     def search(self, *, tenant_id: str, query: str, limit: int = DEFAULT_RAG_LIMIT) -> list[dict]:
         """Cosine-similarity search the tenant's corpus. RLS (via SET LOCAL) scopes the rows."""

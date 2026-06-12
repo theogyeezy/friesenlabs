@@ -900,7 +900,13 @@ export class MockApi {
         score: 0.7421,
       },
     ];
-    return { query, results: results.map((r) => ({ ...r })), search_available: true, reason: null };
+    return {
+      query,
+      results: results.map((r) => ({ ...r })),
+      search_available: true,
+      reason: null,
+      reason_code: null,
+    };
   }
 
   // --- knowledge pages (the editable corpus) -------------------------------------

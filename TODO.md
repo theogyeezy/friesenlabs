@@ -594,9 +594,11 @@ connector VERIFY/IAM, batch-embed live run) are NOT repeated below.
   note (inventory + search stay useful).
 
 ### P1 — soon after
-- [ ] **Differentiate degrade reasons + stop silent degraded modes** — every embed failure
-  reads "search model not configured" (`api/knowledge_routes.py:139-146`, type-only WARNING);
-  UI says "warming up" even for permanent config gaps (`KnowledgeView.tsx:318-329`);
+- [ ] **Differentiate degrade reasons + stop silent degraded modes** — _(knowledge-tab half
+  DONE in #334: `EmbedderUnavailable` typed boundary in `PgRagClient._embed`, search degrade
+  splits embedder-down ("warming up") from post-embed transient failures (retry copy +
+  `reason_code` on the wire, full-detail server logs). REMAINING: the synthesizer/worker
+  halves below.)_ `AnthropicSynthesizer` swallows client-build failures unlogged;
   `AnthropicSynthesizer` swallows client-build failures unlogged
   (`conv/synthesizer.py:136-139`); the worker boots silently with `rag=None`
   (`worker/worker.py:170-177`). Reason codes (transient vs unconfigured), matching UI copy,
@@ -618,9 +620,9 @@ connector VERIFY/IAM, batch-embed live run) are NOT repeated below.
   with load-sample (reuse `agents/knowledge_seed`). _(The empty-state half is DONE in #251 —
   it now guides the customer to add a document / connect sources instead of the false
   "fills in automatically" promise.)_
-- [ ] **Unprovisioned ≠ rolling-out** — DSN-unwired `GET /knowledge` is a bare 404
-  (`knowledge_routes.py:78-81`) the UI renders as "rolling out" + refresh forever
-  (`KnowledgeView.tsx:136-143`). Carry a reason code; distinct copy.
+- [x] **Unprovisioned ≠ rolling-out** _(DONE in #334, 2026-06-12)_ — a 503 from
+  `GET /knowledge` (data plane unwired) now renders its own calm "isn't switched on for this
+  workspace yet" panel, distinct from the 404 "rolling out after the next deploy" story.
 
 ### P2 — hygiene
 - [ ] Search pagination/total (`MAX_SEARCH_LIMIT=25`, no offset/total_hits in
