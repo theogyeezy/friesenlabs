@@ -98,9 +98,12 @@ fix): `python -m api.migrate` loads `schema.sql` idempotently. Additive only.
   (`_to_millis`, the sync-bug fix vs the old ISO filter). `_normalize` keeps media values as URL
   refs + flags `_media_refs`, flattens associations to `{toType:[ids]}`. 4 unit tests (pagination,
   epoch-millis filter value, media-ref-only + no Files call, association flatten); ruff clean. DONE.
-- [ ] 5. **`PgCrmRecordsSink`** in `ingest/sinks.py`: upsert into `crm_records`
-  (ON CONFLICT (tenant_id,source,object_type,source_ref_id) DO UPDATE). Unit test the
-  upsert SQL/columns + tenant scoping (SET LOCAL app.current_tenant).
+- [x] 5. **`PgCrmRecordsSink`** in `ingest/sinks.py`: `upsert_records(tenant_id, records)` UPSERTs
+  the full bag into `crm_records` (ON CONFLICT … DO UPDATE, un-archives), tenant_id from the GUC
+  (`current_setting('app.current_tenant')`, SET LOCAL — never hand-written), properties/associations
+  `::jsonb`, per-row SAVEPOINT isolation, crm_app non-owner. Accepts Record dataclass OR dict.
+  6 unit tests (SET LOCAL first, upsert shape/jsonb/GUC/on-conflict, both input types, empty,
+  missing-keys reported, savepoint rollback); ruff clean. DONE.
 - [ ] 6. **Wire the connector**: `HubSpotConnector` yields full records → `PgCrmRecordsSink`
   + still derives typed contacts/companies/deals rows for the existing UI. Keep the vector
   embedding of text (exclude `_media_refs`). Unit/integration test the end-to-end land.

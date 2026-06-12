@@ -311,3 +311,74 @@ class PgCrmStructuredSink(_PgPooledStore):
                 tuple(values[c] for c in cols),
             )
         report.count += 1
+
+
+# --------------------------------------------------------------------------- #
+# crm_records — the FULL-FIDELITY sink (every property + associations, JSONB).
+# --------------------------------------------------------------------------- #
+def _rec_get(rec: Any, key: str) -> Any:
+    """Read a field from a hubspot_full.Record dataclass OR a plain dict (the connector may
+    yield either) — keeps this sink decoupled from the connector's concrete type."""
+    return rec.get(key) if isinstance(rec, dict) else getattr(rec, key, None)
+
+
+class PgCrmRecordsSink(_PgPooledStore):
+    """Full-fidelity sink over the ``crm_records`` JSONB table (pooled per-op conn + SET LOCAL).
+
+    UPSERTs the connector's normalized records — the FULL property bag (media as URL refs only,
+    never bytes), the association graph, and the provider last-modified — keyed on
+    ``(tenant_id, source, object_type, source_ref_id)``. ``tenant_id`` comes from the GUC
+    (``current_setting('app.current_tenant')``), NEVER hand-written, so RLS scopes the write; the
+    txn begins with ``SET LOCAL`` and the GUC auto-resets at COMMIT/ROLLBACK. Per-row errors are
+    isolated by a SAVEPOINT so one bad record never aborts the batch. Connects as the NON-OWNER
+    ``crm_app`` role. The most recent batch's report is on ``.last_report``.
+    """
+
+    def __init__(self, dsn: str | None = None, *, conn_factory=None, source: str = "hubspot") -> None:
+        super().__init__(dsn, conn_factory=conn_factory)
+        self._source = source
+        self.last_report = UpsertReport()
+
+    def upsert_records(self, tenant_id: str, records: list[Any]) -> int:
+        """Upsert full records for ONE tenant; return the count landed. ON CONFLICT DO UPDATE
+        refreshes properties/associations/updated_at and un-archives (archived_at = NULL)."""
+        report = UpsertReport()
+        self.last_report = report
+        if not records:
+            return 0
+        with self._tx(tenant_id) as cur:
+            for rec in records:
+                self._upsert_one(cur, rec, report)
+        return report.count
+
+    def _upsert_one(self, cur: Any, rec: Any, report: UpsertReport) -> None:
+        obj_type = _rec_get(rec, "object_type")
+        src_ref = _rec_get(rec, "source_ref_id")
+        if not obj_type or not src_ref:
+            report.errors.append({
+                "object_type": obj_type, "source_ref_id": src_ref,
+                "reason": "record missing object_type/source_ref_id",
+            })
+            return
+        props = _rec_get(rec, "properties") or {}
+        assoc = _rec_get(rec, "associations") or {}
+        cur.execute("SAVEPOINT crm_rec")
+        try:
+            cur.execute(
+                "INSERT INTO crm_records "
+                "(tenant_id, source, object_type, source_ref_id, properties, associations, updated_at) "
+                "VALUES (current_setting('app.current_tenant')::uuid, %s, %s, %s, %s::jsonb, %s::jsonb, %s) "
+                "ON CONFLICT (tenant_id, source, object_type, source_ref_id) DO UPDATE SET "
+                "properties = EXCLUDED.properties, associations = EXCLUDED.associations, "
+                "updated_at = EXCLUDED.updated_at, archived_at = NULL, synced_at = now()",
+                (self._source, obj_type, src_ref,
+                 json.dumps(props), json.dumps(assoc), _rec_get(rec, "updated_at")),
+            )
+            report.count += 1
+        except Exception as exc:  # noqa: BLE001 — isolate + report, never abort the batch
+            cur.execute("ROLLBACK TO SAVEPOINT crm_rec")
+            report.errors.append({
+                "object_type": obj_type, "source_ref_id": src_ref,
+                "reason": f"{type(exc).__name__}: {exc}",
+            })
+            log.warning("crm_records sink: %s/%s failed: %s", obj_type, src_ref, exc)
