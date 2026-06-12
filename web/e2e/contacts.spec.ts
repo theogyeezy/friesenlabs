@@ -329,3 +329,79 @@ test("empty tenant renders the honest empty state, not fake rows", async ({ page
   await expect(page.getByTestId("dir-empty")).toContainText("No contacts yet");
   await expect(page.getByTestId("contact-row")).toHaveCount(0);
 });
+
+
+// ===========================================================================
+// Companies create + contact archive + contact note (the CRM build)
+// ===========================================================================
+
+test("create a company from the Companies tab posts to /companies", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+  let postBody: Record<string, unknown> | null = null;
+
+  await page.route("**/views/*", (r) => r.fulfill({ status: 404, json: { detail: "x" } }));
+  await page.route("**/approvals", (r) => r.fulfill({ json: { approvals: [] } }));
+  await page.route("**/companies?*", (r) => r.fulfill({ json: companiesPage([COMPANY_BIRCHWOOD]) }));
+  await page.route("**/companies", async (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    postBody = route.request().postDataJSON() as Record<string, unknown>;
+    await route.fulfill({ status: 201, json: { company: { id: "co-new", name: "Acme Inc", domain: "acme.com" } } });
+  });
+
+  await page.goto("/");
+  await page.locator(".nav-item", { hasText: "Contacts" }).click();
+  await page.getByTestId("dir-tab-companies").click();
+  await page.getByTestId("add-company-btn").click();
+  await expect(page.getByTestId("company-form")).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId("company-form-name").fill("Acme Inc");
+  await page.getByTestId("company-form-domain").fill("acme.com");
+  await page.getByTestId("company-form-submit").click();
+
+  await expect(async () => { expect(postBody).not.toBeNull(); }).toPass({ timeout: 5_000 });
+  expect(postBody).toEqual({ name: "Acme Inc", domain: "acme.com" });
+  expect(postBody).not.toHaveProperty("tenant_id");
+  expect(errors, errors.join("\n")).toHaveLength(0);
+});
+
+test("archive a contact posts to /contacts/{id}/archive", async ({ page }) => {
+  let archivePath = "";
+  await page.route("**/views/*", (r) => r.fulfill({ status: 404, json: { detail: "x" } }));
+  await page.route("**/approvals", (r) => r.fulfill({ json: { approvals: [] } }));
+  await page.route("**/contacts?*", (r) => r.fulfill({ json: contactsPage([CONTACT_DANA]) }));
+  await page.route(`**/contacts/${CONTACT_DANA.id}`, (r) =>
+    r.fulfill({ json: { contact: CONTACT_DANA, activities: [], company_deals: [] } }));
+  await page.route(`**/contacts/${CONTACT_DANA.id}/archive`, async (route) => {
+    archivePath = new URL(route.request().url()).pathname;
+    await route.fulfill({ json: { id: CONTACT_DANA.id, archived: true, archived_at: "now" } });
+  });
+
+  await page.goto("/");
+  await page.locator(".nav-item", { hasText: "Contacts" }).click();
+  await page.locator(`[data-contact-id="${CONTACT_DANA.id}"]`).first().click();
+  await expect(page.getByTestId("archive-contact-btn")).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId("archive-contact-btn").click();
+  await expect(async () => { expect(archivePath).toContain("/archive"); }).toPass({ timeout: 5_000 });
+  expect(archivePath).toBe(`/contacts/${CONTACT_DANA.id}/archive`);
+});
+
+test("log a note on a contact posts to /contacts/{id}/activities", async ({ page }) => {
+  let noteBody: Record<string, unknown> | null = null;
+  await page.route("**/views/*", (r) => r.fulfill({ status: 404, json: { detail: "x" } }));
+  await page.route("**/approvals", (r) => r.fulfill({ json: { approvals: [] } }));
+  await page.route("**/contacts?*", (r) => r.fulfill({ json: contactsPage([CONTACT_DANA]) }));
+  await page.route(`**/contacts/${CONTACT_DANA.id}`, (r) =>
+    r.fulfill({ json: { contact: CONTACT_DANA, activities: [], company_deals: [] } }));
+  await page.route(`**/contacts/${CONTACT_DANA.id}/activities`, async (route) => {
+    noteBody = route.request().postDataJSON() as Record<string, unknown>;
+    await route.fulfill({ status: 201, json: { activity: { id: "a1", kind: "note", body: "Called back", occurred_at: null } } });
+  });
+
+  await page.goto("/");
+  await page.locator(".nav-item", { hasText: "Contacts" }).click();
+  await page.locator(`[data-contact-id="${CONTACT_DANA.id}"]`).first().click();
+  await page.getByTestId("note-input").fill("Called back");
+  await page.getByTestId("note-submit").click();
+  await expect(async () => { expect(noteBody).not.toBeNull(); }).toPass({ timeout: 5_000 });
+  expect(noteBody).toEqual({ kind: "note", body: "Called back" });
+});

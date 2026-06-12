@@ -443,19 +443,20 @@ def test_contacts_write_surface_is_exactly_create_and_edit():
     reader = FakeDirectoryReader()
     client = _client(ContactsDeps(crm=reader))
 
-    # The only mounted contact writes EXIST (an empty body fails validation -> 422, not 405):
+    # Mounted contact writes EXIST (an empty body fails validation -> 422, not 405):
     assert client.post("/contacts", headers=H, json={}).status_code == 422
     assert client.patch(f"/contacts/{CONTACT_A1}", headers=H, json={}).status_code == 422
 
-    # Everything else under /contacts is genuinely unmounted -> 405:
+    # Contacts: no PUT / DELETE / collection-POST-on-an-id -> 405.
     assert client.put(f"/contacts/{CONTACT_A1}", headers=H).status_code == 405
     assert client.delete(f"/contacts/{CONTACT_A1}", headers=H).status_code == 405
-    assert client.post(f"/contacts/{CONTACT_A1}", headers=H).status_code == 405
 
-    # /companies remains fully read-only — no write method is mounted at all:
-    for method in ("post", "put", "patch", "delete"):
-        assert getattr(client, method)("/companies", headers=H).status_code == 405
-        assert getattr(client, method)(f"/companies/{COMPANY_A1}", headers=H).status_code == 405
+    # Companies now have a CREATE + EDIT surface too (empty body -> 422 validation, not 405):
+    assert client.post("/companies", headers=H, json={}).status_code == 422
+    assert client.patch(f"/companies/{COMPANY_A1}", headers=H, json={}).status_code == 422
+    # ...but still no PUT / DELETE:
+    assert client.put("/companies", headers=H).status_code == 405
+    assert client.delete(f"/companies/{COMPANY_A1}", headers=H).status_code == 405
 
 
 @pytest.mark.integration

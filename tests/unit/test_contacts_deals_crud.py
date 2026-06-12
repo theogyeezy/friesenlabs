@@ -177,12 +177,55 @@ class FakeCrm:
             row["name"] = changes["name"]
         if "amount" in changes:
             row["amount"] = changes["amount"]
+        for k in ("company_id", "contact_id"):  # re-link
+            if k in changes:
+                row[k] = changes[k]
         return {
             "id": str(deal_id),
             "updated": changes,
             "deal": {"id": str(deal_id), "name": row.get("name"),
-                     "stage": row.get("stage"), "amount": row.get("amount")},
+                     "stage": row.get("stage"), "amount": row.get("amount"),
+                     "company_id": row.get("company_id"), "contact_id": row.get("contact_id")},
         }
+
+    # --- companies writes -----------------------------------------------------
+
+    def insert_company(self, *, tenant_id, name, domain=None):
+        self.calls.append(("insert_company", dict(tenant_id=tenant_id, name=name, domain=domain)))
+        row_id = str(uuid.uuid4())
+        self._companies[row_id] = {"id": row_id, "name": name, "domain": domain,
+                                   "tenant_id": str(tenant_id)}
+        return {"id": row_id, "name": name, "domain": domain}
+
+    def update_company_fields(self, *, tenant_id, company_id, changes):
+        self.calls.append(("update_company_fields", dict(
+            tenant_id=tenant_id, company_id=company_id, changes=changes)))
+        row = self._companies.get(str(company_id))
+        if row is None or str(row["tenant_id"]) != str(tenant_id):
+            raise ValueError("company not found or not visible")
+        row.update(changes)
+        return {"id": str(company_id), "updated": changes,
+                "company": {"id": str(company_id), "name": row.get("name"),
+                            "domain": row.get("domain")}}
+
+    # --- activities + archive -------------------------------------------------
+
+    def insert_activity(self, *, tenant_id, kind, body, contact_id=None, deal_id=None):
+        self.calls.append(("insert_activity", dict(
+            tenant_id=tenant_id, kind=kind, body=body,
+            contact_id=contact_id, deal_id=deal_id)))
+        return {"id": str(uuid.uuid4()), "kind": kind, "body": body,
+                "contact_id": contact_id, "deal_id": deal_id, "occurred_at": None}
+
+    def set_archived(self, *, tenant_id, table, entity_id, archived):
+        self.calls.append(("set_archived", dict(
+            tenant_id=tenant_id, table=table, entity_id=entity_id, archived=archived)))
+        store = {"deals": self._deals, "contacts": self._contacts,
+                 "companies": self._companies}[table]
+        row = store.get(str(entity_id))
+        if row is None or str(row["tenant_id"]) != str(tenant_id):
+            raise ValueError(f"{table} row not found or not visible")
+        return {"id": str(entity_id), "archived": archived, "archived_at": None}
 
 
 # --------------------------------------------------------------------------- helpers
@@ -685,3 +728,176 @@ def test_create_deal_no_company_id_passes_empty_string():
     _, kwargs = crm.calls[-1]
     # company_id is None in the body so the route passes "" to insert_deal
     assert kwargs["company_id"] == ""
+
+
+# =========================================================================== #
+# Companies: create + edit
+# =========================================================================== #
+
+@pytest.mark.unit
+def test_create_company():
+    tc, crm = _contacts_client()
+    r = tc.post("/companies", json={"name": "Acme Inc", "domain": "acme.com"}, headers=H_A)
+    assert r.status_code == 201
+    assert r.json()["company"]["name"] == "Acme Inc"
+    m, kw = crm.calls[-1]
+    assert m == "insert_company" and kw["name"] == "Acme Inc" and kw["domain"] == "acme.com"
+
+
+@pytest.mark.unit
+def test_create_company_blank_name_422():
+    tc, _ = _contacts_client()
+    assert tc.post("/companies", json={"name": "  "}, headers=H_A).status_code == 422
+
+
+@pytest.mark.unit
+def test_create_company_no_tenant_id_in_body():
+    tc, crm = _contacts_client()
+    tc.post("/companies", json={"name": "Acme", "tenant_id": "EVIL"}, headers=H_A)
+    assert crm.calls[-1][1]["tenant_id"] == "A"  # from the claim, not the body
+
+
+@pytest.mark.unit
+def test_edit_company_name_and_domain():
+    tc, crm = _contacts_client()
+    coid = crm._seed_company("A")
+    r = tc.patch(f"/companies/{coid}", json={"name": "Renamed", "domain": "x.io"}, headers=H_A)
+    assert r.status_code == 200 and r.json()["updated"]["name"] == "Renamed"
+
+
+@pytest.mark.unit
+def test_edit_company_404_other_tenant():
+    tc, crm = _contacts_client()
+    coid = crm._seed_company("B")  # belongs to tenant B
+    assert tc.patch(f"/companies/{coid}", json={"name": "x"}, headers=H_A).status_code == 404
+
+
+@pytest.mark.unit
+def test_edit_company_no_fields_422():
+    tc, crm = _contacts_client()
+    coid = crm._seed_company("A")
+    assert tc.patch(f"/companies/{coid}", json={}, headers=H_A).status_code == 422
+
+
+# =========================================================================== #
+# Activities: log a note on a contact / deal
+# =========================================================================== #
+
+@pytest.mark.unit
+def test_log_contact_activity():
+    tc, crm = _contacts_client()
+    cid = crm._seed_contact("A")
+    r = tc.post(f"/contacts/{cid}/activities", json={"kind": "call", "body": "Left a voicemail"}, headers=H_A)
+    assert r.status_code == 201
+    m, kw = crm.calls[-1]
+    assert m == "insert_activity" and kw["contact_id"] == cid and kw["kind"] == "call"
+    assert kw["body"] == "Left a voicemail" and kw["deal_id"] is None
+
+
+@pytest.mark.unit
+def test_log_contact_activity_blank_body_422():
+    tc, crm = _contacts_client()
+    cid = crm._seed_contact("A")
+    assert tc.post(f"/contacts/{cid}/activities", json={"body": "  "}, headers=H_A).status_code == 422
+
+
+@pytest.mark.unit
+def test_log_contact_activity_unknown_contact_404():
+    tc, _ = _contacts_client()
+    assert tc.post(f"/contacts/{uuid.uuid4()}/activities", json={"body": "x"}, headers=H_A).status_code == 404
+
+
+@pytest.mark.unit
+def test_log_deal_activity():
+    tc, crm = _deals_client()
+    did = _seed_deal(crm, "A")
+    r = tc.post(f"/deals/{did}/activities", json={"body": "Sent the proposal"}, headers=H_A)
+    assert r.status_code == 201
+    m, kw = crm.calls[-1]
+    assert m == "insert_activity" and kw["deal_id"] == did and kw["kind"] == "note"
+
+
+# =========================================================================== #
+# Deal re-linking on edit
+# =========================================================================== #
+
+@pytest.mark.unit
+def test_edit_deal_relink_contact_and_company():
+    tc, crm = _deals_client()
+    did = _seed_deal(crm, "A")
+    cid = crm._seed_contact("A")
+    coid = crm._seed_company("A")
+    r = tc.patch(f"/deals/{did}", json={"contact_id": cid, "company_id": coid}, headers=H_A)
+    assert r.status_code == 200
+    changes = crm.calls[-1][1]["changes"]
+    assert changes["contact_id"] == cid and changes["company_id"] == coid
+
+
+@pytest.mark.unit
+def test_edit_deal_relink_clear_contact_to_null():
+    tc, crm = _deals_client()
+    did = _seed_deal(crm, "A", contact_id="old")
+    r = tc.patch(f"/deals/{did}", json={"contact_id": ""}, headers=H_A)
+    assert r.status_code == 200
+    assert crm.calls[-1][1]["changes"]["contact_id"] is None
+
+
+@pytest.mark.unit
+def test_edit_deal_relink_unknown_contact_404():
+    tc, crm = _deals_client()
+    did = _seed_deal(crm, "A")
+    assert tc.patch(f"/deals/{did}", json={"contact_id": str(uuid.uuid4())}, headers=H_A).status_code == 404
+
+
+@pytest.mark.unit
+def test_edit_deal_relink_malformed_company_422():
+    tc, crm = _deals_client()
+    did = _seed_deal(crm, "A")
+    assert tc.patch(f"/deals/{did}", json={"company_id": "not-a-uuid"}, headers=H_A).status_code == 422
+
+
+@pytest.mark.unit
+def test_edit_deal_still_rejects_stage():
+    # stage stays gated (move-stage), never a direct PATCH field.
+    tc, crm = _deals_client()
+    did = _seed_deal(crm, "A")
+    r = tc.patch(f"/deals/{did}", json={"stage": "closed_won"}, headers=H_A)
+    # stage isn't on EditDealBody -> pydantic ignores it -> no writable field -> 422
+    assert r.status_code == 422
+
+
+# =========================================================================== #
+# Archive (soft-delete) — deals / contacts / companies
+# =========================================================================== #
+
+@pytest.mark.unit
+def test_archive_and_unarchive_deal():
+    tc, crm = _deals_client()
+    did = _seed_deal(crm, "A")
+    assert tc.post(f"/deals/{did}/archive", headers=H_A).json()["archived"] is True
+    assert crm.calls[-1][1] == {"tenant_id": "A", "table": "deals", "entity_id": did, "archived": True}
+    assert tc.post(f"/deals/{did}/unarchive", headers=H_A).json()["archived"] is False
+
+
+@pytest.mark.unit
+def test_archive_deal_404_other_tenant():
+    tc, crm = _deals_client()
+    did = _seed_deal(crm, "B")
+    assert tc.post(f"/deals/{did}/archive", headers=H_A).status_code == 404
+
+
+@pytest.mark.unit
+def test_archive_contact_and_company():
+    tc, crm = _contacts_client()
+    cid = crm._seed_contact("A")
+    coid = crm._seed_company("A")
+    assert tc.post(f"/contacts/{cid}/archive", headers=H_A).json()["archived"] is True
+    assert crm.calls[-1][1]["table"] == "contacts"
+    assert tc.post(f"/companies/{coid}/archive", headers=H_A).json()["archived"] is True
+    assert crm.calls[-1][1]["table"] == "companies"
+
+
+@pytest.mark.unit
+def test_unarchive_contact_404_unknown():
+    tc, _ = _contacts_client()
+    assert tc.post(f"/contacts/{uuid.uuid4()}/unarchive", headers=H_A).status_code == 404

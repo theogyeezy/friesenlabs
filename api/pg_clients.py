@@ -183,6 +183,18 @@ def _normalize_company_row(row: dict) -> dict:
     return out
 
 
+def _normalize_company_write_row(row: dict) -> dict:
+    """Write result for a company row (create/edit)."""
+    out = {
+        "id": _as_str(row.get("id")),
+        "name": row.get("name"),
+        "domain": row.get("domain"),
+    }
+    if "created_at" in row:
+        out["created_at"] = _as_iso(row.get("created_at"))
+    return out
+
+
 def _normalize_deal_write_row(row: dict) -> dict:
     """Write result for a deal row. The external write field `name` maps to deals.title."""
     out = {
@@ -515,6 +527,7 @@ class PgCrmClient(_PgTenantClient):
                 "SELECT d.id, d.tenant_id, d.title, d.stage, d.amount, d.currency, "
                 "d.company_id, d.contact_id, d.created_at, c.name AS company_name "
                 "FROM deals d LEFT JOIN companies c ON c.id = d.company_id "
+                "WHERE d.archived_at IS NULL "  # archived deals drop off the board
                 "ORDER BY d.created_at DESC LIMIT %s",
                 (n,),
             )
@@ -584,12 +597,12 @@ class PgCrmClient(_PgTenantClient):
             if q:
                 pat = _escape_ilike(q)
                 cur.execute(
-                    base + "WHERE (c.name ILIKE %s ESCAPE '\\' OR c.email ILIKE %s ESCAPE '\\') "
-                    + tail,
+                    base + "WHERE c.archived_at IS NULL "
+                    "AND (c.name ILIKE %s ESCAPE '\\' OR c.email ILIKE %s ESCAPE '\\') " + tail,
                     (pat, pat, n, off),
                 )
             else:
-                cur.execute(base + tail, (n, off))
+                cur.execute(base + "WHERE c.archived_at IS NULL " + tail, (n, off))
             return [_normalize_contact_row(r) for r in _dict_rows(cur)]
 
     def get_contact_directory(self, *, tenant_id: str, contact_id: str) -> dict | None:
@@ -640,6 +653,7 @@ class PgCrmClient(_PgTenantClient):
                 "d.company_id, d.contact_id, d.created_at "
                 "FROM deals d WHERE d.company_id = %s "
                 "AND d.stage NOT IN ('closed_won', 'closed_lost') "
+                "AND d.archived_at IS NULL "
                 "ORDER BY d.created_at DESC LIMIT %s",
                 (str(company_id), n),
             )
@@ -653,9 +667,11 @@ class PgCrmClient(_PgTenantClient):
         off = _clamp_offset(offset)
         base = (
             "SELECT co.id, co.tenant_id, co.name, co.domain, co.created_at, "
-            "(SELECT count(*) FROM contacts c WHERE c.company_id = co.id) AS contact_count, "
+            "(SELECT count(*) FROM contacts c WHERE c.company_id = co.id "
+            "AND c.archived_at IS NULL) AS contact_count, "
             "(SELECT count(*) FROM deals d WHERE d.company_id = co.id "
-            "AND d.stage NOT IN ('closed_won', 'closed_lost')) AS open_deal_count "
+            "AND d.stage NOT IN ('closed_won', 'closed_lost') "
+            "AND d.archived_at IS NULL) AS open_deal_count "
             "FROM companies co "
         )
         tail = "ORDER BY co.created_at DESC LIMIT %s OFFSET %s"
@@ -663,12 +679,12 @@ class PgCrmClient(_PgTenantClient):
             if q:
                 pat = _escape_ilike(q)
                 cur.execute(
-                    base + "WHERE (co.name ILIKE %s ESCAPE '\\' OR co.domain ILIKE %s "
-                    "ESCAPE '\\') " + tail,
+                    base + "WHERE co.archived_at IS NULL "
+                    "AND (co.name ILIKE %s ESCAPE '\\' OR co.domain ILIKE %s ESCAPE '\\') " + tail,
                     (pat, pat, n, off),
                 )
             else:
-                cur.execute(base + tail, (n, off))
+                cur.execute(base + "WHERE co.archived_at IS NULL " + tail, (n, off))
             return [_normalize_company_row(r) for r in _dict_rows(cur)]
 
     def get_company_directory(self, *, tenant_id: str, company_id: str) -> dict | None:
@@ -706,9 +722,14 @@ class PgCrmClient(_PgTenantClient):
     # Identifiers are selected from allow-lists before SQL is built, values are always bound
     # parameters, and tenancy is enforced by the per-op SET LOCAL transaction + table RLS.
 
-    _DEAL_UPDATE_COLUMNS = {"stage": "stage", "amount": "amount", "name": "title"}
+    # company_id/contact_id let a deal be RE-LINKED on edit (the route validates that the new id
+    # exists + belongs to the tenant first, so a bad id is a clean 404, not an FK 500). Stage stays
+    # OUT of this allow-list on purpose — stage moves must go through Greenlight (POST move-stage).
+    _DEAL_UPDATE_COLUMNS = {"stage": "stage", "amount": "amount", "name": "title",
+                            "company_id": "company_id", "contact_id": "contact_id"}
     _CONTACT_UPDATE_COLUMNS = {"name": "name", "email": "email", "phone": "phone",
                                "company_id": "company_id"}
+    _COMPANY_UPDATE_COLUMNS = {"name": "name", "domain": "domain"}
     _CONTACT_SKIPPED_FIELDS = {"title": "contacts.title is not in the schema"}
 
     @staticmethod
@@ -743,7 +764,7 @@ class PgCrmClient(_PgTenantClient):
         with self._tx(tenant_id) as cur:
             cur.execute(
                 f"UPDATE deals SET {set_sql} WHERE id = %s "
-                "RETURNING id, title, stage, amount, company_id, created_at",
+                "RETURNING id, title, stage, amount, company_id, contact_id, created_at",
                 tuple(params),
             )
             row = _dict_one(cur)
@@ -822,6 +843,71 @@ class PgCrmClient(_PgTenantClient):
         if row is None:
             raise RuntimeError("contact insert returned no row")
         return _normalize_contact_write_row(row)
+
+    def insert_company(self, *, tenant_id: str, name: str, domain: str | None = None) -> dict:
+        """Insert one CRM company (direct write, tenant from verified claim via SET LOCAL).
+
+        `domain` is normalized to NULL when blank. Mirrors the insert_contact/insert_deal pattern."""
+        dom = (domain or "").strip() or None
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "INSERT INTO companies (tenant_id, name, domain) VALUES (%s,%s,%s) "
+                "RETURNING id, name, domain, created_at",
+                (str(tenant_id), name, dom),
+            )
+            row = _dict_one(cur)
+        if row is None:
+            raise RuntimeError("company insert returned no row")
+        return _normalize_company_write_row(row)
+
+    def update_company_fields(self, *, tenant_id: str, company_id: str, changes: dict) -> dict:
+        """Update allow-listed company fields (name/domain). RLS-scoped; tenant from verified claim.
+        Raises ValueError('company not found...') when no row is visible (route -> 404)."""
+        items, _ = self._change_items(changes, self._COMPANY_UPDATE_COLUMNS)
+        if not items:
+            raise ValueError("changes must include at least one writable company field")
+        set_sql = ", ".join(f"{column} = %s" for _, column, _ in items)
+        params = [value for _, _, value in items]
+        params.append(str(company_id))
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                f"UPDATE companies SET {set_sql} WHERE id = %s "
+                "RETURNING id, name, domain, created_at",
+                tuple(params),
+            )
+            row = _dict_one(cur)
+        if row is None:
+            raise ValueError("company not found or not visible")
+        return {
+            "id": _as_str(row.get("id")),
+            "updated": {key: changes[key] for key, _, _ in items},
+            "company": _normalize_company_write_row(row),
+        }
+
+    _ARCHIVABLE_TABLES = {"deals", "contacts", "companies"}
+
+    def set_archived(self, *, tenant_id: str, table: str, entity_id: str, archived: bool) -> dict:
+        """Soft-archive (or restore) a CRM entity by setting/clearing `archived_at`. Archived rows
+        drop off the board/directories (the list reads filter `archived_at IS NULL`) but stay
+        fetchable by id so they can be restored. `table` is allow-listed (never built from input);
+        RLS scopes the write to the verified tenant. Raises ValueError (-> route 404) when no row."""
+        if table not in self._ARCHIVABLE_TABLES:
+            raise ValueError(f"table {table!r} is not archivable")
+        value_sql = "now()" if archived else "NULL"
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                f"UPDATE {table} SET archived_at = {value_sql} WHERE id = %s "
+                "RETURNING id, archived_at",
+                (str(entity_id),),
+            )
+            row = _dict_one(cur)
+        if row is None:
+            raise ValueError(f"{table} row not found or not visible")
+        return {
+            "id": _as_str(row.get("id")),
+            "archived": archived,
+            "archived_at": _as_iso(row.get("archived_at")),
+        }
 
     def insert_deal(self, *, tenant_id: str, company_id: str, name: str,
                     stage: str, amount: float | int | None,

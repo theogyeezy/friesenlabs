@@ -135,6 +135,17 @@ class CreateDealBody(BaseModel):
 class EditDealBody(BaseModel):
     title: str | None = None
     amount: float | int | None = None
+    # Re-link the deal to a different contact/company. An empty string clears the link (-> NULL);
+    # a uuid is validated for existence (404) before the write. Stage stays OUT (gated via move-stage).
+    contact_id: str | None = None
+    company_id: str | None = None
+
+
+class CreateActivityBody(BaseModel):
+    """Log a CRM activity (note/call/email/task) on a deal — a direct user write (no external
+    delivery), so it does NOT route through Greenlight."""
+    kind: str = "note"
+    body: str
 
 
 # --------------------------------------------------------------------------- #
@@ -186,6 +197,17 @@ def _valid_contact_id_or_422(contact_id: str) -> str:
         return str(uuid.UUID(str(contact_id)))
     except (ValueError, AttributeError, TypeError):
         raise HTTPException(status_code=422, detail="invalid contact_id")
+
+
+def _set_deal_archived(deps: "DealsDeps", claims, deal_id: str, archived: bool) -> dict:
+    """Archive/restore a deal (soft, reversible). 404 when the tenant can't see the deal."""
+    crm = _require_reader(deps)
+    did = _valid_deal_id_or_404(deal_id)
+    try:
+        return crm.set_archived(tenant_id=claims.tenant_id, table="deals",
+                                entity_id=did, archived=archived)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="no such deal")
 
 
 def _valid_company_id_or_422(company_id: str) -> str:
@@ -300,6 +322,23 @@ def mount_deals(app: FastAPI, deps: DealsDeps, current_tenant, *, gate_deps: Any
             changes["name"] = title  # deals.title maps to the "name" change key
         if body.amount is not None:
             changes["amount"] = body.amount
+        # Re-link: an empty string clears the link (NULL); a uuid must exist for this tenant.
+        if body.contact_id is not None:
+            if body.contact_id:
+                cid = _valid_contact_id_or_422(body.contact_id)
+                if crm.get_contact_directory(tenant_id=claims.tenant_id, contact_id=cid) is None:
+                    raise HTTPException(status_code=404, detail="no such contact")
+                changes["contact_id"] = cid
+            else:
+                changes["contact_id"] = None
+        if body.company_id is not None:
+            if body.company_id:
+                coid = _valid_company_id_or_422(body.company_id)
+                if crm.get_company_directory(tenant_id=claims.tenant_id, company_id=coid) is None:
+                    raise HTTPException(status_code=404, detail="no such company")
+                changes["company_id"] = coid
+            else:
+                changes["company_id"] = None
         if not changes:
             raise HTTPException(status_code=422, detail="at least one field must be provided")
         # RLS-scoped existence check: a deal this tenant can't see can't be edited.
@@ -316,6 +355,30 @@ def mount_deals(app: FastAPI, deps: DealsDeps, current_tenant, *, gate_deps: Any
                 raise HTTPException(status_code=404, detail="no such deal")
             raise HTTPException(status_code=422, detail=msg)
         return result
+
+    @app.post("/deals/{deal_id}/activities", status_code=201)
+    def log_deal_activity(deal_id: str, body: CreateActivityBody,
+                          claims: TenantClaims = Depends(current_tenant)):
+        crm = _require_reader(deps)
+        did = _valid_deal_id_or_404(deal_id)
+        if crm.get_deal_board(tenant_id=claims.tenant_id, deal_id=did) is None:
+            raise HTTPException(status_code=404, detail="no such deal")
+        text = (body.body or "").strip()
+        if not text:
+            raise HTTPException(status_code=422, detail="body must be non-empty")
+        row = crm.insert_activity(
+            tenant_id=claims.tenant_id, kind=(body.kind or "note").strip() or "note",
+            body=text, deal_id=did,
+        )
+        return {"activity": row}
+
+    @app.post("/deals/{deal_id}/archive")
+    def archive_deal(deal_id: str, claims: TenantClaims = Depends(current_tenant)):
+        return _set_deal_archived(deps, claims, deal_id, True)
+
+    @app.post("/deals/{deal_id}/unarchive")
+    def unarchive_deal(deal_id: str, claims: TenantClaims = Depends(current_tenant)):
+        return _set_deal_archived(deps, claims, deal_id, False)
 
     @app.post("/deals/{deal_id}/move-stage")
     def move_stage(deal_id: str, body: MoveStageBody,
