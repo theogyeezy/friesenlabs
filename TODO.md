@@ -49,7 +49,9 @@ What remains is **owner-gated** (infra flips/seeding — see P0/P1 below), **web
   cache forget-on-terminated — PROVEN LIVE (the Vada Fenwick follow-up carried context across
   a stalled turn + worker restart). Remaining: bound fast-lane citation snippets to ~320 chars (they
   carry the full chunk); optional Haiku router behind the `conv/router.py` seam; SSE streaming.
-- [ ] **Worker session discovery is STARTUP-BOUND (live finding, 2026-06-12, P1):** the SDK
+- [ ] **Worker session discovery is STARTUP-BOUND (live finding, 2026-06-12, P1):** _(mitigated:
+  deploy.yml now rolls uplift-worker after the api roll — every deploy refreshes the watch set;
+  the SDK re-discovery question + upstream report remain open)_ the SDK
   `EnvironmentWorker` only attaches to sessions present at startup — every session created
   after the worker last rolled gets NO tool service (turns stall silently until a worker
   restart; deploy.yml rolls only the api). Fix: roll uplift-worker in deploy.yml (cheap), and/or
