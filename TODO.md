@@ -322,6 +322,28 @@ workspace-key-pool seeding.
   `screens/agents.tsx` "Add tool"/"Get more skills…" are toast-only dead ends; paid skills'
   "Get · $X" installs free with no payment path (`screens/studio.tsx:88`); unguarded
   `await askClaude` (`screens/studio.tsx:218`); autonomy/status toggles are local-state-only.
+
+### Found live during the 2026-06-12 Greenlight approve-verification (Lane Matt)
+Record-only PROVEN live: approving the seeded `issue_quote` returned
+`performed: false — "draft-only until provider go-live"` (`send_email` maps to the SAME
+`record_only` applier — `api/control/appliers.py`), and Resend's send log is EMPTY (0 emails
+ever, checked via the platform key). Compliance is stricter than expected: a human cannot
+approve a non-CAN-SPAM draft at all (decide-time 422). Follow-ups:
+- [ ] **Seeded demo approvals aren't applier-shaped** (`scripts/seed_demo_tenant.py`) —
+  `update_deal` seeds carry `deal`/`field` (no `deal_id`/`changes`) → approve = contained
+  `KeyError`, `performed: false`; `send_email` seeds carry `body_preview` (no `body`) → the
+  CAN-SPAM check can never pass AND the edit guard (correctly) refuses the novel `body` key,
+  so they are PERMANENTLY un-approvable (deny is the only exit). Re-seed with applier-shaped
+  payloads (`deal_id`+`changes`; full `body` with an unsubscribe line) or mark seeds
+  display-only and exclude them from decide.
+- [ ] **Runner digest overstates "pending"** — `actions_proposed` includes UNSERVED READ-ONLY
+  calls (the 15:15Z scheduled run's two entries were `read_crm`/`query_cube`, `approval: None`),
+  so run status "pending" suggests Greenlight drafts where none exist. Split unserved-call
+  entries from routed drafts in `RunRecord` (e.g. `calls_unserved` vs `actions_proposed`) and
+  surface the difference in the Studio runs panel.
+- [ ] **Worker didn't serve read-only calls within the scheduled run's drain window** — the
+  same two `read_crm`/`query_cube` calls were still open when `send_message` returned.
+  Investigate worker claim latency on dispatch-initiated sessions (2/2 polling at the time).
 ## Switchboard customer-readiness audit — TODOs (2026-06-11, Lane Matt)
 
 From a release-readiness audit of the `integration` module ($29/mo, gates `integrations`;
