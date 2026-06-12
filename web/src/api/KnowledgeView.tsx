@@ -509,13 +509,21 @@ export function KnowledgeView({ client, initialPageRef, onInitialPageConsumed }:
   // --- search ------------------------------------------------------------------
 
   const runSearch = useCallback(
-    async (q: string) => {
+    async (q: string, offset = 0) => {
       const term = q.trim();
       if (!term) return;
       setSearching(true);
       setSearchError(null);
       try {
-        setSearch(await api.searchKnowledge(term));
+        const res = await api.searchKnowledge(term, undefined, offset);
+        // offset > 0 = "show more": APPEND to the same query's results; anything else
+        // (a new query, a degrade, an old-API response) replaces wholesale.
+        setSearch((prev) =>
+          offset > 0 && prev !== null && prev.query === res.query &&
+          prev.search_available && res.search_available
+            ? { ...res, results: [...prev.results, ...res.results] }
+            : res,
+        );
       } catch (e) {
         setSearch(null);
         setSearchError(
@@ -1035,6 +1043,18 @@ export function KnowledgeView({ client, initialPageRef, onInitialPageConsumed }:
               ) : (
                 <div data-testid="knowledge-results" style={{ ...card, paddingTop: 7, paddingBottom: 9 }}>
                   {search.results.map(resultRow)}
+                  {search.next_offset != null && (
+                    <div style={{ paddingTop: 10, borderTop: "1px solid var(--line-2, #efe9df)" }}>
+                      <button
+                        data-testid="knowledge-search-more"
+                        onClick={() => void runSearch(search.query, search.next_offset!)}
+                        disabled={searching}
+                        style={{ ...ghostBtn, padding: "5px 14px", fontSize: 12.5, opacity: searching ? 0.55 : 1 }}
+                      >
+                        {searching ? "Loading..." : "Show more results"}
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

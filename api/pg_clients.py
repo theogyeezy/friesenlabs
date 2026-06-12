@@ -105,9 +105,11 @@ SLOT_SEARCH_LIMIT = 10
 
 # Uploaded-document namespace (ingest/upload.py ref scheme). The literals are DUPLICATED here —
 # this module must never import ingest/ (the boto3-free import invariant the knowledge routes
-# and the image-fileset test pin).
+# and the image-fileset test pin). Same for the embedding width (db/schema.sql: vector(1024),
+# Titan V2 — mirrors ingest.EMBEDDING_DIM).
 _UPLOAD_SOURCE = "upload"
 _RAW_SUFFIX = "#raw"
+_EMBEDDING_DIM = 1024
 # How much of the raw original the LIST query ships per document: enough for the one-line
 # title + a body preview, never the full (up to 100KB) content.
 _RAW_HEAD_LEN = 800
@@ -390,22 +392,35 @@ class PgRagClient(_PgTenantClient):
     def _embed(self, query: str) -> list[float]:
         try:
             if self._embedder is not None:
+                # The injected seam stays dim-unchecked — unit fakes deliberately use tiny
+                # vectors to exercise the SQL path. Its FAILURES still wrap (typed boundary).
                 return self._embedder(query)
             from ingest.embed import embed  # noqa: PLC0415 — lazy; Bedrock only at call time
-            return embed(query)
+            vec = embed(query)
         except Exception as exc:
             raise EmbedderUnavailable(str(exc)) from exc
+        # The P2 dim assert, on the REAL path only: a wrong-width Titan response must read as
+        # an embedder problem (typed, calm warming-up story), never a Postgres operator error.
+        if len(vec) != _EMBEDDING_DIM:
+            raise EmbedderUnavailable(
+                f"query embedder returned dim {len(vec)} != {_EMBEDDING_DIM}")
+        return vec
 
-    def search(self, *, tenant_id: str, query: str, limit: int = DEFAULT_RAG_LIMIT) -> list[dict]:
-        """Cosine-similarity search the tenant's corpus. RLS (via SET LOCAL) scopes the rows."""
+    def search(self, *, tenant_id: str, query: str, limit: int = DEFAULT_RAG_LIMIT,
+               offset: int = 0) -> list[dict]:
+        """Cosine-similarity search the tenant's corpus. RLS (via SET LOCAL) scopes the rows.
+        `offset` pages the ranked scan ("show more results" — the P2 pagination note); junk/
+        negative offsets clamp to 0. The real (lazy Titan) embed path dim-asserts inside
+        _embed — a wrong-width vector reads as an embedder problem, never a Postgres
+        operator error."""
         vec = _vector_literal(self._embed(query))
         n = _clamp_limit(limit, DEFAULT_RAG_LIMIT)
         with self._tx(tenant_id) as cur:
             cur.execute(
                 "SELECT ref_id, source, content, 1 - (embedding <=> %s::vector) AS score "
                 "FROM documents WHERE embedding IS NOT NULL "
-                "ORDER BY embedding <=> %s::vector LIMIT %s",
-                (vec, vec, n),
+                "ORDER BY embedding <=> %s::vector LIMIT %s OFFSET %s",
+                (vec, vec, n, _clamp_offset(offset)),
             )
             rows = _dict_rows(cur)
         return [

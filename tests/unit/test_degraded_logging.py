@@ -28,7 +28,7 @@ def _current_tenant() -> TenantClaims:
 
 
 class _ExplodingRag:
-    def search(self, *, tenant_id, query, limit=8):
+    def search(self, *, tenant_id, query, limit=8, offset=0):
         raise RuntimeError("Titan embed model not reachable: AccessDeniedException")
 
 

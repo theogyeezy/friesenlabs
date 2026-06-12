@@ -628,10 +628,12 @@ connector VERIFY/IAM, batch-embed live run) are NOT repeated below.
   workspace yet" panel, distinct from the 404 "rolling out after the next deploy" story.
 
 ### P2 — hygiene
-- [ ] Search pagination/total (`MAX_SEARCH_LIMIT=25`, no offset/total_hits in
-  `api/knowledge_routes.py`).
-- [ ] Embedding-dim assert at search time (upsert validates 1024, search assumes —
-  `api/pg_clients.py:317-337`).
+- [x] Search pagination _(DONE in #339, 2026-06-12 — clamped offset + next_offset, "Show
+  more results" appends in place; a deliberate depth cap of 200 instead of total_hits:
+  semantic rank decays fast and a corpus-wide COUNT per query buys nothing)_.
+- [x] Embedding-dim assert at search time _(DONE in #339 — real lazy-Titan path only,
+  raises the typed EmbedderUnavailable; the injected test seam stays dim-unchecked by
+  design)_.
 - [ ] Fix the stale `ingest/run_sync.py:~172` docstring ("structured sink stays IN-MEMORY in
   both modes" — false since #231).
 - [ ] Test gaps: real-DB empty-tenant `/knowledge` integration test; `PgCrmStructuredSink`

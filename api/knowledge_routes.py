@@ -101,6 +101,9 @@ MAX_Q_LEN = 500
 # How many search hits may leave the API per request, and the default. The reader clamps again.
 DEFAULT_SEARCH_LIMIT = 8
 MAX_SEARCH_LIMIT = 25
+# How deep "show more" may page into the ranked scan — semantic rank decays fast; past this
+# the results are noise and the offset is only scan cost.
+MAX_SEARCH_OFFSET = 200
 
 # How much of a matched document's content leaves the API per hit. A snippet for display — never
 # the full document dump (keeps the payload bounded and avoids over-exposing a long record).
@@ -269,12 +272,16 @@ def mount_knowledge(app: FastAPI, deps: KnowledgeDeps, current_tenant) -> None:
 
     @app.get("/knowledge/search")
     def knowledge_search(q: str | None = None, limit: int = DEFAULT_SEARCH_LIMIT,
+                         offset: int = 0,
                          claims: TenantClaims = Depends(current_tenant)):
         rag = _require_reader(deps)
         query = _clean_q(q)
         n = max(1, min(int(limit), MAX_SEARCH_LIMIT))
+        # Paging (the P2 note): a bounded OFFSET into the ranked scan. Clamped here AND in the
+        # reader; `next_offset` is null once a short page signals the end of the corpus.
+        start = max(0, min(int(offset), MAX_SEARCH_OFFSET))
         try:
-            hits = rag.search(tenant_id=claims.tenant_id, query=query, limit=n)
+            hits = rag.search(tenant_id=claims.tenant_id, query=query, limit=n, offset=start)
         except EmbedderUnavailable as exc:
             # The query embedder (Bedrock/Titan) is env-key-gated on the live task; an embed
             # failure degrades to an honest 200 with the "warming up" story, never a 500 and
@@ -284,7 +291,8 @@ def mount_knowledge(app: FastAPI, deps: KnowledgeDeps, current_tenant) -> None:
                         claims.tenant_id, exc, exc_info=True)
             return {"query": query, "results": [], "search_available": False,
                     "reason": REASON_SEARCH_UNAVAILABLE,
-                    "reason_code": REASON_CODE_EMBEDDER}
+                    "reason_code": REASON_CODE_EMBEDDER,
+                    "offset": start, "next_offset": None}
         except Exception as exc:  # noqa: BLE001 — anything AFTER the embed (DB read/pool) is a
             # TRANSIENT failure, not the embedder story (knowledge audit P1: the UI must not
             # say "warming up" forever over a Postgres outage). Same honesty rules: 200 +
@@ -293,7 +301,8 @@ def mount_knowledge(app: FastAPI, deps: KnowledgeDeps, current_tenant) -> None:
                         claims.tenant_id, type(exc).__name__, exc, exc_info=True)
             return {"query": query, "results": [], "search_available": False,
                     "reason": REASON_SEARCH_FAILED,
-                    "reason_code": REASON_CODE_SEARCH_ERROR}
+                    "reason_code": REASON_CODE_SEARCH_ERROR,
+                    "offset": start, "next_offset": None}
         results = [
             {
                 "ref_id": h.get("ref_id"),
@@ -303,8 +312,12 @@ def mount_knowledge(app: FastAPI, deps: KnowledgeDeps, current_tenant) -> None:
             }
             for h in (hits or [])
         ]
+        # A full page means there MAY be more (the next fetch finding zero ends it honestly);
+        # a short page IS the end. The cap stops "show more" from scanning forever.
+        more = len(results) == n and (start + n) < MAX_SEARCH_OFFSET
         return {"query": query, "results": results, "search_available": True, "reason": None,
-                "reason_code": None}
+                "reason_code": None, "offset": start,
+                "next_offset": (start + n) if more else None}
 
     @app.post("/knowledge/documents", status_code=201)
     def knowledge_add_document(body: AddDocumentBody,
