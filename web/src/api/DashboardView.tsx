@@ -16,6 +16,7 @@ import {
   buildViewDataLoader,
   defaultClient,
   friendlyErrorMessage,
+  type SavedViewRow,
 } from "./client";
 import { SpecRenderer, type LoadData } from "../dashboard/SpecRenderer";
 import { Spinner } from "./Spinner";
@@ -84,96 +85,82 @@ export function DashboardView({ client, viewId, onLoadSample, onAskAgents }: Das
     }
   }, [loadingSample, onLoadSample]);
 
-  // loadView: fetch and render a specific view id (called once we know the id).
-  const loadView = useCallback(async (id: string) => {
+  // Render a specific view id: GET /views/{id} for the spec, then (real builds) its data.
+  const renderRow = useCallback(async (id: string, row: SavedViewRow) => {
+    setSpec(row.spec_json);
+    setVersion(row.version);
+    resolvedRef.current = id;
+    setCurrentViewId(id);
+    // Mock builds keep the offline fixture loader; real builds resolve the spec's CubeQueries
+    // via POST /views/{id}/data. A data-plane failure (503/404/502/network) is NOT a view-load
+    // error: keep the spec and fall back to the empty loader so each panel shows its calm
+    // "No data yet" state instead of crashing the whole view.
+    if (!api.isMock()) {
+      try {
+        const data = await api.loadViewData(id);
+        setDataLoader(() => buildViewDataLoader(row.spec_json, data));
+      } catch {
+        setDataLoader(() => noLiveData);
+      }
+    }
+  }, [api]);
+
+  // loadView: fetch and render a view id, translating failures to the right honest state.
+  // resolveOnMissing (the implicit-default case): when the preferred id is absent (404) or there's
+  // no data plane (network/parse), pick the best ALTERNATIVE saved view via listViews() rather than
+  // showing empty/error — this is what makes the Command Center surface a freshly-loaded sample view
+  // even though the default id ('demo_pipeline') isn't in the load-sample fixture.
+  const loadView = useCallback(async (id: string, opts?: { resolveOnMissing?: boolean }) => {
     setLoading(true);
     setError(null);
     setEmpty(false);
     try {
-      const row = await api.getView(id);
-      setSpec(row.spec_json);
-      setVersion(row.version);
-      // Mock builds keep the offline fixture loader; real builds resolve the
-      // spec's CubeQueries via POST /views/{id}/data. A data-plane failure
-      // (503/404/502/network) is NOT a view-load error: keep the spec and fall
-      // back to the empty loader so each panel shows its calm "No data yet" /
-      // "could not be loaded" state instead of crashing the whole view.
-      if (!api.isMock()) {
-        try {
-          const data = await api.loadViewData(id);
-          setDataLoader(() => buildViewDataLoader(row.spec_json, data));
-        } catch {
-          setDataLoader(() => noLiveData);
-        }
-      }
+      await renderRow(id, await api.getView(id));
     } catch (e) {
-      if (e instanceof ApiError && e.status === 404) {
-        // A fresh tenant with no saved views is the normal empty state,
-        // not an error.
-        setEmpty(true);
+      const serverError = e instanceof ApiError && e.status >= 500;
+      const missing = e instanceof ApiError && e.status === 404;
+      if (serverError) {
+        setError(friendlyErrorMessage(e, "Couldn't load this view. Please try again."));
+      } else if (opts?.resolveOnMissing) {
+        // Preferred default unavailable — resolve an alternative from the saved-view list.
+        try {
+          const rows = await api.listViews();
+          const alt = rows.find((r) => r.view_id !== id) ?? rows[0];
+          if (rows.length > 0 && alt) {
+            await renderRow(alt.view_id, await api.getView(alt.view_id));
+          } else {
+            setEmpty(true);
+          }
+        } catch {
+          setEmpty(true);
+        }
+      } else if (missing) {
+        setEmpty(true); // a fresh tenant with no saved views is the normal empty state
       } else {
         setError(friendlyErrorMessage(e, "Couldn't load this view. Please try again."));
       }
     } finally {
       setLoading(false);
     }
-  }, [api]);
+  }, [api, renderRow]);
 
   // resolvedRef: tracks the id we loaded most recently to avoid double-loads
   // when the dropdown effect fires right after mount resolution.
   const resolvedRef = useRef<string | null>(null);
 
-  // Mount-time resolution: if viewId was supplied as a prop, load it directly.
-  // Otherwise call listViews() and pick the best default:
-  //   1. 'demo_pipeline' if present (the Load-sample seed id)
-  //   2. the first row's view_id otherwise
-  //   3. honest empty state when listViews() is truly empty
+  // Mount-time load: the explicit prop id, or the 'demo_pipeline' default. The default uses
+  // resolveOnMissing so that when 'demo_pipeline' isn't present (a fresh tenant / right after Load
+  // sample data, whose fixture seeds different ids) it falls back to the first available saved view
+  // rather than showing empty — while a genuine 5xx still surfaces as an error.
   useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      if (viewId) {
-        resolvedRef.current = viewId;
-        setCurrentViewId(viewId);
-        await loadView(viewId);
-        return;
-      }
-      // No explicit id — resolve via listViews().
-      setLoading(true);
-      setError(null);
-      setEmpty(false);
-      try {
-        const rows = await api.listViews();
-        if (cancelled) return;
-        // Populate the dropdown list immediately (no extra round-trip needed).
-        setViews(
-          rows.map((r) => ({
-            view_id: r.view_id,
-            title: String((r.spec_json as Record<string, unknown>).title ?? r.view_id),
-          })),
-        );
-        if (rows.length === 0) {
-          setEmpty(true);
-          setLoading(false);
-          return;
-        }
-        const preferred = rows.find((r) => r.view_id === "demo_pipeline");
-        const chosen = (preferred ?? rows[0]).view_id;
-        resolvedRef.current = chosen;
-        setCurrentViewId(chosen);
-        await loadView(chosen);
-      } catch {
-        // listViews() couldn't answer (API rolling out / no data plane / fresh tenant):
-        // degrade to the honest empty state (which offers Load-sample + Ask-agents), never a
-        // red error wall on the flagship surface.
-        if (!cancelled) {
-          setEmpty(true);
-          setLoading(false);
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
+    // Load the explicit prop id, or the 'demo_pipeline' default. Set currentViewId + resolvedRef up
+    // front so the dashboard-error retry re-loads the right id and the dropdown effect doesn't
+    // double-load. For the implicit default, resolveOnMissing falls back to listViews() when
+    // 'demo_pipeline' isn't present (e.g. right after Load sample data).
+    const id = viewId ?? "demo_pipeline";
+    resolvedRef.current = id;
+    setCurrentViewId(id);
+    void loadView(id, { resolveOnMissing: !viewId });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // mount-only — remount via key to refresh
 
@@ -199,7 +186,9 @@ export function DashboardView({ client, viewId, onLoadSample, onAskAgents }: Das
     return () => {
       cancelled = true;
     };
-  }, [api, savedNote]); // savedNote drives refresh after saves
+    // currentViewId: populate the dropdown once the mount load resolves an id (the mount effect no
+    // longer sets the list inline). savedNote: refresh after a save.
+  }, [api, savedNote, currentViewId]);
 
   // Dropdown switch: when the user changes to a different view, load it.
   // Skip the very first time currentViewId settles from mount-resolution
