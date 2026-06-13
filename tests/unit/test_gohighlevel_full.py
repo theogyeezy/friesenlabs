@@ -115,6 +115,62 @@ def test_get_sends_per_resource_version_header(monkeypatch):
     assert seen["auth"] == "Bearer test-token"
 
 
+def test_get_sends_a_nondefault_user_agent(monkeypatch):
+    # GHL's Cloudflare BANS urllib's default UA (error 1010 -> 403 on every call); the client must
+    # send a named UA. LIVE-CONFIRMED 2026-06-12. Regression guard so the header is never dropped.
+    c = _client()
+    seen = {}
+
+    def fake_urlopen(req, timeout=None):
+        seen["ua"] = req.get_header("User-agent")
+        return _Resp('{"x": 1}')
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    c._get("/contacts/", {"locationId": "loc-1"})
+    assert seen["ua"] and not seen["ua"].lower().startswith("python-")  # not the banned default
+
+
+# --- per-resource path / location-param overrides (LIVE-CONFIRMED) -------- #
+def test_opportunities_uses_search_path_and_snake_location_param():
+    c = _client()
+    seen = {}
+
+    def fake_get(path, params=None, *, version=None):
+        seen["path"] = path
+        seen["params"] = params
+        return {"opportunities": [{"id": "o1"}], "meta": {}}
+
+    c._get = fake_get  # type: ignore[assignment]
+    recs = list(c.list_records("opportunities", location_id="loc-1"))
+    assert seen["path"] == "/opportunities/search"       # /search subpath
+    assert "location_id" in seen["params"] and "locationId" not in seen["params"]  # snake_case
+    assert recs[0].source_ref_id == "o1"
+
+
+def test_conversations_uses_search_path():
+    c = _client()
+    seen = {}
+    c._get = lambda path, params=None, *, version=None: (  # type: ignore[assignment]
+        seen.update(path=path) or {"conversations": [], "meta": {}})
+    list(c.list_records("conversations", location_id="loc-1"))
+    assert seen["path"] == "/conversations/search"
+
+
+def test_calendars_is_a_flat_list_without_pagination_params():
+    # calendars 422s on limit/startAfter; list_records must pull it as one flat page with no paging.
+    c = _client()
+    seen = {}
+
+    def fake_get(path, params=None, *, version=None):
+        seen["params"] = params
+        return {"calendars": [{"id": "cal1"}]}  # NO meta cursors
+
+    c._get = fake_get  # type: ignore[assignment]
+    recs = list(c.list_records("calendars", location_id="loc-1"))
+    assert "limit" not in seen["params"] and "startAfter" not in seen["params"]
+    assert [r.source_ref_id for r in recs] == ["cal1"]
+
+
 def test_get_requires_a_token():
     c = GoHighLevelFullClient()  # no credentials
     with pytest.raises(RuntimeError, match="no token"):
@@ -122,12 +178,16 @@ def test_get_requires_a_token():
 
 
 # --- object discovery ---------------------------------------------------- #
-def test_discover_object_types_unions_standard_and_custom():
+def test_discover_object_types_unions_standard_and_user_custom_objects():
     c = _client()
-    c._get = lambda path, params=None, *, version=None: {"objects": [{"key": "custom_pet"}]}  # type: ignore[assignment]
+    # GHL user-defined custom objects are namespaced (custom_objects.<name>); built-in schema keys
+    # (contact/opportunity/business) are NOT and must be filtered out (they 404 on a records pull).
+    c._get = lambda path, params=None, *, version=None: {  # type: ignore[assignment]
+        "objects": [{"key": "custom_objects.pet"}, {"key": "contact"}, {"key": "business"}]}
     types = c.discover_object_types()
     assert "contacts" in types and "opportunities" in types and "conversations" in types
-    assert "custom_pet" in types
+    assert "custom_objects.pet" in types                  # user custom object surfaced
+    assert "business" not in types and "contact" not in types  # built-in schema keys filtered
     assert len(types) == len(set(types))
 
 
@@ -139,7 +199,7 @@ def test_discover_object_types_tolerates_schema_failure():
 
     c._get = boom  # type: ignore[assignment]
     types = c.discover_object_types()
-    assert "contacts" in types and "custom_pet" not in types  # standard set, no crash
+    assert "contacts" in types and "custom_objects.pet" not in types  # standard set, no crash
 
 
 # --- bounded live search ------------------------------------------------- #

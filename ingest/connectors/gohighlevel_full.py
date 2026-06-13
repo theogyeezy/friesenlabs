@@ -26,30 +26,56 @@ log = logging.getLogger("ingest.connectors.gohighlevel_full")
 GHL_API_BASE = "https://services.leadconnectorhq.com"
 _MAX_RETRIES = 5
 _DEFAULT_VERSION = "2021-07-28"
+# GHL fronts the API with Cloudflare, which BANS urllib's default "Python-urllib/x.y" User-Agent
+# (Cloudflare error 1010 "browser_signature_banned" → 403 on EVERY call). A named, non-default UA
+# clears it. Confirmed against a live location 2026-06-12 (default UA → 403 1010; this UA → 200).
+_USER_AGENT = "Uplift-Connector/1.0 (+https://friesenlabs.com)"
 
-# Per-resource API Version header. contacts/conversations GROUNDED; others # VERIFY on first run.
+# Per-resource API Version header. LIVE-CONFIRMED 2026-06-12 for contacts/opportunities/conversations/
+# calendars/products against a real location; payments/invoices/tasks still # VERIFY.
 _VERSION: dict[str, str] = {
     "contacts": "2021-07-28",
-    "conversations": "2021-04-15",
-    "opportunities": "2021-07-28",   # VERIFY
-    "calendars": "2021-07-28",       # VERIFY
+    "conversations": "2021-04-15",   # LIVE-CONFIRMED (2021-07-28 also works)
+    "opportunities": "2021-07-28",   # LIVE-CONFIRMED
+    "calendars": "2021-04-15",       # LIVE-CONFIRMED (2021-07-28 → 422)
     "tasks": "2021-07-28",           # VERIFY
-    "products": "2021-07-28",        # VERIFY
-    "payments": "2021-07-28",        # VERIFY
-    "invoices": "2021-07-28",        # VERIFY
+    "products": "2021-07-28",        # LIVE-CONFIRMED
+    "payments": "2021-07-28",        # VERIFY (live → 401, may need a different scope/path)
+    "invoices": "2021-07-28",        # VERIFY (live → 403, may need a different scope/path)
 }
 
-# Standard objects to extract (each list endpoint is /{resource}/, location-scoped). # VERIFY paths.
+# Standard objects to extract (location-scoped), all LIVE-CONFIRMED 2026-06-12. The default list
+# endpoint is /{resource}/; the ones that differ are in _LIST_PATH_OVERRIDE / _LOCATION_PARAM /
+# _FLAT_LIST below. NOT in the default set (follow-ons): tasks + notes ride UNDER a contact
+# (/contacts/{id}/tasks — per-contact, not location-level); payments (live → 401) and invoices
+# (live → 403) need a different scope/path; true custom-object RECORDS need the v3
+# Search-Object-Records POST (this trial had only GHL built-in schemas to probe).
 _STANDARD_OBJECTS = (
-    "contacts", "opportunities", "conversations", "calendars",
-    "tasks", "products", "payments", "invoices",
+    "contacts", "opportunities", "conversations", "calendars", "products",
 )
+
+# Resources returned as a single flat list that REJECTS limit/startAfter pagination params (live:
+# /calendars/ with limit → 422, without → 200). list_records pulls these in one page.
+_FLAT_LIST = frozenset({"calendars"})
+
+# Per-resource list path. contacts/products/calendars are /{resource}/; opportunities + conversations
+# use a /search subpath (LIVE-CONFIRMED 2026-06-12).
+_LIST_PATH_OVERRIDE: dict[str, str] = {
+    "opportunities": "/opportunities/search",
+    "conversations": "/conversations/search",
+}
+
+# Per-resource name of the location query param: opportunities uses snake_case `location_id`; every
+# other endpoint uses camelCase `locationId` (LIVE-CONFIRMED 2026-06-12).
+_LOCATION_PARAM: dict[str, str] = {"opportunities": "location_id"}
 
 # Per-object last-updated field for incremental (# VERIFY each).
 _UPDATED_FIELD: dict[str, str] = {"contacts": "dateUpdated", "opportunities": "updatedAt"}
 
-# The JSON key holding the array in a list response (the resource name; custom objects use "records").
-_LIST_KEY_OVERRIDE: dict[str, str] = {"calendars": "events"}  # VERIFY
+# The JSON key holding the array in a list response. LIVE-CONFIRMED each resource returns its own
+# name (contacts→"contacts", opportunities→"opportunities", calendars→"calendars", …) so no override
+# is needed; the dict stays for future resources whose list key differs from the object type.
+_LIST_KEY_OVERRIDE: dict[str, str] = {}
 
 _MEDIA_EXT = (
     ".mp3", ".wav", ".m4a", ".aac", ".ogg", ".mp4", ".mov", ".avi", ".webm", ".mkv",
@@ -128,7 +154,10 @@ class GoHighLevelFullClient:
         url = f"{self._base_url}{path}"
         if params:
             url = f"{url}?{urllib.parse.urlencode(params)}"
-        headers = {"Authorization": f"Bearer {self._token}", "Version": version, "Accept": "application/json"}
+        headers = {
+            "Authorization": f"Bearer {self._token}", "Version": version,
+            "Accept": "application/json", "User-Agent": _USER_AGENT,  # avoid Cloudflare 1010 ban
+        }
         sleep = self._sleep or _time.sleep
         attempt = 0
         while True:
@@ -157,17 +186,21 @@ class GoHighLevelFullClient:
 
     # -- discovery -------------------------------------------------------- #
     def discover_object_types(self) -> tuple[str, ...]:
-        """Standard objects ∪ the location's CUSTOM objects (from the Custom Objects v3 Object-Schema
-        API). Custom objects are OPTIONAL — a schemas-call failure falls back to the standard set."""
+        """Standard objects ∪ the location's USER-DEFINED custom objects (from the Custom Objects v3
+        Object-Schema API). Custom objects are OPTIONAL — a schemas-call failure falls back to the
+        standard set. Only keys that look user-defined (namespaced ``custom_objects.<name>``) are
+        surfaced; GHL's built-in schema keys (``contact``/``opportunity``/``business``) are filtered
+        out — they 404 on a records pull and just duplicate the standard objects."""
         types: list[str] = list(_STANDARD_OBJECTS)
         seen = set(types)
         try:
-            data = self._get(f"/objects/?locationId={self._location_id}")  # VERIFY exact schema path
+            data = self._get(f"/objects/?locationId={self._location_id}")
         except Exception:  # noqa: BLE001 — custom objects optional; a missing scope must not kill the extract
             return tuple(types)
         for schema in (data.get("objects") or data.get("schemas") or []):
             key = schema.get("key") or schema.get("objectKey") or schema.get("id")
-            if key and key not in seen:
+            # user-defined custom objects are namespaced (e.g. "custom_objects.pets"); skip built-ins.
+            if key and key not in seen and ("." in key or key.startswith("custom_objects")):
                 seen.add(key)
                 types.append(key)
         return tuple(types)
@@ -185,7 +218,12 @@ class GoHighLevelFullClient:
 
     # -- the full record pull --------------------------------------------- #
     def _list_path(self, object_type: str) -> str:
-        return f"/{object_type}/"  # VERIFY non-contacts paths
+        # opportunities/conversations use a /search subpath; everything else is /{resource}/.
+        return _LIST_PATH_OVERRIDE.get(object_type, f"/{object_type}/")
+
+    def _location_param(self, object_type: str) -> str:
+        # opportunities wants snake_case `location_id`; every other endpoint wants `locationId`.
+        return _LOCATION_PARAM.get(object_type, "locationId")
 
     def _list_key(self, object_type: str) -> str:
         return _LIST_KEY_OVERRIDE.get(object_type, object_type)
@@ -199,13 +237,20 @@ class GoHighLevelFullClient:
         are kept as URL refs only."""
         loc = location_id or self._location_id
         path = self._list_path(object_type)
+        loc_param = self._location_param(object_type)
         version = _VERSION.get(object_type, _DEFAULT_VERSION)
         list_key = self._list_key(object_type)
         limit = max(1, min(int(page_size), 100))
+        if object_type in _FLAT_LIST:
+            # Single flat page: no limit/startAfter (the endpoint 422s on them).
+            page = self._get(path, {loc_param: str(loc)}, version=version)
+            for raw in (page.get(list_key) or page.get("records") or []):
+                yield _normalize(object_type, raw)
+            return
         start_after: str | None = _to_millis(since) if since is not None else None
         start_after_id: str | None = None
         while True:
-            params = {"locationId": str(loc), "limit": str(limit)}
+            params = {loc_param: str(loc), "limit": str(limit)}
             if start_after is not None:
                 params["startAfter"] = start_after
             if start_after_id is not None:
@@ -224,7 +269,9 @@ class GoHighLevelFullClient:
                     location_id: str | None = None, limit: int = 10) -> list[Record]:
         """ONE bounded page for LIVE agent queries (read-only) — never walks the whole location."""
         loc = location_id or self._location_id
-        params = {"locationId": str(loc), "limit": str(max(1, min(int(limit), 100)))}
+        params = {self._location_param(object_type): str(loc)}
+        if object_type not in _FLAT_LIST:  # calendars 422s on limit
+            params["limit"] = str(max(1, min(int(limit), 100)))
         if q:
             params["query"] = q
         page = self._get(self._list_path(object_type), params, version=_VERSION.get(object_type, _DEFAULT_VERSION))

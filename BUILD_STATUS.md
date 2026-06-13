@@ -1493,9 +1493,23 @@ Landed (additive; the existing typed GHL contacts/opportunities + vector path is
   backed by `ctx.ghl` (added to `ToolContext`); `registry.tenant_ghl_client()` resolver; lazy
   `ghl_resolver` injected into `make_executor` (additive, alongside the HubSpot one); granted to **Scout**.
 
-Tests: ~28 new unit tests (normalize/customFields/media/associations, startAfter pagination, epoch-millis
-seed, 429 retry, Version header, token-required, discovery×2, search, connector orchestration×4, registry
-+ run_sync wiring×3, live-tool specs/degradation/executor-e2e/roster×12). Full `pytest tests/unit` green;
-ruff clean; no-media verified (only JSON-response reads, never a blob/recording fetch). **Owner-gated:**
-register the GHL marketplace app → seed `uplift/oauth/gohighlevel/client_id`+`client_secret`; the
-`crm_records` migration is shared with #340 (no second migration). DO NOT merge/deploy.
+Tests: ~33 new unit tests (normalize/customFields/media/associations, startAfter pagination, epoch-millis
+seed, 429 retry, Version + User-Agent headers, per-resource path/param overrides, calendars flat-list,
+token-required, discovery×2, search, connector orchestration×4, registry + run_sync wiring×3, live-tool
+specs/degradation/executor-e2e/roster×12). Full `pytest tests/unit` green; ruff clean; no-media verified.
+
+**LIVE-VALIDATED 2026-06-12** against a real GoHighLevel trial location (read-only, via a pasted Private
+Integration Token; `scripts/ghl_smoke_local.py`, local-only/uncommitted). `.sync()` pulled **1,491
+contacts** (full `startAfter`/`startAfterId` pagination), 4 opportunities, 5 conversations, 0
+failed_types; the 429/Retry-After backoff fired + recovered mid-run. Findings folded into the code:
+(1) **GHL Cloudflare BANS urllib's default User-Agent** (error 1010 → 403 on every call) — the client now
+sends a named UA (`_USER_AGENT`); (2) **opportunities** = `/opportunities/search` + snake_case
+`location_id` param; **conversations** = `/conversations/search`; (3) **calendars** needs Version
+`2021-04-15` and is a flat list that 422s on `limit`/pagination params (`_FLAT_LIST`); (4) discovery now
+filters GHL built-in schema keys, surfacing only namespaced user custom objects. Default object set
+trimmed to the live-confirmed five (contacts/opportunities/conversations/calendars/products); tasks+notes
+(per-contact), payments (401)/invoices (403, scope), and custom-object RECORDS (v3 Search POST) are
+documented follow-ons.
+
+**Owner-gated:** register the GHL marketplace app → seed `uplift/oauth/gohighlevel/client_id`+
+`client_secret`; the `crm_records` migration is shared with #340 (no second migration). DO NOT merge/deploy.
