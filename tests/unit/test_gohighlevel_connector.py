@@ -194,3 +194,37 @@ def test_sync_advances_cursor_and_second_run_pulls_nothing():
     assert second.pulled == 0
     assert second.embedded == 0
     assert len(store.docs) == 5  # no duplicates
+
+
+def test_rest_client_sends_nondefault_user_agent(monkeypatch):
+    """GHL's Cloudflare BANS urllib's default UA (error 1010 -> 403 on every call -> sync fails).
+    The REST client MUST send a named User-Agent. Regression guard (LIVE-CONFIRMED 2026-06-13)."""
+    import urllib.request
+
+    from ingest.connectors.gohighlevel import GoHighLevelRestClient
+
+    seen = {}
+
+    class _Resp:
+        def __init__(self, body):
+            self._b = body.encode()
+
+        def read(self):
+            return self._b
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        seen["ua"] = req.get_header("User-agent")
+        return _Resp('{"contacts": [], "meta": {}}')
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    c = GoHighLevelRestClient()
+    c.set_token("t")
+    c.set_location("loc-1")
+    list(c.list_contacts(None))
+    assert seen["ua"] and not seen["ua"].lower().startswith("python-")  # not the banned default
