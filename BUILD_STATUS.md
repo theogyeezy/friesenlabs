@@ -549,6 +549,14 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   usable + safe; RAG-embed IAM gap closed live.
 
 ## Lane Matt (app code) — log
+- 2026-06-12 — **Drag-to-nest in the Knowledge rail (#346):** Notion's signature gesture as
+  pure sugar over the #342 location PATCH — drag onto a page nests, the rail header is the
+  top-level dropzone (dashed cue / accent ring / dimmed source), the dragged page's own
+  subtree never accepts (dragOver withholds preventDefault -> browser not-allowed, ZERO
+  requests), draggable only under organize_available, keyboard parity via the Move panel.
+  doMove + drag unified on one movePage primitive + shared per-class failure copy. +2 e2e
+  (PATCH-body-asserted nest/un-nest; refused drop fires nothing); knowledge spec 33/33;
+  full chromium-real 184/184. Client-only.
 - 2026-06-12 — **Knowledge tree finishers (#345):** collapsible nodes (chevron swallows the
   click; collapsed subtrees stay hidden even through the cycle-defensive flat tail;
   session-local state) + "+ Sub-page" on the open page (create -> auto-nest via the SAME

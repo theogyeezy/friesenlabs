@@ -558,27 +558,57 @@ export function KnowledgeView({ client, initialPageRef, onInitialPageConsumed }:
     return ids;
   };
 
+  /** One honest message per move-failure class — shared by the panel and drag-drop. */
+  const moveFailureCopy = (e: unknown): string => {
+    if (e instanceof ApiError && e.status === 503) {
+      return "Organizing is rolling out on our side — your pages are unaffected. Try again after the next update.";
+    }
+    if (e instanceof ApiError && e.status === 422) {
+      return "That move isn't possible — a page can't go under itself or one of its own sub-pages.";
+    }
+    return friendlyErrorMessage(e, "Couldn't move the page. Please try again.");
+  };
+
+  /** The shared move primitive: PATCH location + tree refresh. Returns the failure copy
+   * (null = success) so each surface renders the note in its own place. */
+  const movePage = async (
+    refId: string,
+    op: { parent_ref?: string | null; move?: "up" | "down" },
+  ): Promise<string | null> => {
+    try {
+      await api.moveKnowledgeDocument(refId, op);
+      await loadPages();
+      return null;
+    } catch (e) {
+      return moveFailureCopy(e);
+    }
+  };
+
   const doMove = async (op: { parent_ref?: string | null; move?: "up" | "down" }) => {
     if (!doc || moving) return;
     setMoving(true);
     setMoveNote(null);
-    try {
-      await api.moveKnowledgeDocument(doc.ref_id, op);
-      await loadPages();
-      if ("parent_ref" in op) setMoveOpen(false);
-    } catch (e) {
-      if (e instanceof ApiError && e.status === 503) {
-        setMoveNote(
-          "Organizing is rolling out on our side — your pages are unaffected. Try again after the next update.",
-        );
-      } else if (e instanceof ApiError && e.status === 422) {
-        setMoveNote("That move isn't possible — a page can't go under itself or one of its own sub-pages.");
-      } else {
-        setMoveNote(friendlyErrorMessage(e, "Couldn't move the page. Please try again."));
-      }
-    } finally {
-      setMoving(false);
-    }
+    const failure = await movePage(doc.ref_id, op);
+    setMoveNote(failure);
+    if (failure === null && "parent_ref" in op) setMoveOpen(false);
+    setMoving(false);
+  };
+
+  // --- drag-to-nest (sugar over the same location PATCH) -------------------------
+  const [dragRef, setDragRef] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<string | null>(null); // a ref or "__top__"
+  const [dragNote, setDragNote] = useState<string | null>(null);
+
+  /** A drop is allowed anywhere except the dragged page itself and its own subtree. */
+  const canDropOn = (target: string): boolean =>
+    dragRef !== null && target !== dragRef && !subtreeOf(dragRef).has(target);
+
+  const dropOn = async (target: string | null) => {
+    const ref = dragRef;
+    setDragRef(null);
+    setDropTarget(null);
+    if (!ref) return;
+    setDragNote(await movePage(ref, { parent_ref: target }));
   };
 
   // --- search ------------------------------------------------------------------
@@ -648,13 +678,44 @@ export function KnowledgeView({ client, initialPageRef, onInitialPageConsumed }:
   const pageRow = (p: KnowledgeDocumentSummary, depth = 0, hasKids = false): React.ReactElement => {
     const sel = p.ref_id !== null && p.ref_id === openRef;
     const isCollapsed = p.ref_id !== null && collapsed.has(p.ref_id);
+    const isDropTarget = p.ref_id !== null && dropTarget === p.ref_id;
     return (
       <button
         key={p.ref_id ?? p.title}
         data-testid="knowledge-page-item"
         data-depth={depth}
         className={`kn-page-btn${sel ? " sel" : ""}`}
-        style={depth > 0 ? { paddingLeft: 10 + depth * 16 } : undefined}
+        style={{
+          ...(depth > 0 ? { paddingLeft: 10 + depth * 16 } : {}),
+          ...(isDropTarget ? { outline: "2px solid var(--accent, #b3552e)", outlineOffset: -2 } : {}),
+          ...(dragRef === p.ref_id ? { opacity: 0.5 } : {}),
+        }}
+        draggable={organizeAvailable && p.ref_id !== null}
+        onDragStart={(e) => {
+          if (!p.ref_id) return;
+          setDragRef(p.ref_id);
+          setDragNote(null);
+          e.dataTransfer.setData("text/plain", p.ref_id);
+          e.dataTransfer.effectAllowed = "move";
+        }}
+        onDragEnd={() => {
+          setDragRef(null);
+          setDropTarget(null);
+        }}
+        onDragOver={(e) => {
+          if (!p.ref_id || !canDropOn(p.ref_id)) return; // not preventing = drop refused
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+          setDropTarget(p.ref_id);
+        }}
+        onDragLeave={() => {
+          if (p.ref_id !== null && dropTarget === p.ref_id) setDropTarget(null);
+        }}
+        onDrop={(e) => {
+          if (!p.ref_id || !canDropOn(p.ref_id)) return;
+          e.preventDefault();
+          void dropOn(p.ref_id);
+        }}
         onClick={() => {
           if (!p.ref_id || !guardDiscard()) return;
           setEditor({ mode: "closed" });
@@ -1344,12 +1405,37 @@ export function KnowledgeView({ client, initialPageRef, onInitialPageConsumed }:
           <div className="kn-grid">
             <aside className="kn-rail">
               <div>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                <div
+                  data-testid="knowledge-pages-top-dropzone"
+                  onDragOver={(e) => {
+                    if (dragRef === null) return;
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = "move";
+                    setDropTarget("__top__");
+                  }}
+                  onDragLeave={() => {
+                    if (dropTarget === "__top__") setDropTarget(null);
+                  }}
+                  onDrop={(e) => {
+                    if (dragRef === null) return;
+                    e.preventDefault();
+                    void dropOn(null); // top level
+                  }}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 8, marginBottom: 6,
+                    borderRadius: 8,
+                    ...(dragRef !== null ? { outline: "1.5px dashed var(--line, #e3ddd3)", outlineOffset: 2 } : {}),
+                    ...(dropTarget === "__top__" ? { outline: "2px solid var(--accent, #b3552e)", outlineOffset: 2 } : {}),
+                  }}
+                >
                   <h2 style={{ fontSize: 13, fontWeight: 750, letterSpacing: ".04em", textTransform: "uppercase", margin: 0, ...muted }}>
                     Pages
                   </h2>
                   {pages !== null && (
                     <span style={{ fontSize: 11.5, ...muted }}>{pages.length}</span>
+                  )}
+                  {dragRef !== null && (
+                    <span style={{ fontSize: 10.5, ...muted }}>drop here for top level</span>
                   )}
                   {!uploadsOff && (
                     <button
@@ -1362,6 +1448,11 @@ export function KnowledgeView({ client, initialPageRef, onInitialPageConsumed }:
                     </button>
                   )}
                 </div>
+                {dragNote && (
+                  <p data-testid="knowledge-drag-note" style={{ fontSize: 12.5, lineHeight: 1.5, margin: "2px 0 6px", ...muted }}>
+                    {dragNote}
+                  </p>
+                )}
                 {pagesRollout && (
                   <p data-testid="knowledge-pages-rollout" style={{ fontSize: 12.5, lineHeight: 1.5, margin: "6px 0 0", ...muted }}>
                     Pages are rolling out — they&rsquo;ll appear here after the next API deploy.

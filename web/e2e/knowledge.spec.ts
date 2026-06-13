@@ -1088,3 +1088,77 @@ test("'+ Sub-page' creates and nests under the open page in one flow", async ({ 
 
   expect(errors, `page errors: ${errors.join("\n")}`).toHaveLength(0);
 });
+
+test("drag a page onto another to nest it; the top dropzone un-nests", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+
+  let parentNow: string | null = null; // Pricing's live parent in the stub
+  await page.route(inventoryApi, (route) => route.fulfill({ json: INVENTORY }));
+  await page.route(docsApi, (route) =>
+    route.fulfill({
+      json: { ...TREE_PAGES,
+              documents: TREE_PAGES.documents.map((d) =>
+                d.ref_id === REF_OTHER ? { ...d, parent_ref: parentNow, sort_order: 9 } : d) },
+    }),
+  );
+  await page.route(docDetailApi, async (route, request) => {
+    const url = new URL(request.url());
+    const path = decodeURIComponent(url.pathname);
+    if (request.method() === "PATCH" && path.endsWith("/location")) {
+      expect(path).toContain(REF_OTHER);
+      const body = request.postDataJSON() as { parent_ref?: string | null };
+      parentNow = body.parent_ref ?? null;
+      return route.fulfill({
+        json: { ref_id: REF_OTHER, parent_ref: parentNow, sort_order: 9, organize_available: true },
+      });
+    }
+    return route.fulfill({ json: docFor(REF_OTHER, "Pricing") });
+  });
+
+  await page.goto("/?view=knowledge");
+  await expect(page.getByTestId("knowledge-page-item")).toHaveCount(3, { timeout: 15_000 });
+
+  const pricing = page.getByTestId("knowledge-page-item").filter({ hasText: "Pricing" }).first();
+  const handbook = page.getByTestId("knowledge-page-item").filter({ hasText: "Handbook" }).first();
+
+  // Drag Pricing onto Handbook -> nests (PATCH parent_ref) and the rail re-renders nested.
+  await pricing.dragTo(handbook);
+  await expect(
+    page.getByTestId("knowledge-page-item").filter({ hasText: "Pricing" }).first(),
+  ).toHaveAttribute("data-depth", "1", { timeout: 15_000 });
+
+  // Drag it to the top dropzone -> back to top level.
+  await page.getByTestId("knowledge-page-item").filter({ hasText: "Pricing" }).first()
+    .dragTo(page.getByTestId("knowledge-pages-top-dropzone"));
+  await expect(
+    page.getByTestId("knowledge-page-item").filter({ hasText: "Pricing" }).first(),
+  ).toHaveAttribute("data-depth", "0", { timeout: 15_000 });
+
+  expect(errors, `page errors: ${errors.join("\n")}`).toHaveLength(0);
+});
+
+test("dragging a parent onto its own child is refused — no request fires", async ({ page }) => {
+  let patches = 0;
+  await page.route(inventoryApi, (route) => route.fulfill({ json: INVENTORY }));
+  await page.route(docsApi, (route) => route.fulfill({ json: TREE_PAGES }));
+  await page.route(docDetailApi, async (route, request) => {
+    if (request.method() === "PATCH") {
+      patches += 1;
+      return route.fulfill({ json: { ref_id: "x", parent_ref: null, sort_order: 0, organize_available: true } });
+    }
+    return route.fulfill({ json: docFor(REF_PARENT, "Handbook") });
+  });
+
+  await page.goto("/?view=knowledge");
+  await expect(page.getByTestId("knowledge-page-item")).toHaveCount(3, { timeout: 15_000 });
+
+  const handbook = page.getByTestId("knowledge-page-item").filter({ hasText: "Handbook" }).first();
+  const hours = page.getByTestId("knowledge-page-item").filter({ hasText: "Hours" }).first();
+  await handbook.dragTo(hours); // own child: the dropzone never accepts
+  await page.waitForTimeout(300);
+  expect(patches).toBe(0);
+  // Tree unchanged.
+  await expect(handbook).toHaveAttribute("data-depth", "0");
+  await expect(hours).toHaveAttribute("data-depth", "1");
+});
