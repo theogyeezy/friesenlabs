@@ -149,13 +149,25 @@ PROVIDERS: dict[str, OAuthProvider] = {
         authorize_url="https://marketplace.gohighlevel.com/oauth/chooselocation",
         # LeadConnector is GoHighLevel's API host (services.leadconnectorhq.com).
         token_url="https://services.leadconnectorhq.com/oauth/token",
-        # Read-only scopes for what the connector pulls — contacts + opportunities,
-        # plus locations.readonly so a location-scoped token can resolve its own
-        # location. Read-only by design — Uplift never writes back.
+        # Read-only scopes for the FULL extract — every object type the connector pulls
+        # (contacts/opportunities/conversations/calendars/products + custom objects +
+        # custom fields), plus locations.readonly so a location-scoped token can resolve
+        # its own location. Read-only by design — Uplift never writes back. These MUST
+        # match the scopes ticked on the GHL Marketplace App or the token 403s on the
+        # broader objects (the same failure a too-narrow Private Integration Token gives).
         scopes=(
             "contacts.readonly",
             "opportunities.readonly",
+            "conversations.readonly",
+            "conversations/message.readonly",
+            "calendars.readonly",
+            "calendars/events.readonly",
+            "products.readonly",
+            "objects/schema.readonly",
+            "objects/record.readonly",
             "locations.readonly",
+            "locations/customFields.readonly",
+            "locations/customValues.readonly",
         ),
         client_id_ref="uplift/oauth/gohighlevel/client_id",
         client_secret_ref="uplift/oauth/gohighlevel/client_secret",
