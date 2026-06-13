@@ -107,9 +107,13 @@ class GoHighLevelFullClient:
         self._token = token
         self._location_id = location_id
 
-    # alias so the connector's set_token(...) seam works like the others
+    # alias seams so the existing GoHighLevelConnector.authenticate() (reused for vault token +
+    # location resolution) can inject both onto this client exactly as it does the MVP client.
     def set_token(self, token: str) -> None:
         self._token = token
+
+    def set_location(self, location_id: str) -> None:
+        self._location_id = location_id
 
     # -- one GET (Version header + 429/Retry-After backoff) --------------- #
     def _get(self, path: str, params: dict[str, str] | None = None, *, version: str = _DEFAULT_VERSION) -> dict:

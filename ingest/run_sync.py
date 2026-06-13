@@ -225,6 +225,29 @@ def run_full_extract(tenant_id: str, *, since: int | str | None = None):
     return connector.sync(tenant_id, since=since)
 
 
+def run_full_extract_ghl(tenant_id: str, *, since: int | str | None = None):
+    """Drive the GoHighLevel FULL extract for one tenant → source-agnostic `crm_records`
+    (`source='gohighlevel'`), REUSING the vault token + location_id resolution. ADDITIVE: a SEPARATE
+    entry point from the default `--all` typed/vector sync (untouched). Real mode only
+    (Boto3SecretProvider + the Aurora crm_app DSN); returns the `FullSyncResult`."""
+    if not real_mode():
+        raise RuntimeError(
+            f"run_full_extract_ghl requires real mode ({ENV_INGEST_REAL_STORES}); the full extract "
+            "lands crm_records over the Aurora DSN"
+        )
+    from .connectors.base import Boto3SecretProvider  # noqa: PLC0415 — lazy
+    from .connectors.registry import build_gohighlevel_full_connector  # noqa: PLC0415
+
+    dsn = dsn_from_env()
+    if not dsn:
+        raise RuntimeError(
+            f"{ENV_INGEST_REAL_STORES} is set but no DSN (UPLIFT_DB_URL or DB_USER/DB_PASS/DB_HOST) "
+            "— refusing a silent dry run"
+        )
+    connector = build_gohighlevel_full_connector(tenant_id, secrets=Boto3SecretProvider(), dsn=dsn)
+    return connector.sync(tenant_id, since=since)
+
+
 #: Vault-slot namespace (ingest.connectors.base.tenant_secret_ref): uplift/{tenant}/{source}.
 _VAULT_PREFIX = "uplift/"
 

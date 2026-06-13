@@ -66,9 +66,15 @@ merges (the crm_records migration is shared — no second migration).
   PII — and SKIPPED). Lands the source-agnostic `crm_records` (`source='gohighlevel'`) alongside the
   existing path. 4 unit tests (lands per type + forwards location, skips failing type, honors
   override, forwards since); ruff clean. DONE.
-- [ ] 4. **Registry + run_sync**: `registry.build_gohighlevel_full_connector(...)` reusing the
-  existing GHL vault auth (`GoHighLevelConnector.authenticate` resolves token + location_id); extend
-  `run_full_extract` (or add a sibling) to drive GHL. Backwards-compatible. Unit tests.
+- [x] 4. **Registry + run_sync** — DONE. `registry.build_gohighlevel_full_connector(tenant_id, *,
+  secrets, dsn|conn_factory, client, secret_writer, token, location_id)` mirrors the HubSpot factory:
+  REUSES `GoHighLevelConnector.authenticate()` (same vault read + OAuth refresh + write-back) which
+  set_token's AND set_location's the full client (both duck-typed; added `set_location` to the full
+  client); `token`(+optional `location_id`) skips auth for the pasted-key/test path; lands the
+  source-agnostic `crm_records` via `PgCrmRecordsSink`. `run_sync.run_full_extract_ghl(tenant_id, *,
+  since)` is the SIBLING driver (real-mode-gated, Boto3SecretProvider + Aurora DSN) — additive, the
+  default `--all` typed/vector sync untouched. 3 wiring tests (token+location bypass, vault-auth reuse
+  resolves token+location from legacy JSON, real-mode gate); `pytest tests/unit` green, ruff clean.
 - [ ] 5. **Live GHL agent tools** (`agents/tools/ghl_live.py`): `ghl_object_types` / `ghl_fields` /
   `ghl_search` — `Policy.AUTO` read-only, backed by `ctx.ghl` (add `ghl` to `ToolContext`; lazy
   per-tenant client). `registry.tenant_ghl_client()` resolver; register in `_TOOL_CLASSES`; inject a
