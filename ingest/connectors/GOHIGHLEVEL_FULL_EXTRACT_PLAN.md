@@ -85,8 +85,11 @@ merges (the crm_records migration is shared — no second migration).
   arg-threading, not-connected degradation, lazy-resolve-once, registry, resolver token+location,
   executor e2e for the bound tenant + degrade-when-unwired, roster grant); `pytest tests/unit` green,
   ruff clean.
-- [ ] 6. **Full test pass**: `pytest tests/unit` green; imports OK; ruff clean; no-media grep (only
-  JSON-response reads, never a blob/recording fetch). `BUILD_STATUS.md` entry (own lane).
+- [x] 6. **Full test pass** — DONE. `pytest tests/unit` green (exit 0; 3 DB-gated skips); all touched
+  modules import (`ingest.connectors.gohighlevel_full`/`registry`/`run_sync`, `agents.tools.ghl_live`/
+  `registry`, `agents.roster`, `api.asgi`); ruff clean across `ingest/`+`agents/`+`api/asgi.py`+tests;
+  no-media verified (the only `.read()` is the JSON API response in `_get`; media values are URL-ref
+  flagged, never fetched). `BUILD_STATUS.md` entry added (own GHL section, stacked-on-#340 note).
 - [ ] 7. **PR**: open a PR (branch `feat/gohighlevel-full-extract`, stacked on #340) — additive
   summary + owner-gated note: register the **GHL marketplace app** → seed
   `uplift/oauth/gohighlevel/client_id`+`client_secret`; `crm_records` migration is shared with #340.

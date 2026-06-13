@@ -1466,3 +1466,36 @@ no Files call, association flatten, sink upsert/RLS/savepoint, connector orchest
 `pytest tests/unit` = **2187 passed, 3 skipped** (DB-gated); ruff clean. **Owner-gated:** run the
 `crm_records` migration via the one-off task BEFORE the api rolls, then deploy. Path B (live HubSpot
 MCP for agent access) is items 10–12, next.
+
+## GoHighLevel full-extract connector — feat/gohighlevel-full-extract (loop-built, stacked on #340, NOT merged/deployed)
+
+The same full-fidelity pattern for **GoHighLevel** — lands EVERY field + every object type (standard +
+custom) + associations into the SAME source-agnostic `crm_records` JSONB table (`source='gohighlevel'`),
+PLUS live GHL agent tools. Cheap because `crm_records`, `PgCrmRecordsSink`, the embedding path, and the
+agent-tool framework already exist and are source-agnostic — the genuinely new work is ONE client file +
+GHL live tools. Stacked on the HubSpot branch (#340) so `crm_records` is present; the migration is
+SHARED — no second migration. **No binary media** — call-recording / attachment values kept as URL refs
+only (`properties._media_refs`); bytes are never fetched.
+
+Landed (additive; the existing typed GHL contacts/opportunities + vector path is untouched):
+- `ingest/connectors/gohighlevel_full.py`: `GoHighLevelFullClient` — `_get` pins the **per-resource
+  `Version` header** + does **429/Retry-After backoff** (`_MAX_RETRIES=5`, injectable sleep);
+  `discover_object_types()` (standard ∪ custom from the Object-Schema v3 API, tolerant of a missing
+  scope); `discover_fields()`; `list_records()` paginates via **`startAfter`/`startAfterId`** cursors
+  (from `meta.*`), epoch-millis incremental seed, media-as-refs, inline `customFields` flattened to
+  `cf_<id>`, associations; `search_live()` bounded. Reuses the source-agnostic `hubspot_full.Record` /
+  `FullSyncResult`. `GoHighLevelFullConnector.sync()` is per-object-type robust (a bad type logged by
+  exception TYPE only and skipped). Non-contacts paths/Versions stay `# VERIFY` (SPA docs blocked the
+  exact paths — confirm on the first live run).
+- `ingest/connectors/registry.py` + `ingest/run_sync.py`: `build_gohighlevel_full_connector()` (REUSES
+  `GoHighLevelConnector.authenticate` for the vault token + location_id) + `run_full_extract_ghl()` driver.
+- `agents/tools/ghl_live.py`: read-only AUTO tools `ghl_object_types` / `ghl_fields` / `ghl_search`
+  backed by `ctx.ghl` (added to `ToolContext`); `registry.tenant_ghl_client()` resolver; lazy
+  `ghl_resolver` injected into `make_executor` (additive, alongside the HubSpot one); granted to **Scout**.
+
+Tests: ~28 new unit tests (normalize/customFields/media/associations, startAfter pagination, epoch-millis
+seed, 429 retry, Version header, token-required, discovery×2, search, connector orchestration×4, registry
++ run_sync wiring×3, live-tool specs/degradation/executor-e2e/roster×12). Full `pytest tests/unit` green;
+ruff clean; no-media verified (only JSON-response reads, never a blob/recording fetch). **Owner-gated:**
+register the GHL marketplace app → seed `uplift/oauth/gohighlevel/client_id`+`client_secret`; the
+`crm_records` migration is shared with #340 (no second migration). DO NOT merge/deploy.
