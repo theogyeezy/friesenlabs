@@ -204,6 +204,10 @@ export function KnowledgeView({ client, initialPageRef, onInitialPageConsumed }:
   const [moveOpen, setMoveOpen] = useState(false);
   const [moveNote, setMoveNote] = useState<string | null>(null);
   const [moving, setMoving] = useState(false);
+  // Collapsed tree nodes (session-local — collapse state isn't worth a server round trip).
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  // "+ Sub-page": the new-page editor nests its result under this ref right after the POST.
+  const pendingParentRef = useRef<string | null>(null);
   const [pagesRollout, setPagesRollout] = useState(false);
   const [pagesError, setPagesError] = useState<string | null>(null);
 
@@ -353,12 +357,20 @@ export function KnowledgeView({ client, initialPageRef, onInitialPageConsumed }:
 
   const startNewPage = () => {
     if (!guardDiscard()) return;
+    pendingParentRef.current = null;
     setEditor({ mode: "new", title: "", content: "" });
     setEditorPreview(false);
     setAddNote(null);
     setAddError(null);
     setConfirmingDelete(false);
     setTimeout(() => titleRef.current?.focus(), 0);
+  };
+
+  /** "+ Sub-page": a new page that nests itself under the open page right after the POST. */
+  const startSubPage = () => {
+    if (!doc) return;
+    startNewPage();
+    pendingParentRef.current = doc.ref_id;
   };
 
   const startEdit = () => {
@@ -379,6 +391,7 @@ export function KnowledgeView({ client, initialPageRef, onInitialPageConsumed }:
 
   const closeEditor = () => {
     if (!guardDiscard()) return;
+    pendingParentRef.current = null;
     setEditor({ mode: "closed" });
     setAddError(null);
   };
@@ -403,6 +416,16 @@ export function KnowledgeView({ client, initialPageRef, onInitialPageConsumed }:
         const res = await api.addKnowledgeDocument(title, content);
         refId = res.ref_id;
         chunks = res.chunks;
+        if (refId && pendingParentRef.current && organizeAvailable) {
+          // Best-effort nest under the page that spawned this sub-page: a failure leaves
+          // it top-level (visible, movable) — never blocks the create that already landed.
+          try {
+            await api.moveKnowledgeDocument(refId, { parent_ref: pendingParentRef.current });
+          } catch {
+            /* calm: the page exists; Move can nest it later */
+          }
+        }
+        pendingParentRef.current = null;
       } else {
         const res = await api.updateKnowledgeDocument(editor.refId, title, content);
         refId = res.ref_id;
@@ -622,8 +645,9 @@ export function KnowledgeView({ client, initialPageRef, onInitialPageConsumed }:
     </div>
   );
 
-  const pageRow = (p: KnowledgeDocumentSummary, depth = 0): React.ReactElement => {
+  const pageRow = (p: KnowledgeDocumentSummary, depth = 0, hasKids = false): React.ReactElement => {
     const sel = p.ref_id !== null && p.ref_id === openRef;
+    const isCollapsed = p.ref_id !== null && collapsed.has(p.ref_id);
     return (
       <button
         key={p.ref_id ?? p.title}
@@ -649,6 +673,27 @@ export function KnowledgeView({ client, initialPageRef, onInitialPageConsumed }:
             whiteSpace: "nowrap",
           }}
         >
+          {hasKids && (
+            <span
+              data-testid="knowledge-page-toggle"
+              role="button"
+              aria-label={isCollapsed ? "Expand sub-pages" : "Collapse sub-pages"}
+              onClick={(e) => {
+                e.stopPropagation();
+                setCollapsed((cur) => {
+                  const next = new Set(cur);
+                  if (p.ref_id) {
+                    if (next.has(p.ref_id)) next.delete(p.ref_id);
+                    else next.add(p.ref_id);
+                  }
+                  return next;
+                });
+              }}
+              style={{ display: "inline-block", width: 14, marginRight: 3, color: "var(--ink-4, #b0a89c)", fontSize: 10 }}
+            >
+              {isCollapsed ? "\u25B8" : "\u25BE"}
+            </span>
+          )}
           {p.title}
           {!p.editable && (
             <span style={{ fontSize: 10.5, fontWeight: 700, marginLeft: 6, ...muted }}>read-only</span>
@@ -677,7 +722,7 @@ export function KnowledgeView({ client, initialPageRef, onInitialPageConsumed }:
   // renders the child top-level), siblings ordered by (sort_order, list position — the API
   // list arrives newest-first). Depth display-capped; a server-data cycle can't trap the
   // walk (visited set + a defensive flat tail).
-  const treeRows = (list: KnowledgeDocumentSummary[]): Array<[KnowledgeDocumentSummary, number]> => {
+  const treeRows = (list: KnowledgeDocumentSummary[]): Array<[KnowledgeDocumentSummary, number, boolean]> => {
     const refs = new Set(list.map((p) => p.ref_id));
     const kids = new Map<string | null, KnowledgeDocumentSummary[]>();
     for (const p of list) {
@@ -686,7 +731,7 @@ export function KnowledgeView({ client, initialPageRef, onInitialPageConsumed }:
       kids.get(parent)!.push(p);
     }
     const idx = new Map(list.map((p, i) => [p.ref_id, i]));
-    const out: Array<[KnowledgeDocumentSummary, number]> = [];
+    const out: Array<[KnowledgeDocumentSummary, number, boolean]> = [];
     const visited = new Set<string>();
     const walk = (parent: string | null, depth: number) => {
       const group = (kids.get(parent) ?? [])
@@ -699,15 +744,30 @@ export function KnowledgeView({ client, initialPageRef, onInitialPageConsumed }:
       for (const p of group) {
         if (!p.ref_id || visited.has(p.ref_id)) continue;
         visited.add(p.ref_id);
-        out.push([p, Math.min(depth, 6)]);
-        walk(p.ref_id, depth + 1);
+        const hasKids = (kids.get(p.ref_id) ?? []).length > 0;
+        out.push([p, Math.min(depth, 6), hasKids]);
+        // A collapsed node keeps its subtree out of the rail (session-local state).
+        if (!collapsed.has(p.ref_id)) walk(p.ref_id, depth + 1);
       }
     };
     walk(null, 0);
     for (const p of list) {
-      if (p.ref_id && !visited.has(p.ref_id)) out.push([p, 0]);
+      if (p.ref_id && !visited.has(p.ref_id) && !isHiddenByCollapse(p, list)) out.push([p, 0, false]);
     }
     return out;
+  };
+
+  /** True when a page sits (transitively) under a collapsed ancestor — the defensive flat
+   * tail must not resurface what the collapse just hid. */
+  const isHiddenByCollapse = (p: KnowledgeDocumentSummary, list: KnowledgeDocumentSummary[]): boolean => {
+    const byRef = new Map(list.map((x) => [x.ref_id, x]));
+    let cur = p.parent_ref ?? null;
+    let hops = 0;
+    while (cur != null && hops++ < 20) {
+      if (collapsed.has(cur)) return true;
+      cur = byRef.get(cur)?.parent_ref ?? null;
+    }
+    return false;
   };
 
   /** The open page's ancestor chain (nearest-first reversed to root-first) for breadcrumbs. */
@@ -920,6 +980,15 @@ export function KnowledgeView({ client, initialPageRef, onInitialPageConsumed }:
                 {!doc.editable && " · read-only"}
               </div>
             </div>
+            {organizeAvailable && !confirmingDelete && (
+              <button
+                data-testid="knowledge-doc-subpage"
+                onClick={startSubPage}
+                style={ghostBtn}
+              >
+                + Sub-page
+              </button>
+            )}
             {organizeAvailable && !confirmingDelete && (
               <button
                 data-testid="knowledge-doc-move"
@@ -1340,7 +1409,7 @@ export function KnowledgeView({ client, initialPageRef, onInitialPageConsumed }:
                               indented sub-pages in manual order. */}
                           {needle
                             ? visible.map((p) => pageRow(p))
-                            : treeRows(visible).map(([p, d]) => pageRow(p, d))}
+                            : treeRows(visible).map(([p, d, kids]) => pageRow(p, d, kids))}
                         </nav>
                       )}
                     </>

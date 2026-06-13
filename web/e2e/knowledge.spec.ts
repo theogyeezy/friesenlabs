@@ -1011,3 +1011,80 @@ test("organize affordances stay hidden until the migration lands", async ({ page
   await expect(page.getByTestId("knowledge-doc-title")).toBeVisible();
   await expect(page.getByTestId("knowledge-doc-move")).toHaveCount(0);
 });
+
+test("tree nodes collapse and expand (session-local)", async ({ page }) => {
+  await page.route(inventoryApi, (route) => route.fulfill({ json: INVENTORY }));
+  await page.route(docsApi, (route) => route.fulfill({ json: TREE_PAGES }));
+
+  await page.goto("/?view=knowledge");
+  await expect(page.getByTestId("knowledge-page-item")).toHaveCount(3, { timeout: 15_000 });
+
+  // Only the parent (the one row with children) shows a toggle.
+  await expect(page.getByTestId("knowledge-page-toggle")).toHaveCount(1);
+  await page.getByTestId("knowledge-page-toggle").click();
+  // The subtree is hidden — and the page did NOT open (the toggle swallows the click).
+  await expect(page.getByTestId("knowledge-page-item")).toHaveCount(2);
+  await expect(page.getByTestId("knowledge-doc")).toHaveCount(0);
+  await page.getByTestId("knowledge-page-toggle").click();
+  await expect(page.getByTestId("knowledge-page-item")).toHaveCount(3);
+});
+
+test("'+ Sub-page' creates and nests under the open page in one flow", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+
+  const SUB_REF = "upload:after-hours-dd33dd33";
+  let nested = false;
+  await page.route(inventoryApi, (route) => route.fulfill({ json: INVENTORY }));
+  await page.route(docsApi, async (route, request) => {
+    if (request.method() === "POST") {
+      const body = request.postDataJSON() as { title: string };
+      expect(body.title).toBe("After hours");
+      return route.fulfill({
+        status: 201,
+        json: { ref_id: SUB_REF, chunks: 1, source: "upload", title: body.title },
+      });
+    }
+    return route.fulfill({
+      json: nested
+        ? { ...TREE_PAGES, total: 4,
+            documents: [...TREE_PAGES.documents,
+              { ref_id: SUB_REF, title: "After hours", preview: "On-call rotation.", chunks: 1,
+                editable: true, created_at: "2026-06-12T13:00:00+00:00",
+                updated_at: "2026-06-12T13:00:00+00:00", parent_ref: REF_PARENT, sort_order: 9 }] }
+        : TREE_PAGES,
+    });
+  });
+  await page.route(docDetailApi, async (route, request) => {
+    const url = new URL(request.url());
+    const path = decodeURIComponent(url.pathname);
+    if (request.method() === "PATCH" && path.endsWith("/location")) {
+      expect(path).toContain(SUB_REF);
+      const body = request.postDataJSON() as { parent_ref?: string | null };
+      expect(body.parent_ref).toBe(REF_PARENT);
+      nested = true;
+      return route.fulfill({
+        json: { ref_id: SUB_REF, parent_ref: REF_PARENT, sort_order: 9, organize_available: true },
+      });
+    }
+    const ref = detailRefOf(url);
+    return route.fulfill({ json: ref === SUB_REF ? docFor(SUB_REF, "After hours") : docFor(REF_PARENT, "Handbook") });
+  });
+
+  await page.goto("/?view=knowledge");
+  await expect(page.getByTestId("knowledge-page-item")).toHaveCount(3, { timeout: 15_000 });
+
+  await page.getByTestId("knowledge-page-item").first().click(); // Handbook
+  await page.getByTestId("knowledge-doc-subpage").click();
+  await page.getByTestId("knowledge-add-title").fill("After hours");
+  await page.getByTestId("knowledge-add-content").fill("On-call rotation and escalation.");
+  await page.getByTestId("knowledge-add-submit").click();
+
+  // Created AND nested: the rail shows it under Handbook, breadcrumbs prove the chain.
+  await expect(page.getByTestId("knowledge-doc-title")).toHaveText("After hours", { timeout: 15_000 });
+  await expect(page.getByTestId("knowledge-doc-breadcrumbs")).toContainText("Handbook / After hours");
+  const subItem = page.getByTestId("knowledge-page-item").filter({ hasText: "After hours" }).first();
+  await expect(subItem).toHaveAttribute("data-depth", "1");
+
+  expect(errors, `page errors: ${errors.join("\n")}`).toHaveLength(0);
+});
