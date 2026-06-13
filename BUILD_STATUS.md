@@ -549,6 +549,12 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   usable + safe; RAG-embed IAM gap closed live.
 
 ## Lane Matt (app code) — log
+- 2026-06-12 — **Knowledge tree finishers (#345):** collapsible nodes (chevron swallows the
+  click; collapsed subtrees stay hidden even through the cycle-defensive flat tail;
+  session-local state) + "+ Sub-page" on the open page (create -> auto-nest via the SAME
+  location PATCH as Move, one flow; nest failure degrades calmly to top-level; pending
+  parent clears on cancel so it can't go stale). Client-only. +2 e2e; knowledge spec 31/31;
+  full chromium-real 182/182.
 - 2026-06-12 — **Knowledge page hierarchy, slice 2/2: tree UI (#343):** the rail renders
   sub-pages indented in manual order (cycle-safe walk; deleted parents degrade children to
   top level; filter flattens), the open page gets clickable breadcrumbs, and a Move panel
