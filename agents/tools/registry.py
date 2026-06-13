@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from .base import Policy, Tool
 from .build_view import BuildView
+from .hubspot_live import HubSpotObjectTypes, HubSpotProperties, HubSpotSearch
 from .readonly import QueryCube, ReadCrm, SearchRag
 from .run_model import RunModel
 from .sideeffecting import (
@@ -24,9 +25,32 @@ from .sideeffecting import (
 
 _TOOL_CLASSES: list[type[Tool]] = [
     SearchRag, QueryCube, ReadCrm, RunModel, BuildView,  # read-only (auto)
+    HubSpotObjectTypes, HubSpotProperties, HubSpotSearch,  # live HubSpot (read-only, auto)
     DraftEmail,                                           # draft (auto)
     SendEmail, UpdateDeal, UpdateContact, CreateActivity, CreateDeal, IssueQuote,
 ]
+
+
+def tenant_hubspot_client(tenant_id: str, secrets):
+    """Resolve a tenant's LIVE HubSpotFullClient (token from the vault, REUSING the connector auth)
+    for the live HubSpot tools — or None if the tenant has no vaulted HubSpot credential (not
+    connected) or the creds can't be read. Honest degradation: the tools then report not_connected.
+    Errors are swallowed by TYPE (no token/PII) so a missing credential never throws into the loop."""
+    import logging  # noqa: PLC0415
+
+    from ingest.connectors.hubspot import HubSpotConnector  # noqa: PLC0415 — lazy, avoid import cost
+    from ingest.connectors.hubspot_full import HubSpotFullClient  # noqa: PLC0415
+
+    client = HubSpotFullClient()
+    try:
+        HubSpotConnector(
+            tenant_id, client=client, secrets=secrets, raw_sink=None, structured_sink=None,
+        ).authenticate()
+    except Exception as exc:  # noqa: BLE001 — not connected / unreadable creds → no live client
+        logging.getLogger("agents.tools").info(
+            "hubspot live tool: no client for tenant (%s) — not connected", type(exc).__name__)
+        return None
+    return client
 
 # name -> Tool class
 TOOL_REGISTRY: dict[str, type[Tool]] = {cls.name: cls for cls in _TOOL_CLASSES}

@@ -207,6 +207,7 @@ def make_executor(
     cube: Any = None,
     cortex: Any = None,
     spec_generator: Any = None,
+    hubspot_resolver: Callable[[str], Any] | None = None,
 ) -> Callable[[Action], Any]:
     """Build the real tool executor: dispatch through `agents.tools.registry` with a ToolContext
     bound to the action's tenant.
@@ -242,6 +243,9 @@ def make_executor(
             cube=cube,
             rag=rag,
             cortex=cortex,  # persistent per-tenant model registry (ml.registry) -> run_model
+            # Live HubSpot tools: a LAZY per-tenant resolver (no vault read unless a HubSpot tool
+            # is actually invoked; tenant from the verified binding, never the request body).
+            hubspot=(lambda: hubspot_resolver(tenant_id)) if hubspot_resolver is not None else None,
             greenlight=greenlight,
             extra=extra,
         )
@@ -315,9 +319,21 @@ def build_app():
         # DEGRADED client: every call returns {"status": "unconfigured", rows: []} instead of the
         # bare empty-rows shape — visible misconfiguration by design, not byte-identical.
         cube = cube_client_from_env()
+        # Live HubSpot tools: a per-tenant client resolver (vault token via the reused connector
+        # auth). It returns None when a tenant isn't connected, so the tools degrade honestly; it
+        # is invoked LAZILY (only when a HubSpot tool actually runs) inside the executor.
+        from agents.tools.registry import tenant_hubspot_client  # noqa: PLC0415
+        from ingest.connectors.base import Boto3SecretProvider  # noqa: PLC0415
+
+        _hs_secrets = Boto3SecretProvider()
+
+        def _hubspot_resolver(tenant_id, _secrets=_hs_secrets):
+            return tenant_hubspot_client(tenant_id, _secrets)
+
         # Real tool executor: registry dispatch with tenant-bound clients (RLS via SET LOCAL).
         executor = make_executor(greenlight=greenlight, crm=crm, rag=rag, cube=cube,
-                                 cortex=cortex, spec_generator=spec_generator)
+                                 cortex=cortex, spec_generator=spec_generator,
+                                 hubspot_resolver=_hubspot_resolver)
     else:
         greenlight = Greenlight()
         saved_views = SavedViews(allowed_members=allowed_members)

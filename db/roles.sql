@@ -212,3 +212,18 @@ REVOKE DELETE ON tasks FROM crm_app;
 -- explicitly so the append-only intent is not silently superseded, and a roles.sql re-run
 -- converges a grant-history live DB to this design.
 REVOKE UPDATE, DELETE ON points_ledger FROM crm_app;
+
+-- ---------------------------------------------------------------------------
+-- crm_records — the full-fidelity connector extract (RLS-FORCEd tenant table; see schema.sql).
+-- EXPLICIT grant for the same fresh-load reason as the blocks above: schema.sql creates the table
+-- BEFORE roles.sql's ALTER DEFAULT PRIVILEGES runs, so crm_app has ZERO privileges on it until this
+-- line lands — without it the connector's full-extract upsert permission-denies.
+--   SELECT/INSERT/UPDATE: the sink UPSERTs records (INSERT .. ON CONFLICT (tenant_id,source,
+--   object_type,source_ref_id) DO UPDATE) and reads them back. NO DELETE: a record is soft-archived
+--   (archived_at), never erased by the app — same reversible soft-delete as the typed CRM tables.
+-- ---------------------------------------------------------------------------
+GRANT SELECT, INSERT, UPDATE ON crm_records TO crm_app;
+-- The ALTER DEFAULT PRIVILEGES block above hands DELETE to crm_app on tables created later by the
+-- migration role. Revoke it explicitly so the soft-archive-not-erase intent is not silently
+-- superseded, and a roles.sql re-run converges a grant-history live DB to this design.
+REVOKE DELETE ON crm_records FROM crm_app;

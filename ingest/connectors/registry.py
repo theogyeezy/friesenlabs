@@ -280,3 +280,41 @@ def build_sync_connector(
         spec.client_arg: client,
     }
     return spec.connector_cls(tenant_id, **kwargs)
+
+
+def build_hubspot_full_connector(
+    tenant_id: str,
+    *,
+    secrets=None,
+    dsn: str | None = None,
+    conn_factory=None,
+    client: Any = None,
+    secret_writer=None,
+    token: str | None = None,
+):
+    """Build a ready-to-run HubSpot FULL-extract connector for one tenant.
+
+    ADDITIVE: this is a SEPARATE path from `build_sync_connector` (the typed contacts/companies/
+    deals + vector sync) — it lands the full-fidelity `crm_records` and never touches the existing
+    flow. The tenant's OAuth token is resolved by REUSING `HubSpotConnector.authenticate()` (same
+    vault read + refresh + write-back — never duplicated); pass `token` to skip auth (the pasted-key
+    path / tests). Exactly one of `dsn`/`conn_factory` feeds the sink (PgCrmRecordsSink validates).
+    """
+    from ingest.connectors.hubspot import HubSpotConnector  # noqa: PLC0415 — avoid import cycle
+    from ingest.connectors.hubspot_full import (  # noqa: PLC0415
+        HubSpotFullClient,
+        HubSpotFullConnector,
+    )
+    from ingest.sinks import PgCrmRecordsSink  # noqa: PLC0415 — psycopg2 only here
+
+    full_client = client if client is not None else HubSpotFullClient()
+    if token is not None:
+        full_client.set_token(token)
+    else:
+        # The sinks are unused during authenticate(); it only resolves + set_token's the client.
+        HubSpotConnector(
+            tenant_id, client=full_client, secrets=secrets,
+            raw_sink=None, structured_sink=None, secret_writer=secret_writer,
+        ).authenticate()
+    sink = PgCrmRecordsSink(dsn=dsn, conn_factory=conn_factory)
+    return HubSpotFullConnector(full_client, sink)
