@@ -169,6 +169,23 @@ adversarial audit then a 4-wave build. **22 PRs squash-merged to `main` (green),
   registry + a real retrain + seeded knowledge corpus. Legal/Terms/Privacy pages + the
   placeholder-501(c)(3) landing copy are still open (deliberately deferred).
 
+## Build principle — ship complete, never partial (Matt, 2026-06-13)
+**Anytime you build, the product must be fully fleshed out, wired, integrated, and implemented
+end to end — backend, frontend, and cloud where necessary — so it works with no human intervention
+or manual promotion needed. Write clean, scalable, enterprise-grade code.**
+
+A feature is NOT done if any layer is stubbed, a wire is left dangling, a TODO defers the real
+implementation, or a manual step is required to make it function. "Works on my branch with a mock"
+is not works. Carry every change through all the layers it touches (DB/migration → API → agent/tool
+wiring → frontend → infra/config) and verify it runs, not just compiles. The ONLY acceptable
+remaining manual steps are things genuinely external to the code (registering a third-party app,
+an owner-gated production deploy, seeding a real secret) — and those must be called out explicitly,
+not left implicit.
+
+> Matt's words: "Make sure anytime you build, the product is fully fleshed out, wired, integrated
+> and implemented with backend, frontend and cloud if necessary. No human intervention or promotion
+> should be needed. Write clean scalable enterprise code."
+
 ## How we build
 - **Dependency order, not feature order.** Phase 0 → 12. Don't start a phase whose inputs
   don't exist. The Build Guide (`docs/`, local-only) is the source of truth for order + commands.
