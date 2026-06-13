@@ -469,7 +469,13 @@ def post_form(url: str, fields: dict) -> dict:
     data = urllib.parse.urlencode(fields).encode("utf-8")
     req = urllib.request.Request(
         url, data=data, method="POST",
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            # GoHighLevel/LeadConnector token endpoint is Cloudflare-fronted and BANS urllib's
+            # default User-Agent (error 1010 → 403), which would break OAuth exchange/refresh from
+            # a datacenter (AWS) egress. A named UA clears it; harmless for other providers.
+            "User-Agent": "Uplift-Connector/1.0 (+https://friesenlabs.com)",
+        },
     )
     try:
         with urllib.request.urlopen(req, timeout=_POST_TIMEOUT_S) as resp:  # noqa: S310 — fixed https provider URL

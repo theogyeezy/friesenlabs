@@ -462,6 +462,10 @@ _PROBES: dict[str, dict[str, Any]] = {
 }
 
 _PROBE_TIMEOUT_SECONDS = 8
+# GoHighLevel (and other Cloudflare-fronted providers) BAN urllib's default "Python-urllib/x.y"
+# User-Agent (Cloudflare error 1010 → 403), which the prober would misread as "token rejected".
+# A named UA clears it; harmless for the non-Cloudflare providers. (Mirrors the connector clients.)
+_PROBE_USER_AGENT = "Uplift-Connector/1.0 (+https://friesenlabs.com)"
 
 
 def probe_token(source: str, token: str) -> bool | None:
@@ -475,6 +479,7 @@ def probe_token(source: str, token: str) -> bool | None:
 
     req = urllib.request.Request(spec["url"], method="GET")
     req.add_header("Authorization", f"Bearer {token}")
+    req.add_header("User-Agent", _PROBE_USER_AGENT)  # avoid Cloudflare 1010 false "token rejected"
     for k, v in spec["headers"].items():
         req.add_header(k, v)
     try:

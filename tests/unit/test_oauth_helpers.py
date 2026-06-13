@@ -168,3 +168,31 @@ def test_oauth_config_gate_and_redirect_uri():
     assert cfg.configured() is True
     assert cfg.redirect_uri("hubspot") == "https://api.x/integrations/hubspot/oauth/callback"
     assert cfg.return_url() == "/"  # empty app_return_url -> root
+
+
+def test_post_form_sends_nondefault_user_agent(monkeypatch):
+    """The OAuth token endpoint (GHL/LeadConnector) is Cloudflare-fronted and bans urllib's default
+    UA (1010 -> 403), breaking exchange/refresh from AWS. post_form must send a named UA."""
+    import urllib.request
+
+    from ingest.connectors import oauth
+
+    seen = {}
+
+    class _Resp:
+        def read(self):
+            return b'{"ok": 1}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        seen["ua"] = req.get_header("User-agent")
+        return _Resp()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    oauth.post_form("https://services.leadconnectorhq.com/oauth/token", {"grant_type": "x"})
+    assert seen["ua"] and not seen["ua"].lower().startswith("python-")

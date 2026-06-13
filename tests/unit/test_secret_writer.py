@@ -191,3 +191,28 @@ def test_secret_exists_false_when_deletion_scheduled():
     sm = FakeSmWithDelete(deleted_pending={"uplift/A/hubspot"})
     w = Boto3SecretWriter(client=sm)
     assert w.secret_exists("uplift/A/hubspot") is False
+
+
+def test_probe_token_sends_nondefault_user_agent(monkeypatch):
+    """GHL/Cloudflare BANS urllib's default UA (error 1010 -> 403), which the prober would misread
+    as 'token rejected'. probe_token must send a named UA. Regression guard."""
+    import urllib.request
+
+    from api.integrations_routes import probe_token
+
+    seen = {}
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        seen["ua"] = req.get_header("User-agent")
+        return _Resp()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    assert probe_token("gohighlevel", "tok") is True
+    assert seen["ua"] and not seen["ua"].lower().startswith("python-")  # not the banned default

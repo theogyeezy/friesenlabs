@@ -360,5 +360,8 @@ def build_gohighlevel_full_connector(
             tenant_id, client=full_client, secrets=secrets,
             raw_sink=None, structured_sink=None, secret_writer=secret_writer,
         ).authenticate()
-    sink = PgCrmRecordsSink(dsn=dsn, conn_factory=conn_factory)
+    # source="gohighlevel" is REQUIRED: PgCrmRecordsSink defaults to "hubspot", and crm_records'
+    # PK is (tenant_id, source, object_type, source_ref_id) — without this, GHL rows land mislabeled
+    # as HubSpot and collide with real HubSpot rows.
+    sink = PgCrmRecordsSink(dsn=dsn, conn_factory=conn_factory, source="gohighlevel")
     return GoHighLevelFullConnector(full_client, sink)
