@@ -40,7 +40,28 @@ What remains is **owner-gated** (infra flips/seeding — see P0/P1 below), **web
 ### Full per-feature breakdown (all incomplete features, by area)
 
 ### Chat & agent plane (Balto, citations, tools)
-- [ ] **Live-runtime citations (grounded RAG on the real coordinator path)** — `partial`
+- [x] **Live-runtime citations** — LIVE-VERIFIED 2026-06-12 (browser, demo tenant): grounded
+  answer with 11 citations across 4 `demo:kb:` docs, `grounding_status=grounded`,
+  `retrieved_count=8`, in one fast-lane request. _(The near-live ManagedAgentsRuntime
+  integration-test item below stays open for CI coverage.)_
+- [ ] **Chat polish (post fast-lane, 2026-06-12):** ~~persist the MA session id per tenant~~
+  DONE (same day): `tenant_workspaces.session_id` + runtime resume with lazy ledger priming +
+  cache forget-on-terminated — PROVEN LIVE (the Vada Fenwick follow-up carried context across
+  a stalled turn + worker restart). Remaining: bound fast-lane citation snippets to ~320 chars (they
+  carry the full chunk); optional Haiku router behind the `conv/router.py` seam; SSE streaming.
+- [ ] **Worker session discovery is STARTUP-BOUND (live finding, 2026-06-12, P1):** _(mitigated:
+  deploy.yml now rolls uplift-worker after the api roll — every deploy refreshes the watch set;
+  the SDK re-discovery question + upstream report remain open)_ the SDK
+  `EnvironmentWorker` only attaches to sessions present at startup — every session created
+  after the worker last rolled gets NO tool service (turns stall silently until a worker
+  restart; deploy.yml rolls only the api). Fix: roll uplift-worker in deploy.yml (cheap), and/or
+  a periodic worker self-restart / SDK re-discovery (verify the SDK's discovery contract —
+  this may be an SDK beta gap worth reporting). Until fixed: restart the worker after deploys.
+- [ ] **Suppress the "documents couldn't verify" grounding note on CRM-answered crew turns** —
+  it renders under answers served from `read_crm` tool_results (live: the Vada Fenwick contact
+  answer), where the document corpus is irrelevant; skip the note when the turn carried served
+  CRM tool results.
+- [ ] **(was) Live-runtime citations (grounded RAG on the real coordinator path)** — `partial`
   - ~~Seed the demo tenant knowledge corpus~~ DONE 2026-06-12 (26 docs, retrieval verified in-VPC).
   - Add a live or near-live integration test that proves a populated corpus yields grounded citations through ManagedAgentsRuntime (current coverage is FakeRuntime/unit only).
   - ~~Turns ended at the first `requires_action` idle~~ FIXED (settle loop): the live browser
@@ -55,6 +76,27 @@ What remains is **owner-gated** (infra flips/seeding — see P0/P1 below), **web
   across short requests, ChatDock auto-continues with progressive narration — zero human nudges.
   Remaining (optional polish): SSE streaming instead of polling; multi-task api stickiness
   (the in-flight Conversation cache is per-process — fine at the current single api task).
+  - ~~Orphan-consumed turn wedge~~ FIXED (round 7, live matrix 2026-06-12): a /chat whose
+    client died (closed tab) keeps draining server-side, marks every event seen, and loses
+    the response — every later continue read a silent idle stream and surfaced
+    `stream_interrupted` forever (observed live: 10+ continues on a session idle for
+    minutes). A zero-progress drop on a log ending at a non-`requires_action` idle now
+    force-replays the tail past the ledger and settles with the real answer.
+- [ ] **One shared MA session per tenant — concurrent turns interfere** _(live matrix finding
+  2026-06-12, sev medium)_: two browser tabs (or two users) of the same tenant interleave
+  `user.message`s into the SAME coordinator session. Turns serialize on the tenant turn lock
+  (a second tab's continue blocks >57s → edge 504s), and one request's drain consumes another
+  turn's final events (the answer lands in the wrong/no response — the continue priming marks
+  through the LAST user.message, which may be the other tab's). Fix direction: per-conversation
+  sessions (session-per-chat-thread keyed in `tenant_workspaces`/a new table) or a turn-id
+  watermark so drains only consume their own turn's events.
+- [ ] **"Queue it for my approval" never reaches the Greenlight queue** _(live matrix finding
+  2026-06-12, sev medium)_: the crew staged the Vada Fenwick follow-up via `draft_email`
+  (compose-only; returned a draft object) so `/approvals` stayed empty — the user has no
+  Greenlight item to approve, and the draft also auto-generates its body rather than carrying
+  the agent-approved wording. Either route `draft_email` output into a `send_email`
+  queued_for_approval proposal (draft-only held), or teach the coordinator to finish the
+  flow with the gated `send_email` so the approval queue is the single surface.
 - [ ] **NL refine of an existing saved view (POST /views/{id}/refine)** — `not-wired`
   - Wire a real view_patcher (an agent-runtime spec patcher, analogous to AnthropicSpecGenerator) into build_app() ApiDeps so POST /views/{id}/refine works, or remove the route if NL-refine is deferred.
   - Add a real-mode test for view refine once wired.
@@ -365,7 +407,16 @@ approve a non-CAN-SPAM draft at all (decide-time 422). Follow-ups:
   so run status "pending" suggests Greenlight drafts where none exist. Split unserved-call
   entries from routed drafts in `RunRecord` (e.g. `calls_unserved` vs `actions_proposed`) and
   surface the difference in the Studio runs panel.
-- [ ] **Worker didn't serve read-only calls within the scheduled run's drain window** — the
+- [x] **Worker didn't serve read-only calls within the scheduled run's drain window** —
+  **ROOT-CAUSED + FIXED 2026-06-12: the chat-tuned 25s settle default
+  (`DEFAULT_TURN_SETTLE_SECONDS`, edge-bounded by design) starved the worker's
+  poll+serve+model-continue cycle on playbook turns (both live sightings surfaced at exactly
+  +25s). `get_runtime` now passes `settle_budget_s` through, and each playbook leg gets its
+  own: scheduled (one-off task) + event (background thread) = 120s
+  (`UPLIFT_PLAYBOOK_SETTLE_SECONDS`); HTTP-bound Run-now = 45s under the 60s edge ceilings
+  (`UPLIFT_RUNNOW_SETTLE_SECONDS`). Chat keeps its default + async continue-leg. If Run-now
+  still clips occasionally, the 202-async run pattern (the integrations "Sync now" shape) is
+  the durable follow-up.** — the
   same two `read_crm`/`query_cube` calls were still open when `send_message` returned.
   Investigate worker claim latency on dispatch-initiated sessions (2/2 polling at the time).
 ## Switchboard customer-readiness audit — TODOs (2026-06-11, Lane Matt)
@@ -550,10 +601,27 @@ connector VERIFY/IAM, batch-embed live run) are NOT repeated below.
   Add `grounding_status` (`grounded` / `no_sources_found` / `synthesis_unavailable`) +
   `retrieved_count` to `/chat` responses; render in `ChatDock`; structured-log dropped claims.
 
+### Shipped after the audit (Lane Matt)
+- [x] **Editable knowledge pages — Notion-style workspace (#332, 2026-06-12)** — the corpus is
+  now a real pages surface, end to end: every upload also lands a `<ref>#raw` row (the exact
+  original, embedding NULL — invisible to search; chunks land first so a mid-write failure
+  can only mean "indexed, not yet editable"); `GET /knowledge/documents` +
+  `GET/PUT/DELETE /knowledge/documents/{ref}` (edit re-ingests through the SAME seam as POST,
+  new namespace lands BEFORE the old is removed, cleanup failure → `previous_removed:false`,
+  never a lost doc); KnowledgeView rebuilt as a two-pane workspace (pages rail · safe-markdown
+  reader · write/preview editor with ⌘S + dirty-guard + two-step delete · search hit → Open
+  page). Legacy pre-raw uploads incl. the seeded `demo:kb:*` corpus list/read/delete honestly
+  read-only (edit → 409). NO schema change (rides `documents` + the existing crm_app DELETE
+  grant). 8 unit + 31 integration + 19 Playwright knowledge tests; full pytest + full
+  Playwright suite green. Web deploy ahead of the API degrades to a calm pages-rolling-out
+  note (inventory + search stay useful).
+
 ### P1 — soon after
-- [ ] **Differentiate degrade reasons + stop silent degraded modes** — every embed failure
-  reads "search model not configured" (`api/knowledge_routes.py:139-146`, type-only WARNING);
-  UI says "warming up" even for permanent config gaps (`KnowledgeView.tsx:318-329`);
+- [ ] **Differentiate degrade reasons + stop silent degraded modes** — _(knowledge-tab half
+  DONE in #334: `EmbedderUnavailable` typed boundary in `PgRagClient._embed`, search degrade
+  splits embedder-down ("warming up") from post-embed transient failures (retry copy +
+  `reason_code` on the wire, full-detail server logs). REMAINING: the synthesizer/worker
+  halves below.)_ `AnthropicSynthesizer` swallows client-build failures unlogged;
   `AnthropicSynthesizer` swallows client-build failures unlogged
   (`conv/synthesizer.py:136-139`); the worker boots silently with `rag=None`
   (`worker/worker.py:170-177`). Reason codes (transient vs unconfigured), matching UI copy,
@@ -570,20 +638,23 @@ connector VERIFY/IAM, batch-embed live run) are NOT repeated below.
   coordinator's; citations come from an independent `_grounded_answer` synthesis
   (`conv/session.py:403-407`), so claims may not match the prose. Merge/dedupe or render the
   grounded claims as their own block.
-- [ ] **Onboarding never touches knowledge** — `STEP_IDS` (`api/onboarding_routes.py:51`) has
-  no knowledge step and `/onboarding/load-sample` seeds CRM only. Seed a small sample corpus
-  with load-sample (reuse `agents/knowledge_seed`). _(The empty-state half is DONE in #251 —
-  it now guides the customer to add a document / connect sources instead of the false
-  "fills in automatically" promise.)_
-- [ ] **Unprovisioned ≠ rolling-out** — DSN-unwired `GET /knowledge` is a bare 404
-  (`knowledge_routes.py:78-81`) the UI renders as "rolling out" + refresh forever
-  (`KnowledgeView.tsx:136-143`). Carry a reason code; distinct copy.
+- [x] **Onboarding never touches knowledge** _(DONE in #337, 2026-06-12)_ — load-sample now
+  seeds 3 clearly-labelled EDITABLE sample pages (pricing/refunds/FAQ) through the SAME
+  build_doc_ingestor seam the Knowledge tab rides (idempotent; honest pages_seeded:0 + reason
+  when the ingest plane is unwired; a seeding failure never fails the CRM load). A knowledge
+  checklist STEP id was deliberately NOT added (web checklist churn — revisit if wanted).
+  _(The empty-state half was DONE in #251.)_
+- [x] **Unprovisioned ≠ rolling-out** _(DONE in #334, 2026-06-12)_ — a 503 from
+  `GET /knowledge` (data plane unwired) now renders its own calm "isn't switched on for this
+  workspace yet" panel, distinct from the 404 "rolling out after the next deploy" story.
 
 ### P2 — hygiene
-- [ ] Search pagination/total (`MAX_SEARCH_LIMIT=25`, no offset/total_hits in
-  `api/knowledge_routes.py`).
-- [ ] Embedding-dim assert at search time (upsert validates 1024, search assumes —
-  `api/pg_clients.py:317-337`).
+- [x] Search pagination _(DONE in #339, 2026-06-12 — clamped offset + next_offset, "Show
+  more results" appends in place; a deliberate depth cap of 200 instead of total_hits:
+  semantic rank decays fast and a corpus-wide COUNT per query buys nothing)_.
+- [x] Embedding-dim assert at search time _(DONE in #339 — real lazy-Titan path only,
+  raises the typed EmbedderUnavailable; the injected test seam stays dim-unchecked by
+  design)_.
 - [ ] Fix the stale `ingest/run_sync.py:~172` docstring ("structured sink stays IN-MEMORY in
   both modes" — false since #231).
 - [ ] Test gaps: real-DB empty-tenant `/knowledge` integration test; `PgCrmStructuredSink`

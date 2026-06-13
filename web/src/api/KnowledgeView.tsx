@@ -1,27 +1,30 @@
-// Knowledge view, wired to the control-plane API via ApiClient — the real-mode
-// counterpart of the FLStore Knowledge prototype (src/screens/knowledge.tsx,
-// mock mode only). Follows the AgentsRoster/WorkflowsView conventions exactly.
-// Everything rendered here is honest:
+// Knowledge view, wired to the control-plane API via ApiClient — a Notion-style
+// knowledge workspace over the real /knowledge surface. Follows the
+// AgentsRoster/WorkflowsView conventions exactly. Everything rendered here is
+// honest:
 //
+//   * PAGES (the editable corpus) ride GET/POST/PUT/DELETE /knowledge/documents:
+//     a left rail lists every uploaded document (title + preview straight from
+//     the stored original); the reader renders the EXACT stored text through the
+//     safe markdown subset renderer (spec-not-code: react nodes only, no HTML,
+//     no links); the editor round-trips it. Changed content lands under a NEW
+//     ref server-side — the view follows the returned ref. A legacy upload
+//     (predates raw-original storage) lists read-only with its indexed chunk
+//     texts and an honest re-add-to-edit note — never reconstructed content.
+//   * The pages endpoints can be AHEAD of the live API image (the web deploys
+//     first): a 404/503 from GET /knowledge/documents degrades to a calm
+//     "pages are rolling out" note in the rail while inventory + search stay
+//     fully useful. Same honesty the inventory itself has had since day one.
 //   * The inventory comes straight from GET /knowledge: per-source document
-//     counts + the newest-ingested timestamp + totals, RLS-scoped server-side.
-//     A plain aggregate (no embedder), so it's honest the moment the data
-//     plane is wired. An un-ingested tenant gets a calm empty state — never an
-//     invented corpus.
-//   * Search rides GET /knowledge/search (cosine similarity over the tenant's
-//     corpus): ref_id + source + a bounded snippet + score. The API embeds the
-//     query with Titan (Bedrock) at call time — env-key-gated on the live task
-//     today — so when the model isn't reachable the API answers
-//     search_available: false and this view shows a calm "search is warming up"
-//     note, NOT an error. The inventory stays useful regardless.
-//   * Documents can be ADDED directly (POST /knowledge/documents — paste a doc,
-//     the API chunks + embeds it under the verified tenant; knowledge audit P0).
-//     A 503 means uploads aren't switched on for this deployment (the ingest
-//     plane's INGEST_REAL_STORES gate) — the form degrades to honest copy, never
-//     a fake success. Delete is deliberately absent this cycle.
-//   * A 404 from /knowledge means the live API image predates these routes (the
-//     web can deploy ahead of the API): a calm "rolling out" state with a
-//     refresh affordance — NOT an error wall.
+//     counts + newest-ingested timestamp, RLS-scoped server-side. An un-ingested
+//     tenant gets a calm empty state — never an invented corpus.
+//   * Search rides GET /knowledge/search (cosine over the tenant's corpus). When
+//     the embedder isn't reachable the API answers search_available: false and
+//     this view shows a calm "search is warming up" note, NOT an error. A hit in
+//     the editable corpus opens its page in place.
+//   * Saving a page when uploads aren't switched on (the ingest plane's
+//     INGEST_REAL_STORES gate answers 503) degrades to honest copy — the
+//     document did NOT land, never a fake success.
 //   * Raw transport strings ("API <code>", server detail dumps) never reach the
 //     DOM — every catch routes through friendlyErrorMessage.
 
@@ -31,14 +34,17 @@ import {
   ApiError,
   defaultClient,
   friendlyErrorMessage,
+  type KnowledgeDocumentDetail,
+  type KnowledgeDocumentSummary,
   type KnowledgeInventoryResponse,
   type KnowledgeSearchResponse,
   type KnowledgeSearchResult,
   type KnowledgeSource,
 } from "./client";
 import { Spinner } from "./Spinner";
+import { SafeMarkdown } from "../dashboard/markdown";
 
-const { useState, useEffect, useCallback } = React;
+const { useState, useEffect, useCallback, useLayoutEffect, useRef } = React;
 
 // Mirrors api/knowledge_routes.py MAX_Q_LEN — the input enforces it so typing
 // can never produce a 422.
@@ -55,7 +61,7 @@ const SOURCE_LABELS: Record<string, string> = {
   stripe: "Stripe",
   call: "Calls",
   email: "Email",
-  upload: "Uploads",
+  upload: "Pages",
 };
 
 function sourceLabel(source: string | null): string {
@@ -72,6 +78,12 @@ function fmtWhen(iso: string | null): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
+/** A search hit's chunk-family prefix: 'upload:pricing-policy-ab12cd34#2' -> the page ref. */
+function hitRefPrefix(refId: string | null): string | null {
+  if (!refId) return null;
+  return refId.split("#")[0];
 }
 
 // ---------------------------------------------------------------------------
@@ -96,6 +108,13 @@ const ghostBtn: React.CSSProperties = {
   cursor: "pointer",
 };
 
+const primaryBtn: React.CSSProperties = {
+  ...ghostBtn,
+  background: "var(--ink, #2a2622)",
+  color: "#fff",
+  border: "none",
+};
+
 const muted: React.CSSProperties = { color: "var(--ink-3, #8a8278)" };
 
 const sourceBadge: React.CSSProperties = {
@@ -112,35 +131,121 @@ const sourceBadge: React.CSSProperties = {
   color: "var(--ink-2, #5d564d)",
 };
 
+const fieldStyle: React.CSSProperties = {
+  width: "100%",
+  boxSizing: "border-box",
+  padding: "9px 12px",
+  borderRadius: 10,
+  border: "1px solid var(--line, #e3ddd3)",
+  background: "var(--surface, #fff)",
+  color: "var(--ink, #2a2622)",
+  fontSize: 14,
+  fontFamily: "inherit",
+};
+
+// The two-pane workspace collapses on small screens; a tiny scoped stylesheet
+// beats prop-drilling a resize observer for one breakpoint.
+const LAYOUT_CSS = `
+  .kn-grid { display: grid; grid-template-columns: 290px minmax(0, 1fr); gap: 20px; align-items: start; }
+  .kn-rail { position: sticky; top: 16px; display: flex; flex-direction: column; gap: 18px; }
+  .kn-page-btn { display: block; width: 100%; text-align: left; padding: 8px 10px; border: none;
+    border-radius: 9px; background: transparent; cursor: pointer; font-family: inherit; }
+  .kn-page-btn:hover { background: var(--accent-soft, #f4f1ea); }
+  .kn-page-btn.sel { background: var(--accent-soft, #f4f1ea); }
+  @media (max-width: 800px) { .kn-grid { grid-template-columns: 1fr; } .kn-rail { position: static; } }
+`;
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
+type EditorState =
+  | { mode: "closed" }
+  | { mode: "new"; title: string; content: string }
+  | { mode: "edit"; refId: string; title: string; content: string; baseTitle: string; baseContent: string };
+
 export interface KnowledgeViewProps {
   client?: ApiClient;
+  /** Open this page on mount / when it changes (the in-shell citation → page path).
+   * The `?doc=` URL param covers the same need for standalone/deep-link mounts. */
+  initialPageRef?: string | null;
+  /** Called once after `initialPageRef` is applied, so the owner can clear its state
+   * (a later remount must not re-open a page the user already navigated away from). */
+  onInitialPageConsumed?: () => void;
 }
 
-export function KnowledgeView({ client }: KnowledgeViewProps) {
+/** The `?doc=` deep-link target, read ONCE at module use (mount): every knowledge page is
+ * linkable as /?view=knowledge&doc=<ref> — citations in standalone chat ride this. */
+function docParamRef(): string | null {
+  try {
+    return new URLSearchParams(window.location.search).get("doc");
+  } catch {
+    return null;
+  }
+}
+
+export function KnowledgeView({ client, initialPageRef, onInitialPageConsumed }: KnowledgeViewProps) {
   const api = client ?? defaultClient();
   const [data, setData] = useState<KnowledgeInventoryResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [rollout, setRollout] = useState(false);
+  // "rollout" = the live image predates the route (404 — refresh after the next deploy);
+  // "unprovisioned" = the API answered but the data plane isn't wired for this deployment
+  // (503). Distinct copy (knowledge audit P1: unprovisioned ≠ rolling-out) — both calm.
+  const [rollout, setRollout] = useState<false | "rollout" | "unprovisioned">(false);
 
-  // Search state — independent of the inventory load.
+  // Pages (the editable corpus) — independent of the inventory load so either
+  // surface staying useful never depends on the other.
+  const [pages, setPages] = useState<KnowledgeDocumentSummary[] | null>(null);
+  // False until the knowledge_pages migration runs (or on an older API image): the rail
+  // stays the honest flat list and every organize affordance is hidden.
+  const [organizeAvailable, setOrganizeAvailable] = useState(false);
+  // The reader's Move panel + its honest notes.
+  const [moveOpen, setMoveOpen] = useState(false);
+  const [moveNote, setMoveNote] = useState<string | null>(null);
+  const [moving, setMoving] = useState(false);
+  // Collapsed tree nodes (session-local — collapse state isn't worth a server round trip).
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  // "+ Sub-page": the new-page editor nests its result under this ref right after the POST.
+  const pendingParentRef = useRef<string | null>(null);
+  const [pagesRollout, setPagesRollout] = useState(false);
+  const [pagesError, setPagesError] = useState<string | null>(null);
+
+  // The open page.
+  const [openRef, setOpenRef] = useState<string | null>(null);
+  const [doc, setDoc] = useState<KnowledgeDocumentDetail | null>(null);
+  const [docLoading, setDocLoading] = useState(false);
+  const [docError, setDocError] = useState<string | null>(null);
+  const [cleanupNote, setCleanupNote] = useState(false); // previous_removed: false after an edit
+
+  // Editor (new page / edit page).
+  const [editor, setEditor] = useState<EditorState>({ mode: "closed" });
+  const [editorPreview, setEditorPreview] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [addNote, setAddNote] = useState<string | null>(null);
+  const [addError, setAddError] = useState<string | null>(null);
+  const [uploadsOff, setUploadsOff] = useState(false);
+
+  // Delete (two-step confirm, inline).
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  // Search state — independent of everything else.
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState<KnowledgeSearchResponse | null>(null);
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
 
-  // Add-document state (knowledge audit P0: the customer corpus-add path).
-  const [adding, setAdding] = useState(false);
-  const [docTitle, setDocTitle] = useState("");
-  const [docContent, setDocContent] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [addNote, setAddNote] = useState<string | null>(null);
-  const [addError, setAddError] = useState<string | null>(null);
-  const [uploadsOff, setUploadsOff] = useState(false);
+  // Rail filter — pure client-side narrowing of the loaded pages list (the semantic
+  // search box above is the corpus-wide tool; this is for eyeballing a long rail).
+  const [pageFilter, setPageFilter] = useState("");
+
+  const titleRef = useRef<HTMLInputElement | null>(null);
+  const contentRef = useRef<HTMLTextAreaElement | null>(null);
+  // Where the caret belongs after a programmatic list-continuation edit — applied in a
+  // layout effect (synchronously after commit, BEFORE the next key event can land), so
+  // fast typing can never race the caret restore.
+  const pendingCursor = useRef<number | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -151,9 +256,9 @@ export function KnowledgeView({ client }: KnowledgeViewProps) {
     } catch (e) {
       setData(null);
       if (e instanceof ApiError && (e.status === 404 || e.status === 503)) {
-        // 404 = live API image predates the route; 503 = reader unconfigured.
-        // Both degrade to the calm rollout panel — never a red error wall.
-        setRollout(true);
+        // 404 = live API image predates the route; 503 = data plane unconfigured.
+        // Distinct calm copy for each — never a red error wall.
+        setRollout(e.status === 404 ? "rollout" : "unprovisioned");
       } else {
         setError(friendlyErrorMessage(e, "Couldn't load your knowledge base. Please try again."));
       }
@@ -162,18 +267,368 @@ export function KnowledgeView({ client }: KnowledgeViewProps) {
     }
   }, [api]);
 
+  const loadPages = useCallback(async () => {
+    setPagesRollout(false);
+    setPagesError(null);
+    try {
+      const res = await api.listKnowledgeDocuments();
+      setPages(res.documents);
+      setOrganizeAvailable(res.organize_available === true);
+    } catch (e) {
+      setPages(null);
+      if (e instanceof ApiError && (e.status === 404 || e.status === 503)) {
+        // The web can deploy ahead of the API image — calm note, not an error.
+        setPagesRollout(true);
+      } else {
+        setPagesError(friendlyErrorMessage(e, "Couldn't load your pages. Please try again."));
+      }
+    }
+  }, [api]);
+
   useEffect(() => {
     void load();
-  }, [load]);
+    void loadPages();
+  }, [load, loadPages]);
+
+  // Citation → page. Two paths: the in-shell PROP (consumed-and-cleared by the owner, so
+  // re-clicking the same citation is a fresh null→ref transition and opens again), and the
+  // ?doc= deep-link param (once, on mount). openPage 404s honestly if the ref isn't a page.
+  const docParamApplied = useRef(false);
+  useEffect(() => {
+    if (initialPageRef) {
+      setEditor({ mode: "closed" });
+      void openPage(initialPageRef);
+      onInitialPageConsumed?.();
+      return;
+    }
+    if (!docParamApplied.current) {
+      docParamApplied.current = true;
+      const target = docParamRef();
+      if (target) {
+        setEditor({ mode: "closed" });
+        void openPage(target);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps — fires per prop change only;
+    // re-running on openPage recreation must not re-open a page the user navigated away from.
+  }, [initialPageRef]);
+
+  const openPage = useCallback(
+    async (refId: string) => {
+      setOpenRef(refId);
+      setDoc(null);
+      setDocError(null);
+      setCleanupNote(false);
+      setConfirmingDelete(false);
+      setMoveOpen(false);
+      setMoveNote(null);
+      setDocLoading(true);
+      try {
+        setDoc(await api.getKnowledgeDocument(refId));
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 404) {
+          // The page vanished between list and open (deleted elsewhere) — honest copy
+          // and a fresh list, never a stale ghost.
+          setDocError("That page isn't in your knowledge base anymore.");
+          void loadPages();
+        } else {
+          setDocError(friendlyErrorMessage(e, "Couldn't open that page. Please try again."));
+        }
+      } finally {
+        setDocLoading(false);
+      }
+    },
+    [api, loadPages],
+  );
+
+  // --- editor ----------------------------------------------------------------
+
+  const editorDirty =
+    editor.mode === "new"
+      ? editor.title.trim() !== "" || editor.content.trim() !== ""
+      : editor.mode === "edit"
+        ? editor.title !== editor.baseTitle || editor.content !== editor.baseContent
+        : false;
+
+  const guardDiscard = (): boolean => {
+    if (editor.mode === "closed" || !editorDirty) return true;
+    return window.confirm("Discard unsaved changes to this page?");
+  };
+
+  const startNewPage = () => {
+    if (!guardDiscard()) return;
+    pendingParentRef.current = null;
+    setEditor({ mode: "new", title: "", content: "" });
+    setEditorPreview(false);
+    setAddNote(null);
+    setAddError(null);
+    setConfirmingDelete(false);
+    setTimeout(() => titleRef.current?.focus(), 0);
+  };
+
+  /** "+ Sub-page": a new page that nests itself under the open page right after the POST. */
+  const startSubPage = () => {
+    if (!doc) return;
+    startNewPage();
+    pendingParentRef.current = doc.ref_id;
+  };
+
+  const startEdit = () => {
+    if (!doc || !doc.editable || doc.content === null) return;
+    setEditor({
+      mode: "edit",
+      refId: doc.ref_id,
+      title: doc.title,
+      content: doc.content,
+      baseTitle: doc.title,
+      baseContent: doc.content,
+    });
+    setEditorPreview(false);
+    setAddNote(null);
+    setAddError(null);
+    setConfirmingDelete(false);
+  };
+
+  const closeEditor = () => {
+    if (!guardDiscard()) return;
+    pendingParentRef.current = null;
+    setEditor({ mode: "closed" });
+    setAddError(null);
+  };
+
+  const setEditorField = (patch: Partial<{ title: string; content: string }>) => {
+    setEditor((cur) => (cur.mode === "closed" ? cur : { ...cur, ...patch }));
+  };
+
+  const saveEditor = async () => {
+    if (editor.mode === "closed" || saving) return;
+    const title = editor.title.trim();
+    const content = editor.content.trim();
+    if (!title || !content) return;
+    setSaving(true);
+    setAddError(null);
+    setAddNote(null);
+    try {
+      let refId: string | null;
+      let chunks: number;
+      let cleanupPending = false;
+      if (editor.mode === "new") {
+        const res = await api.addKnowledgeDocument(title, content);
+        refId = res.ref_id;
+        chunks = res.chunks;
+        if (refId && pendingParentRef.current && organizeAvailable) {
+          // Best-effort nest under the page that spawned this sub-page: a failure leaves
+          // it top-level (visible, movable) — never blocks the create that already landed.
+          try {
+            await api.moveKnowledgeDocument(refId, { parent_ref: pendingParentRef.current });
+          } catch {
+            /* calm: the page exists; Move can nest it later */
+          }
+        }
+        pendingParentRef.current = null;
+      } else {
+        const res = await api.updateKnowledgeDocument(editor.refId, title, content);
+        refId = res.ref_id;
+        chunks = res.chunks;
+        cleanupPending = res.previous_removed === false;
+      }
+      setAddNote(`Added "${title}" — ${chunks} ${chunks === 1 ? "section" : "sections"} indexed.`);
+      setEditor({ mode: "closed" });
+      void load(); // the inventory now includes the new upload
+      void loadPages();
+      if (refId) {
+        // Best-effort open of the saved page — if the pages surface isn't served
+        // yet (web ahead of API), the success note above already tells the story.
+        await openPage(refId);
+      }
+      // After openPage's state reset, so the honest cleanup signal survives the open.
+      setCleanupNote(cleanupPending);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 503) {
+        // The ingest plane isn't switched on for this deployment — honest copy, never
+        // a fake success (the API refused loudly; nothing landed).
+        setUploadsOff(true);
+        setEditor({ mode: "closed" });
+      } else if (err instanceof ApiError && err.status === 409) {
+        setAddError("This page predates editing — add its content as a new page instead.");
+      } else {
+        setAddError(friendlyErrorMessage(err, "Couldn't save the page. Please try again."));
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const onEditorKeyDown = (e: React.KeyboardEvent) => {
+    if ((e.metaKey || e.ctrlKey) && (e.key === "s" || e.key === "Enter")) {
+      e.preventDefault();
+      void saveEditor();
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closeEditor();
+    }
+  };
+
+  // Auto-grow the editor with its content (Notion-style: the page scrolls, not the box).
+  useEffect(() => {
+    const ta = contentRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    ta.style.height = `${Math.max(320, ta.scrollHeight)}px`;
+  }, [editor, editorPreview]);
+
+  // Enter inside a markdown list continues it ("- " / "* " / "3. " -> "4. "); Enter on an
+  // EMPTY item exits the list (removes the dangling prefix) — the Notion muscle memory.
+  const onContentKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key !== "Enter" || e.shiftKey || e.metaKey || e.ctrlKey || e.altKey) return;
+    const ta = e.currentTarget;
+    const { selectionStart, selectionEnd, value } = ta;
+    if (selectionStart !== selectionEnd) return; // replacing a selection: browser default
+    const lineStart = value.lastIndexOf("\n", selectionStart - 1) + 1;
+    const line = value.slice(lineStart, selectionStart);
+    const m = /^(\s*)(?:([-*])|(\d+)([.)]))\s/.exec(line);
+    if (!m) return;
+    e.preventDefault();
+    const [prefix, indent, bullet, num, numSep] = m;
+    let newValue: string;
+    let cursor: number;
+    if (line.length === prefix.length) {
+      // Empty item: drop the prefix, stay on this line.
+      newValue = value.slice(0, lineStart) + value.slice(selectionStart);
+      cursor = lineStart;
+    } else {
+      const next = bullet ? `${indent}${bullet} ` : `${indent}${Number(num) + 1}${numSep} `;
+      newValue = `${value.slice(0, selectionStart)}\n${next}${value.slice(selectionEnd)}`;
+      cursor = selectionStart + 1 + next.length;
+    }
+    pendingCursor.current = cursor;
+    setEditorField({ content: newValue });
+  };
+
+  useLayoutEffect(() => {
+    if (pendingCursor.current !== null && contentRef.current) {
+      contentRef.current.selectionStart = contentRef.current.selectionEnd = pendingCursor.current;
+      pendingCursor.current = null;
+    }
+  });
+
+  // --- delete ------------------------------------------------------------------
+
+  const deletePage = async () => {
+    if (!doc || deleting) return;
+    setDeleting(true);
+    try {
+      await api.deleteKnowledgeDocument(doc.ref_id);
+      setOpenRef(null);
+      setDoc(null);
+      setConfirmingDelete(false);
+      void load();
+      void loadPages();
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) {
+        // Already gone — same outcome the user wanted; refresh honestly.
+        setOpenRef(null);
+        setDoc(null);
+        void loadPages();
+      } else {
+        setDocError(friendlyErrorMessage(e, "Couldn't delete that page. Please try again."));
+      }
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  // --- organize ----------------------------------------------------------------
+
+  /** A page's whole subtree (itself + descendants) — these can never become its parent. */
+  const subtreeOf = (root: string): Set<string> => {
+    const ids = new Set<string>([root]);
+    const list = pages ?? [];
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const p of list) {
+        if (p.ref_id && !ids.has(p.ref_id) && p.parent_ref != null && ids.has(p.parent_ref)) {
+          ids.add(p.ref_id);
+          grew = true;
+        }
+      }
+    }
+    return ids;
+  };
+
+  /** One honest message per move-failure class — shared by the panel and drag-drop. */
+  const moveFailureCopy = (e: unknown): string => {
+    if (e instanceof ApiError && e.status === 503) {
+      return "Organizing is rolling out on our side — your pages are unaffected. Try again after the next update.";
+    }
+    if (e instanceof ApiError && e.status === 422) {
+      return "That move isn't possible — a page can't go under itself or one of its own sub-pages.";
+    }
+    return friendlyErrorMessage(e, "Couldn't move the page. Please try again.");
+  };
+
+  /** The shared move primitive: PATCH location + tree refresh. Returns the failure copy
+   * (null = success) so each surface renders the note in its own place. */
+  const movePage = async (
+    refId: string,
+    op: { parent_ref?: string | null; move?: "up" | "down" },
+  ): Promise<string | null> => {
+    try {
+      await api.moveKnowledgeDocument(refId, op);
+      await loadPages();
+      return null;
+    } catch (e) {
+      return moveFailureCopy(e);
+    }
+  };
+
+  const doMove = async (op: { parent_ref?: string | null; move?: "up" | "down" }) => {
+    if (!doc || moving) return;
+    setMoving(true);
+    setMoveNote(null);
+    const failure = await movePage(doc.ref_id, op);
+    setMoveNote(failure);
+    if (failure === null && "parent_ref" in op) setMoveOpen(false);
+    setMoving(false);
+  };
+
+  // --- drag-to-nest (sugar over the same location PATCH) -------------------------
+  const [dragRef, setDragRef] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<string | null>(null); // a ref or "__top__"
+  const [dragNote, setDragNote] = useState<string | null>(null);
+
+  /** A drop is allowed anywhere except the dragged page itself and its own subtree. */
+  const canDropOn = (target: string): boolean =>
+    dragRef !== null && target !== dragRef && !subtreeOf(dragRef).has(target);
+
+  const dropOn = async (target: string | null) => {
+    const ref = dragRef;
+    setDragRef(null);
+    setDropTarget(null);
+    if (!ref) return;
+    setDragNote(await movePage(ref, { parent_ref: target }));
+  };
+
+  // --- search ------------------------------------------------------------------
 
   const runSearch = useCallback(
-    async (q: string) => {
+    async (q: string, offset = 0) => {
       const term = q.trim();
       if (!term) return;
       setSearching(true);
       setSearchError(null);
       try {
-        setSearch(await api.searchKnowledge(term));
+        const res = await api.searchKnowledge(term, undefined, offset);
+        // offset > 0 = "show more": APPEND to the same query's results; anything else
+        // (a new query, a degrade, an old-API response) replaces wholesale.
+        setSearch((prev) =>
+          offset > 0 && prev !== null && prev.query === res.query &&
+          prev.search_available && res.search_available
+            ? { ...res, results: [...prev.results, ...res.results] }
+            : res,
+        );
       } catch (e) {
         setSearch(null);
         setSearchError(
@@ -191,117 +646,617 @@ export function KnowledgeView({ client }: KnowledgeViewProps) {
     void runSearch(query);
   };
 
-  const onAddDocument = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const title = docTitle.trim();
-    const content = docContent.trim();
-    if (!title || !content || saving) return;
-    setSaving(true);
-    setAddError(null);
-    setAddNote(null);
-    try {
-      const res = await api.addKnowledgeDocument(title, content);
-      setAddNote(
-        `Added "${res.title ?? title}" — ${res.chunks} ${res.chunks === 1 ? "section" : "sections"} indexed.`,
-      );
-      setDocTitle("");
-      setDocContent("");
-      setAdding(false);
-      void load(); // the inventory now includes the new upload
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 503) {
-        // The ingest plane isn't switched on for this deployment — honest copy, never
-        // a fake success (the API refused loudly; nothing landed).
-        setUploadsOff(true);
-      } else {
-        setAddError(friendlyErrorMessage(err, "Couldn't add that document. Please try again."));
-      }
-    } finally {
-      setSaving(false);
-    }
+  const clearSearch = () => {
+    setSearch(null);
+    setSearchError(null);
+    setQuery("");
   };
 
-  const openAddForm = () => {
-    setAdding(true);
-    setAddNote(null);
-  };
+  // --- pieces --------------------------------------------------------------------
 
-  // --- source inventory card ---
-  const sourceCard = (s: KnowledgeSource, i: number): React.ReactElement => (
+  const sourceRow = (s: KnowledgeSource, i: number): React.ReactElement => (
     <div
       key={`${s.source ?? "other"}-${i}`}
       data-testid="knowledge-source"
       data-source={s.source ?? ""}
-      style={{ ...card, display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "8px 2px",
+        borderTop: i === 0 ? "none" : "1px solid var(--line-2, #efe9df)",
+      }}
     >
       <span style={sourceBadge}>{sourceLabel(s.source)}</span>
-      <span style={{ fontSize: 18, fontWeight: 760, color: "var(--ink, #2a2622)" }}>
+      <span style={{ fontSize: 13, fontWeight: 720, color: "var(--ink, #2a2622)" }}>
         {fmtCount(s.document_count)}
-        <span style={{ fontSize: 12.5, fontWeight: 600, marginLeft: 5, ...muted }}>
-          {s.document_count === 1 ? "document" : "documents"}
-        </span>
       </span>
-      <span style={{ marginLeft: "auto", fontSize: 12, ...muted }}>
-        updated {fmtWhen(s.last_updated)}
-      </span>
+      <span style={{ marginLeft: "auto", fontSize: 11, ...muted }}>{fmtWhen(s.last_updated)}</span>
     </div>
   );
 
-  // --- one search hit ---
-  const resultRow = (r: KnowledgeSearchResult, i: number): React.ReactElement => (
-    <div
-      key={`${r.ref_id ?? "hit"}-${i}`}
-      data-testid="knowledge-result"
-      style={{
-        padding: "12px 0",
-        borderTop: i === 0 ? "none" : "1px solid var(--line-2, #efe9df)",
-        display: "flex",
-        flexDirection: "column",
-        gap: 6,
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-        <span style={sourceBadge}>{sourceLabel(r.source)}</span>
-        {r.score !== null && (
-          <span style={{ fontSize: 11.5, fontFamily: "var(--mono, ui-monospace, monospace)", ...muted }}>
-            {Math.round(r.score * 100)}% match
+  const pageRow = (p: KnowledgeDocumentSummary, depth = 0, hasKids = false): React.ReactElement => {
+    const sel = p.ref_id !== null && p.ref_id === openRef;
+    const isCollapsed = p.ref_id !== null && collapsed.has(p.ref_id);
+    const isDropTarget = p.ref_id !== null && dropTarget === p.ref_id;
+    return (
+      <button
+        key={p.ref_id ?? p.title}
+        data-testid="knowledge-page-item"
+        data-depth={depth}
+        className={`kn-page-btn${sel ? " sel" : ""}`}
+        style={{
+          ...(depth > 0 ? { paddingLeft: 10 + depth * 16 } : {}),
+          ...(isDropTarget ? { outline: "2px solid var(--accent, #b3552e)", outlineOffset: -2 } : {}),
+          ...(dragRef === p.ref_id ? { opacity: 0.5 } : {}),
+        }}
+        draggable={organizeAvailable && p.ref_id !== null}
+        onDragStart={(e) => {
+          if (!p.ref_id) return;
+          setDragRef(p.ref_id);
+          setDragNote(null);
+          e.dataTransfer.setData("text/plain", p.ref_id);
+          e.dataTransfer.effectAllowed = "move";
+        }}
+        onDragEnd={() => {
+          setDragRef(null);
+          setDropTarget(null);
+        }}
+        onDragOver={(e) => {
+          if (!p.ref_id || !canDropOn(p.ref_id)) return; // not preventing = drop refused
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+          setDropTarget(p.ref_id);
+        }}
+        onDragLeave={() => {
+          if (p.ref_id !== null && dropTarget === p.ref_id) setDropTarget(null);
+        }}
+        onDrop={(e) => {
+          if (!p.ref_id || !canDropOn(p.ref_id)) return;
+          e.preventDefault();
+          void dropOn(p.ref_id);
+        }}
+        onClick={() => {
+          if (!p.ref_id || !guardDiscard()) return;
+          setEditor({ mode: "closed" });
+          setAddNote(null);
+          void openPage(p.ref_id);
+        }}
+      >
+        <span
+          style={{
+            display: "block",
+            fontSize: 13.5,
+            fontWeight: sel ? 750 : 650,
+            color: "var(--ink, #2a2622)",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {hasKids && (
+            <span
+              data-testid="knowledge-page-toggle"
+              role="button"
+              aria-label={isCollapsed ? "Expand sub-pages" : "Collapse sub-pages"}
+              onClick={(e) => {
+                e.stopPropagation();
+                setCollapsed((cur) => {
+                  const next = new Set(cur);
+                  if (p.ref_id) {
+                    if (next.has(p.ref_id)) next.delete(p.ref_id);
+                    else next.add(p.ref_id);
+                  }
+                  return next;
+                });
+              }}
+              style={{ display: "inline-block", width: 14, marginRight: 3, color: "var(--ink-4, #b0a89c)", fontSize: 10 }}
+            >
+              {isCollapsed ? "\u25B8" : "\u25BE"}
+            </span>
+          )}
+          {p.title}
+          {!p.editable && (
+            <span style={{ fontSize: 10.5, fontWeight: 700, marginLeft: 6, ...muted }}>read-only</span>
+          )}
+        </span>
+        {p.preview && (
+          <span
+            style={{
+              display: "block",
+              fontSize: 11.5,
+              marginTop: 2,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              ...muted,
+            }}
+          >
+            {p.preview}
           </span>
         )}
+      </button>
+    );
+  };
+
+  // Pages -> a rendered tree: children grouped under parents (an unknown/deleted parent
+  // renders the child top-level), siblings ordered by (sort_order, list position — the API
+  // list arrives newest-first). Depth display-capped; a server-data cycle can't trap the
+  // walk (visited set + a defensive flat tail).
+  const treeRows = (list: KnowledgeDocumentSummary[]): Array<[KnowledgeDocumentSummary, number, boolean]> => {
+    const refs = new Set(list.map((p) => p.ref_id));
+    const kids = new Map<string | null, KnowledgeDocumentSummary[]>();
+    for (const p of list) {
+      const parent = p.parent_ref != null && refs.has(p.parent_ref) ? p.parent_ref : null;
+      if (!kids.has(parent)) kids.set(parent, []);
+      kids.get(parent)!.push(p);
+    }
+    const idx = new Map(list.map((p, i) => [p.ref_id, i]));
+    const out: Array<[KnowledgeDocumentSummary, number, boolean]> = [];
+    const visited = new Set<string>();
+    const walk = (parent: string | null, depth: number) => {
+      const group = (kids.get(parent) ?? [])
+        .slice()
+        .sort(
+          (a, b) =>
+            (a.sort_order ?? 0) - (b.sort_order ?? 0) ||
+            (idx.get(a.ref_id) ?? 0) - (idx.get(b.ref_id) ?? 0),
+        );
+      for (const p of group) {
+        if (!p.ref_id || visited.has(p.ref_id)) continue;
+        visited.add(p.ref_id);
+        const hasKids = (kids.get(p.ref_id) ?? []).length > 0;
+        out.push([p, Math.min(depth, 6), hasKids]);
+        // A collapsed node keeps its subtree out of the rail (session-local state).
+        if (!collapsed.has(p.ref_id)) walk(p.ref_id, depth + 1);
+      }
+    };
+    walk(null, 0);
+    for (const p of list) {
+      if (p.ref_id && !visited.has(p.ref_id) && !isHiddenByCollapse(p, list)) out.push([p, 0, false]);
+    }
+    return out;
+  };
+
+  /** True when a page sits (transitively) under a collapsed ancestor — the defensive flat
+   * tail must not resurface what the collapse just hid. */
+  const isHiddenByCollapse = (p: KnowledgeDocumentSummary, list: KnowledgeDocumentSummary[]): boolean => {
+    const byRef = new Map(list.map((x) => [x.ref_id, x]));
+    let cur = p.parent_ref ?? null;
+    let hops = 0;
+    while (cur != null && hops++ < 20) {
+      if (collapsed.has(cur)) return true;
+      cur = byRef.get(cur)?.parent_ref ?? null;
+    }
+    return false;
+  };
+
+  /** The open page's ancestor chain (nearest-first reversed to root-first) for breadcrumbs. */
+  const breadcrumbs = (ref: string): KnowledgeDocumentSummary[] => {
+    const byRef = new Map((pages ?? []).map((p) => [p.ref_id, p]));
+    const chain: KnowledgeDocumentSummary[] = [];
+    let cur = byRef.get(ref)?.parent_ref ?? null;
+    let hops = 0;
+    while (cur != null && hops++ < 20) {
+      const parent = byRef.get(cur);
+      if (!parent) break;
+      chain.unshift(parent);
+      cur = parent.parent_ref ?? null;
+    }
+    return chain;
+  };
+
+  const resultRow = (r: KnowledgeSearchResult, i: number): React.ReactElement => {
+    // Offer "Open page" only when the hit's chunk family IS a listed page (covers both
+    // upload: and seeded demo:kb: refs) — never a guess from the ref shape alone.
+    const prefix = hitRefPrefix(r.ref_id);
+    const pageRef = prefix !== null && (pages ?? []).some((p) => p.ref_id === prefix) ? prefix : null;
+    return (
+      <div
+        key={`${r.ref_id ?? "hit"}-${i}`}
+        data-testid="knowledge-result"
+        style={{
+          padding: "12px 0",
+          borderTop: i === 0 ? "none" : "1px solid var(--line-2, #efe9df)",
+          display: "flex",
+          flexDirection: "column",
+          gap: 6,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <span style={sourceBadge}>{sourceLabel(r.source)}</span>
+          {r.score !== null && (
+            <span style={{ fontSize: 11.5, fontFamily: "var(--mono, ui-monospace, monospace)", ...muted }}>
+              {Math.round(r.score * 100)}% match
+            </span>
+          )}
+          {pageRef && (
+            <button
+              data-testid="knowledge-result-open"
+              onClick={() => {
+                if (!guardDiscard()) return;
+                setEditor({ mode: "closed" });
+                void openPage(pageRef);
+              }}
+              style={{ ...ghostBtn, marginLeft: "auto", padding: "3px 10px", fontSize: 12 }}
+            >
+              Open page
+            </button>
+          )}
+        </div>
+        <p style={{ fontSize: 13, lineHeight: 1.55, color: "var(--ink, #2a2622)", margin: 0 }}>
+          {r.snippet || "(no preview)"}
+        </p>
       </div>
-      <p style={{ fontSize: 13, lineHeight: 1.55, color: "var(--ink, #2a2622)", margin: 0 }}>
-        {r.snippet || "(no preview)"}
-      </p>
+    );
+  };
+
+  // --- the reader / editor pane -----------------------------------------------------
+
+  const editorPane = editor.mode !== "closed" && (
+    <div data-testid="knowledge-add-form" style={{ ...card, padding: "22px 24px" }} onKeyDown={onEditorKeyDown}>
+      <input
+        ref={titleRef}
+        data-testid="knowledge-add-title"
+        type="text"
+        value={editor.title}
+        maxLength={MAX_TITLE_LEN}
+        onChange={(e) => setEditorField({ title: e.target.value })}
+        placeholder="Untitled"
+        aria-label="Page title"
+        style={{
+          width: "100%",
+          boxSizing: "border-box",
+          border: "none",
+          outline: "none",
+          background: "transparent",
+          color: "var(--ink, #2a2622)",
+          fontSize: 24,
+          fontWeight: 760,
+          letterSpacing: "-.02em",
+          fontFamily: "inherit",
+          padding: "0 0 10px",
+        }}
+      />
+      <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+        <button
+          data-testid="knowledge-editor-write"
+          onClick={() => setEditorPreview(false)}
+          style={{ ...ghostBtn, padding: "4px 12px", fontSize: 12, ...(editorPreview ? {} : { background: "var(--accent-soft, #f4f1ea)" }) }}
+        >
+          Write
+        </button>
+        <button
+          data-testid="knowledge-editor-preview"
+          onClick={() => setEditorPreview(true)}
+          style={{ ...ghostBtn, padding: "4px 12px", fontSize: 12, ...(editorPreview ? { background: "var(--accent-soft, #f4f1ea)" } : {}) }}
+        >
+          Preview
+        </button>
+        <span style={{ marginLeft: "auto", fontSize: 11.5, alignSelf: "center", ...muted }}>
+          # heading · **bold** · *italic* · `code` · - list
+        </span>
+      </div>
+      {editorPreview ? (
+        <div
+          data-testid="knowledge-editor-rendered"
+          style={{ minHeight: 320, padding: "4px 2px", fontSize: 14.5, lineHeight: 1.65, color: "var(--ink, #2a2622)" }}
+        >
+          {editor.content.trim() ? (
+            <SafeMarkdown body={editor.content} />
+          ) : (
+            <p style={{ ...muted, fontSize: 13.5 }}>Nothing to preview yet.</p>
+          )}
+        </div>
+      ) : (
+        <textarea
+          ref={contentRef}
+          data-testid="knowledge-add-content"
+          value={editor.content}
+          maxLength={MAX_DOC_CHARS}
+          onChange={(e) => setEditorField({ content: e.target.value })}
+          onKeyDown={onContentKeyDown}
+          placeholder="Write the page — your agents will ground answers on it and cite it by section."
+          aria-label="Page content"
+          rows={14}
+          style={{
+            ...fieldStyle,
+            fontSize: 13.5,
+            lineHeight: 1.6,
+            resize: "vertical",
+            minHeight: 320,
+            overflow: "hidden",
+          }}
+        />
+      )}
+      {addError && (
+        <p data-testid="knowledge-add-error" style={{ color: "var(--rose, #b4413b)", fontSize: 13, margin: "10px 0 0" }}>
+          {addError}
+        </p>
+      )}
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 12 }}>
+        <button
+          data-testid="knowledge-add-submit"
+          onClick={() => void saveEditor()}
+          disabled={saving || !editor.title.trim() || !editor.content.trim()}
+          style={{
+            ...primaryBtn,
+            opacity: saving || !editor.title.trim() || !editor.content.trim() ? 0.55 : 1,
+            cursor: saving || !editor.title.trim() || !editor.content.trim() ? "default" : "pointer",
+          }}
+        >
+          {saving ? "Indexing..." : editor.mode === "new" ? "Add to knowledge base" : "Save changes"}
+        </button>
+        <button data-testid="knowledge-add-cancel" onClick={closeEditor} style={ghostBtn}>
+          Cancel
+        </button>
+        <span style={{ marginLeft: "auto", fontSize: 11.5, ...muted }}>⌘S to save · Esc to cancel</span>
+      </div>
     </div>
   );
+
+  const readerPane = editor.mode === "closed" && openRef !== null && (
+    <div data-testid="knowledge-doc" style={{ ...card, padding: "22px 24px" }}>
+      {docLoading && <Spinner testid="knowledge-doc-loading" label="Opening the page..." />}
+      {docError && (
+        <div data-testid="knowledge-doc-error" style={{ fontSize: 13.5 }}>
+          <p style={{ ...muted, lineHeight: 1.5, margin: 0 }}>{docError}</p>
+          <button onClick={() => setOpenRef(null)} style={{ ...ghostBtn, marginTop: 10 }}>
+            Back to pages
+          </button>
+        </div>
+      )}
+      {!docLoading && !docError && doc !== null && (
+        <>
+          {breadcrumbs(doc.ref_id).length > 0 && (
+            <nav data-testid="knowledge-doc-breadcrumbs" style={{ fontSize: 12, marginBottom: 8, ...muted }}>
+              {breadcrumbs(doc.ref_id).map((b) => (
+                <span key={b.ref_id}>
+                  <button
+                    onClick={() => {
+                      if (!b.ref_id || !guardDiscard()) return;
+                      void openPage(b.ref_id);
+                    }}
+                    style={{ border: "none", background: "none", padding: 0, font: "inherit", color: "var(--ink-3, #8a8278)", cursor: "pointer", textDecoration: "underline" }}
+                  >
+                    {b.title}
+                  </button>
+                  {" / "}
+                </span>
+              ))}
+              <span style={{ color: "var(--ink-2, #5d564d)" }}>{doc.title}</span>
+            </nav>
+          )}
+          <div style={{ display: "flex", alignItems: "flex-start", gap: 10, flexWrap: "wrap" }}>
+            <div style={{ flex: 1, minWidth: 200 }}>
+              <h2
+                data-testid="knowledge-doc-title"
+                style={{ fontSize: 24, fontWeight: 760, letterSpacing: "-.02em", margin: 0 }}
+              >
+                {doc.title}
+              </h2>
+              <div style={{ fontSize: 12, marginTop: 5, ...muted }}>
+                updated {fmtWhen(doc.updated_at)} · {fmtCount(doc.chunks)}{" "}
+                {doc.chunks === 1 ? "section" : "sections"} indexed
+                {!doc.editable && " · read-only"}
+              </div>
+            </div>
+            {organizeAvailable && !confirmingDelete && (
+              <button
+                data-testid="knowledge-doc-subpage"
+                onClick={startSubPage}
+                style={ghostBtn}
+              >
+                + Sub-page
+              </button>
+            )}
+            {organizeAvailable && !confirmingDelete && (
+              <button
+                data-testid="knowledge-doc-move"
+                onClick={() => {
+                  setMoveOpen((v) => !v);
+                  setMoveNote(null);
+                }}
+                style={ghostBtn}
+              >
+                Move
+              </button>
+            )}
+            {doc.editable && !confirmingDelete && (
+              <button data-testid="knowledge-doc-edit" onClick={startEdit} style={ghostBtn}>
+                Edit
+              </button>
+            )}
+            {!confirmingDelete ? (
+              <button
+                data-testid="knowledge-doc-delete"
+                onClick={() => setConfirmingDelete(true)}
+                style={{ ...ghostBtn, color: "var(--rose, #b4413b)" }}
+              >
+                Delete
+              </button>
+            ) : (
+              <span style={{ display: "inline-flex", gap: 8, alignItems: "center" }}>
+                <span style={{ fontSize: 12.5, ...muted }}>Delete this page?</span>
+                <button
+                  data-testid="knowledge-doc-confirm-delete"
+                  onClick={() => void deletePage()}
+                  disabled={deleting}
+                  style={{ ...ghostBtn, color: "#fff", background: "var(--rose, #b4413b)", border: "none" }}
+                >
+                  {deleting ? "Deleting..." : "Delete"}
+                </button>
+                <button onClick={() => setConfirmingDelete(false)} style={ghostBtn}>
+                  Keep
+                </button>
+              </span>
+            )}
+          </div>
+
+          {moveOpen && (
+            <div
+              data-testid="knowledge-doc-move-panel"
+              style={{ ...card, fontSize: 13, margin: "14px 0 0", padding: "12px 14px", display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}
+            >
+              <span style={{ fontWeight: 700 }}>Move</span>
+              <button
+                data-testid="knowledge-move-up"
+                onClick={() => void doMove({ move: "up" })}
+                disabled={moving}
+                style={{ ...ghostBtn, padding: "4px 12px", fontSize: 12.5 }}
+              >
+                ↑ Up
+              </button>
+              <button
+                data-testid="knowledge-move-down"
+                onClick={() => void doMove({ move: "down" })}
+                disabled={moving}
+                style={{ ...ghostBtn, padding: "4px 12px", fontSize: 12.5 }}
+              >
+                ↓ Down
+              </button>
+              <label style={{ display: "inline-flex", gap: 6, alignItems: "center", marginLeft: 6 }}>
+                <span style={{ fontSize: 12.5, ...muted }}>Nest under</span>
+                <select
+                  data-testid="knowledge-move-parent"
+                  disabled={moving}
+                  value=""
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (v === "") return;
+                    void doMove({ parent_ref: v === "__top__" ? null : v });
+                  }}
+                  style={{ ...fieldStyle, width: "auto", padding: "4px 8px", fontSize: 12.5 }}
+                >
+                  <option value="">Choose…</option>
+                  <option value="__top__">Top level</option>
+                  {(pages ?? [])
+                    .filter((p) => p.ref_id && !subtreeOf(doc.ref_id).has(p.ref_id))
+                    .map((p) => (
+                      <option key={p.ref_id} value={p.ref_id!}>
+                        {p.title}
+                      </option>
+                    ))}
+                </select>
+              </label>
+              {moveNote && (
+                <span data-testid="knowledge-move-note" style={{ fontSize: 12.5, flexBasis: "100%", ...muted }}>
+                  {moveNote}
+                </span>
+              )}
+            </div>
+          )}
+
+          {cleanupNote && (
+            <div
+              data-testid="knowledge-doc-cleanup-note"
+              style={{ ...card, background: "var(--accent-soft, #f4f1ea)", fontSize: 12.5, margin: "14px 0 0", padding: "10px 14px" }}
+            >
+              The edit saved, but the previous version couldn&rsquo;t be cleaned up yet — it may
+              still appear in your pages until it&rsquo;s removed.
+            </div>
+          )}
+
+          {!doc.editable && (
+            <div
+              data-testid="knowledge-legacy-note"
+              style={{ ...card, background: "var(--accent-soft, #f4f1ea)", fontSize: 12.5, margin: "14px 0 0", padding: "10px 14px" }}
+            >
+              This page was added before editing existed, so only its indexed sections are shown.
+              To make it editable, add its content as a new page and delete this one.
+            </div>
+          )}
+
+          <div
+            data-testid="knowledge-doc-body"
+            style={{ marginTop: 18, fontSize: 14.5, lineHeight: 1.65, color: "var(--ink, #2a2622)", maxWidth: 720 }}
+          >
+            {doc.content !== null ? (
+              <SafeMarkdown body={doc.content} />
+            ) : (
+              (doc.sections ?? []).map((s, i) => (
+                <p key={i} style={{ margin: "0 0 14px" }}>
+                  {s}
+                </p>
+              ))
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+
+  const emptyReader = editor.mode === "closed" && openRef === null && (
+    <div style={{ ...card, textAlign: "center", padding: "46px 24px" }}>
+      <div style={{ fontSize: 15, fontWeight: 720, marginBottom: 6 }}>
+        {pages && pages.length > 0 ? "Pick a page" : "Your team's knowledge lives here"}
+      </div>
+      <p style={{ ...muted, fontSize: 13.5, lineHeight: 1.55, maxWidth: 460, margin: "0 auto" }}>
+        {pages && pages.length > 0
+          ? "Open a page from the left, search your whole knowledge base above, or start a new page."
+          : "Write pages your agents ground every answer on — pricing, playbooks, FAQs, SOPs. Add your first page to get started."}
+      </p>
+      {!uploadsOff && (
+        <button onClick={startNewPage} style={{ ...primaryBtn, marginTop: 16 }}>
+          New page
+        </button>
+      )}
+    </div>
+  );
+
+  // ---------------------------------------------------------------------------
 
   return (
     <div
       data-testid="knowledge-view"
-      style={{ maxWidth: 920, margin: "0 auto", padding: "32px 24px", fontFamily: "system-ui, sans-serif" }}
+      style={{ maxWidth: 1100, margin: "0 auto", padding: "32px 24px", fontFamily: "system-ui, sans-serif" }}
     >
-      <div style={{ marginBottom: 18 }}>
-        <div style={{ fontSize: 12, fontWeight: 600, letterSpacing: ".06em", textTransform: "uppercase", ...muted }}>
-          Uplift knowledge
+      <style>{LAYOUT_CSS}</style>
+      <div style={{ marginBottom: 18, display: "flex", alignItems: "flex-end", gap: 14, flexWrap: "wrap" }}>
+        <div style={{ flex: 1, minWidth: 260 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, letterSpacing: ".06em", textTransform: "uppercase", ...muted }}>
+            Uplift knowledge
+          </div>
+          <h1 style={{ fontSize: 26, fontWeight: 760, letterSpacing: "-.02em", margin: "6px 0 4px" }}>Knowledge</h1>
+          <p style={{ ...muted, fontSize: 14, margin: 0 }}>
+            Everything your agents draw on — written as pages, searchable in plain language, cited
+            back to you.
+          </p>
         </div>
-        <h1 style={{ fontSize: 26, fontWeight: 760, letterSpacing: "-.02em", margin: "6px 0 4px" }}>Knowledge</h1>
-        <p style={{ ...muted, fontSize: 14 }}>
-          Everything your agents can draw on — searchable in plain language. Add documents
-          directly (pricing, playbooks, FAQs) or connect sources; agents ground their answers on
-          what lives here.
-        </p>
+        {!loading && !rollout && !error && !uploadsOff && (
+          <button data-testid="knowledge-add-toggle" onClick={startNewPage} style={primaryBtn}>
+            New page
+          </button>
+        )}
       </div>
 
       {loading && <Spinner testid="knowledge-loading" label="Loading your knowledge base..." />}
 
-      {/* The live API image may predate /knowledge: a calm rollout note, not an error wall. */}
+      {/* Two calm not-here-yet states, never an error wall (P1: unprovisioned ≠ rolling-out):
+          404 = the live API image predates the route; 503 = the data plane isn't wired. */}
       {rollout && (
-        <div data-testid="knowledge-rollout" style={{ ...card, fontSize: 13.5 }}>
-          <div style={{ fontWeight: 700, marginBottom: 4 }}>Knowledge API is rolling out</div>
+        <div
+          data-testid={rollout === "rollout" ? "knowledge-rollout" : "knowledge-unprovisioned"}
+          style={{ ...card, fontSize: 13.5 }}
+        >
+          <div style={{ fontWeight: 700, marginBottom: 4 }}>
+            {rollout === "rollout"
+              ? "Knowledge API is rolling out"
+              : "Knowledge isn't switched on for this workspace yet"}
+          </div>
           <p style={{ ...muted, lineHeight: 1.5 }}>
-            Your deployment doesn&rsquo;t serve the knowledge endpoint yet — refresh after the next
-            API deploy. Nothing is wrong with your workspace.
+            {rollout === "rollout"
+              ? "Your deployment doesn't serve the knowledge endpoint yet — refresh after the next API deploy. Nothing is wrong with your workspace."
+              : "The knowledge data plane isn't connected on this deployment, so there's nothing to show or search here yet. It lights up the moment it's wired — nothing is wrong with your workspace, and refreshing won't change it until then."}
           </p>
-          <button data-testid="knowledge-rollout-refresh" onClick={() => void load()} style={{ ...ghostBtn, marginTop: 10 }}>
+          <button
+            data-testid="knowledge-rollout-refresh"
+            onClick={() => {
+              void load();
+              void loadPages();
+            }}
+            style={{ ...ghostBtn, marginTop: 10 }}
+          >
             Refresh
           </button>
         </div>
@@ -314,7 +1269,14 @@ export function KnowledgeView({ client }: KnowledgeViewProps) {
         >
           <div style={{ fontWeight: 700, marginBottom: 4 }}>Something needs another try</div>
           <p style={{ ...muted, lineHeight: 1.5 }}>{error}</p>
-          <button data-testid="knowledge-retry" onClick={() => void load()} style={{ ...ghostBtn, marginTop: 10 }}>
+          <button
+            data-testid="knowledge-retry"
+            onClick={() => {
+              void load();
+              void loadPages();
+            }}
+            style={{ ...ghostBtn, marginTop: 10 }}
+          >
             Try again
           </button>
         </div>
@@ -330,35 +1292,27 @@ export function KnowledgeView({ client }: KnowledgeViewProps) {
               value={query}
               maxLength={MAX_Q_LEN}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Ask your knowledge base — e.g. deals in negotiation"
+              placeholder="Ask your knowledge base — e.g. what's our discount policy"
               aria-label="Search your knowledge base"
-              style={{
-                flex: 1,
-                minWidth: 0,
-                padding: "10px 14px",
-                borderRadius: 10,
-                border: "1px solid var(--line, #e3ddd3)",
-                background: "var(--surface, #fff)",
-                color: "var(--ink, #2a2622)",
-                fontSize: 14,
-                fontFamily: "inherit",
-              }}
+              style={{ ...fieldStyle, flex: 1, minWidth: 0, padding: "10px 14px" }}
             />
             <button
               data-testid="knowledge-search-submit"
               type="submit"
               disabled={searching || !query.trim()}
               style={{
-                ...ghostBtn,
-                background: "var(--ink, #2a2622)",
-                color: "#fff",
-                border: "none",
+                ...primaryBtn,
                 opacity: searching || !query.trim() ? 0.55 : 1,
                 cursor: searching || !query.trim() ? "default" : "pointer",
               }}
             >
               {searching ? "Searching..." : "Search"}
             </button>
+            {(search !== null || searchError) && (
+              <button data-testid="knowledge-search-clear" type="button" onClick={clearSearch} style={ghostBtn}>
+                Clear
+              </button>
+            )}
           </form>
 
           {/* search results / honest states (only after a search has run) */}
@@ -370,17 +1324,39 @@ export function KnowledgeView({ client }: KnowledgeViewProps) {
           {!searchError && search !== null && (
             <div style={{ marginBottom: 18 }}>
               {!search.search_available ? (
-                <div
-                  data-testid="knowledge-search-unavailable"
-                  style={{ ...card, background: "var(--accent-soft, #f4f1ea)", fontSize: 13.5 }}
-                >
-                  <div style={{ fontWeight: 700, marginBottom: 4 }}>Search is warming up</div>
-                  <p style={{ ...muted, lineHeight: 1.55, margin: 0 }}>
-                    Semantic search needs the embedding model, which is being connected on our side.
-                    Your documents below are already here; search lights up the moment it&rsquo;s
-                    ready.
-                  </p>
-                </div>
+                // The P1 split: "search_error" = transient (retry-worthy); anything else —
+                // incl. a missing reason_code from an older API image — is the embedder
+                // warming-up story (the only degrade that existed before the split).
+                search.reason_code === "search_error" ? (
+                  <div
+                    data-testid="knowledge-search-failed"
+                    style={{ ...card, background: "var(--accent-soft, #f4f1ea)", fontSize: 13.5 }}
+                  >
+                    <div style={{ fontWeight: 700, marginBottom: 4 }}>Search hit a snag</div>
+                    <p style={{ ...muted, lineHeight: 1.55, margin: "0 0 10px" }}>
+                      Something on our side interrupted that search — your pages and documents are
+                      unaffected. It&rsquo;s usually momentary.
+                    </p>
+                    <button
+                      data-testid="knowledge-search-retry"
+                      onClick={() => void runSearch(search.query || query)}
+                      style={ghostBtn}
+                    >
+                      Try the search again
+                    </button>
+                  </div>
+                ) : (
+                  <div
+                    data-testid="knowledge-search-unavailable"
+                    style={{ ...card, background: "var(--accent-soft, #f4f1ea)", fontSize: 13.5 }}
+                  >
+                    <div style={{ fontWeight: 700, marginBottom: 4 }}>Search is warming up</div>
+                    <p style={{ ...muted, lineHeight: 1.55, margin: 0 }}>
+                      Semantic search needs the embedding model, which is being connected on our side.
+                      Your pages below are already here; search lights up the moment it&rsquo;s ready.
+                    </p>
+                  </div>
+                )
               ) : search.results.length === 0 ? (
                 <div data-testid="knowledge-search-empty" style={{ ...card, fontSize: 13.5, ...muted }}>
                   No matches for &ldquo;{search.query}&rdquo; in your knowledge base.
@@ -388,35 +1364,31 @@ export function KnowledgeView({ client }: KnowledgeViewProps) {
               ) : (
                 <div data-testid="knowledge-results" style={{ ...card, paddingTop: 7, paddingBottom: 9 }}>
                   {search.results.map(resultRow)}
+                  {search.next_offset != null && (
+                    <div style={{ paddingTop: 10, borderTop: "1px solid var(--line-2, #efe9df)" }}>
+                      <button
+                        data-testid="knowledge-search-more"
+                        onClick={() => void runSearch(search.query, search.next_offset!)}
+                        disabled={searching}
+                        style={{ ...ghostBtn, padding: "5px 14px", fontSize: 12.5, opacity: searching ? 0.55 : 1 }}
+                      >
+                        {searching ? "Loading..." : "Show more results"}
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
           )}
 
-          {/* add a document — the customer corpus-add path (knowledge audit P0) */}
-          <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "0 0 10px" }}>
-            <h2 style={{ fontSize: 16, fontWeight: 750, letterSpacing: "-.01em", margin: 0 }}>
-              Your sources
-            </h2>
-            {!adding && !uploadsOff && (
-              <button
-                data-testid="knowledge-add-toggle"
-                onClick={openAddForm}
-                style={{ ...ghostBtn, marginLeft: "auto", padding: "6px 14px" }}
-              >
-                Add document
-              </button>
-            )}
-          </div>
-
           {uploadsOff && (
             <div
               data-testid="knowledge-add-unavailable"
-              style={{ ...card, background: "var(--accent-soft, #f4f1ea)", fontSize: 13.5, marginBottom: 12 }}
+              style={{ ...card, background: "var(--accent-soft, #f4f1ea)", fontSize: 13.5, marginBottom: 16 }}
             >
               <div style={{ fontWeight: 700, marginBottom: 4 }}>Direct uploads aren&rsquo;t switched on yet</div>
               <p style={{ ...muted, lineHeight: 1.55, margin: 0 }}>
-                Your document was not saved. Adding documents needs the ingestion plane, which
+                Your page was not saved. Adding pages needs the ingestion plane, which
                 isn&rsquo;t enabled on this deployment yet — your corpus still fills from connected
                 sources, and search keeps working on what&rsquo;s already here.
               </p>
@@ -424,107 +1396,146 @@ export function KnowledgeView({ client }: KnowledgeViewProps) {
           )}
 
           {addNote && (
-            <div data-testid="knowledge-add-note" style={{ ...card, fontSize: 13.5, marginBottom: 12 }}>
+            <div data-testid="knowledge-add-note" style={{ ...card, fontSize: 13.5, marginBottom: 16 }}>
               {addNote}
             </div>
           )}
 
-          {adding && (
-            <form onSubmit={onAddDocument} data-testid="knowledge-add-form" style={{ ...card, marginBottom: 12 }}>
-              <input
-                data-testid="knowledge-add-title"
-                type="text"
-                value={docTitle}
-                maxLength={MAX_TITLE_LEN}
-                onChange={(e) => setDocTitle(e.target.value)}
-                placeholder="Title — e.g. Pricing policy"
-                aria-label="Document title"
-                style={{
-                  width: "100%",
-                  boxSizing: "border-box",
-                  padding: "9px 12px",
-                  borderRadius: 10,
-                  border: "1px solid var(--line, #e3ddd3)",
-                  background: "var(--surface, #fff)",
-                  color: "var(--ink, #2a2622)",
-                  fontSize: 14,
-                  fontFamily: "inherit",
-                  marginBottom: 8,
-                }}
-              />
-              <textarea
-                data-testid="knowledge-add-content"
-                value={docContent}
-                maxLength={MAX_DOC_CHARS}
-                onChange={(e) => setDocContent(e.target.value)}
-                placeholder="Paste the document text — agents will cite it by section."
-                aria-label="Document text"
-                rows={6}
-                style={{
-                  width: "100%",
-                  boxSizing: "border-box",
-                  padding: "9px 12px",
-                  borderRadius: 10,
-                  border: "1px solid var(--line, #e3ddd3)",
-                  background: "var(--surface, #fff)",
-                  color: "var(--ink, #2a2622)",
-                  fontSize: 13.5,
-                  fontFamily: "inherit",
-                  lineHeight: 1.5,
-                  resize: "vertical",
-                  marginBottom: 10,
-                }}
-              />
-              {addError && (
-                <p data-testid="knowledge-add-error" style={{ color: "var(--rose, #b4413b)", fontSize: 13, margin: "0 0 10px" }}>
-                  {addError}
-                </p>
-              )}
-              <div style={{ display: "flex", gap: 8 }}>
-                <button
-                  data-testid="knowledge-add-submit"
-                  type="submit"
-                  disabled={saving || !docTitle.trim() || !docContent.trim()}
+          {/* the workspace: pages rail + reader/editor */}
+          <div className="kn-grid">
+            <aside className="kn-rail">
+              <div>
+                <div
+                  data-testid="knowledge-pages-top-dropzone"
+                  onDragOver={(e) => {
+                    if (dragRef === null) return;
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = "move";
+                    setDropTarget("__top__");
+                  }}
+                  onDragLeave={() => {
+                    if (dropTarget === "__top__") setDropTarget(null);
+                  }}
+                  onDrop={(e) => {
+                    if (dragRef === null) return;
+                    e.preventDefault();
+                    void dropOn(null); // top level
+                  }}
                   style={{
-                    ...ghostBtn,
-                    background: "var(--ink, #2a2622)",
-                    color: "#fff",
-                    border: "none",
-                    opacity: saving || !docTitle.trim() || !docContent.trim() ? 0.55 : 1,
-                    cursor: saving || !docTitle.trim() || !docContent.trim() ? "default" : "pointer",
+                    display: "flex", alignItems: "center", gap: 8, marginBottom: 6,
+                    borderRadius: 8,
+                    ...(dragRef !== null ? { outline: "1.5px dashed var(--line, #e3ddd3)", outlineOffset: 2 } : {}),
+                    ...(dropTarget === "__top__" ? { outline: "2px solid var(--accent, #b3552e)", outlineOffset: 2 } : {}),
                   }}
                 >
-                  {saving ? "Indexing..." : "Add to knowledge base"}
-                </button>
-                <button
-                  data-testid="knowledge-add-cancel"
-                  type="button"
-                  onClick={() => setAdding(false)}
-                  style={ghostBtn}
-                >
-                  Cancel
-                </button>
+                  <h2 style={{ fontSize: 13, fontWeight: 750, letterSpacing: ".04em", textTransform: "uppercase", margin: 0, ...muted }}>
+                    Pages
+                  </h2>
+                  {pages !== null && (
+                    <span style={{ fontSize: 11.5, ...muted }}>{pages.length}</span>
+                  )}
+                  {dragRef !== null && (
+                    <span style={{ fontSize: 10.5, ...muted }}>drop here for top level</span>
+                  )}
+                  {!uploadsOff && (
+                    <button
+                      data-testid="knowledge-page-new"
+                      onClick={startNewPage}
+                      title="New page"
+                      style={{ ...ghostBtn, marginLeft: "auto", padding: "2px 10px", fontSize: 13 }}
+                    >
+                      +
+                    </button>
+                  )}
+                </div>
+                {dragNote && (
+                  <p data-testid="knowledge-drag-note" style={{ fontSize: 12.5, lineHeight: 1.5, margin: "2px 0 6px", ...muted }}>
+                    {dragNote}
+                  </p>
+                )}
+                {pagesRollout && (
+                  <p data-testid="knowledge-pages-rollout" style={{ fontSize: 12.5, lineHeight: 1.5, margin: "6px 0 0", ...muted }}>
+                    Pages are rolling out — they&rsquo;ll appear here after the next API deploy.
+                    Search and sources work today.
+                  </p>
+                )}
+                {pagesError && (
+                  <p data-testid="knowledge-pages-error" style={{ fontSize: 12.5, lineHeight: 1.5, margin: "6px 0 0", ...muted }}>
+                    {pagesError}{" "}
+                    <button onClick={() => void loadPages()} style={{ ...ghostBtn, padding: "2px 10px", fontSize: 12 }}>
+                      Retry
+                    </button>
+                  </p>
+                )}
+                {pages !== null && pages.length === 0 && (
+                  <p data-testid="knowledge-pages-empty" style={{ fontSize: 12.5, lineHeight: 1.5, margin: "6px 0 0", ...muted }}>
+                    No pages yet — write your first one.
+                  </p>
+                )}
+                {pages !== null && pages.length > 0 && (() => {
+                  const needle = pageFilter.trim().toLowerCase();
+                  const visible = needle
+                    ? pages.filter((p) => `${p.title}\n${p.preview}`.toLowerCase().includes(needle))
+                    : pages;
+                  return (
+                    <>
+                      {pages.length > 4 && (
+                        <input
+                          data-testid="knowledge-pages-filter"
+                          type="text"
+                          value={pageFilter}
+                          onChange={(e) => setPageFilter(e.target.value)}
+                          placeholder="Filter pages..."
+                          aria-label="Filter pages"
+                          style={{ ...fieldStyle, padding: "6px 10px", fontSize: 12.5, margin: "2px 0 8px" }}
+                        />
+                      )}
+                      {visible.length === 0 ? (
+                        <p data-testid="knowledge-pages-nomatch" style={{ fontSize: 12.5, lineHeight: 1.5, margin: "6px 0 0", ...muted }}>
+                          No pages match &ldquo;{pageFilter.trim()}&rdquo;.
+                        </p>
+                      ) : (
+                        <nav data-testid="knowledge-pages" style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                          {/* Filtering flattens (matches only); otherwise the tree renders
+                              indented sub-pages in manual order. */}
+                          {needle
+                            ? visible.map((p) => pageRow(p))
+                            : treeRows(visible).map(([p, d, kids]) => pageRow(p, d, kids))}
+                        </nav>
+                      )}
+                    </>
+                  );
+                })()}
               </div>
-            </form>
-          )}
 
-          {data.total_documents === 0 ? (
-            <div data-testid="knowledge-empty" style={{ ...card, fontSize: 13.5, ...muted }}>
-              No documents yet. Add your first document above (pricing, playbooks, FAQs), or
-              connect sources in Switchboard — your agents ground their answers on what lives
-              here, so an empty knowledge base means ungrounded answers.
-            </div>
-          ) : (
-            <>
-              <div data-testid="knowledge-total" style={{ fontSize: 13, marginBottom: 12, ...muted }}>
-                {fmtCount(data.total_documents)} documents across {data.source_count}{" "}
-                {data.source_count === 1 ? "source" : "sources"}
+              <div>
+                <h2 style={{ fontSize: 13, fontWeight: 750, letterSpacing: ".04em", textTransform: "uppercase", margin: "0 0 4px", ...muted }}>
+                  Sources
+                </h2>
+                {data.total_documents === 0 ? (
+                  <div data-testid="knowledge-empty" style={{ fontSize: 12.5, lineHeight: 1.55, padding: "6px 0", ...muted }}>
+                    No documents yet. Add your first page (pricing, playbooks, FAQs), or connect
+                    sources in Switchboard — your agents ground their answers on what lives here,
+                    so an empty knowledge base means ungrounded answers.
+                  </div>
+                ) : (
+                  <>
+                    <div data-testid="knowledge-total" style={{ fontSize: 12, marginBottom: 4, ...muted }}>
+                      {fmtCount(data.total_documents)} documents across {data.source_count}{" "}
+                      {data.source_count === 1 ? "source" : "sources"}
+                    </div>
+                    <div>{data.sources.map(sourceRow)}</div>
+                  </>
+                )}
               </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                {data.sources.map(sourceCard)}
-              </div>
-            </>
-          )}
+            </aside>
+
+            <main style={{ minWidth: 0 }}>
+              {editorPane}
+              {readerPane}
+              {emptyReader}
+            </main>
+          </div>
         </>
       )}
     </div>

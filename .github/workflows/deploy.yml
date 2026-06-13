@@ -128,3 +128,15 @@ jobs:
             sleep 15
           done
           echo "healthz never returned 200" && exit 1
+      - name: Roll the worker service (session re-discovery)
+        run: |
+          # The SDK EnvironmentWorker's session discovery is STARTUP-BOUND (live finding,
+          # 2026-06-12): sessions created after the worker last started get NO tool service —
+          # chat turns stall silently until a restart. Rolling the worker with every deploy
+          # keeps its watch set fresh (the api roll above creates new sessions anyway). Two
+          # tasks roll one-at-a-time (minimumHealthyPercent), so in-flight tool calls on the
+          # surviving task keep serving during the roll.
+          aws ecs update-service --cluster uplift-cluster --service uplift-worker \
+            --force-new-deployment --query 'service.serviceName' --output text
+          aws ecs wait services-stable --cluster uplift-cluster --services uplift-worker
+          echo "worker rolled + stable"

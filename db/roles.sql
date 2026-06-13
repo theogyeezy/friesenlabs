@@ -27,6 +27,10 @@ GRANT USAGE ON SCHEMA public TO crm_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON
     documents, companies, contacts, deals, activities, saved_views, ingest_cursor
 TO crm_app;
+-- knowledge_pages: page-organization metadata (hierarchy + manual order) for the editable
+-- knowledge corpus. Full DML — a page delete removes its row, a move updates it. Tenant-scoped
+-- via FORCE'd RLS like every sibling above.
+GRANT SELECT, INSERT, UPDATE, DELETE ON knowledge_pages TO crm_app;
 
 -- Audit trail (approvals + traces): the app may APPEND and (approvals only) flip a decision,
 -- never erase history.

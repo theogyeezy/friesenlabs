@@ -549,6 +549,153 @@ Per the two-lane contract in `CONTRIBUTING.md`: each lane appends ONLY to its ow
   usable + safe; RAG-embed IAM gap closed live.
 
 ## Lane Matt (app code) — log
+- 2026-06-12 — **Drag-to-nest in the Knowledge rail (#346):** Notion's signature gesture as
+  pure sugar over the #342 location PATCH — drag onto a page nests, the rail header is the
+  top-level dropzone (dashed cue / accent ring / dimmed source), the dragged page's own
+  subtree never accepts (dragOver withholds preventDefault -> browser not-allowed, ZERO
+  requests), draggable only under organize_available, keyboard parity via the Move panel.
+  doMove + drag unified on one movePage primitive + shared per-class failure copy. +2 e2e
+  (PATCH-body-asserted nest/un-nest; refused drop fires nothing); knowledge spec 33/33;
+  full chromium-real 184/184. Client-only.
+- 2026-06-12 — **Knowledge tree finishers (#345):** collapsible nodes (chevron swallows the
+  click; collapsed subtrees stay hidden even through the cycle-defensive flat tail;
+  session-local state) + "+ Sub-page" on the open page (create -> auto-nest via the SAME
+  location PATCH as Move, one flow; nest failure degrades calmly to top-level; pending
+  parent clears on cancel so it can't go stale). Client-only. +2 e2e; knowledge spec 31/31;
+  full chromium-real 182/182.
+- 2026-06-12 — **Knowledge page hierarchy, slice 2/2: tree UI (#343):** the rail renders
+  sub-pages indented in manual order (cycle-safe walk; deleted parents degrade children to
+  top level; filter flattens), the open page gets clickable breadcrumbs, and a Move panel
+  (up/down + nest-under excluding the page's own subtree + top level) with honest per-class
+  notes (503 organizing-rolling-out / 422 cycle). EVERY affordance gated on
+  organize_available — un-migrated DB renders exactly the #332 flat rail. Mock gains a
+  stateful tree. +4 e2e; knowledge spec 29/29; full chromium-real 180/180. Rollout after
+  merge: Deploy build tag -> Migrate with it (knowledge_pages additive) -> approve apply ->
+  Amplify.
+- 2026-06-12 — **Knowledge page hierarchy, slice 1/2: backend (#342):** `knowledge_pages`
+  (tenant+ref_prefix PK, parent_ref NULL=top, float sort_order; RLS FORCE; full DML to
+  crm_app; absent row = top-level default so NO backfill) + four tolerant PgRagClient meta
+  methods (42P01 -> reads None / typed PageOrganizeUnavailable on the write — psycopg2-free
+  import preserved) + PATCH /knowledge/documents/{ref}/location (one op per call: re-parent
+  with cycle-walk refusal, or move up/down with first-use integer materialization + honest
+  edge no-ops; un-migrated DB -> pinned 503). Edits CARRY the location row + children to the
+  new ref namespace in one tx; deletes re-parent children to the grandparent. +7 integration
+  tests + a real-PG meta-lifecycle proof (env-gated); full pytest exit 0. Slice 2 = the tree
+  rail/move UI; rollout = build tag -> Migrate with it -> approve Deploy -> Amplify.
+- 2026-06-12 — **Knowledge search paging + real-path dim assert (#339 — the last two knowledge
+  P2s):** /knowledge/search gains a clamped offset (depth cap 200) + offset/next_offset on the
+  wire (null at the honest end; degrade shapes carry the same keys — wire-compat with older
+  images); the web appends "Show more results" in place. The embed dim assert lands on the
+  REAL lazy-Titan path only (wrong width -> typed EmbedderUnavailable, the calm warming-up
+  story, never a Postgres operator error); the injected embedder seam stays dim-unchecked —
+  unit fakes deliberately use tiny vectors (their failures still wrap; the #334 boundary
+  holds). Full pytest exit 0; knowledge e2e 25/25.
+- 2026-06-12 — **Citations → knowledge pages + URL-addressable pages (#338):** the chat loop
+  closes — a citation whose source_ref is a page chunk (upload:…#n / demo:kb:…#n; the SAME
+  chunked-family rule as the rail, shape-decided client-side) gets "Open page". In-shell it
+  soft-switches the route and opens in place (no reload, chat thread survives; handoff is
+  consumed-and-cleared so re-clicks work). Standalone chat falls back to a real
+  /?view=knowledge&doc=<ref> deep link — every knowledge page is now URL-addressable
+  (KnowledgeView reads ?doc= once on mount; non-page refs 404 honestly). CRM refs and
+  single-row corpus shadows get NO link. +2 e2e; knowledge spec 24/24; FULL chromium-real
+  project 175/175; no API changes.
+- 2026-06-12 — **Pages-rail integrity + onboarding seeds knowledge (#337):** (1) LATENT BUG —
+  the demo fixture lands 169 single-row activity shadows under source='upload'
+  (demo:doc:act:N); post-#332 they'd flood the pages rail as junk read-only "pages" titled by
+  their trailing digit. list_uploaded_documents now requires a CHUNKED family (#0..#n / #raw
+  member) — proven against real Postgres in the new env-gated test_knowledge_pages_sql.py
+  (list shape, raw head bound, inventory #raw exclusion, RLS-scoped namespace delete).
+  (2) The audit's "onboarding never touches knowledge": load-sample seeds 3 clearly-labelled
+  EDITABLE sample pages (pricing/refunds/FAQ) through the SAME build_doc_ingestor seam the
+  Knowledge tab rides; idempotent; honest degrades (no plane -> pages_seeded:0 + pinned
+  reason; mid-seed failure reports what landed, never fails the CRM load). +3 unit tests,
+  full pytest exit 0; backend-only (the response gains the `knowledge` key).
+- 2026-06-12 — **Knowledge degrade reasons differentiated (#334 — audit P1, knowledge slice):**
+  `PgRagClient._embed` raises a TYPED `EmbedderUnavailable` (RuntimeError subclass — broad
+  callers unchanged; a Bedrock outage never touches the pool), `/knowledge/search` classifies
+  on the type (never string-sniffing): embedder down -> pinned "search model not configured" +
+  `reason_code embedder_unavailable` (calm warming-up), post-embed failure -> "search failed" +
+  `search_error` with RETRY copy (no more "warming up" forever over a Postgres outage). And
+  unprovisioned ≠ rolling-out: 503 from GET /knowledge gets its own calm "isn't switched on
+  for this workspace yet" panel vs the 404 deploy-lag story. Wire only GAINS `reason_code`
+  (older API image -> web defaults to the embedder story). +3 integration tests (typed
+  boundary fires pre-pool), e2e 22/22, full pytest exit 0. Synthesizer/worker halves of the
+  P1 item remain (tracked in TODO).
+- 2026-06-12 — **Knowledge editor ergonomics + rail filter (#333, on top of #332):** Enter
+  continues markdown lists ("- "/"* "/"3. "→"4. "; empty item exits — caret restore is a
+  LAYOUT effect so fast typing can't race it), the editor textarea auto-grows (page scrolls,
+  not the box), and a client-side filter narrows the pages rail past 4 pages (semantic search
+  stays the corpus-wide tool; honest no-match state). Pure KnowledgeView + spec — no API
+  change. knowledge e2e 21/21 ×2 (--repeat-each=2); tsc + real build clean.
+- 2026-06-12 — **Knowledge → a Notion-style pages workspace (#332):** the sixth real tab grows
+  full document CRUD with NO schema change. Ingest seam now lands a `<ref>#raw` row per upload
+  (the exact original, embedding NULL — invisible to search; chunks land FIRST so a mid-write
+  failure means "indexed, not yet editable", never the reverse; titles normalize to one line so
+  the raw row's first paragraph break splits title/body unambiguously). PgRagClient grows
+  list/get/delete for the upload namespace (bounded raw heads in LIST — never full dumps;
+  LIKE-escaped prefixes; inventory now excludes the #raw mirrors) and the routes grow
+  GET /knowledge/documents + GET/PUT/DELETE /knowledge/documents/{ref}: PUT re-ingests through
+  the SAME seam as POST and removes the old namespace only AFTER the new one fully lands (a
+  cleanup failure answers `previous_removed:false` — duplicate, never lost); refs are
+  charset-validated pre-reader (both real shapes: `upload:<slug>-<hash8>` AND the seeded
+  `demo:kb:<slug>` — the demo corpus lists/reads/deletes as honest read-only pages, edit→409).
+  KnowledgeView rebuilt: pages rail · safe-markdown reader (the spec-not-code subset renderer)
+  · write/preview editor (⌘S, dirty-guard, two-step delete) · search hit → Open page only when
+  the chunk family IS a listed page; new calm pages-rolling-out state covers the web deploying
+  ahead of the API. Mock API gains a stateful pages map (offline demo fully drivable). Tests:
+  8 unit + 31 integration + 19 Playwright knowledge e2e; full pytest exit 0; tsc + all three
+  builds clean; FULL Playwright suite green. Crew RBAC/Greenlight untouched — pages are the
+  tenant's own corpus, the same openness tier POST /knowledge/documents has had since #251.
+- 2026-06-12 — **CREW LANE LIVE-VERIFIED + the worker-discovery bug found (the Vada Fenwick
+  test):** the contact-lookup router fix deployed and the question correctly took the crew
+  lane — transport flawless (1 send + 10 auto-continues, all 200, zero 504s, zero nudges,
+  honest interim narration) — but the turn stalled: the WORKER's session discovery is
+  STARTUP-BOUND (the SDK EnvironmentWorker was streaming two morning-era sessions and never
+  picked up newer ones; deploy.yml rolls only the api service, so the worker had run for
+  hours). A `--force-new-deployment` on uplift-worker re-discovered immediately — it attached
+  to the persisted session, served the still-open `read_crm` calls, and the follow-up turn
+  answered with the real contact record (+1-737-555-0115, Round Rock Utility District) WITH
+  full context across the stall — the session-persistence feature proven live. Filed: worker
+  re-discovery (or roll the worker in deploy.yml); suppress the "documents couldn't verify"
+  note on turns answered from served CRM tool_results.
+- 2026-06-12 — **Playbook settle 120s -> 480s (option 1, owner-directed):** the 19:45Z live
+  tick proved 120s covers a direct tool round-trip (Run-now at 45s served query_cube+read_crm)
+  but NOT a delegation cycle — the coordinator delegated to scout and the sub-turn's calls were
+  still open at budget end. The scheduled/event legs have no http edge; 8 minutes clears the
+  15-minute cadence with margin. Run-now stays 45s (edge-bounded; a delegating run surfaces
+  `incomplete` + a settle_budget sentinel honestly — 202-async Run-now remains the durable
+  follow-up).
+- 2026-06-12 — **MA session-id persistence (deploy-roll survival):** the in-memory Conversation
+  (and the tenant's MA session id with it) died on every api task roll — in-flight CREW turns
+  were unrecoverable and history reset. Now: `tenant_workspaces.session_id` (idempotent ALTER),
+  `WorkspaceStore.set_session_id`, `ManagedAgentsRuntime.resume_session` (offline handle) with
+  LAZY LEDGER PRIMING (a new send marks all prior events seen so reconnect-replays never fold
+  history into a digest; a continue marks through the last `user.message` so the in-flight tail
+  is recovered exactly), Conversation resume-or-create + `persist_session` seam +
+  `forget_session`, cache rebuild-on-terminated clears the dead id first, asgi factory wired.
+  TDD (7 new integration tests across store/conv/cache/runtime); full pytest exit 0. Needs the
+  migrate workflow before the deploy (the new column).
+- 2026-06-12 — **Worker drain-window latency ROOT-CAUSED + FIXED (settle budgets per leg):**
+  both live "incomplete" sightings surfaced at exactly +25s — the chat-tuned
+  `DEFAULT_TURN_SETTLE_SECONDS` (edge-bounded, with chat's async continue-leg as its safety
+  net) was starving playbook turns, which have no continue-leg. `get_runtime` now passes
+  `settle_budget_s` through (the plumbing gap), and each leg gets a fit-for-purpose budget:
+  scheduled/event = 120s (no http edge; `UPLIFT_PLAYBOOK_SETTLE_SECONDS`), HTTP-bound Run-now
+  = 45s (under the 60s CloudFront/ALB ceilings; `UPLIFT_RUNNOW_SETTLE_SECONDS`); chat
+  untouched. TDD: get_runtime pass-through, env resolvers, and a spy asserting the scheduled
+  leg builds runtimes with the 120s budget. 202-async Run-now filed as the durable follow-up
+  if 45s still clips.
+- 2026-06-12 — **CHAT LIVE-VERIFIED end-to-end (browser, demo tenant) — the "clanky chat"
+  program closes:** "What is our discount policy?" answered in SECONDS via the Tier-0 fast
+  lane: ONE 200 request, `grounding_status=grounded`, `retrieved_count=8`, `settled=true`,
+  **11 citations across 4 real corpus docs** (`demo:kb:pricing-discount-authority#0`,
+  `pricing-policy-overview#0`, `pricing-service-agreement-rates#0`,
+  `playbook-objection-handling#0`) rendered in the dock with claims + snippets;
+  `pending=[]`, `delegations=[]` — zero MA round-trips, zero human nudges. Crew-lane transport
+  (settle rounds 1-6 + /chat/continue + ChatDock auto-continue + 504 recovery) all deployed
+  behind it. Remaining polish filed in TODO: persist the MA session id per tenant (a deploy
+  roll still kills an in-flight CREW turn), bound fast-lane citation snippets (~320 chars like
+  the API does — today they carry the full chunk), optional LLM router upgrade, SSE streaming.
 - 2026-06-12 — **Tier-0 knowledge fast lane (the Moveworks front door, owner-directed):**
   knowledge-shaped asks now answer DIRECTLY from the grounded RAG path in seconds — no MA
   session round-trip at all (the live "discount policy" turn took 3+ minutes through

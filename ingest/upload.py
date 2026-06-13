@@ -1,4 +1,4 @@
-"""Customer document upload — the seam behind POST /knowledge/documents (knowledge audit P0).
+"""Customer document upload — the seam behind POST/PUT /knowledge/documents (knowledge audit P0).
 
 Rides the SAME production pieces the seeder and connectors use — `ingest.chunk.chunk_text`,
 the injected embedder seam, the `DocumentStore.upsert` (`PgDocumentStore` in real use: RLS-bound,
@@ -15,6 +15,15 @@ The content hash in the namespace means:
 Partial-corpus safety: every chunk embeds BEFORE the first upsert — a mid-doc embedder failure
 lands NOTHING (the audit's partial-sync finding, applied to uploads).
 
+RAW DOCUMENT ROW (the editable-knowledge upgrade): chunks are stored whitespace-collapsed with
+a 40-word overlap, so the ORIGINAL text is NOT reconstructible from them. To make a document
+readable and editable later (GET/PUT/DELETE /knowledge/documents/<ref>), the exact original
+lands as ONE extra row `<ref_prefix>#raw` with `embedding NULL` — same table, same RLS, same
+unique index; invisible to search (which filters `embedding IS NOT NULL`). Its content is
+`<title>\n\n<content>` where the title is normalized to a single line, so the first paragraph
+break is an unambiguous title/body separator. The raw row is written LAST — chunks land first,
+so a mid-write failure can only mean "indexed but not yet editable", never the reverse.
+
 IMPORT SAFETY: importing this module touches no AWS/boto3/psycopg2 — `chunk_text` is pure and
 the store/embedder arrive injected.
 """
@@ -28,6 +37,10 @@ from ingest import EMBEDDING_DIM
 from ingest.chunk import chunk_text
 
 UPLOAD_SOURCE = "upload"
+
+# The non-numeric seq suffix of the raw-original row (api/knowledge_routes.py and
+# api/pg_clients.py duplicate this literal — they must never import ingest/).
+RAW_SUFFIX = "#raw"
 
 # Mirror the API's bounds (api/knowledge_routes.py imports these — one source of truth).
 MAX_TITLE_LEN = 200
@@ -43,11 +56,13 @@ def _slug(title: str) -> str:
 
 def ingest_document(store: Any, embedder: Callable[[str], list[float]], *,
                     tenant_id: str, title: str, content: str) -> dict:
-    """Chunk → embed (all first) → upsert one customer document. Returns
-    {ref_id, chunks, source, title}. Raises ValueError on invalid input or a wrong-dim
+    """Chunk → embed (all first) → upsert one customer document + its raw-original row.
+    Returns {ref_id, chunks, source, title}. Raises ValueError on invalid input or a wrong-dim
     embedder; any embedder/store error propagates (the route turns it into a loud 503 —
     a write must never silently no-op)."""
-    title = (title or "").strip()
+    # The title is normalized to ONE line (inner newlines/runs of whitespace collapse to a
+    # single space) so the raw row's first paragraph break separates title from body.
+    title = " ".join((title or "").split())
     content = (content or "").strip()
     if not title:
         raise ValueError("title is required")
@@ -74,6 +89,11 @@ def ingest_document(store: Any, embedder: Callable[[str], list[float]], *,
 
     for ref_id, piece, vec, chash in embedded:
         store.upsert(str(tenant_id), UPLOAD_SOURCE, ref_id, piece, vec, chash)
+
+    # The exact original, last (see RAW DOCUMENT ROW above). Same namespace => a re-post of
+    # identical content overwrites in place; a title-only edit lands here AND in the re-embedded
+    # chunks under the same refs.
+    store.upsert_raw(str(tenant_id), UPLOAD_SOURCE, f"{ref_prefix}{RAW_SUFFIX}", text)
 
     return {"ref_id": ref_prefix, "chunks": len(embedded), "source": UPLOAD_SOURCE,
             "title": title}

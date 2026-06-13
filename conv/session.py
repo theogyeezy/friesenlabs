@@ -49,6 +49,7 @@ Routing (TODO AI/P1 resolved — coordinator-driven on real runtimes):
 """
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import date
@@ -62,6 +63,8 @@ from .analytics import Analytics, Event, EventType
 from .rag import Answer, RagContext, answer as rag_answer
 from .slots import SlotContext, resolve_slots
 from .views import BALTO_STATUS, detect_view_intent
+
+logger = logging.getLogger("conv.session")
 
 # Sentinel distinguishing "runtime has no tool_context_factory seam" from "seam present, unset".
 _SEAM_ABSENT = object()
@@ -147,6 +150,8 @@ class Conversation:
         prediction_log: Any = None,
         synthesizer: Any = None,
         router: Any = None,
+        persisted_session_id: str | None = None,
+        persist_session: Any = None,
         spec_generator: Any = None,
         disambiguator: Any = None,
         greenlight: Any = None,
@@ -204,10 +209,27 @@ class Conversation:
         self.environment_id = environment_id
 
         # The session binds THIS tenant's persisted environment (per-tenant, never instance-global).
-        self.session: Session = self.runtime.create_session(
-            self.coordinator_id, tenant_id=tenant_id, vault_id=vault_id,
-            environment_id=environment_id,
-        )
+        # SESSION PERSISTENCE (2026-06-12): a persisted id RESUMES the tenant's existing MA
+        # session (deploy-roll survival — in-flight turns + history outlive the api task);
+        # otherwise create fresh and report the new id through `persist_session` (best-effort:
+        # a store hiccup never breaks the turn). `forget_session()` reports None — the cache's
+        # terminated-rebuild path clears a dead id so the next build starts clean.
+        self._persist_session = persist_session
+        if persisted_session_id and hasattr(self.runtime, "resume_session"):
+            self.session: Session = self.runtime.resume_session(
+                persisted_session_id, self.coordinator_id, tenant_id,
+                vault_id=vault_id, environment_id=environment_id,
+            )
+        else:
+            self.session = self.runtime.create_session(
+                self.coordinator_id, tenant_id=tenant_id, vault_id=vault_id,
+                environment_id=environment_id,
+            )
+            if persist_session is not None:
+                try:
+                    persist_session(self.session.id)
+                except Exception:  # noqa: BLE001 — persistence is best-effort, never turn-fatal
+                    logger.warning("persist_session failed (session_id not stored)")
 
         # THE HIPAA-FALLBACK EXECUTION SEAM ONLY: SelfHostedToolUseRuntime (a direct Messages
         # tool-use loop — no Managed Agents, no worker) carries a `tool_context_factory` seam and
@@ -316,6 +338,15 @@ class Conversation:
             if pattern.search(text):
                 return name, tool_cls
         return None, None
+
+    def forget_session(self) -> None:
+        """Clear the persisted session id (the session is dead — terminated server-side).
+        Called by the cache's rebuild path before constructing a fresh Conversation."""
+        if self._persist_session is not None:
+            try:
+                self._persist_session(None)
+            except Exception:  # noqa: BLE001 — best-effort
+                logger.warning("persist_session(None) failed (stale session_id not cleared)")
 
     def _grounded_answer(self, message: str) -> Answer:
         """The citation-invariant agentic-RAG path (conv.rag.answer) — ONE implementation shared

@@ -72,13 +72,15 @@ class FakeStore:
         return dict(row)
 
 
-def _client(store=None, sample_loader=None):
+def _client(store=None, sample_loader=None, ingest_document=None):
     app = FastAPI()
     kwargs = {}
     if store is not None:
         kwargs["store"] = store
     if sample_loader is not None:
         kwargs["sample_loader"] = sample_loader
+    if ingest_document is not None:
+        kwargs["ingest_document"] = ingest_document
     deps = OnboardingDeps(**kwargs)
     mount_onboarding(app, deps, make_current_tenant(FakeVerifier()))
     return TestClient(app)
@@ -181,6 +183,68 @@ def test_load_sample_idempotent_and_marks_done():
     assert r2.json()["onboarding"]["sample_loaded"] is True
     assert load_calls["n"] == 2  # the route called the (idempotent) loader each time
     assert len(store.rows) == 1  # exactly one tenant row, never duplicated
+
+
+# --------------------------------------------------------------------------- sample pages
+def _crm_loader(s, tenant_id):
+    return {"companies": 1, "documents": 3}
+
+
+@pytest.mark.unit
+def test_load_sample_seeds_knowledge_pages_via_the_ingest_seam():
+    from api.onboarding_routes import SAMPLE_PAGES
+
+    seeded: list[tuple] = []
+
+    def fake_ingest(tenant_id, title, content):
+        seeded.append((tenant_id, title))
+        return {"ref_id": f"upload:x-{len(seeded)}", "chunks": 1}
+
+    c = _client(FakeStore(), sample_loader=_crm_loader, ingest_document=fake_ingest)
+    body = c.post("/onboarding/load-sample", headers=H).json()
+    assert body["loaded"] is True
+    assert body["knowledge"] == {"pages_seeded": len(SAMPLE_PAGES), "reason": None}
+    # Every page ran under the VERIFIED claims tenant with the curated titles, in order.
+    assert seeded == [("A", t) for t, _ in SAMPLE_PAGES]
+
+    # Re-running re-seeds idempotently (the seam upserts in place for unchanged content).
+    c.post("/onboarding/load-sample", headers=H)
+    assert len(seeded) == 2 * len(SAMPLE_PAGES)
+
+
+@pytest.mark.unit
+def test_load_sample_without_ingest_plane_reports_honestly():
+    from api.onboarding_routes import REASON_PAGES_UNCONFIGURED
+
+    c = _client(FakeStore(), sample_loader=_crm_loader)  # no ingestor wired
+    body = c.post("/onboarding/load-sample", headers=H).json()
+    # The CRM sample still loads; the pages half degrades honestly — never a fake success.
+    assert body["loaded"] is True
+    assert body["knowledge"]["pages_seeded"] == 0
+    assert body["knowledge"]["reason"] == REASON_PAGES_UNCONFIGURED
+
+
+@pytest.mark.unit
+def test_load_sample_page_seeding_failure_never_fails_the_crm_load():
+    from api.onboarding_routes import REASON_PAGES_FAILED
+
+    calls = {"n": 0}
+
+    def flaky_ingest(tenant_id, title, content):
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            raise RuntimeError("AccessDenied arn:aws:bedrock-XYZZY")
+        return {"ref_id": "upload:x-1", "chunks": 1}
+
+    c = _client(FakeStore(), sample_loader=_crm_loader, ingest_document=flaky_ingest)
+    r = c.post("/onboarding/load-sample", headers=H)
+    body = r.json()
+    # Still a 200 with loaded: true — the CRM fixture landed before the pages half ran.
+    assert r.status_code == 200
+    assert body["loaded"] is True
+    assert body["knowledge"]["pages_seeded"] == 1  # what actually landed, honestly
+    assert body["knowledge"]["reason"] == REASON_PAGES_FAILED
+    assert "XYZZY" not in r.text  # the raw error never leaks
 
 
 # --------------------------------------------------------------------------- unconfigured

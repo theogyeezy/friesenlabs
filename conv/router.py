@@ -39,7 +39,10 @@ _CREW_VERBS = re.compile(
 # the crew's read tools, not the document corpus.
 _CRM_STATE = re.compile(
     r"\b(how is|how's|what should|status of|doing\b|account\b|deal\b|deals\b|lead\b|leads\b|"
-    r"pipeline\b|quota\b|forecast\b|this week|last week|today)\b",
+    r"pipeline\b|quota\b|forecast\b|this week|last week|today|"
+    # Contact lookups are CRM data, not corpus (live miss, owner-reported 2026-06-12):
+    # "what is X's phone number" must reach the crew's read_crm, not the knowledge lane.
+    r"phone|mobile\b|cell\b|contact info|email address)\b",
     re.I,
 )
 
@@ -48,6 +51,16 @@ _CRM_STATE = re.compile(
 _KNOWLEDGE_SHAPE = re.compile(
     r"^(what|what's|whats|how|tell me|explain|describe|when|where|why|who|do we|does|is there|"
     r"are there|can i|can we)\b",
+    re.I,
+)
+
+
+# Corpus NOUNS — strong knowledge signals that survive opener typos ("waht is our discont
+# policy" misses the shape regex but plainly asks about a policy; owner-reported 2026-06-12).
+# Checked AFTER the crew markers, so action/CRM asks mentioning these still go to the crew.
+_CORPUS_NOUNS = re.compile(
+    r"\b(polic(y|ies)|terms|pricing|price list|playbook|onboarding|warranty|rate card|"
+    r"discount\w*|discont\w*|procedure|process for|faq)\b",
     re.I,
 )
 
@@ -63,6 +76,6 @@ class HeuristicRouter:
             return CREW
         if _CRM_STATE.search(text):
             return CREW
-        if _KNOWLEDGE_SHAPE.match(text) or text.endswith("?"):
+        if _KNOWLEDGE_SHAPE.match(text) or text.endswith("?") or _CORPUS_NOUNS.search(text):
             return KNOWLEDGE
         return CREW

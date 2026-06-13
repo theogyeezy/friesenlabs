@@ -103,6 +103,32 @@ def _escape_ilike(q: str) -> str:
 # disambiguation prompt, so anything beyond a handful of prefix hits is noise.
 SLOT_SEARCH_LIMIT = 10
 
+# Uploaded-document namespace (ingest/upload.py ref scheme). The literals are DUPLICATED here —
+# this module must never import ingest/ (the boto3-free import invariant the knowledge routes
+# and the image-fileset test pin). Same for the embedding width (db/schema.sql: vector(1024),
+# Titan V2 — mirrors ingest.EMBEDDING_DIM).
+_UPLOAD_SOURCE = "upload"
+_RAW_SUFFIX = "#raw"
+_EMBEDDING_DIM = 1024
+# How much of the raw original the LIST query ships per document: enough for the one-line
+# title + a body preview, never the full (up to 100KB) content.
+_RAW_HEAD_LEN = 800
+
+
+def _escape_like(value: str) -> str:
+    r"""Escape the LIKE metacharacters (\, %, _) in a ref prefix that becomes a LIKE pattern.
+    The route layer already validates the prefix shape; this keeps the client safe on its own."""
+    return str(value).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _chunk_seq(ref_id: Any) -> int:
+    """Numeric #seq of a chunk ref ('upload:x-ab12#3' -> 3); junk sorts last, stably."""
+    tail = str(ref_id or "").rpartition("#")[2]
+    try:
+        return int(tail)
+    except ValueError:
+        return 1 << 30
+
 
 def _escape_ilike_prefix(q: str) -> str:
     r"""Escape the LIKE metacharacters (\, %, _) in a user-supplied name and wrap it for a
@@ -334,6 +360,21 @@ class _PgTenantClient:
             self._putconn(conn)
 
 
+class EmbedderUnavailable(RuntimeError):
+    """The QUERY embedder (Bedrock/Titan, env-key-gated on the live task) failed — raised
+    from PgRagClient._embed as a TYPED boundary (knowledge audit P1) so the route layer can
+    tell "search model isn't reachable" (calm 'warming up' copy) apart from a real search
+    failure (DB down — a retryable error) WITHOUT sniffing exception strings. Subclasses
+    RuntimeError, so every existing broad `except Exception` caller (conv/rag, agents tools)
+    behaves exactly as before."""
+
+
+class PageOrganizeUnavailable(RuntimeError):
+    """A page-organization WRITE hit a database where the knowledge_pages migration hasn't
+    run (42P01) — typed so the route answers honest 'organizing is rolling out' copy, never
+    a 500. Reads degrade quietly instead (list_page_meta -> None: a flat pages list)."""
+
+
 class PgRagClient(_PgTenantClient):
     """pgvector cosine search over `documents` (tenant-scoped via RLS).
 
@@ -344,7 +385,8 @@ class PgRagClient(_PgTenantClient):
 
     `embedder` is a callable `str -> list[float]` injected at construction (a fake in tests).
     When omitted, the real Titan V2 embedder (`ingest.embed.embed`) is imported lazily at CALL
-    time — never at import.
+    time — never at import. Embed failures surface as EmbedderUnavailable; everything after
+    the embed (the DB read) raises as-is.
     """
 
     def __init__(self, dsn: str | None = None, *,
@@ -354,21 +396,37 @@ class PgRagClient(_PgTenantClient):
         self._embedder = embedder
 
     def _embed(self, query: str) -> list[float]:
-        if self._embedder is not None:
-            return self._embedder(query)
-        from ingest.embed import embed  # noqa: PLC0415 — lazy; Bedrock only at call time
-        return embed(query)
+        try:
+            if self._embedder is not None:
+                # The injected seam stays dim-unchecked — unit fakes deliberately use tiny
+                # vectors to exercise the SQL path. Its FAILURES still wrap (typed boundary).
+                return self._embedder(query)
+            from ingest.embed import embed  # noqa: PLC0415 — lazy; Bedrock only at call time
+            vec = embed(query)
+        except Exception as exc:
+            raise EmbedderUnavailable(str(exc)) from exc
+        # The P2 dim assert, on the REAL path only: a wrong-width Titan response must read as
+        # an embedder problem (typed, calm warming-up story), never a Postgres operator error.
+        if len(vec) != _EMBEDDING_DIM:
+            raise EmbedderUnavailable(
+                f"query embedder returned dim {len(vec)} != {_EMBEDDING_DIM}")
+        return vec
 
-    def search(self, *, tenant_id: str, query: str, limit: int = DEFAULT_RAG_LIMIT) -> list[dict]:
-        """Cosine-similarity search the tenant's corpus. RLS (via SET LOCAL) scopes the rows."""
+    def search(self, *, tenant_id: str, query: str, limit: int = DEFAULT_RAG_LIMIT,
+               offset: int = 0) -> list[dict]:
+        """Cosine-similarity search the tenant's corpus. RLS (via SET LOCAL) scopes the rows.
+        `offset` pages the ranked scan ("show more results" — the P2 pagination note); junk/
+        negative offsets clamp to 0. The real (lazy Titan) embed path dim-asserts inside
+        _embed — a wrong-width vector reads as an embedder problem, never a Postgres
+        operator error."""
         vec = _vector_literal(self._embed(query))
         n = _clamp_limit(limit, DEFAULT_RAG_LIMIT)
         with self._tx(tenant_id) as cur:
             cur.execute(
                 "SELECT ref_id, source, content, 1 - (embedding <=> %s::vector) AS score "
                 "FROM documents WHERE embedding IS NOT NULL "
-                "ORDER BY embedding <=> %s::vector LIMIT %s",
-                (vec, vec, n),
+                "ORDER BY embedding <=> %s::vector LIMIT %s OFFSET %s",
+                (vec, vec, n, _clamp_offset(offset)),
             )
             rows = _dict_rows(cur)
         return [
@@ -386,11 +444,15 @@ class PgRagClient(_PgTenantClient):
         scoped via SET LOCAL. A PLAIN aggregate — NO embedding model is touched, so the Knowledge
         inventory works the moment the data plane is wired even if the Titan embedder isn't. An
         un-ingested tenant gets an empty list (never a hand-written tenant filter; `documents` has
-        created_at only — there is no updated_at column — so last_updated is MAX(created_at))."""
+        created_at only — there is no updated_at column — so last_updated is MAX(created_at)).
+        Raw-original mirror rows (`…#raw`, ingest/upload.py) are excluded — they duplicate
+        content the chunk rows already count."""
         with self._tx(tenant_id) as cur:
             cur.execute(
                 "SELECT source, COUNT(*) AS document_count, MAX(created_at) AS last_updated "
-                "FROM documents GROUP BY source ORDER BY document_count DESC, source"
+                "FROM documents WHERE ref_id IS NULL OR ref_id NOT LIKE %s "
+                "GROUP BY source ORDER BY document_count DESC, source",
+                ("%" + _RAW_SUFFIX,),
             )
             rows = _dict_rows(cur)
         return [
@@ -401,6 +463,190 @@ class PgRagClient(_PgTenantClient):
             }
             for r in rows
         ]
+
+    # ------------------------------------------------------------------ uploaded documents
+    # The editable knowledge corpus (source='upload', ingest/upload.py ref scheme). A
+    # "document" is the family of rows sharing one `upload:<slug>-<hash8>` prefix: embedded
+    # chunk rows `#0..#n` plus the raw-original row `#raw` (embedding NULL). Same discipline
+    # as every read above: tenancy is RLS-only via the per-op SET LOCAL transaction; the
+    # ref prefix is validated upstream (api/knowledge_routes.py) AND escaped here before it
+    # becomes a LIKE pattern — belt and suspenders.
+
+    def list_uploaded_documents(self, *, tenant_id: str) -> list[dict]:
+        """One row per uploaded DOCUMENT, newest first: ref prefix, a bounded head of the raw
+        original (title line + the start of the body — never the full content), embedded chunk
+        count, and created/updated stamps. Legacy uploads (pre-raw-row) come back with
+        raw_head None — listable and deletable, not editable.
+
+        A "document" is a CHUNKED family — at least one member ref carries a `#` suffix
+        (`#0..#n` chunks / `#raw`). Single-row corpus shadows that also ride source='upload'
+        (the demo fixture's `demo:doc:act:N` activity notes; any future connector one-liners)
+        are retrieval fodder, NOT pages — without the HAVING they'd flood the rail as junk
+        read-only entries."""
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "SELECT split_part(ref_id, '#', 1) AS ref,"
+                " MAX(CASE WHEN ref_id LIKE %s THEN left(content, %s) END) AS raw_head,"
+                " COUNT(*) FILTER (WHERE embedding IS NOT NULL) AS chunk_count,"
+                " MIN(created_at) AS created_at, MAX(created_at) AS updated_at "
+                "FROM documents WHERE source = %s "
+                "GROUP BY 1 "
+                "HAVING COUNT(*) FILTER (WHERE ref_id LIKE %s) > 0 "
+                "ORDER BY MAX(created_at) DESC, 1",
+                ("%" + _RAW_SUFFIX, _RAW_HEAD_LEN, _UPLOAD_SOURCE, "%#%"),
+            )
+            rows = _dict_rows(cur)
+        return [
+            {
+                "ref_id": r.get("ref"),
+                "raw_head": r.get("raw_head"),
+                "chunk_count": int(r.get("chunk_count") or 0),
+                "created_at": r.get("created_at"),
+                "updated_at": r.get("updated_at"),
+            }
+            for r in rows
+        ]
+
+    def get_uploaded_document(self, *, tenant_id: str, ref_prefix: str) -> dict | None:
+        """One uploaded document in full: the raw original (None for a legacy upload) plus its
+        embedded chunks in #seq order (the legacy read-only fallback) and stamps. Returns None
+        when nothing exists under the prefix for this tenant (RLS-scoped)."""
+        like = _escape_like(ref_prefix) + "#%"
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "SELECT ref_id, content, embedding IS NOT NULL AS embedded, created_at "
+                "FROM documents WHERE source = %s AND ref_id LIKE %s ESCAPE '\\'",
+                (_UPLOAD_SOURCE, like),
+            )
+            rows = _dict_rows(cur)
+        if not rows:
+            return None
+        raw = next((r for r in rows if r.get("ref_id") == ref_prefix + _RAW_SUFFIX), None)
+        chunks = sorted(
+            (r for r in rows if r.get("embedded")),
+            key=lambda r: _chunk_seq(r.get("ref_id")),
+        )
+        stamps = [r.get("created_at") for r in rows if r.get("created_at") is not None]
+        return {
+            "ref_id": ref_prefix,
+            "raw_content": raw.get("content") if raw else None,
+            "chunk_count": len(chunks),
+            "chunk_contents": [c.get("content") for c in chunks],
+            "created_at": min(stamps) if stamps else None,
+            "updated_at": max(stamps) if stamps else None,
+        }
+
+    def delete_uploaded_document(self, *, tenant_id: str, ref_prefix: str) -> int:
+        """Delete every row of one uploaded document (chunks + raw) in ONE tenant-scoped
+        transaction; returns the number of rows removed (0 = nothing existed for this tenant).
+        Upload rows only — the source predicate keeps connector/seeded corpora untouchable
+        through this path even if a crafted prefix slipped past route validation."""
+        like = _escape_like(ref_prefix) + "#%"
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "DELETE FROM documents WHERE source = %s "
+                "AND (ref_id = %s OR ref_id LIKE %s ESCAPE '\\')",
+                (_UPLOAD_SOURCE, ref_prefix, like),
+            )
+            return cur.rowcount or 0
+
+    # ------------------------------------------------------------------ page organization
+    # Hierarchy + manual order over `knowledge_pages` (db/schema.sql) — page-level metadata
+    # keyed by ref prefix; an ABSENT row means "top level, default order". Every method
+    # tolerates the table not existing yet (the web/API can deploy ahead of the MIGRATION):
+    # reads answer None, the location write raises the typed PageOrganizeUnavailable — the
+    # route turns that into honest copy, never a 500.
+
+    @staticmethod
+    def _organize_missing(exc: Exception) -> bool:
+        """True when the failure is `relation does not exist` (42P01) — the knowledge_pages
+        migration hasn't run on this database yet. pgcode is read as an attribute so this
+        module still never imports psycopg2 at import time."""
+        return getattr(exc, "pgcode", None) == "42P01"
+
+    def list_page_meta(self, *, tenant_id: str) -> dict[str, dict] | None:
+        """All of the tenant's page-organization rows keyed by ref prefix — or None when the
+        table hasn't been migrated yet (callers render the honest flat list)."""
+        try:
+            with self._tx(tenant_id) as cur:
+                cur.execute("SELECT ref_prefix, parent_ref, sort_order FROM knowledge_pages")
+                rows = _dict_rows(cur)
+        except Exception as exc:  # noqa: BLE001 — only the missing-table case is special
+            if self._organize_missing(exc):
+                return None
+            raise
+        return {
+            str(r["ref_prefix"]): {
+                "parent_ref": r.get("parent_ref"),
+                "sort_order": float(r.get("sort_order") or 0),
+            }
+            for r in rows
+        }
+
+    def set_page_location(self, *, tenant_id: str, ref_prefix: str,
+                          parent_ref: str | None, sort_order: float) -> None:
+        """Upsert one page's location (parent + order) in one tenant-scoped transaction."""
+        try:
+            with self._tx(tenant_id) as cur:
+                cur.execute(
+                    "INSERT INTO knowledge_pages (tenant_id, ref_prefix, parent_ref, sort_order) "
+                    "VALUES (%s, %s, %s, %s) "
+                    "ON CONFLICT (tenant_id, ref_prefix) DO UPDATE SET "
+                    "parent_ref = EXCLUDED.parent_ref, sort_order = EXCLUDED.sort_order, "
+                    "updated_at = now()",
+                    (str(tenant_id), ref_prefix, parent_ref, sort_order),
+                )
+        except Exception as exc:  # noqa: BLE001
+            if self._organize_missing(exc):
+                raise PageOrganizeUnavailable(str(exc)) from exc
+            raise
+
+    def migrate_page_ref(self, *, tenant_id: str, old_ref: str, new_ref: str) -> None:
+        """An edit moved a page to a NEW ref namespace (content hash changed): carry its
+        location row to the new key and re-point its children — one transaction, so the tree
+        never half-moves. Absent table = nothing to carry (quietly fine: organization simply
+        doesn't exist yet)."""
+        try:
+            with self._tx(tenant_id) as cur:
+                cur.execute(
+                    "UPDATE knowledge_pages SET ref_prefix = %s, updated_at = now() "
+                    "WHERE ref_prefix = %s",
+                    (new_ref, old_ref),
+                )
+                cur.execute(
+                    "UPDATE knowledge_pages SET parent_ref = %s, updated_at = now() "
+                    "WHERE parent_ref = %s",
+                    (new_ref, old_ref),
+                )
+        except Exception as exc:  # noqa: BLE001
+            if self._organize_missing(exc):
+                return
+            raise
+
+    def delete_page_meta(self, *, tenant_id: str, ref_prefix: str) -> None:
+        """A page was deleted: its children move up to ITS parent (never orphaned under a
+        ghost), then its own row goes — one transaction. Absent table = nothing to clean."""
+        try:
+            with self._tx(tenant_id) as cur:
+                cur.execute(
+                    "SELECT parent_ref FROM knowledge_pages WHERE ref_prefix = %s",
+                    (ref_prefix,),
+                )
+                row = cur.fetchone()
+                grandparent = row[0] if row else None
+                cur.execute(
+                    "UPDATE knowledge_pages SET parent_ref = %s, updated_at = now() "
+                    "WHERE parent_ref = %s",
+                    (grandparent, ref_prefix),
+                )
+                cur.execute(
+                    "DELETE FROM knowledge_pages WHERE ref_prefix = %s",
+                    (ref_prefix,),
+                )
+        except Exception as exc:  # noqa: BLE001
+            if self._organize_missing(exc):
+                return
+            raise
 
 
 # Allow-listed CRM tables + their filterable columns (identifiers are NEVER taken from input

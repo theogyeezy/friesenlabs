@@ -31,7 +31,8 @@ def test_inmemory_round_trip():
     store.upsert("t-A", "wrkspc_1", "env_1", "coord_1")
     row = store.get("t-A")
     assert row == {"tenant_id": "t-A", "workspace_id": "wrkspc_1",
-                   "environment_id": "env_1", "coordinator_id": "coord_1"}
+                   "environment_id": "env_1", "coordinator_id": "coord_1",
+                   "session_id": None}
 
 
 @pytest.mark.unit

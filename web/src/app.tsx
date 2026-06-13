@@ -99,7 +99,7 @@ const ModuleNotEnabled = ({ title, icon, onManage }) => (
 // content is the real /chat surface (grounded answers, citations, honest
 // "Agents unavailable" copy on 503). Stays mounted so the thread survives
 // close/reopen, exactly like the prototype AgentChat.
-function RealChatPanel({ open, onClose }) {
+function RealChatPanel({ open, onClose, onOpenKnowledgePage }) {
   useEffect(() => {
     if (!open) return;
     const k = (e) => { if (e.key === "Escape") onClose(); };
@@ -118,7 +118,7 @@ function RealChatPanel({ open, onClose }) {
           <button className="icon-btn" onClick={onClose}><Icon name="x" size={18} /></button>
         </div>
         <div className="chat-body" style={{ padding: 0 }}>
-          <ChatDock embedded />
+          <ChatDock embedded onOpenKnowledgePage={onOpenKnowledgePage} />
         </div>
       </div>
     </>
@@ -135,6 +135,10 @@ function App() {
   const gamifyOn = useStore((s) => s.gamifyOn);
   const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
   const [route, setRoute] = useState("dashboard");
+  // Citation → knowledge-page handoff (real mode): a chat citation's "Open page" sets the
+  // target ref + routes to Knowledge; KnowledgeView consumes it and clears it back to null
+  // (so a later Knowledge visit doesn't re-open a page the user navigated away from).
+  const [knowledgePageRef, setKnowledgePageRef] = useState(null);
   // Per-tenant module entitlements (real mode): the set of route-ids this tenant
   // has enabled in Settings → "Your suite". null = not loaded / errored / 503 →
   // we SHOW ALL routes (fail-open: never hide a surface because the gate is down).
@@ -597,7 +601,12 @@ function App() {
                   GET /knowledge (per-source inventory) + /knowledge/search (RLS
                   cosine search, honest degrade while the embedder warms up) —
                   never the FLStore Knowledge prototype. */}
-              {route === "knowledge" && <KnowledgeView />}
+              {route === "knowledge" && (
+                <KnowledgeView
+                  initialPageRef={knowledgePageRef}
+                  onInitialPageConsumed={() => setKnowledgePageRef(null)}
+                />
+              )}
               {route === "approvals" && <GreenlightQueue />}
               {route === "integrations" && <IntegrationsPanel />}
               {/* Sidecar is LIVE in real mode: grounded next-action suggestions over the
@@ -699,7 +708,8 @@ function App() {
 
       <SlideOver deal={deal} agents={agents} stages={STAGES} onClose={() => setDeal(null)} />
       {realMode
-        ? <RealChatPanel open={chat} onClose={() => setChat(false)} />
+        ? <RealChatPanel open={chat} onClose={() => setChat(false)}
+            onOpenKnowledgePage={(ref) => { setKnowledgePageRef(ref); setChat(false); navTo("knowledge"); }} />
         : <AgentChat open={chat} agents={agents} onClose={() => setChat(false)} />}
       {/* Prototype overlays (palette, onboarding, tour, marketplace, intake)
           present scripted FLStore content — mock mode only. */}

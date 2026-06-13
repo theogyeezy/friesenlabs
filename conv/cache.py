@@ -87,7 +87,9 @@ class CachedConversation:
             except RuntimeError as e:
                 if "terminated" not in str(e):
                     raise
-                # The cached session died (irreversible) — rebuild ONCE on a fresh session.
+                # The cached session died (irreversible) — clear the PERSISTED id first so the
+                # rebuild starts a fresh session instead of resuming the corpse, then rebuild.
+                getattr(convo, "forget_session", lambda: None)()
                 convo = self._cache.rebuild(self._tenant_id, dead=convo)
                 return convo.send(message, **kwargs)
 
@@ -105,6 +107,7 @@ class CachedConversation:
             except RuntimeError as e:
                 if "terminated" not in str(e):
                     raise
+                getattr(convo, "forget_session", lambda: None)()
                 convo = self._cache.rebuild(self._tenant_id, dead=convo)
                 return convo.continue_turn()
 

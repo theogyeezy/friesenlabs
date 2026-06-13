@@ -505,3 +505,72 @@ def test_window_crosses_midnight_and_dow_correctly():
     disp2, ran2 = _window_fixture("0 0 * * 6")  # Saturday-only, minute 0
     disp2.dispatch_scheduled("t-1", now=datetime(2026, 6, 13, 0, 0, tzinfo=timezone.utc))
     assert len(ran2) == 1
+
+
+# --------------------------------------------------------------------------- #
+# Settle budgets (the worker drain-window latency P1, observed live twice):
+# the chat-tuned 25s default (edge-bounded) starves playbook runs — the worker
+# poll+serve+model-continue cycle regularly exceeds it, so runs end "incomplete"
+# with unserved read-only calls. Playbook legs have NO http edge (scheduled =
+# one-off task; events = background thread) -> 120s; run-now rides HTTP -> 45s
+# (under the 60s CloudFront/ALB ceilings with headroom).
+# --------------------------------------------------------------------------- #
+def test_get_runtime_passes_settle_budget_through():
+    from agents.runtime import DEFAULT_TURN_SETTLE_SECONDS, get_runtime
+
+    rt = get_runtime({"runtime": "managed", "api_key": "k", "environment_id": "e",
+                      "settle_budget_s": 120.0})
+    assert rt._settle_budget_s == 120.0
+    rt_default = get_runtime({"runtime": "managed", "api_key": "k", "environment_id": "e"})
+    assert rt_default._settle_budget_s == DEFAULT_TURN_SETTLE_SECONDS
+
+
+def test_playbook_and_runnow_settle_resolvers(monkeypatch):
+    from agents.playbooks.dispatch import playbook_settle_seconds, runnow_settle_seconds
+
+    monkeypatch.delenv("UPLIFT_PLAYBOOK_SETTLE_SECONDS", raising=False)
+    monkeypatch.delenv("UPLIFT_RUNNOW_SETTLE_SECONDS", raising=False)
+    # 480s: the 19:45Z live tick proved 120s doesn't cover a DELEGATION cycle (coordinator ->
+    # scout sub-turn -> tools -> resume); the dispatch one-off task has no edge constraint and
+    # 8 minutes is fine against a 15-minute tick cadence.
+    assert playbook_settle_seconds() == 480.0
+    assert runnow_settle_seconds() == 45.0
+    monkeypatch.setenv("UPLIFT_PLAYBOOK_SETTLE_SECONDS", "300")
+    monkeypatch.setenv("UPLIFT_RUNNOW_SETTLE_SECONDS", "50")
+    assert playbook_settle_seconds() == 300.0
+    assert runnow_settle_seconds() == 50.0
+
+
+def test_build_runner_real_mode_uses_the_playbook_budget(monkeypatch):
+    """The scheduled leg builds per-tenant runtimes with the PLAYBOOK budget, not chat's 25s."""
+    import agents.runtime as runtime_mod
+    from agents.playbooks.dispatch import _build_runner
+
+    captured: list[dict] = []
+    real_get = runtime_mod.get_runtime
+
+    def spy_get_runtime(config=None):
+        captured.append(dict(config or {}))
+        return real_get({"runtime": "fake"})
+
+    monkeypatch.setattr(runtime_mod, "get_runtime", spy_get_runtime)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+
+    class _WS:
+        def get(self, tenant_id):
+            return {"environment_id": "env_1", "vault_id": None}
+
+    import agents.workspace_store as ws_mod
+    monkeypatch.setattr(ws_mod, "PgWorkspaceStore", lambda dsn: _WS())
+
+    import agents.playbooks.store as store_mod
+    monkeypatch.setattr(store_mod, "PgPlaybookStore", lambda dsn: store_mod.InMemoryPlaybookStore())
+    monkeypatch.setattr(store_mod, "PgPlaybookRunStore", lambda dsn: store_mod.InMemoryPlaybookRunStore())
+
+    store, run_playbook = _build_runner("postgresql://x")
+    from agents.playbooks.runner import TriggerEvent
+    run_playbook("t-1", "00000000-0000-0000-0000-000000000000", TriggerEvent())
+
+    managed = [c for c in captured if c.get("runtime") == "managed"]
+    assert managed, "real mode must build a managed runtime"
+    assert managed[0].get("settle_budget_s") == 480.0

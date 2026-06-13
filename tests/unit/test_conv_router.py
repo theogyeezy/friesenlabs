@@ -34,9 +34,29 @@ def test_knowledge_shaped_questions_take_the_fast_lane(message):
     "have the team investigate why renewals dipped",
     "How is the Acme account doing?",          # CRM-state ask -> crew (reads live data)
     "what should we do about the Acme lead?",  # open-ended ops -> crew
+    # LIVE MISS (2026-06-12, owner-reported): a contact lookup is CRM data, not corpus —
+    # the fast lane refused honestly but the crew could have answered from read_crm.
+    "what is Vada Fenwick phone number",
+    "what's the phone number for Vada Fenwick?",
+    "contact info for the Westlake facilities manager",
+    "what is Jane Doe's mobile?",
 ])
 def test_action_research_and_crm_asks_go_to_the_crew(message):
     assert HeuristicRouter().route(message) == "crew"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("message", [
+    # Owner-reported (2026-06-12): typo'd openers fell off the question-shape regex and took
+    # the slow crew lane. Corpus-NOUN signals route to knowledge regardless of opener spelling
+    # (the RAG embedding handles the typos once routed).
+    "waht is our discont policy",
+    "hwo long does onboarding take",
+    "whats the payment terms agian",
+    "pricing for service agreements",
+])
+def test_typoed_corpus_questions_still_take_the_fast_lane(message):
+    assert HeuristicRouter().route(message) == "knowledge"
 
 
 @pytest.mark.unit

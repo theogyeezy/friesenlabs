@@ -689,11 +689,18 @@ export interface KnowledgeSearchResult {
 export interface KnowledgeSearchResponse {
   query: string;
   results: KnowledgeSearchResult[];
-  /** False = the query embedder (Titan/Bedrock) isn't reachable yet (env-key-gated):
-   * the result list is empty and `reason` explains it — an informative state, NOT an
-   * error. The inventory tab stays useful regardless. */
+  /** False = search degraded; `reason_code` says WHY (the audit-P1 split):
+   * "embedder_unavailable" = the query embedder (Titan/Bedrock) isn't reachable yet
+   * (env-key-gated) — the calm "warming up" state; "search_error" = a transient failure
+   * after the embed (retry-worthy, NOT "warming up"). Absent/null reason_code from an
+   * older API image is treated as the embedder story (the only degrade that existed). */
   search_available: boolean;
   reason: string | null;
+  reason_code?: string | null;
+  /** Paging into the ranked scan ("show more"): `next_offset` is null at the end of the
+   * corpus (or past the server's depth cap). Absent from an older API image = no paging. */
+  offset?: number;
+  next_offset?: number | null;
 }
 
 /** POST /knowledge/documents result — the customer document-add path (knowledge audit P0). */
@@ -702,6 +709,69 @@ export interface KnowledgeAddDocumentResponse {
   chunks: number;
   source: string | null;
   title: string | null;
+}
+
+/** One page in the tenant's editable knowledge corpus (GET /knowledge/documents).
+ * `editable: false` marks a legacy upload that predates raw-original storage —
+ * listable and deletable, but its exact text can't be reconstructed for editing. */
+export interface KnowledgeDocumentSummary {
+  ref_id: string | null;
+  title: string;
+  /** Bounded one-line body preview; "" for a legacy upload. */
+  preview: string;
+  chunks: number;
+  editable: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+  /** Organization (knowledge_pages): null/absent = top level; sort within siblings.
+   * Optional so an older API image (pre-hierarchy) still type-checks. */
+  parent_ref?: string | null;
+  sort_order?: number;
+}
+
+export interface KnowledgeDocumentListResponse {
+  documents: KnowledgeDocumentSummary[];
+  total: number;
+  /** False until the knowledge_pages migration runs — the client renders the same
+   * honest flat list and hides every organize affordance. Absent (older API) = false. */
+  organize_available?: boolean;
+}
+
+/** PATCH /knowledge/documents/{ref}/location — exactly one operation per call. */
+export interface KnowledgeMoveResponse {
+  ref_id: string;
+  parent_ref: string | null;
+  sort_order: number;
+  organize_available: boolean;
+}
+
+/** One page in full (GET /knowledge/documents/{ref}). Exactly one of `content`
+ * (the stored original, editable) or `sections` (legacy chunk texts, read-only)
+ * is populated — the API never invents content. */
+export interface KnowledgeDocumentDetail {
+  ref_id: string;
+  title: string;
+  content: string | null;
+  editable: boolean;
+  sections: string[] | null;
+  chunks: number;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+/** PUT /knowledge/documents/{ref} result. Changed content lands under a NEW
+ * ref (`ref_id`); `previous_removed: false` flags that the old version still
+ * exists (the cleanup failed) — visible and deletable, never silently lost. */
+export interface KnowledgeUpdateDocumentResponse extends KnowledgeAddDocumentResponse {
+  replaced_ref_id: string;
+  previous_removed: boolean;
+}
+
+/** DELETE /knowledge/documents/{ref} result. */
+export interface KnowledgeDeleteDocumentResponse {
+  ref_id: string;
+  deleted: boolean;
+  rows_removed: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -2040,12 +2110,13 @@ export class ApiClient {
   /** GET /knowledge/search?q=: cosine search over the tenant's corpus (ref_id +
    * source + snippet + score). Degrades honestly to {search_available: false,
    * reason} when the Titan query embedder isn't reachable (env-key-gated). */
-  async searchKnowledge(query: string, limit?: number): Promise<KnowledgeSearchResponse> {
+  async searchKnowledge(query: string, limit?: number, offset?: number): Promise<KnowledgeSearchResponse> {
     if (this.mock) {
       return (await this.mockApi()).searchKnowledge(query, limit);
     }
     const params = new URLSearchParams({ q: query });
     if (limit !== undefined) params.set("limit", String(limit));
+    if (offset !== undefined && offset > 0) params.set("offset", String(offset));
     return this.request<KnowledgeSearchResponse>("GET", `/knowledge/search?${params.toString()}`);
   }
 
@@ -2060,6 +2131,76 @@ export class ApiClient {
       title,
       content,
     });
+  }
+
+  /** GET /knowledge/documents: the tenant's pages, newest first — title + bounded
+   * preview + chunk count per uploaded document. A plain RLS-scoped aggregate (no
+   * embedder); an un-uploaded tenant gets an honest empty list. */
+  async listKnowledgeDocuments(): Promise<KnowledgeDocumentListResponse> {
+    if (this.mock) {
+      return (await this.mockApi()).listKnowledgeDocuments();
+    }
+    return this.request<KnowledgeDocumentListResponse>("GET", "/knowledge/documents");
+  }
+
+  /** GET /knowledge/documents/{ref}: one page in full — the exact stored original
+   * when it exists; a legacy upload degrades honestly to read-only chunk sections. */
+  async getKnowledgeDocument(refId: string): Promise<KnowledgeDocumentDetail> {
+    if (this.mock) {
+      return (await this.mockApi()).getKnowledgeDocument(refId);
+    }
+    return this.request<KnowledgeDocumentDetail>(
+      "GET",
+      `/knowledge/documents/${encodeURIComponent(refId)}`,
+    );
+  }
+
+  /** PUT /knowledge/documents/{ref}: edit a page — re-ingested server-side (changed
+   * content lands under a NEW ref, then the old namespace is removed). 409 = a
+   * legacy upload with no stored original (re-add to make editable). */
+  async updateKnowledgeDocument(
+    refId: string,
+    title: string,
+    content: string,
+  ): Promise<KnowledgeUpdateDocumentResponse> {
+    if (this.mock) {
+      return (await this.mockApi()).updateKnowledgeDocument(refId, title, content);
+    }
+    return this.request<KnowledgeUpdateDocumentResponse>(
+      "PUT",
+      `/knowledge/documents/${encodeURIComponent(refId)}`,
+      { title, content },
+    );
+  }
+
+  /** DELETE /knowledge/documents/{ref}: remove a page (every chunk + the stored
+   * original). 404 = nothing under that ref for this tenant. */
+  async deleteKnowledgeDocument(refId: string): Promise<KnowledgeDeleteDocumentResponse> {
+    if (this.mock) {
+      return (await this.mockApi()).deleteKnowledgeDocument(refId);
+    }
+    return this.request<KnowledgeDeleteDocumentResponse>(
+      "DELETE",
+      `/knowledge/documents/${encodeURIComponent(refId)}`,
+    );
+  }
+
+  /** PATCH /knowledge/documents/{ref}/location: organize a page — re-parent
+   * ({parent_ref: ref|null}) OR nudge it ({move: "up"|"down"}), one op per call.
+   * 503 = the knowledge_pages migration hasn't run yet (honest rolling-out copy);
+   * 422 = cycle/unknown parent. */
+  async moveKnowledgeDocument(
+    refId: string,
+    op: { parent_ref?: string | null; move?: "up" | "down" },
+  ): Promise<KnowledgeMoveResponse> {
+    if (this.mock) {
+      return (await this.mockApi()).moveKnowledgeDocument(refId, op);
+    }
+    return this.request<KnowledgeMoveResponse>(
+      "PATCH",
+      `/knowledge/documents/${encodeURIComponent(refId)}/location`,
+      op,
+    );
   }
 
   // --- integrations (authed) -------------------------------------------------

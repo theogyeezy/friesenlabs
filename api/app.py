@@ -656,10 +656,12 @@ def create_app(deps: ApiDeps) -> FastAPI:
         from api.workflows_routes import mount_workflows
         mount_workflows(app, deps.workflows, current_tenant)
 
-    # Authed per-tenant knowledge view (the real Knowledge tab). Claims-bound, READ-ONLY: the
-    # inventory is a plain aggregate over the tenant's documents (no embedder), and search
+    # Authed per-tenant knowledge surface (the real Knowledge tab). Claims-bound: the inventory
+    # + pages list are plain aggregates over the tenant's documents (no embedder), search
     # degrades to an honest "search model not configured" 200 when the Titan embedder isn't
-    # reachable — never a 500, never a leaked AWS error (see knowledge_routes).
+    # reachable, and the only writes are the tenant's OWN uploaded pages (add/edit/delete —
+    # nothing outbound, so no Greenlight gate) — never a 500, never a leaked AWS error
+    # (see knowledge_routes).
     if deps.knowledge is not None:
         from api.knowledge_routes import mount_knowledge
         mount_knowledge(app, deps.knowledge, current_tenant)

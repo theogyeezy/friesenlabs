@@ -1,23 +1,30 @@
-"""Unit: customer document upload — chunk → embed → upsert (knowledge audit P0, 2026-06-11).
+"""Unit: customer document upload — chunk → embed → upsert (knowledge audit P0, 2026-06-11;
+raw-original row added 2026-06-12 for the editable Knowledge pages surface).
 
-`ingest.upload.ingest_document` is the seam behind POST /knowledge/documents: it rides the
+`ingest.upload.ingest_document` is the seam behind POST/PUT /knowledge/documents: it rides the
 SAME production pieces the seeder/connectors use (ingest.chunk.chunk_text, the embedder seam,
 the DocumentStore upsert) under `source='upload'` with a deterministic
 `upload:<slug>-<hash8>#<seq>` ref scheme — idempotent on re-post, no stale-tail chunks when
-content changes (changed content = a new ref namespace, never a partial overwrite).
+content changes (changed content = a new ref namespace, never a partial overwrite). Every
+ingest ALSO lands one `<prefix>#raw` row carrying the exact original `title\n\ncontent`
+(embedding None — invisible to search) so the document stays readable + editable.
 """
 import pytest
 
 from ingest import EMBEDDING_DIM
-from ingest.upload import MAX_DOC_CHARS, MAX_TITLE_LEN, ingest_document
+from ingest.upload import MAX_DOC_CHARS, MAX_TITLE_LEN, RAW_SUFFIX, ingest_document
 
 
 class FakeStore:
     def __init__(self):
         self.rows: dict[tuple, tuple] = {}
+        self.raw: dict[tuple, str] = {}
 
     def upsert(self, tenant_id, source, ref_id, content, vec, chash):
         self.rows[(tenant_id, source, ref_id)] = (content, tuple(vec), chash)
+
+    def upsert_raw(self, tenant_id, source, ref_id, content):
+        self.raw[(tenant_id, source, ref_id)] = content
 
 
 def _embedder(dim=EMBEDDING_DIM):
@@ -43,6 +50,34 @@ def test_ingest_document_lands_chunks_with_stable_upload_refs():
                             title="Pricing Policy", content="Discounts cap at 15%.")
     assert again["ref_id"] == out["ref_id"]
     assert len(store.rows) == 1
+    assert len(store.raw) == 1
+
+
+@pytest.mark.unit
+def test_raw_original_row_lands_with_exact_text():
+    """The `#raw` row carries the EXACT original (title line + blank line + body, newlines
+    intact) — chunks are whitespace-collapsed, so this row is the only faithful copy."""
+    store = FakeStore()
+    body = "Line one.\n\n- bullet a\n- bullet b\n\nLine two."
+    out = ingest_document(store, _embedder(), tenant_id="T1",
+                          title="Onboarding SOP", content=body)
+    key = ("T1", "upload", out["ref_id"] + RAW_SUFFIX)
+    assert store.raw == {key: f"Onboarding SOP\n\n{body}"}
+    # And the raw ref never collides with a chunk ref.
+    assert key not in store.rows
+
+
+@pytest.mark.unit
+def test_multiline_title_normalizes_to_one_line():
+    """The title folds to a single line so the raw row's first paragraph break is an
+    unambiguous title/body separator (and the slug/ref stays stable either way)."""
+    store = FakeStore()
+    out = ingest_document(store, _embedder(), tenant_id="T1",
+                          title="Pricing\n  Policy", content="Discounts cap at 15%.")
+    assert out["title"] == "Pricing Policy"
+    ((_, _, raw_ref),) = store.raw.keys()
+    raw = store.raw[("T1", "upload", raw_ref)]
+    assert raw.partition("\n\n")[0] == "Pricing Policy"
 
 
 @pytest.mark.unit
@@ -53,6 +88,9 @@ def test_changed_content_gets_a_distinct_ref_namespace():
     b = ingest_document(store, _embedder(), tenant_id="T1",
                         title="Pricing Policy", content="Discounts cap at 20% now.")
     assert a["ref_id"] != b["ref_id"]  # no stale-tail overwrite of the old doc's chunks
+    # Each version keeps its own raw original.
+    assert ("T1", "upload", a["ref_id"] + RAW_SUFFIX) in store.raw
+    assert ("T1", "upload", b["ref_id"] + RAW_SUFFIX) in store.raw
 
 
 @pytest.mark.unit
@@ -62,6 +100,7 @@ def test_long_content_chunks_into_multiple_rows():
                           title="Playbook", content=LONG_CONTENT)
     assert out["chunks"] > 1
     assert len(store.rows) == out["chunks"]
+    assert len(store.raw) == 1  # one raw original regardless of chunk count
 
 
 @pytest.mark.unit
@@ -71,6 +110,7 @@ def test_embedder_dim_mismatch_refuses_and_lands_nothing():
         ingest_document(store, _embedder(dim=512), tenant_id="T1",
                         title="Doc", content="text")
     assert store.rows == {}
+    assert store.raw == {}
 
 
 @pytest.mark.unit
@@ -89,6 +129,7 @@ def test_embed_failure_mid_doc_lands_nothing():
     with pytest.raises(RuntimeError):
         ingest_document(store, flaky, tenant_id="T1", title="Playbook", content=LONG_CONTENT)
     assert store.rows == {}
+    assert store.raw == {}
 
 
 @pytest.mark.unit
@@ -105,3 +146,4 @@ def test_blank_and_oversize_inputs_refused():
         ingest_document(store, _embedder(), tenant_id="T1",
                         title="Doc", content="x" * (MAX_DOC_CHARS + 1))
     assert store.rows == {}
+    assert store.raw == {}

@@ -186,6 +186,11 @@ def make_conversation_factory(
             # Tier-0 fast lane (conv/router.py): knowledge-shaped asks answer directly from
             # the grounded RAG path in seconds — crew-biased, deterministic, offline.
             router=HeuristicRouter(),
+            # SESSION PERSISTENCE (2026-06-12): resume the tenant's persisted MA session so a
+            # deploy roll can't kill in-flight turns or history; new ids persist back, dead
+            # ones clear via the cache's forget hook. Best-effort by contract.
+            persisted_session_id=row.get("session_id"),
+            persist_session=(lambda sid, _t=tenant_id: workspace_store.set_session_id(_t, sid)),
             spec_generator=spec_generator,  # default ctx.extra['generate_spec'] for build_view
             greenlight=greenlight,
             cost_recorder=cost_recorder,    # per-turn Anthropic token usage -> cost_events
@@ -378,16 +383,27 @@ def build_app():
     # configured (api_key + the DSN-backed workspace store); otherwise the store-only/inert default.
     playbook_dispatcher = None  # in-process event producer (deals/contacts); None = inert
     if dsn and api_key and workspace_store is not None:
-        from agents.playbooks.dispatch import BackgroundDispatcher, PlaybookDispatcher  # noqa: PLC0415 — lazy
+        from agents.playbooks.dispatch import (  # noqa: PLC0415 — lazy
+            BackgroundDispatcher,
+            PlaybookDispatcher,
+            playbook_settle_seconds,
+            runnow_settle_seconds,
+        )
         from agents.playbooks.store import PgPlaybookRunStore, PgPlaybookStore  # noqa: PLC0415
         from agents.runtime import get_runtime  # noqa: PLC0415 — lazy
 
-        def _studio_registrar_factory(tenant_id, _ws=workspace_store, _key=api_key):
+        def _studio_registrar_factory(tenant_id, _ws=workspace_store, _key=api_key,
+                                      settle_budget_s=None):
             row = _ws.get(tenant_id) or {}
             env_id = row.get("environment_id")
             if not env_id:
                 return None  # tenant not provisioned -> honest record-only
-            runtime = get_runtime({"runtime": "managed", "api_key": _key, "environment_id": env_id})
+            # Default budget = run-now's (this factory's HTTP-facing consumers: the activate +
+            # run routes must clear the 60s edge); the event leg overrides with the playbook
+            # budget below — the chat-tuned 25s starved the worker's serve cycle (live P1).
+            runtime = get_runtime({"runtime": "managed", "api_key": _key,
+                                   "environment_id": env_id,
+                                   "settle_budget_s": settle_budget_s or runnow_settle_seconds()})
             return (runtime, env_id, row.get("vault_id"))
 
         playbook_store = PgPlaybookStore(dsn)
@@ -403,7 +419,8 @@ def build_app():
                                    _store=playbook_store, _runs=playbook_run_store):
             from agents.playbooks import runner as runner_mod  # noqa: PLC0415 — lazy
 
-            resolved = _factory(tenant_id)
+            # Background thread — no http edge: wait the full playbook budget for the worker.
+            resolved = _factory(tenant_id, settle_budget_s=playbook_settle_seconds())
             if resolved is None:
                 record = runner_mod.RunRecord(
                     playbook_id=str(playbook_id), tenant_id=str(tenant_id), status="error",
@@ -618,7 +635,10 @@ def build_app():
     # rest of the app uses — the tenant is ONLY ever the verified JWT claim (THE TRUST RULE).
     from api.auth import make_current_tenant
     from api.onboarding_routes import deps_from_dsn as onboarding_deps_from_dsn, mount_onboarding
-    mount_onboarding(app, onboarding_deps_from_dsn(dsn), make_current_tenant(deps.verifier))
+    # load-sample seeds the sample knowledge pages through the SAME document ingestor the
+    # knowledge routes ride (one seam) — unwired ingest plane -> honest pages_seeded: 0.
+    mount_onboarding(app, onboarding_deps_from_dsn(dsn, ingest_document=build_doc_ingestor()),
+                     make_current_tenant(deps.verifier))
     return app
 
 

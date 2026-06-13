@@ -339,3 +339,82 @@ def test_budget_bounds_a_busy_stream_that_never_idles():
     # The drain returned EARLY (unsettled) instead of riding all 50 events past the ceiling.
     assert out["pending_approvals"] == [{"status": "pending", "reason": "settle_budget"}]
     assert "working 49" not in out["answer"]
+
+
+# Live finding ROUND 7 (matrix run, 2026-06-12): a /chat request whose CLIENT dies (tab
+# closed, laptop lid) keeps draining server-side as an ORPHAN — it consumes every session
+# event into the dedupe ledger and then its response is lost with the dead connection.
+# Every later /chat/continue replays NOTHING (all seen), reads a silent stream on an
+# already-IDLE session, hits the bounded read timeout, and surfaces stream_interrupted —
+# forever. Observed live: 10+ consecutive continues, ~45s each, on a session that had been
+# idle for minutes with the finished answer sitting in its event log.
+#
+# The contract: a ZERO-PROGRESS drop (nothing replayed, nothing open) on a session whose
+# event log ENDS at a non-requires_action idle is a FINISHED turn, not an interrupted one —
+# recover it by force-replaying the tail past the ledger so the answer (and any routed
+# approvals) reaches this request, and settle. A requires_action tail keeps the honest
+# unsettled signal: the worker still owes a result.
+
+_FINISHED_TURN_LOG = [
+    _ev(type="user.message", id="u1",
+        content=[_ev(type="text", text="how is my pipeline looking?")]),
+    _ev(type="agent.message", id="a1",
+        content=[_ev(type="text", text="Pulling your pipeline snapshot now.")]),
+    _ev(type="agent.custom_tool_use", name="read_crm", input={"entity": "deals"}, id="ctu_7"),
+    _ev(type="user.custom_tool_result", custom_tool_use_id="ctu_7", id="r7",
+        content=[_ev(type="text", text='{"status": "ok", "result": {"rows": []}}')]),
+    _ev(type="agent.message", id="a2",
+        content=[_ev(type="text", text="44 open deals, $1.83M total.")]),
+    _ev(type="session.status_idle", id="i1", stop_reason=_ev(type="end_turn")),
+]
+
+
+def _orphan_consumed(r, session, log):
+    """Simulate the orphaned request: every event id is already in the dedupe ledger."""
+    seen = r._seen_event_ids.setdefault(session.id, set())
+    for e in log:
+        if getattr(e, "id", None) is not None:
+            seen.add(e.id)
+
+
+@pytest.mark.unit
+def test_continue_after_orphaned_request_recovers_the_finished_turn():
+    r = _managed([])
+    session = _session(r)
+    _orphan_consumed(r, session, _FINISHED_TURN_LOG)
+    r._client.beta.sessions.events.list = _FakeEventsList(_FINISHED_TURN_LOG)
+    r._client.beta.sessions.events.stream.side_effect = [
+        _DroppingStream([], TimeoutError("read timeout")),
+        _DroppingStream([], TimeoutError("read timeout")),
+    ]
+    out = r.continue_drain(session)
+    # The finished turn is RECOVERED — settled, with the real answer — not stream_interrupted.
+    assert out["pending_approvals"] == []
+    assert "44 open deals" in out["answer"]
+    assert [(x["tool"], x["status"]) for x in out["tool_results"]] == [("read_crm", "ok")]
+    # Observe-only: the continue never sent a user.message.
+    r._client.beta.sessions.events.send.assert_not_called()
+
+
+@pytest.mark.unit
+def test_continue_zero_progress_requires_action_tail_stays_unsettled():
+    # Same orphan shape, but the log ends at a requires_action idle: the worker still owes
+    # a result, so settling here would hand the customer silence as a final answer.
+    log = [
+        _ev(type="user.message", id="u1",
+            content=[_ev(type="text", text="how is my pipeline looking?")]),
+        _ev(type="agent.custom_tool_use", name="read_crm", input={"entity": "deals"},
+            id="ctu_8"),
+        _ev(type="session.status_idle", id="i1", stop_reason=_ev(type="requires_action")),
+    ]
+    r = _managed([])
+    session = _session(r)
+    _orphan_consumed(r, session, log)
+    r._client.beta.sessions.events.list = _FakeEventsList(log)
+    r._client.beta.sessions.events.stream.side_effect = [
+        _DroppingStream([], TimeoutError("read timeout")),
+        _DroppingStream([], TimeoutError("read timeout")),
+    ]
+    out = r.continue_drain(session)
+    assert out["pending_approvals"] == [{"status": "pending", "reason": "stream_interrupted"}]
+    assert out["answer"] == ""

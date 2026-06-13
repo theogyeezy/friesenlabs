@@ -162,6 +162,9 @@ class ManagedAgentsRuntime(AgentRuntime):
         # `events.list` replays the FULL session log, so dedupe must span turns on this instance
         # (one runtime per conversation in prod — bounded by the conversation's lifetime).
         self._seen_event_ids: dict[str, set[str]] = {}
+        # Sessions RESUMED from a persisted id whose dedupe ledger hasn't been primed yet —
+        # a fresh process knows nothing of what the dead one already delivered (see _drain).
+        self._resumed_unprimed: set[str] = set()
         # SETTLE (the agentic-turn fix, 2026-06-12): how long one turn may keep draining past a
         # `requires_action` idle while the worker serves the open calls. Wall-clock from the
         # start of send_message; on exhaustion the turn fails closed exactly as before. The
@@ -380,6 +383,21 @@ class ManagedAgentsRuntime(AgentRuntime):
             metadata={"tenant_id": tenant_id, "vault_id": vault_id},
         )
 
+    def resume_session(self, session_id, coordinator_id, tenant_id,
+                       vault_id=None, environment_id=None) -> Session:
+        """Re-attach to a PERSISTED MA session (deploy-roll survival, 2026-06-12) — constructs
+        the local handle only, no network. The session may be dead server-side: the drain's
+        terminated handling + the cache's rebuild path cover that (and clear the stale id).
+        The dedupe ledger is primed lazily on first use so reconnect-replays never fold prior
+        turns into a new digest while /chat/continue still recovers the in-flight tail."""
+        self._session_ids.add(session_id)
+        self._resumed_unprimed.add(session_id)
+        return Session(
+            id=session_id, tenant_id=tenant_id, coordinator_id=coordinator_id,
+            metadata={"tenant_id": tenant_id, "environment_id": environment_id,
+                      "vault_id": vault_id},
+        )
+
     def send_message(self, session, message) -> dict:
         return self._drain(session, message)
 
@@ -454,6 +472,24 @@ class ManagedAgentsRuntime(AgentRuntime):
         turn_start = self._clock()  # settle budget anchor (see the requires_action branch)
         last_stop: str | None = None  # the most recent idle's stop reason (settle observability)
         seen = self._seen_event_ids.setdefault(session.id, set())
+        if session.id in self._resumed_unprimed:
+            # PRIME the resumed ledger (one events.list): a fresh process must not re-deliver
+            # history. A new SEND marks EVERYTHING so far as seen (it is prior-turn material);
+            # a CONTINUE marks everything through the LAST user.message — the tail after it is
+            # exactly the in-flight turn the dead process never surfaced.
+            self._resumed_unprimed.discard(session.id)
+            history = list(client.beta.sessions.events.list(
+                session_id=session.id, extra_headers=self._beta_headers()))
+            if message is not None:
+                cutoff = len(history)
+            else:
+                marks = [i for i, e in enumerate(history)
+                         if getattr(e, "type", None) == "user.message"]
+                cutoff = (marks[-1] + 1) if marks else 0
+            for e in history[:cutoff]:
+                eid = getattr(e, "id", None)
+                if eid is not None:
+                    seen.add(eid)
 
         def _accumulate_usage(event) -> None:
             nonlocal usage_in, usage_out, usage_model
@@ -474,10 +510,13 @@ class ManagedAgentsRuntime(AgentRuntime):
             if m:
                 usage_model = m
 
-        def handle(event) -> bool:
+        def handle(event, force=False) -> bool:
             """Process ONE session event (live stream or replay); True = the turn is over.
             Events carrying a server id are deduped against the per-session ledger, so a
-            replayed/overlapping event is processed exactly once."""
+            replayed/overlapping event is processed exactly once. `force` is the
+            finished-turn recovery path ONLY (round 7): the tail events are final and
+            already ledger-seen, so both the budget check and the dedupe skip are bypassed —
+            this is local re-processing of a turn the session completed, not waiting."""
             # BUDGET ON EVERY EVENT (round 6): a BUSY session emitting ordinary events for
             # minutes never hits a requires_action idle or a stream drop, so checking the
             # budget only there let the drain ride the whole turn past the 60s edge ceiling
@@ -485,7 +524,7 @@ class ManagedAgentsRuntime(AgentRuntime):
             # The moment the per-request budget is spent the turn surfaces UNSETTLED. The
             # check runs BEFORE the dedupe ledger records this event, so the continue leg
             # (fresh budget) re-reads it from events.list and nothing is lost.
-            if self._clock() - turn_start >= self._settle_budget_s:
+            if not force and self._clock() - turn_start >= self._settle_budget_s:
                 if not calls and not pending:
                     pending.append({"status": "pending", "reason": "settle_budget"})
                 else:
@@ -494,7 +533,7 @@ class ManagedAgentsRuntime(AgentRuntime):
                 return True
             eid = getattr(event, "id", None)
             if eid is not None:
-                if eid in seen:
+                if not force and eid in seen:
                     return False  # already processed (reconnect replay / stream-list overlap)
                 seen.add(eid)
             _accumulate_usage(event)  # additive cost observation — dedup-safe (runs post-seen)
@@ -577,6 +616,37 @@ class ManagedAgentsRuntime(AgentRuntime):
                 return True
             return False
 
+        def _finished_tail_recovered() -> bool:
+            """ZERO-PROGRESS drop wedge (round 7, live matrix run 2026-06-12): a /chat
+            request whose client died (closed tab) keeps draining server-side as an orphan —
+            it marks every event seen and its response is lost with the connection. Each
+            later continue then replays nothing, reads a silent stream on an already-idle
+            session, and surfaces stream_interrupted forever. If the session's event log
+            ENDS at a non-requires_action idle the turn is already OVER: force-replay the
+            tail (everything after the last user.message) past the dedupe ledger so the
+            finished answer and any routed approvals reach THIS request, and settle. A
+            requires_action tail keeps the honest unsettled signal — the worker still owes
+            a result and the next continue will observe it."""
+            try:
+                events = list(client.beta.sessions.events.list(
+                    session_id=session.id, extra_headers=self._beta_headers()))
+            except Exception:
+                return False  # can't tell — keep the recoverable unsettled surface
+            if not events:
+                return False
+            tail_stop = events[-1]
+            if getattr(tail_stop, "type", None) != "session.status_idle":
+                return False
+            if self._stop_reason_type(tail_stop) == "requires_action":
+                return False
+            marks = [i for i, e in enumerate(events)
+                     if getattr(e, "type", None) == "user.message"]
+            start = (marks[-1] + 1) if marks else 0
+            for event in events[start:]:
+                if handle(event, force=True):
+                    break
+            return True
+
         done = False
         while True:
             # Stream-FIRST, then send: the SSE stream only delivers events emitted after it
@@ -614,6 +684,14 @@ class ManagedAgentsRuntime(AgentRuntime):
                     except Exception as exc:
                         if not _is_stream_drop(exc):
                             raise
+                        # Round 7: a drop with ZERO progress this drain (nothing replayed,
+                        # nothing open, no text) on a session whose log ends at a finished
+                        # idle is the orphan-consumed wedge — recover the finished turn
+                        # instead of surfacing stream_interrupted forever.
+                        if (not calls and not pending and not answer_parts
+                                and not tool_results and _finished_tail_recovered()):
+                            done = True
+                            break
                         # Settle guards: budget spent OR reconnects exhausted -> SURFACE the
                         # turn unsettled (round 4) — under the async contract the continue leg
                         # re-attaches and finishes it, so a recoverable in-flight turn must
@@ -711,6 +789,11 @@ class FakeRuntime(AgentRuntime):
             "answer": f"[fake] handled: {message}",
         }
 
+    def resume_session(self, session_id, coordinator_id, tenant_id,
+                       vault_id=None, environment_id=None) -> Session:
+        return Session(id=session_id, tenant_id=tenant_id, coordinator_id=coordinator_id,
+                       metadata={"tenant_id": tenant_id, "environment_id": environment_id})
+
     def continue_drain(self, session) -> dict:
         # The fake settles every turn in one round — a continue finds nothing in flight.
         return {"session_id": session.id, "tenant_id": session.tenant_id,
@@ -734,6 +817,11 @@ def get_runtime(config: dict[str, Any] | None = None) -> AgentRuntime:
         return ManagedAgentsRuntime(
             api_key=config.get("api_key"),
             environment_id=config.get("environment_id"),  # the persisted per-tenant env id
+            # Per-call-site drain budget: chat keeps the edge-bounded default (None -> env/25s);
+            # playbook legs pass their own (scheduled/event 120s, run-now 45s) — the 25s chat
+            # default starved the worker's poll+serve+continue cycle on playbook runs (the
+            # twice-observed live "incomplete with unserved read-only calls").
+            settle_budget_s=config.get("settle_budget_s"),
         )
     if kind == "self_hosted":
         # Lazy import keeps this module's import cost unchanged for the fake/managed paths.
