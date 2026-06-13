@@ -78,6 +78,7 @@ def test_ghl_factory_token_bypass_wires_connector_sink_and_location():
     assert client.token == "bearer-xyz"              # token set, no auth path
     assert client.location == "loc-9"                # location forwarded
     assert isinstance(conn._sink, PgCrmRecordsSink)  # wired to the full-fidelity sink
+    assert conn._sink._source == "gohighlevel"       # NOT the "hubspot" default — crm_records PK
     assert conn._client is client
 
 
