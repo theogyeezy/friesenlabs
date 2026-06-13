@@ -40,6 +40,7 @@ class ToolContext:
     rag: Any = None         # vector-search client
     cortex: Any = None      # model-prediction client
     hubspot: Any = None     # live HubSpot client (HubSpotFullClient, token already set per-tenant)
+    ghl: Any = None         # live GoHighLevel client (GoHighLevelFullClient, token+location per-tenant)
     greenlight: Greenlight | None = None
     extra: dict = field(default_factory=dict)
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from .base import Policy, Tool
 from .build_view import BuildView
+from .ghl_live import GhlFields, GhlObjectTypes, GhlSearch
 from .hubspot_live import HubSpotObjectTypes, HubSpotProperties, HubSpotSearch
 from .readonly import QueryCube, ReadCrm, SearchRag
 from .run_model import RunModel
@@ -26,6 +27,7 @@ from .sideeffecting import (
 _TOOL_CLASSES: list[type[Tool]] = [
     SearchRag, QueryCube, ReadCrm, RunModel, BuildView,  # read-only (auto)
     HubSpotObjectTypes, HubSpotProperties, HubSpotSearch,  # live HubSpot (read-only, auto)
+    GhlObjectTypes, GhlFields, GhlSearch,                 # live GoHighLevel (read-only, auto)
     DraftEmail,                                           # draft (auto)
     SendEmail, UpdateDeal, UpdateContact, CreateActivity, CreateDeal, IssueQuote,
 ]
@@ -49,6 +51,29 @@ def tenant_hubspot_client(tenant_id: str, secrets):
     except Exception as exc:  # noqa: BLE001 — not connected / unreadable creds → no live client
         logging.getLogger("agents.tools").info(
             "hubspot live tool: no client for tenant (%s) — not connected", type(exc).__name__)
+        return None
+    return client
+
+
+def tenant_ghl_client(tenant_id: str, secrets):
+    """Resolve a tenant's LIVE GoHighLevelFullClient (token + location_id from the vault, REUSING the
+    connector auth) for the live GHL tools — or None if the tenant has no vaulted GoHighLevel
+    credential (not connected) or the creds can't be read. Honest degradation: the tools then report
+    not_connected. Errors are swallowed by TYPE (no token/PII) so a missing credential never throws
+    into the loop."""
+    import logging  # noqa: PLC0415
+
+    from ingest.connectors.gohighlevel import GoHighLevelConnector  # noqa: PLC0415 — lazy
+    from ingest.connectors.gohighlevel_full import GoHighLevelFullClient  # noqa: PLC0415
+
+    client = GoHighLevelFullClient()
+    try:
+        GoHighLevelConnector(
+            tenant_id, client=client, secrets=secrets, raw_sink=None, structured_sink=None,
+        ).authenticate()
+    except Exception as exc:  # noqa: BLE001 — not connected / unreadable creds → no live client
+        logging.getLogger("agents.tools").info(
+            "ghl live tool: no client for tenant (%s) — not connected", type(exc).__name__)
         return None
     return client
 

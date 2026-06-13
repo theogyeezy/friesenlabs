@@ -75,11 +75,16 @@ merges (the crm_records migration is shared — no second migration).
   since)` is the SIBLING driver (real-mode-gated, Boto3SecretProvider + Aurora DSN) — additive, the
   default `--all` typed/vector sync untouched. 3 wiring tests (token+location bypass, vault-auth reuse
   resolves token+location from legacy JSON, real-mode gate); `pytest tests/unit` green, ruff clean.
-- [ ] 5. **Live GHL agent tools** (`agents/tools/ghl_live.py`): `ghl_object_types` / `ghl_fields` /
-  `ghl_search` — `Policy.AUTO` read-only, backed by `ctx.ghl` (add `ghl` to `ToolContext`; lazy
-  per-tenant client). `registry.tenant_ghl_client()` resolver; register in `_TOOL_CLASSES`; inject a
-  lazy `ghl_resolver` into `make_executor` (additive); grant to the **Scout** specialist. Unit +
-  e2e-through-executor tests.
+- [x] 5. **Live GHL agent tools** — DONE. `agents/tools/ghl_live.py`: `ghl_object_types` /
+  `ghl_fields` / `ghl_search` — `Policy.AUTO` read-only, backed by `ctx.ghl` (added `ghl: Any = None`
+  to `ToolContext`; values incl. recording/attachment URLs returned as text refs, never fetched).
+  `registry.tenant_ghl_client()` resolver REUSES `GoHighLevelConnector.authenticate` (vault token +
+  location_id, honest `None` when not connected); registered in `_TOOL_CLASSES`; a lazy `ghl_resolver`
+  injected into `make_executor` (additive — `_ghl_resolver` wired in `api/asgi.py` alongside the
+  HubSpot one); granted to the **Scout** specialist (prompt + tool list). 12 tests (specs/AUTO,
+  arg-threading, not-connected degradation, lazy-resolve-once, registry, resolver token+location,
+  executor e2e for the bound tenant + degrade-when-unwired, roster grant); `pytest tests/unit` green,
+  ruff clean.
 - [ ] 6. **Full test pass**: `pytest tests/unit` green; imports OK; ruff clean; no-media grep (only
   JSON-response reads, never a blob/recording fetch). `BUILD_STATUS.md` entry (own lane).
 - [ ] 7. **PR**: open a PR (branch `feat/gohighlevel-full-extract`, stacked on #340) — additive
