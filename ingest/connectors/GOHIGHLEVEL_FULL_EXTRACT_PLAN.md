@@ -90,10 +90,11 @@ merges (the crm_records migration is shared — no second migration).
   `registry`, `agents.roster`, `api.asgi`); ruff clean across `ingest/`+`agents/`+`api/asgi.py`+tests;
   no-media verified (the only `.read()` is the JSON API response in `_get`; media values are URL-ref
   flagged, never fetched). `BUILD_STATUS.md` entry added (own GHL section, stacked-on-#340 note).
-- [ ] 7. **PR**: open a PR (branch `feat/gohighlevel-full-extract`, stacked on #340) — additive
-  summary + owner-gated note: register the **GHL marketplace app** → seed
-  `uplift/oauth/gohighlevel/client_id`+`client_secret`; `crm_records` migration is shared with #340.
-  DO NOT merge/deploy. Then stop.
+- [x] 7. **PR** — DONE. Opened **PR #344** (branch `feat/gohighlevel-full-extract`, base
+  `feat/hubspot-full-extract` so the diff is only the GHL work — stacked on #340). Additive summary +
+  owner-gated note: merge #340 first then rebase on main; register the **GHL marketplace app** → seed
+  `uplift/oauth/gohighlevel/client_id`+`client_secret`; the `crm_records` migration is shared with #340
+  (no second migration). NOT merged/deployed. Loop complete.
 
 ## Follow-on (NOT this loop)
 - Agent field-mapping across BOTH sources (HubSpot + GHL `crm_records`) → Cortex features.
