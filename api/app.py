@@ -35,6 +35,7 @@ from api.contacts_routes import ContactsDeps
 from api.cortex_routes import CortexDeps
 from api.deals_routes import DealsDeps
 from api.tasks_routes import TasksDeps
+from api.conversations_routes import ConversationsDeps
 from api.sidecar_routes import SidecarDeps
 from api.integrations_routes import IntegrationsDeps, build_integrations_deps
 from api.knowledge_routes import KnowledgeDeps
@@ -69,7 +70,9 @@ class ApiDeps:
     verifier: JwtVerifier
     greenlight: Greenlight
     saved_views: SavedViews
-    conversation_factory: Callable[[str], Any]          # tenant_id -> conv.session.Conversation
+    # (tenant_id, conversation_id|None) -> conv.session.Conversation. conversation_id=None keeps
+    # the legacy tenant-level session (back-compat); a real id binds the thread's own session.
+    conversation_factory: Callable[..., Any]
     autonomy_config: AutonomyConfig
     executor: Callable[[Action], Any]                   # performs an approved/auto action
     crm: Any | None = None                              # post-approval CRM appliers
@@ -111,6 +114,9 @@ class ApiDeps:
     # pool; api/asgi.py is the ONLY real wiring (the same PgCrmClient instance the directory + board
     # ride). Pass None to skip mounting the routes entirely.
     tasks: TasksDeps | None = field(default_factory=TasksDeps)
+    # Multi-thread chat history (conversations + transcripts). None-store stub mounts honest-503
+    # routes; the /chat turn also persists into the active conversation when this is wired.
+    conversations: ConversationsDeps | None = field(default_factory=ConversationsDeps)
     # /sidecar deps (the real Sidecar agentic layer — grounded next-action suggestions over the
     # tenant's CRM, accept enqueues a Greenlight draft). Same inert-default contract as `deals`:
     # the all-None stub mounts honest-503 routes and opens no DB pool; api/asgi.py wires the same
@@ -222,6 +228,15 @@ class SynthesizeViewBody(BaseModel):
 
 class ChatBody(BaseModel):
     message: str
+    # Optional: route the turn into a specific conversation thread (its own MA session +
+    # persisted transcript). None => the legacy tenant-level session (back-compat).
+    conversation_id: str | None = None
+
+
+class ContinueBody(BaseModel):
+    # /chat/continue keeps continuing the SAME in-flight turn; the conversation_id binds it to the
+    # right thread/session. None => the legacy tenant-level session.
+    conversation_id: str | None = None
 
 
 class ActionBody(BaseModel):
@@ -550,6 +565,36 @@ def create_app(deps: ApiDeps) -> FastAPI:
             logger.exception("save_dashboard: spec rejected by an unexpected error")
             raise HTTPException(status_code=422, detail="dashboard spec failed validation")
 
+    def _lease_convo(tenant_id: str, conversation_id: str | None):
+        # Arity-safe: the live factory takes (tenant_id, conversation_id); legacy/test factories
+        # take just (tenant_id). conversation_id=None preserves the tenant-level session either way.
+        try:
+            return deps.conversation_factory(tenant_id, conversation_id)
+        except TypeError:
+            return deps.conversation_factory(tenant_id)
+
+    def _conv_store():
+        cd = getattr(deps, "conversations", None)
+        return getattr(cd, "store", None) if cd is not None else None
+
+    def _append_message(tenant_id, conversation_id, role, content, citations=None, grounding=None):
+        # Best-effort: a transcript write must NEVER break the live turn the user already got.
+        store = _conv_store()
+        if store is None or not conversation_id:
+            return
+        try:
+            store.append_message(tenant_id=tenant_id, conversation_id=conversation_id, role=role,
+                                 content=content or "", citations=citations or [],
+                                 grounding_status=grounding)
+        except Exception:  # noqa: BLE001 — logged, never surfaced (the turn already succeeded)
+            logger.warning("conversations: transcript append failed (best-effort)")
+
+    def _persist_agent_if_settled(tenant_id, conversation_id, result):
+        if isinstance(result, dict) and result.get("settled", True):
+            _append_message(tenant_id, conversation_id, "agent", result.get("answer") or "",
+                            citations=result.get("citations") or [],
+                            grounding=result.get("grounding_status"))
+
     @app.post("/chat")
     def chat(body: ChatBody, claims: TenantClaims = Depends(current_tenant)):
         # Kill switch gates the WHOLE turn, on every runtime, at the API boundary (Greenlight
@@ -558,28 +603,43 @@ def create_app(deps: ApiDeps) -> FastAPI:
         # chat either. Approval EXECUTION is separately gated in decide_approval above.
         if deps.killswitch.is_paused(claims.tenant_id):
             raise HTTPException(status_code=409, detail="kill switch engaged — agents are paused")
-        convo = deps.conversation_factory(claims.tenant_id)
+        cid = (body.conversation_id or "").strip() or None
+        store = _conv_store()
+        # An unknown/foreign conversation id is a clean 404 (RLS-scoped get), not a 503.
+        if cid and store is not None and store.get(claims.tenant_id, cid) is None:
+            raise HTTPException(status_code=404, detail="no such conversation")
+        convo = _lease_convo(claims.tenant_id, cid)
         if convo is None:  # conversation backend not wired (e.g. agent runtime needs creds) — fail clean
             raise HTTPException(status_code=503, detail="chat backend not configured")
+        # Persist the user message up front so an async (settled:false) turn never loses it.
+        _append_message(claims.tenant_id, cid, "user", body.message)
         turn = convo.send(body.message)
-        return turn.as_dict() if hasattr(turn, "as_dict") else turn
+        result = turn.as_dict() if hasattr(turn, "as_dict") else turn
+        _persist_agent_if_settled(claims.tenant_id, cid, result)
+        return result
 
     @app.post("/chat/continue")
-    def chat_continue(claims: TenantClaims = Depends(current_tenant)):
+    def chat_continue(conversation_id: str | None = None,
+                      claims: TenantClaims = Depends(current_tenant)):
         """The async turn contract (2026-06-12): a delegation-heavy turn can't settle inside one
         HTTP request under the edge's 60s ceiling, so /chat returns `settled: false` and the
         client continues the SAME in-flight turn here — no new user message, no human nudge.
+        `conversation_id` (query param, optional) binds the continued turn to its thread/session.
         Same kill-switch gate as /chat; with nothing in flight this returns a settled empty
         turn and the client simply stops."""
         if deps.killswitch.is_paused(claims.tenant_id):
             raise HTTPException(status_code=409, detail="kill switch engaged — agents are paused")
-        convo = deps.conversation_factory(claims.tenant_id)
+        cid = (conversation_id or "").strip() or None
+        convo = _lease_convo(claims.tenant_id, cid)
         if convo is None:
             raise HTTPException(status_code=503, detail="chat backend not configured")
         if not hasattr(convo, "continue_turn"):
             raise HTTPException(status_code=501, detail="turn continuation not supported")
         turn = convo.continue_turn()
-        return turn.as_dict() if hasattr(turn, "as_dict") else turn
+        result = turn.as_dict() if hasattr(turn, "as_dict") else turn
+        # The agent answer of an async turn settles here — persist it to the thread's transcript.
+        _persist_agent_if_settled(claims.tenant_id, cid, result)
+        return result
 
     @app.post("/actions")
     def run_action(body: ActionBody, claims: TenantClaims = Depends(current_tenant)):
@@ -639,6 +699,12 @@ def create_app(deps: ApiDeps) -> FastAPI:
     if deps.tasks is not None:
         from api.tasks_routes import mount_tasks
         mount_tasks(app, deps.tasks, current_tenant)
+
+    # Authed per-tenant chat conversations (multi-thread history + rename). Claims-bound; the
+    # transcript is a direct user read/write (no Greenlight). Unconfigured store -> honest 503s.
+    if deps.conversations is not None:
+        from api.conversations_routes import mount_conversations
+        mount_conversations(app, deps.conversations, current_tenant)
 
     # Authed per-tenant agent crew (the real Agents tab). Claims-bound, READ-ONLY: the roster
     # comes from the owned definitions + the trusted tool registry; provisioned MA ids ride

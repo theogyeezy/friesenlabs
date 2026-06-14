@@ -207,6 +207,20 @@ GRANT SELECT, INSERT, UPDATE ON tasks TO crm_app;
 -- migration role. Revoke it explicitly so the soft-delete-not-erase intent is not silently
 -- superseded, and a roles.sql re-run converges a grant-history live DB to this design.
 REVOKE DELETE ON tasks FROM crm_app;
+
+-- ---------------------------------------------------------------------------
+-- conversations + conversation_messages (multi-thread chat history — RLS-FORCEd; see schema.sql).
+-- EXPLICIT grants for the same fresh-load reason as tasks (created BEFORE the ALTER DEFAULT
+-- PRIVILEGES block, so crm_app has ZERO privileges until these lines land).
+--   conversations: SELECT/INSERT/UPDATE — create a thread, list/load it, rename it, bump
+--   updated_at, persist its session_id, and soft-archive it. NO DELETE (archived, never erased).
+--   conversation_messages: SELECT/INSERT only — append-only transcript (the tenant's record);
+--   never UPDATEd or DELETEd by the app.
+-- ---------------------------------------------------------------------------
+GRANT SELECT, INSERT, UPDATE ON conversations TO crm_app;
+REVOKE DELETE ON conversations FROM crm_app;
+GRANT SELECT, INSERT ON conversation_messages TO crm_app;
+REVOKE UPDATE, DELETE ON conversation_messages FROM crm_app;
 -- The ALTER DEFAULT PRIVILEGES block above hands UPDATE + DELETE to crm_app on tables created
 -- later by the migration role — including points_ledger. Revoke the unintended privileges
 -- explicitly so the append-only intent is not silently superseded, and a roles.sql re-run

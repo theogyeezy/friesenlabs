@@ -48,7 +48,8 @@ from api.deals_routes import DealsDeps
 from api.tasks_routes import TasksDeps
 from api.sidecar_routes import SidecarDeps
 from api.knowledge_routes import KnowledgeDeps, build_doc_ingestor
-from api.pg_clients import PgControlSettingsStore, PgCrmClient, PgRagClient
+from api.pg_clients import PgControlSettingsStore, PgConversationStore, PgCrmClient, PgRagClient
+from api.conversations_routes import ConversationsDeps
 from api.gamify_stores import PgMemberStore, PgPointsStore
 from api.limits import PlanResolver, TenantLimitsMiddleware
 from api.usage import PgCostRecorder, PgPlanLookup, PgUsageStore
@@ -128,9 +129,10 @@ def make_conversation_factory(
     synthesizer: Any = None,
     spec_generator: Any = None,
     cost_recorder: Any = None,
+    conversation_store: Any = None,
     today: Callable[[], date] | None = None,
-) -> Callable[[str], Any]:
-    """Build the `/chat` conversation factory: tenant_id -> Conversation | None.
+) -> Callable[..., Any]:
+    """Build the `/chat` conversation factory: (tenant_id, conversation_id=None) -> Conversation | None.
 
     THE TRUST RULE: `tenant_id` arrives from the verified JWT claim (threaded by `api.app`);
     nothing here reads env/headers/bodies for it. The tenant's persisted Managed Agents ids are
@@ -144,10 +146,25 @@ def make_conversation_factory(
     `ManagedAgentsRuntime` bound to the row's environment_id in prod; a FakeRuntime in tests).
     """
 
-    def factory(tenant_id: str):
+    def factory(tenant_id: str, conversation_id: str | None = None):
         row = workspace_store.get(tenant_id)
         if row is None or not row.get("coordinator_id") or not row.get("environment_id"):
             return None  # not provisioned -> /chat's graceful 503 path
+
+        # Per-conversation MA session: when a conversation_id is given (and the store is wired),
+        # THIS thread's own session is resumed/persisted on its conversations row — decoupled from
+        # the tenant-level session. conversation_id=None keeps the legacy tenant session (the
+        # /chat back-compat path). The resume/persist SEAM is identical; only the id's home moves.
+        if conversation_id and conversation_store is not None:
+            conv_row = conversation_store.get(tenant_id, conversation_id)
+            if conv_row is None:
+                return None  # unknown/archived thread -> /chat already 404s; defensive None here
+            persisted_sid = conv_row.get("session_id")
+            persist_session = (lambda sid, _t=tenant_id, _c=conversation_id:
+                               conversation_store.set_session_id(_t, _c, sid))
+        else:
+            persisted_sid = row.get("session_id")
+            persist_session = (lambda sid, _t=tenant_id: workspace_store.set_session_id(_t, sid))
 
         runtime = runtime_factory(row)
         stub_ids = sorted({
@@ -189,8 +206,8 @@ def make_conversation_factory(
             # SESSION PERSISTENCE (2026-06-12): resume the tenant's persisted MA session so a
             # deploy roll can't kill in-flight turns or history; new ids persist back, dead
             # ones clear via the cache's forget hook. Best-effort by contract.
-            persisted_session_id=row.get("session_id"),
-            persist_session=(lambda sid, _t=tenant_id: workspace_store.set_session_id(_t, sid)),
+            persisted_session_id=persisted_sid,
+            persist_session=persist_session,
             spec_generator=spec_generator,  # default ctx.extra['generate_spec'] for build_view
             greenlight=greenlight,
             cost_recorder=cost_recorder,    # per-turn Anthropic token usage -> cost_events
@@ -317,6 +334,9 @@ def build_app():
         # the caller's roster row); points backs the close-scoring hook (a closed_won credit).
         members_store: Any = PgMemberStore(dsn)
         points_store: Any = PgPointsStore(dsn)
+        # Multi-thread chat history: conversations + transcripts (per-op SET LOCAL RLS). Backs the
+        # /conversations CRUD AND the per-conversation session binding in the /chat factory below.
+        conversation_store: Any = PgConversationStore(dsn)
         # Governed metrics: live only when CUBE_ENDPOINT + CUBEJS_API_SECRET_VALUE are BOTH
         # injected (api_cube_env flag). None only when both are unset; endpoint-without-secret
         # (cube_endpoint wired, flag not yet flipped — the live state at this commit) yields the
@@ -359,6 +379,7 @@ def build_app():
         plan_lookup = None
         members_store = None    # no DSN -> member-upsert-on-auth is a no-op (honest, inert)
         points_store = None     # no DSN -> close-scoring is a no-op (honest, inert)
+        conversation_store = None  # no DSN -> chat history unavailable (honest 503)
         executor = lambda action: {"status": "noop"}  # noqa: E731 — unconfigured: today's stub
 
     # /chat factory needs BOTH the DB (workspace rows + tool clients) and the org Anthropic key
@@ -381,9 +402,10 @@ def build_app():
             synthesizer=AnthropicSynthesizer(api_key=api_key),
             spec_generator=spec_generator,
             cost_recorder=cost_recorder,
+            conversation_store=conversation_store,  # per-conversation session binding
         ))
     else:
-        conversation_factory = lambda tenant_id: None  # noqa: E731 — unconfigured: /chat 503
+        conversation_factory = lambda tenant_id, conversation_id=None: None  # noqa: E731 — unconfigured: /chat 503
 
     # Agent Studio: wire a PER-TENANT registrar so activate/run register + drive a REAL crew
     # instead of being record-only. The factory resolves the tenant's persisted Managed Agents
@@ -557,6 +579,7 @@ def build_app():
         # /tasks (the real CRM tasks/reminders surface) — the same single PgCrmClient. crm is None
         # when the DSN is unconfigured -> honest 503.
         tasks=TasksDeps(crm=crm),
+        conversations=ConversationsDeps(store=conversation_store),
         # /sidecar (the real agentic layer) — reads the SAME PgCrmClient and proposes Greenlight
         # drafts. crm is None when the DSN is unconfigured -> honest 503.
         sidecar=SidecarDeps(crm=crm),

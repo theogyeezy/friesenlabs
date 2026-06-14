@@ -496,6 +496,43 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE INDEX IF NOT EXISTS idx_tasks_open ON tasks (tenant_id, due_at)
     WHERE done_at IS NULL AND archived_at IS NULL;
 
+-- conversations — multi-thread chat history. One row per named chat thread; `session_id` binds
+-- THIS conversation to its own Managed-Agents session (lazy: NULL until the first turn creates it,
+-- resumed thereafter — the same resume/persist seam the tenant-level session used, now per-thread).
+-- `updated_at` is bumped each turn so the list orders newest-first. RLS-FORCEd tenant table (in the
+-- tenant_tables array below); crm_app gets SELECT/INSERT/UPDATE in roles.sql (NO DELETE — a thread is
+-- archived, never erased). archived_at = reversible soft-delete (parity with the CRM entities).
+CREATE TABLE IF NOT EXISTS conversations (
+    id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id   uuid NOT NULL,
+    title       text,                 -- NULL => the UI shows a default ("New chat") / derived label
+    session_id  text,                 -- this thread's MA session resume handle (lazy, per-thread)
+    archived_at timestamptz,
+    created_by  text,
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    updated_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_conversations_active
+    ON conversations (tenant_id, updated_at DESC) WHERE archived_at IS NULL;
+
+-- conversation_messages — the per-conversation transcript (the display history source of truth,
+-- independent of MA-session retention). Append-only: crm_app gets SELECT/INSERT only (NO UPDATE/
+-- DELETE in roles.sql — a transcript is the tenant's record, never rewritten). One user row + one
+-- agent row per settled turn; `citations` carries the Turn's citation list as JSONB. The
+-- (tenant_id, conversation_id) FK is made composite same-tenant in the FK DO block below.
+CREATE TABLE IF NOT EXISTS conversation_messages (
+    id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id       uuid NOT NULL,
+    conversation_id uuid NOT NULL,
+    role            text NOT NULL,                          -- 'user' | 'agent'
+    content         text NOT NULL DEFAULT '',
+    citations       jsonb NOT NULL DEFAULT '[]'::jsonb,
+    grounding_status text,
+    created_at      timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_conv_messages_transcript
+    ON conversation_messages (tenant_id, conversation_id, created_at);
+
 -- crm_records — full-fidelity connector extract (HubSpot full-extract & beyond). A generic JSONB
 -- bag per CRM object: EVERY property + the association graph, for ANY object_type (standard objects,
 -- engagements, custom objects). Sits ALONGSIDE the typed contacts/companies/deals tables (those stay
@@ -529,7 +566,8 @@ DECLARE
         'documents', 'companies', 'contacts', 'deals', 'activities',
         'saved_views', 'approvals', 'traces', 'ingest_cursor', 'tenant_workspaces',
         'tenant_settings', 'playbooks', 'playbook_runs', 'predictions', 'usage_counters', 'cost_events', 'onboarding_state',
-        'integration_sync_runs', 'members', 'points_ledger', 'tasks', 'knowledge_pages', 'crm_records'
+        'integration_sync_runs', 'members', 'points_ledger', 'tasks', 'knowledge_pages', 'crm_records',
+        'conversations', 'conversation_messages'
     ];
 BEGIN
     FOREACH t IN ARRAY tenant_tables LOOP
@@ -743,6 +781,20 @@ BEGIN
         ALTER TABLE tasks ADD CONSTRAINT tasks_tenant_deal_fkey
             FOREIGN KEY (tenant_id, deal_id) REFERENCES deals (tenant_id, id);
     END IF;
+    -- conversation_messages.conversation_id -> conversations, SAME-TENANT (composite). Needs a
+    -- (tenant_id, id) unique key on the parent first.
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                   WHERE conname = 'conversations_tenant_id_id_key'
+                     AND conrelid = 'conversations'::regclass) THEN
+        ALTER TABLE conversations ADD CONSTRAINT conversations_tenant_id_id_key
+            UNIQUE (tenant_id, id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                   WHERE conname = 'conv_messages_tenant_conversation_fkey'
+                     AND conrelid = 'conversation_messages'::regclass) THEN
+        ALTER TABLE conversation_messages ADD CONSTRAINT conv_messages_tenant_conversation_fkey
+            FOREIGN KEY (tenant_id, conversation_id) REFERENCES conversations (tenant_id, id);
+    END IF;
 
     -- Retire the cross-tenant-capable single-column FKs (default psql names from the inline
     -- REFERENCES above). Dropped only after every composite FK exists in this transaction —
@@ -934,5 +986,20 @@ ALTER TABLE crm_records ENABLE ROW LEVEL SECURITY;
 ALTER TABLE crm_records FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON crm_records;
 CREATE POLICY tenant_isolation ON crm_records
+    USING (tenant_id = current_setting('app.current_tenant', true)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.current_tenant', true)::uuid);
+
+-- conversations + conversation_messages (chat history) — explicit ENABLE/FORCE + policy (belt and
+-- suspenders with the DO block above; greppable + testable, idempotent on re-run).
+ALTER TABLE conversations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE conversations FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON conversations;
+CREATE POLICY tenant_isolation ON conversations
+    USING (tenant_id = current_setting('app.current_tenant', true)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.current_tenant', true)::uuid);
+ALTER TABLE conversation_messages ENABLE ROW LEVEL SECURITY;
+ALTER TABLE conversation_messages FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON conversation_messages;
+CREATE POLICY tenant_isolation ON conversation_messages
     USING (tenant_id = current_setting('app.current_tenant', true)::uuid)
     WITH CHECK (tenant_id = current_setting('app.current_tenant', true)::uuid);

@@ -23,6 +23,7 @@ import {
   friendlyErrorMessage,
   type ChatResponse,
   type Citation,
+  type ConversationRow,
 } from "./client";
 import { SpecRenderer, type LoadData } from "../dashboard/SpecRenderer";
 import { Spinner } from "./Spinner";
@@ -111,6 +112,34 @@ export function citationPageRef(sourceRef: string | null | undefined): string | 
   return prefix.includes(":") ? prefix : null;
 }
 
+const iconBtn: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  border: "1px solid var(--line, #e3ddd3)",
+  background: "var(--surface, #fff)",
+  borderRadius: 8,
+  padding: "5px 9px",
+  fontSize: 12.5,
+  fontWeight: 600,
+  color: "var(--ink-2, #5d564d)",
+  cursor: "pointer",
+  flexShrink: 0,
+};
+
+const titleBtn: React.CSSProperties = {
+  width: "100%",
+  textAlign: "left",
+  border: "none",
+  background: "transparent",
+  padding: "5px 2px",
+  fontSize: 13.5,
+  fontWeight: 700,
+  color: "var(--ink, #2a2622)",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+};
+
 export function ChatDock({ client, analytics, embedded = false, onOpenKnowledgePage }: ChatDockProps) {
   const api = client ?? defaultClient();
   const ph = analytics ?? defaultAnalytics();
@@ -123,6 +152,79 @@ export function ChatDock({ client, analytics, embedded = false, onOpenKnowledgeP
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [overlay, setOverlay] = useState<OverlayState | null>(null);
+
+  // Multi-thread chat history. `activeId` null = an unsaved new chat (created on first send, in
+  // real mode). `conversations` backs the history list; `titleDraft` non-null = renaming the
+  // active thread inline. Mock builds keep the single ephemeral thread (the methods are inert).
+  const [conversations, setConversations] = useState<ConversationRow[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
+  const [titleDraft, setTitleDraft] = useState<string | null>(null);
+
+  const greeting = useCallback((): Message => ({
+    who: "agent",
+    text: "Ask anything about your pipeline, your agents, or what happened this week.",
+  }), []);
+
+  const refreshConversations = useCallback(async () => {
+    if (api.isMock()) return;
+    try {
+      const r = await api.listConversations("active");
+      setConversations(r.conversations);
+    } catch {
+      /* honest: an empty/failed list just shows "No past chats yet" — never invented threads. */
+    }
+  }, [api]);
+
+  useEffect(() => { void refreshConversations(); }, [refreshConversations]);
+
+  const newChat = useCallback(() => {
+    setActiveId(null);
+    setMsgs([greeting()]);
+    setShowHistory(false);
+    setTitleDraft(null);
+  }, [greeting]);
+
+  const openConversation = useCallback(async (c: ConversationRow) => {
+    setActiveId(c.id);
+    setShowHistory(false);
+    setTitleDraft(null);
+    try {
+      const r = await api.getConversationMessages(c.id);
+      const mapped: Message[] = r.messages.map((m) => ({
+        who: m.role === "user" ? "me" : "agent",
+        text: m.content,
+        citations: m.citations,
+        grounding: m.grounding_status ?? null,
+      }));
+      setMsgs(mapped.length ? mapped : [greeting()]);
+    } catch {
+      setMsgs([greeting()]);
+    }
+  }, [api, greeting]);
+
+  const currentTitle = activeId
+    ? (conversations.find((c) => c.id === activeId)?.title || "New chat")
+    : "New chat";
+
+  const commitRename = useCallback(async () => {
+    const t = (titleDraft ?? "").trim();
+    if (!activeId || !t) { setTitleDraft(null); return; }
+    try {
+      const row = await api.renameConversation(activeId, t);
+      setConversations((cs) => cs.map((c) => (c.id === row.id ? row : c)));
+    } catch {
+      /* keep the old title — a failed rename is silent, never a broken UI */
+    }
+    setTitleDraft(null);
+  }, [api, activeId, titleDraft]);
+
+  const archiveConversation = useCallback(async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    try { await api.archiveConversation(id); } catch { /* best-effort */ }
+    setConversations((cs) => cs.filter((c) => c.id !== id));
+    if (id === activeId) newChat();
+  }, [api, activeId, newChat]);
 
   // The overlay can back out via Escape too (same affordance as the X button).
   useEffect(() => {
@@ -206,6 +308,21 @@ export function ChatDock({ client, analytics, embedded = false, onOpenKnowledgeP
       // Coarse usage signal only — the message TEXT is never captured (it can
       // carry tenant data); we mark that a chat happened + its length bucket.
       ph.capture("chat_message_sent", { embedded, length: body.length });
+      // Ensure a real conversation thread exists (real mode) so this turn + its transcript land in
+      // one; auto-name a fresh thread from the first message. A creation failure falls back to the
+      // legacy tenant-level session (convId stays null) — chat keeps working either way.
+      let convId = activeId;
+      if (!api.isMock() && convId === null) {
+        try {
+          const created = await api.createConversation(
+            body.slice(0, 48).replace(/\s+/g, " ").trim());
+          convId = created.id;
+          setActiveId(created.id);
+          setConversations((cs) => [created, ...cs]);
+        } catch {
+          /* fall back to the tenant-level session */
+        }
+      }
       // ASYNC TURN CONTRACT: settled === false means the delegation/tool round-trips are
       // still in flight server-side — continue the SAME turn (no new message, no human
       // nudge) until it settles. Each continue is a short request under the edge's 60s
@@ -225,7 +342,7 @@ export function ChatDock({ client, analytics, embedded = false, onOpenKnowledgeP
               return last?.working ? [...m.slice(0, -1), note] : [...m, note];
             });
           }
-          res = await api.continueChat();
+          res = await api.continueChat(convId);
           if (res.answer) {
             narration = narration ? `${narration}\n\n${res.answer}` : res.answer;
           }
@@ -247,7 +364,7 @@ export function ChatDock({ client, analytics, embedded = false, onOpenKnowledgeP
       try {
         let res: ChatResponse;
         try {
-          res = await api.chat(body);
+          res = await api.chat(body, convId);
         } catch (e) {
           // The edge gave up on the request (its ~60s ceiling), but the turn keeps settling
           // SERVER-SIDE — recover it through the continue leg instead of erroring out.
@@ -274,9 +391,12 @@ export function ChatDock({ client, analytics, embedded = false, onOpenKnowledgeP
         });
       } finally {
         setSending(false);
+        // Re-pull the list so the active thread floats to the top (updated_at) and a freshly
+        // auto-named thread shows its title. Best-effort; never blocks the turn.
+        void refreshConversations();
       }
     },
-    [api, ph, draft, sending, embedded, runBalto],
+    [api, ph, draft, sending, embedded, runBalto, activeId, refreshConversations],
   );
 
   // Open a Balto view in the overlay, resolving its data. A view that already
@@ -351,6 +471,89 @@ export function ChatDock({ client, analytics, embedded = false, onOpenKnowledgeP
     >
       {!embedded && (
         <h1 style={{ fontSize: 20, fontWeight: 740, letterSpacing: "-.02em" }}>Ask your agents</h1>
+      )}
+
+      {/* History strip: toggle the past-chats list, rename the active thread inline, start a new
+          one. Hidden in mock builds (the prototype keeps a single ephemeral thread). */}
+      {!api.isMock() && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, paddingBottom: 10,
+                      borderBottom: "1px solid var(--line, #e3ddd3)" }}>
+          <button
+            data-testid="chat-history-toggle"
+            title="Chat history"
+            onClick={() => { const next = !showHistory; setShowHistory(next); if (next) void refreshConversations(); }}
+            style={iconBtn}
+          >
+            <span aria-hidden style={{ fontSize: 15, lineHeight: 1 }}>☰</span>
+          </button>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            {titleDraft !== null ? (
+              <input
+                data-testid="chat-title-input"
+                autoFocus
+                value={titleDraft}
+                onChange={(e) => setTitleDraft(e.target.value)}
+                onBlur={() => void commitRename()}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void commitRename();
+                  if (e.key === "Escape") setTitleDraft(null);
+                }}
+                style={{ width: "100%", boxSizing: "border-box", border: "1px solid var(--line, #e3ddd3)",
+                         borderRadius: 8, padding: "5px 9px", fontSize: 13.5, fontFamily: "inherit" }}
+              />
+            ) : (
+              <button
+                data-testid="chat-title"
+                title={activeId ? "Rename this chat" : "Start typing to begin a new chat"}
+                onClick={() => { if (activeId) setTitleDraft(currentTitle); }}
+                style={{ ...titleBtn, cursor: activeId ? "text" : "default" }}
+              >
+                {currentTitle}
+              </button>
+            )}
+          </div>
+          <button data-testid="chat-new" title="New chat" onClick={newChat} style={iconBtn}>
+            <span aria-hidden style={{ fontSize: 15, lineHeight: 1, marginRight: 4 }}>+</span>New
+          </button>
+        </div>
+      )}
+
+      {showHistory && !api.isMock() && (
+        <div data-testid="chat-history"
+             style={{ display: "flex", flexDirection: "column", gap: 2, maxHeight: 220,
+                      overflowY: "auto", paddingBottom: 6 }}>
+          {conversations.length === 0 ? (
+            <div data-testid="chat-history-empty"
+                 style={{ fontSize: 13, color: "var(--ink-3, #8a8278)", padding: "6px 4px" }}>
+              No past chats yet — your conversations will appear here.
+            </div>
+          ) : (
+            conversations.map((c) => (
+              <div
+                key={c.id}
+                data-testid="chat-history-item"
+                onClick={() => void openConversation(c)}
+                style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 9px",
+                         borderRadius: 8, cursor: "pointer",
+                         background: c.id === activeId ? "var(--accent-soft, #f4f1ea)" : "transparent" }}
+              >
+                <span style={{ flex: 1, minWidth: 0, fontSize: 13.5, overflow: "hidden",
+                               textOverflow: "ellipsis", whiteSpace: "nowrap",
+                               color: "var(--ink, #2a2622)" }}>
+                  {c.title || "New chat"}
+                </span>
+                <button
+                  data-testid="chat-history-archive"
+                  title="Archive this chat"
+                  onClick={(e) => void archiveConversation(c.id, e)}
+                  style={{ ...iconBtn, padding: "2px 7px", fontSize: 12, color: "var(--ink-3, #8a8278)" }}
+                >
+                  ✕
+                </button>
+              </div>
+            ))
+          )}
+        </div>
       )}
 
       <div data-testid="chat-body" style={{ display: "flex", flexDirection: "column", gap: 14 }}>

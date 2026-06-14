@@ -22,6 +22,7 @@ injected. Importing this module needs no network, AWS, or psycopg2.
 """
 from __future__ import annotations
 
+import json
 import os
 from contextlib import contextmanager
 from typing import Any, Callable, Iterable
@@ -1672,3 +1673,177 @@ class TenantBoundCrm:
         return self._client.search_contacts_prefix(
             tenant_id=self._slot_tenant(tenant_id), name=name, limit=limit
         )
+
+
+# ===========================================================================
+# Multi-thread chat history (conversations + conversation_messages).
+# Same pooled-store + per-op SET LOCAL pattern as the CRM stores. RLS scopes
+# every op to the bound tenant; the composite (tenant_id, id) FK on
+# conversation_messages is the last line of defense against a cross-tenant id.
+# ===========================================================================
+def _normalize_conversation(row: dict | None) -> dict | None:
+    if row is None:
+        return None
+    return {
+        "id": _as_str(row.get("id")),
+        "title": row.get("title"),
+        "session_id": row.get("session_id"),
+        "archived_at": _as_iso(row.get("archived_at")),
+        "created_at": _as_iso(row.get("created_at")),
+        "updated_at": _as_iso(row.get("updated_at")),
+    }
+
+
+def _normalize_message(row: dict) -> dict:
+    cites = row.get("citations")
+    if isinstance(cites, str):
+        try:
+            cites = json.loads(cites)
+        except (TypeError, ValueError):
+            cites = []
+    return {
+        "id": _as_str(row.get("id")),
+        "role": row.get("role"),
+        "content": row.get("content") or "",
+        "citations": cites if isinstance(cites, list) else [],
+        "grounding_status": row.get("grounding_status"),
+        "created_at": _as_iso(row.get("created_at")),
+    }
+
+
+class PgConversationStore(_PgTenantClient):
+    """Conversations + their message transcripts. The transcript is the display-history source of
+    truth (independent of MA-session retention); `conversations.session_id` is the per-thread MA
+    resume handle the conversation-scoped factory reads/writes."""
+
+    _COLS = "id, title, session_id, archived_at, created_by, created_at, updated_at"
+
+    def create(self, *, tenant_id: str, title: str | None = None,
+               created_by: str | None = None) -> dict:
+        clean = (title or "").strip() or None
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "INSERT INTO conversations (tenant_id, title, created_by) "
+                "VALUES (%s, %s, %s) RETURNING " + self._COLS,
+                (str(tenant_id), clean, created_by),
+            )
+            row = _dict_one(cur)
+        if row is None:
+            raise RuntimeError("conversation insert returned no row")
+        return _normalize_conversation(row)
+
+    def list(self, *, tenant_id: str, scope: str = "active",
+             limit: int = 50, offset: int = 0) -> list[dict]:
+        n = _clamp_limit(limit, 50)
+        off = _clamp_offset(offset)
+        where = ("archived_at IS NOT NULL" if str(scope or "active").strip().lower() == "archived"
+                 else "archived_at IS NULL")
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "SELECT " + self._COLS + " FROM conversations WHERE " + where +
+                " ORDER BY updated_at DESC LIMIT %s OFFSET %s",
+                (n, off),
+            )
+            rows = _dict_rows(cur)
+        return [_normalize_conversation(r) for r in rows]
+
+    def get(self, tenant_id: str, conversation_id: str) -> dict | None:
+        """Raw row (incl. session_id) for the conversation-scoped factory + route guards."""
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "SELECT " + self._COLS + " FROM conversations WHERE id = %s",
+                (str(conversation_id),),
+            )
+            return _normalize_conversation(_dict_one(cur))
+
+    def set_session_id(self, tenant_id: str, conversation_id: str,
+                       session_id: str | None) -> None:
+        """Persist (or clear, with None) THIS conversation's MA session handle — the per-thread
+        analogue of PgWorkspaceStore.set_session_id. RLS scopes the UPDATE to the bound tenant."""
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "UPDATE conversations SET session_id = %s WHERE id = %s",
+                (session_id, str(conversation_id)),
+            )
+
+    def rename(self, *, tenant_id: str, conversation_id: str, title: str) -> dict | None:
+        clean = (title or "").strip()
+        if not clean:
+            raise ValueError("conversation title is required")
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "UPDATE conversations SET title = %s, updated_at = now() "
+                "WHERE id = %s RETURNING " + self._COLS,
+                (clean, str(conversation_id)),
+            )
+            return _normalize_conversation(_dict_one(cur))
+
+    def set_archived(self, *, tenant_id: str, conversation_id: str, archived: bool) -> dict | None:
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "UPDATE conversations SET archived_at = " +
+                ("now()" if archived else "NULL") +
+                " WHERE id = %s RETURNING " + self._COLS,
+                (str(conversation_id),),
+            )
+            return _normalize_conversation(_dict_one(cur))
+
+    def append_message(self, *, tenant_id: str, conversation_id: str, role: str,
+                       content: str, citations: list | None = None,
+                       grounding_status: str | None = None) -> None:
+        """Append ONE transcript row ('user' or 'agent') and bump the conversation's updated_at so
+        the list re-orders newest-first. Used by /chat (the user row immediately, the agent row
+        when the turn settles) and /chat/continue (the agent row of an async turn). Append-only by
+        grant; best-effort at the call site (a transcript write must never break the live turn)."""
+        cites_json = json.dumps(citations or [])
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "INSERT INTO conversation_messages "
+                "(tenant_id, conversation_id, role, content, citations, grounding_status) "
+                "VALUES (%s, %s, %s, %s, %s::jsonb, %s)",
+                (str(tenant_id), str(conversation_id), str(role), content or "",
+                 cites_json, grounding_status),
+            )
+            cur.execute(
+                "UPDATE conversations SET updated_at = now() WHERE id = %s",
+                (str(conversation_id),),
+            )
+
+    def append_turn(self, *, tenant_id: str, conversation_id: str, user_message: str,
+                    agent_answer: str, citations: list | None = None,
+                    grounding_status: str | None = None) -> None:
+        """Append one settled turn: a 'user' row + an 'agent' row, then bump updated_at so the
+        list re-orders newest-first. One transaction. Best-effort at the call site (a transcript
+        write must never break the turn the user already got)."""
+        cites_json = json.dumps(citations or [])
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "INSERT INTO conversation_messages (tenant_id, conversation_id, role, content) "
+                "VALUES (%s, %s, 'user', %s)",
+                (str(tenant_id), str(conversation_id), user_message or ""),
+            )
+            cur.execute(
+                "INSERT INTO conversation_messages "
+                "(tenant_id, conversation_id, role, content, citations, grounding_status) "
+                "VALUES (%s, %s, 'agent', %s, %s::jsonb, %s)",
+                (str(tenant_id), str(conversation_id), agent_answer or "",
+                 cites_json, grounding_status),
+            )
+            cur.execute(
+                "UPDATE conversations SET updated_at = now() WHERE id = %s",
+                (str(conversation_id),),
+            )
+
+    def list_messages(self, *, tenant_id: str, conversation_id: str,
+                       limit: int = 200, offset: int = 0) -> list[dict]:
+        n = _clamp_limit(limit, 200)
+        off = _clamp_offset(offset)
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "SELECT id, role, content, citations, grounding_status, created_at "
+                "FROM conversation_messages WHERE conversation_id = %s "
+                "ORDER BY created_at ASC, id ASC LIMIT %s OFFSET %s",
+                (str(conversation_id), n, off),
+            )
+            rows = _dict_rows(cur)
+        return [_normalize_message(r) for r in rows]

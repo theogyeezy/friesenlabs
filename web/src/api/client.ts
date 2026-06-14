@@ -146,6 +146,38 @@ export interface ChatResponse {
   settled?: boolean;
 }
 
+// --- Chat conversations (multi-thread history) -----------------------------
+/** One chat thread (GET/POST /conversations). `title` null => the UI shows a default label. */
+export interface ConversationRow {
+  id: string;
+  title: string | null;
+  archived_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface ListConversationsResponse {
+  conversations: ConversationRow[];
+  count: number;
+  has_more: boolean;
+  scope: string;
+}
+
+/** One persisted transcript row (GET /conversations/{id}/messages). */
+export interface ConversationMessage {
+  id: string;
+  role: "user" | "agent";
+  content: string;
+  citations?: Citation[];
+  grounding_status?: string | null;
+  created_at: string | null;
+}
+
+export interface ConversationMessagesResponse {
+  conversation_id: string;
+  messages: ConversationMessage[];
+}
+
 /** Body for POST /views/synthesize — the NL ask Balto builds a view for. No tenant_id. */
 export interface SynthesizeViewBody {
   request: string;
@@ -1739,20 +1771,62 @@ export class ApiClient {
     return this.request<SavedViewRow>("POST", "/dashboards", body);
   }
 
-  async chat(message: string): Promise<ChatResponse> {
+  async chat(message: string, conversationId?: string | null): Promise<ChatResponse> {
     if (this.mock) {
       return (await this.mockApi()).chat(message);
     }
-    return this.request<ChatResponse>("POST", "/chat", { message });
+    return this.request<ChatResponse>("POST", "/chat",
+      { message, conversation_id: conversationId ?? null });
   }
 
   /** POST /chat/continue: re-drain the in-flight turn (async turn contract) — call while a
-   * ChatResponse carries settled === false; no message body, nothing new is sent. */
-  async continueChat(): Promise<ChatResponse> {
+   * ChatResponse carries settled === false; no message body, nothing new is sent. The optional
+   * conversationId binds the continued turn to its thread/session. */
+  async continueChat(conversationId?: string | null): Promise<ChatResponse> {
     if (this.mock) {
       return (await this.mockApi()).continueChat();
     }
-    return this.request<ChatResponse>("POST", "/chat/continue");
+    const q = conversationId ? `?conversation_id=${encodeURIComponent(conversationId)}` : "";
+    return this.request<ChatResponse>("POST", `/chat/continue${q}`);
+  }
+
+  // --- Chat conversations (multi-thread history) ---------------------------
+  // Mock builds return inert results (the prototype keeps the single ephemeral thread); real
+  // builds hit the RLS-scoped /conversations routes. Every method has the same shape as the rest.
+  async listConversations(scope = "active"): Promise<ListConversationsResponse> {
+    if (this.mock) return { conversations: [], count: 0, has_more: false, scope };
+    return this.request<ListConversationsResponse>(
+      "GET", `/conversations?scope=${encodeURIComponent(scope)}`);
+  }
+
+  async createConversation(title?: string): Promise<ConversationRow> {
+    if (this.mock) {
+      return { id: "mock", title: title ?? null, archived_at: null,
+               created_at: null, updated_at: null };
+    }
+    const r = await this.request<{ conversation: ConversationRow }>(
+      "POST", "/conversations", { title: title ?? null });
+    return r.conversation;
+  }
+
+  async renameConversation(id: string, title: string): Promise<ConversationRow> {
+    if (this.mock) {
+      return { id, title, archived_at: null, created_at: null, updated_at: null };
+    }
+    const r = await this.request<{ conversation: ConversationRow }>(
+      "PATCH", `/conversations/${encodeURIComponent(id)}`, { title });
+    return r.conversation;
+  }
+
+  async archiveConversation(id: string): Promise<void> {
+    if (this.mock) return;
+    await this.request("POST", `/conversations/${encodeURIComponent(id)}/archive`);
+  }
+
+  async getConversationMessages(id: string): Promise<ConversationMessagesResponse> {
+    if (this.mock) return { conversation_id: id, messages: [] };
+    return this.request<ConversationMessagesResponse>(
+      "GET", `/conversations/${encodeURIComponent(id)}/messages`);
   }
 
   /**

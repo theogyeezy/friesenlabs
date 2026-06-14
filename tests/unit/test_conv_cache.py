@@ -343,3 +343,50 @@ def test_cached_conversation_proxies_continue_turn():
     assert built["tenant-a"].continues == 1
     # The route's capability check must see the method on the PROXY.
     assert hasattr(proxy, "continue_turn")
+
+
+# ---------------------------------------------------------------- per-conversation keying (multi-thread)
+@pytest.mark.unit
+def test_per_conversation_distinct_slots_sessions_and_locks():
+    """Distinct conversation_ids for ONE tenant get distinct cached Conversations (distinct MA
+    sessions) and distinct turn locks; conversation_id=None keeps the legacy tenant-level slot;
+    re-leasing the same conversation is a cache hit (no rebuild)."""
+    built = []
+
+    def build(tenant_id, conversation_id=None):
+        convo = _FakeConvo(f"{tenant_id}:{conversation_id}")
+        built.append((tenant_id, conversation_id))
+        return convo
+
+    cache = TenantConversationCache(build, max_entries=10, ttl_seconds=100.0, clock=_Clock())
+    cache("T", "conv-1").send("a")
+    cache("T", "conv-2").send("b")
+    cache("T").send("c")  # legacy tenant-level thread
+    keys = set(built)
+    assert ("T", "conv-1") in keys and ("T", "conv-2") in keys and ("T", None) in keys
+
+    before = len(built)
+    cache("T", "conv-1").send("again")  # same thread -> cache hit, no new session built
+    assert len(built) == before
+
+    # turn locks are per (tenant, conversation): a turn on conv-1 never serializes conv-2 or the
+    # tenant-level thread.
+    assert cache.turn_lock("T", "conv-1") is not cache.turn_lock("T", "conv-2")
+    assert cache.turn_lock("T", "conv-1") is not cache.turn_lock("T", None)
+    assert cache.turn_lock("T", "conv-1") is cache.turn_lock("T", "conv-1")  # stable per thread
+
+
+@pytest.mark.unit
+def test_conversation_id_none_reuses_legacy_tenant_key():
+    """A 1-arg (legacy/test) build still works: conversation_id is dropped via the arity fallback,
+    and None maps to the bare tenant key — existing tenant sessions are byte-for-byte unaffected."""
+    built = []
+
+    def build(tenant_id):  # 1-arg legacy factory
+        built.append(tenant_id)
+        return _FakeConvo(tenant_id)
+
+    cache = TenantConversationCache(build, max_entries=10, ttl_seconds=100.0, clock=_Clock())
+    cache("T").send("x")
+    cache("T", None).send("y")  # same key as bare tenant
+    assert built == ["T"]  # one build only — conv_id=None shares the tenant slot
