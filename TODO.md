@@ -90,13 +90,16 @@ What remains is **owner-gated** (infra flips/seeding — see P0/P1 below), **web
   through the LAST user.message, which may be the other tab's). Fix direction: per-conversation
   sessions (session-per-chat-thread keyed in `tenant_workspaces`/a new table) or a turn-id
   watermark so drains only consume their own turn's events.
-- [ ] **"Queue it for my approval" never reaches the Greenlight queue** _(live matrix finding
-  2026-06-12, sev medium)_: the crew staged the Vada Fenwick follow-up via `draft_email`
-  (compose-only; returned a draft object) so `/approvals` stayed empty — the user has no
-  Greenlight item to approve, and the draft also auto-generates its body rather than carrying
-  the agent-approved wording. Either route `draft_email` output into a `send_email`
-  queued_for_approval proposal (draft-only held), or teach the coordinator to finish the
-  flow with the gated `send_email` so the approval queue is the single surface.
+- [x] **"Queue it for my approval" now reaches the Greenlight queue** **DONE 2026-06-14:**
+  `draft_email` is the drafting specialists' (nadia/echo) affordance and is now `ALWAYS_ASK` —
+  it STAGES the canonical `send_email` approval via the new `Tool.proposal_action` seam (same
+  applier `record_only`, same CAN-SPAM class, same UI), so a "draft/queue/follow-up" ask lands a
+  real pending item in `/approvals` (draft-only held — the real send never runs until approval).
+  The body stays model-authored (audit P0-1); the tool guarantees CAN-SPAM compliance by appending
+  a standard opt-out footer when the model omits one, so a staged email is always APPROVABLE
+  (never auto-denied). Frontend: the chat surfaces a "Review in Greenlight" affordance (links to
+  the queue) when a turn stages an approval. (was: live matrix finding 2026-06-12 — the crew
+  staged via the old compose-only `draft_email`, so `/approvals` stayed empty.)
 - [ ] **NL refine of an existing saved view (POST /views/{id}/refine)** — `not-wired`
   - Wire a real view_patcher (an agent-runtime spec patcher, analogous to AnthropicSpecGenerator) into build_app() ApiDeps so POST /views/{id}/refine works, or remove the route if NL-refine is deferred.
   - Add a real-mode test for view refine once wired.

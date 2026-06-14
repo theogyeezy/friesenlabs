@@ -28,8 +28,10 @@ _TOOL_CLASSES: list[type[Tool]] = [
     SearchRag, QueryCube, ReadCrm, RunModel, BuildView,  # read-only (auto)
     HubSpotObjectTypes, HubSpotProperties, HubSpotSearch,  # live HubSpot (read-only, auto)
     GhlObjectTypes, GhlFields, GhlSearch,                 # live GoHighLevel (read-only, auto)
-    DraftEmail,                                           # draft (auto)
-    SendEmail, UpdateDeal, UpdateContact, CreateActivity, CreateDeal, IssueQuote,
+    # ALWAYS_ASK (Greenlight-gated). draft_email is the drafting specialists' affordance and stages
+    # the canonical send_email approval (proposal_action) — that is why send_email itself stays
+    # registry-only/unserved (no agent grants it; the real send is the post-approval api/control path).
+    DraftEmail, SendEmail, UpdateDeal, UpdateContact, CreateActivity, CreateDeal, IssueQuote,
 ]
 
 

@@ -164,8 +164,9 @@ def test_tool_policies_come_from_the_trusted_registry():
     assert {"name": "search_rag", "policy": Policy.AUTO.value} in by_name["scout"]["tools"]
     assert {"name": "update_deal", "policy": Policy.ALWAYS_ASK.value} in by_name["ledger"]["tools"]
     assert {"name": "issue_quote", "policy": Policy.ALWAYS_ASK.value} in by_name["margo"]["tools"]
-    # draft_email drafts only (no send) — AUTO, the draft-first guarantee made visible.
-    assert {"name": "draft_email", "policy": Policy.AUTO.value} in by_name["nadia"]["tools"]
+    # draft_email STAGES a send_email approval (never composes-and-drops) — ALWAYS_ASK, so the
+    # nadia/echo "drafts route to a human" promise is backed by a real Greenlight queue entry.
+    assert {"name": "draft_email", "policy": Policy.ALWAYS_ASK.value} in by_name["nadia"]["tools"]
     # The critic carries no custom tools; the coordinator delegates, it doesn't tool-run.
     assert by_name["critic"]["tools"] == []
     assert body["coordinator"]["tools"] == []

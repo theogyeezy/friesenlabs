@@ -155,8 +155,9 @@ tests: U=unit · I=integration · S=smoke · E=e2e(Playwright) · X=isolation �
   ManagedAgentsRuntime real-shape but blocked until verify; `get_runtime` factory; hard limits encoded).
   Roster of 7 specialists + opus coordinator as code (native model tiering). Tools: `base.py` Policy
   seam (auto vs always_ask) + ToolContext binding `app.current_tenant`; read-only (search_rag/query_cube/
-  read_crm) + side-effecting (draft_email auto; send_email/update_deal/issue_quote always_ask →
-  Greenlight proposal, never executed). `worker/worker.py` scaffold (env-key only, lazy anthropic,
+  read_crm) + side-effecting (draft_email/send_email/update_deal/issue_quote always_ask →
+  Greenlight proposal, never executed; draft_email stages a send_email approval via
+  Tool.proposal_action). `worker/worker.py` scaffold (env-key only, lazy anthropic,
   import-safe). IaC: `modules/worker` Fargate + env-key/cube/db secrets. Tests: 15 new (adapter/roster/
   tool-policy/session), full suite 53 passed / 2 skipped; smoke_all green; terraform validate clean.
   Committed + pushed. Live Anthropic provisioning BLOCKED: needs Nick.

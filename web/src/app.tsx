@@ -133,7 +133,7 @@ function clampChatGeo(g) {
   return { x, y, w, h };
 }
 
-function RealChatPanel({ open, onClose, onOpenKnowledgePage, anchorRef }) {
+function RealChatPanel({ open, onClose, onOpenKnowledgePage, onOpenGreenlight, anchorRef }) {
   const [geo, setGeo] = useState(() => clampChatGeo(loadChatGeo() || defaultChatGeo()));
   const [maximized, setMaximized] = useState(false);
   // Collapse animation phase: "" (rest) | "collapsed" (shrunk into the button).
@@ -280,7 +280,7 @@ function RealChatPanel({ open, onClose, onOpenKnowledgePage, anchorRef }) {
         </button>
       </div>
       <div className="chat-body" style={{ padding: 0, flex: 1, minHeight: 0 }}>
-        <ChatDock embedded onOpenKnowledgePage={onOpenKnowledgePage} />
+        <ChatDock embedded onOpenKnowledgePage={onOpenKnowledgePage} onOpenGreenlight={onOpenGreenlight} />
       </div>
       {!maximized && (
         <div
@@ -886,7 +886,8 @@ function App() {
       <SlideOver deal={deal} agents={agents} stages={STAGES} onClose={() => setDeal(null)} />
       {realMode
         ? <RealChatPanel open={chat} onClose={() => setChat(false)} anchorRef={askBtnRef}
-            onOpenKnowledgePage={(ref) => { setKnowledgePageRef(ref); setChat(false); navTo("knowledge"); }} />
+            onOpenKnowledgePage={(ref) => { setKnowledgePageRef(ref); setChat(false); navTo("knowledge"); }}
+            onOpenGreenlight={() => { setChat(false); navTo("approvals"); }} />
         : <AgentChat open={chat} agents={agents} onClose={() => setChat(false)} />}
       {/* Prototype overlays (palette, onboarding, tour, marketplace, intake)
           present scripted FLStore content — mock mode only. */}

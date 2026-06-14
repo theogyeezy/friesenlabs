@@ -67,6 +67,32 @@ interface Message {
   grounding?: string | null;
   /** Interim narration of a still-settling turn (async contract) — replaced when it settles. */
   working?: boolean;
+  /** Count of actions this turn STAGED into the Greenlight approval queue (a drafted email, a
+   * proposed CRM write). > 0 renders a "Review in Greenlight" affordance so the user can act on
+   * it without hunting for the queue. */
+  approvals?: number;
+}
+
+/** A turn's `pending_approvals` carries TWO kinds of entry: routed items the worker actually staged
+ * (they carry a `tool_name`) and async-settle markers (`{reason: ...}`, no tool_name). Count only
+ * the real queued items — the markers are plumbing, never user-facing. */
+function routedApprovalCount(pending: unknown[] | undefined, seenIds: Set<string>): number {
+  if (!Array.isArray(pending)) return 0;
+  let n = 0;
+  for (const raw of pending) {
+    if (!raw || typeof raw !== "object") continue;
+    const p = raw as Record<string, unknown>;
+    if (typeof p.tool_name !== "string") continue;
+    // Dedupe across continue legs by the tool-call id (a staged call surfaces in exactly one
+    // leg's digest, but guard anyway so a replay never double-counts).
+    const id = typeof p.custom_tool_use_id === "string" ? p.custom_tool_use_id : null;
+    if (id) {
+      if (seenIds.has(id)) continue;
+      seenIds.add(id);
+    }
+    n += 1;
+  }
+  return n;
 }
 
 /** Honest copy for each non-grounded retrieval outcome — "grounded" renders citations instead. */
@@ -101,6 +127,9 @@ export interface ChatDockProps {
    * reload). Absent (standalone /?view=chat mount): the link falls back to the
    * /?view=knowledge&doc=<ref> deep link. */
   onOpenKnowledgePage?: (refPrefix: string) => void;
+  /** In-shell navigation to the Greenlight approval queue (the shell passes navTo("approvals")).
+   * Absent (standalone /?view=chat mount): falls back to the /?view=greenlight deep link. */
+  onOpenGreenlight?: () => void;
 }
 
 /** A citation source_ref that IS a knowledge-page chunk ('upload:pricing-policy-ab12#1',
@@ -140,7 +169,7 @@ const titleBtn: React.CSSProperties = {
   whiteSpace: "nowrap",
 };
 
-export function ChatDock({ client, analytics, embedded = false, onOpenKnowledgePage }: ChatDockProps) {
+export function ChatDock({ client, analytics, embedded = false, onOpenKnowledgePage, onOpenGreenlight }: ChatDockProps) {
   const api = client ?? defaultClient();
   const ph = analytics ?? defaultAnalytics();
   const [msgs, setMsgs] = useState<Message[]>([
@@ -332,6 +361,10 @@ export function ChatDock({ client, analytics, embedded = false, onOpenKnowledgeP
         let narration = res.answer ?? "";
         let continues = 0;
         const MAX_CONTINUES = 10;
+        // Tally everything STAGED for approval across the whole turn (a staged call surfaces in
+        // exactly one settle leg's digest, so we accumulate rather than read only the final leg).
+        const seenApprovalIds = new Set<string>();
+        let queued = routedApprovalCount(res.pending_approvals, seenApprovalIds);
         while (res.settled === false && continues < MAX_CONTINUES) {
           continues += 1;
           if (narration) {
@@ -346,6 +379,7 @@ export function ChatDock({ client, analytics, embedded = false, onOpenKnowledgeP
           if (res.answer) {
             narration = narration ? `${narration}\n\n${res.answer}` : res.answer;
           }
+          queued += routedApprovalCount(res.pending_approvals, seenApprovalIds);
         }
         const finalText =
           narration ||
@@ -356,7 +390,8 @@ export function ChatDock({ client, analytics, embedded = false, onOpenKnowledgeP
           return [
             ...kept,
             { who: "agent", text: finalText, citations: res.citations,
-              grounding: res.grounding_status ?? null },
+              grounding: res.grounding_status ?? null,
+              approvals: queued > 0 ? queued : undefined },
           ];
         });
         return res;
@@ -577,6 +612,41 @@ export function ChatDock({ client, analytics, embedded = false, onOpenKnowledgeP
             >
               {m.text}
             </div>
+
+            {m.who === "agent" && m.approvals && m.approvals > 0 && (
+              <div
+                data-testid="chat-approval-prompt"
+                style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}
+              >
+                <span style={{ fontSize: 13, color: "var(--ink-2, #5d564d)" }}>
+                  {m.approvals === 1
+                    ? "1 action is waiting for your approval."
+                    : `${m.approvals} actions are waiting for your approval.`}
+                </span>
+                <button
+                  data-testid="chat-review-greenlight"
+                  onClick={() => {
+                    if (onOpenGreenlight) {
+                      onOpenGreenlight();
+                    } else {
+                      window.location.assign("/?view=greenlight");
+                    }
+                  }}
+                  style={{
+                    padding: "6px 13px",
+                    borderRadius: 10,
+                    border: "1px solid var(--accent, #2a2622)",
+                    background: "var(--accent, #2a2622)",
+                    color: "#fff",
+                    fontSize: 13,
+                    fontWeight: 650,
+                    cursor: "pointer",
+                  }}
+                >
+                  Review in Greenlight
+                </button>
+              </div>
+            )}
 
             {m.view && (
               <button
