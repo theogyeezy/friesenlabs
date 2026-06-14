@@ -47,12 +47,12 @@ const ROSTER = [
     name: "nadia",
     role: "Outreach drafting",
     description:
-      "You draft outreach. Personalize from the tenant's data; never send — drafts route to a human.",
+      "You draft outreach. Personalize from the tenant's data; calling draft_email STAGES the email in the Greenlight approval queue for a human — it never sends on its own.",
     is_coordinator: false,
     tools: [
       { name: "search_rag", policy: "auto" },
       { name: "read_crm", policy: "auto" },
-      { name: "draft_email", policy: "auto" },
+      { name: "draft_email", policy: "always_ask" },
     ],
   },
   {
@@ -80,11 +80,12 @@ const ROSTER = [
   {
     name: "echo",
     role: "Follow-ups",
-    description: "You handle follow-ups. Draft timely nudges; sends require approval.",
+    description:
+      "You handle follow-ups. Calling draft_email STAGES the nudge in the Greenlight approval queue for a human — it never sends on its own.",
     is_coordinator: false,
     tools: [
       { name: "read_crm", policy: "auto" },
-      { name: "draft_email", policy: "auto" },
+      { name: "draft_email", policy: "always_ask" },
     ],
   },
   {
@@ -181,10 +182,11 @@ test("tool chips carry the registry's policies: auto green, always_ask amber 'as
   await expect(page.getByTestId("agents-roster")).toBeVisible({ timeout: 15_000 });
   await expect(page.getByTestId("agent-card")).toHaveCount(7);
 
-  // Chip totals mirror the roster definitions: 17 tools, 2 of them gated.
+  // Chip totals mirror the roster definitions: 17 tools, 4 of them gated (ledger update_deal,
+  // margo issue_quote, and nadia/echo draft_email — staging an email is gated like any send).
   await expect(page.getByTestId("tool-chip")).toHaveCount(17);
-  await expect(page.locator('[data-testid="tool-chip"][data-policy="auto"]')).toHaveCount(15);
-  await expect(page.locator('[data-testid="tool-chip"][data-policy="always_ask"]')).toHaveCount(2);
+  await expect(page.locator('[data-testid="tool-chip"][data-policy="auto"]')).toHaveCount(13);
+  await expect(page.locator('[data-testid="tool-chip"][data-policy="always_ask"]')).toHaveCount(4);
 
   // The poles of the autonomy story, chip by chip per the registry:
   // ledger's update_deal asks first; scout's search_rag runs on its own.
@@ -196,9 +198,10 @@ test("tool chips carry the registry's policies: auto green, always_ask amber 'as
   await expect(margoQuote).toHaveAttribute("data-policy", "always_ask");
   const scoutRag = page.locator('[data-agent-name="scout"] [data-tool="search_rag"]');
   await expect(scoutRag).toHaveAttribute("data-policy", "auto");
-  // nadia's draft_email is a DRAFT (no send) — auto, never claimed as gated.
+  // nadia's draft_email STAGES a send_email approval — gated ("asks first"), never auto-sent.
   const nadiaDraft = page.locator('[data-agent-name="nadia"] [data-tool="draft_email"]');
-  await expect(nadiaDraft).toHaveAttribute("data-policy", "auto");
+  await expect(nadiaDraft).toHaveAttribute("data-policy", "always_ask");
+  await expect(nadiaDraft).toContainText("asks first");
 
   // The legend explains both colors in plain words.
   const legend = page.getByTestId("policy-legend");

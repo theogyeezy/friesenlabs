@@ -29,10 +29,19 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       image: ${{ steps.meta.outputs.image }}
+      worker_image: ${{ steps.meta.outputs.worker_image }}
     steps:
       - uses: actions/checkout@v5
       - id: meta
-        run: echo "image=$ECR/uplift-api:${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+        run: |
+          # api + worker share the agents/ tool code, so a backend change must rebuild BOTH —
+          # rolling the worker without a fresh image just restarts the stale code (the 2026-06-12
+          # worker-discovery roll fixed session re-discovery, not code shipment). Both ride the
+          # SAME immutable ${SHA::7} tag into their ECR repos; the plan points each image var at it.
+          {
+            echo "image=$ECR/uplift-api:${GITHUB_SHA::7}"
+            echo "worker_image=$ECR/uplift-worker:${GITHUB_SHA::7}"
+          } >> "$GITHUB_OUTPUT"
       - uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ vars.DEPLOY_ROLE_ARN }}
@@ -40,18 +49,30 @@ jobs:
       - uses: aws-actions/amazon-ecr-login@v2
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
-      - name: Build + push (arm64, immutable tag; skip when the tag already exists)
+      - name: Build + push api (arm64, immutable tag; skip when the tag already exists)
         run: |
           # ECR tags are immutable: a deploy RETRY on the same commit (e.g. after an apply
           # failure) cannot re-push and used to fail the whole run here (run 27402130189).
           # The tag is the commit SHA, so an existing image IS the right image — skip to plan.
           if aws ecr describe-images --repository-name uplift-api \
                --image-ids imageTag="${GITHUB_SHA::7}" >/dev/null 2>&1; then
-            echo "image ${GITHUB_SHA::7} already in ECR (immutable) — skipping build/push"
+            echo "api image ${GITHUB_SHA::7} already in ECR (immutable) — skipping build/push"
             exit 0
           fi
           docker buildx build --platform linux/arm64 -f api/Dockerfile \
             -t "${{ steps.meta.outputs.image }}" --push .
+      - name: Build + push worker (arm64, immutable tag; skip when the tag already exists)
+        run: |
+          # The worker is the SINGLE tool executor (it runs draft_email/send_email/CRM-write tools
+          # and writes Greenlight proposals), so it MUST carry the same commit's agents/ code as
+          # the api. Same immutable-tag skip-on-retry contract; same arm64 Fargate target.
+          if aws ecr describe-images --repository-name uplift-worker \
+               --image-ids imageTag="${GITHUB_SHA::7}" >/dev/null 2>&1; then
+            echo "worker image ${GITHUB_SHA::7} already in ECR (immutable) — skipping build/push"
+            exit 0
+          fi
+          docker buildx build --platform linux/arm64 -f worker/Dockerfile \
+            -t "${{ steps.meta.outputs.worker_image }}" --push .
 
   plan:
     needs: build
@@ -82,9 +103,12 @@ jobs:
         working-directory: infra
         run: |
           terraform init -backend-config=backend.hcl -input=false
-          # -var beats the file value — avoids the duplicate-attribute error from appending
+          # -var beats the file value — avoids the duplicate-attribute error from appending.
+          # Both api + worker images are pinned to this commit's tag so the plan ships the same
+          # agents/ code to the api task AND the worker (the tool executor) in one apply.
           terraform plan -input=false -lock-timeout=120s \
-            -var "api_image=${{ needs.build.outputs.image }}" -out=deploy.tfplan
+            -var "api_image=${{ needs.build.outputs.image }}" \
+            -var "worker_image=${{ needs.build.outputs.worker_image }}" -out=deploy.tfplan
           terraform show -no-color deploy.tfplan | tail -40
       - uses: actions/upload-artifact@v5
         with:

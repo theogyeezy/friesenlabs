@@ -1,22 +1,49 @@
 """Side-effecting tools (ALWAYS_ASK policy): they NEVER execute the side effect directly.
 
-draft_email is AUTO (drafting is safe). send_email / CRM writes / issue_quote are ALWAYS_ASK:
-invoking them builds a proposal and routes it to Greenlight — email is never sent, the CRM is never
-mutated, until a human approves. The base class guarantees this; these classes only build the
-proposal payload.
+send_email / draft_email / CRM writes / issue_quote are ALWAYS_ASK: invoking them builds a proposal
+and routes it to Greenlight — email is never sent, the CRM is never mutated, until a human approves.
+The base class guarantees this; these classes only build the proposal payload.
+
+draft_email is the agent-facing affordance the drafting specialists (nadia/echo) hold: the model
+"drafts" an email and it STAGES as the canonical `send_email` approval (proposal_action), so the
+queue, compliance class, applier, and UI are all the one send_email path. The body stays
+model-authored (audit P0-1); the tool only guarantees CAN-SPAM compliance by construction.
 """
 from __future__ import annotations
 
 from .base import Policy, Tool, ToolContext
 
+# A standard, compliant opt-out appended when the model's body lacks an unsubscribe mechanism, so a
+# staged email always clears the deterministic CAN-SPAM floor (api/control/compliance.py) and is
+# approvable — never stored `denied`, which would dead-end the very request the user asked to queue.
+# Matches the product's established staged-email convention (scripts/seed_demo_tenant.py).
+_OPT_OUT_FOOTER = "Reply \"unsubscribe\" and we'll stop sending these right away."
+
+
+def _ensure_opt_out(body: str) -> str:
+    """Return `body` unchanged when it already carries an unsubscribe mechanism (case-insensitive),
+    else append the standard opt-out footer. The model's words are always preserved verbatim — the
+    footer is a system-level compliance addendum, never a rewrite of the draft. Null-safe: a missing
+    body still yields a compliant footer (the floor must never be skippable on a malformed call)."""
+    text = body or ""
+    if "unsubscribe" in text.lower():
+        return text
+    sep = "" if text.endswith("\n") else "\n\n"
+    return f"{text}{sep}{_OPT_OUT_FOOTER}" if text else _OPT_OUT_FOOTER
+
 
 class DraftEmail(Tool):
     name = "draft_email"
     description = (
-        "Record an email draft you have written (no send). YOU author the complete, "
-        "personalized body and pass it in `body` — this tool stores it verbatim; it never "
-        "writes content for you."
+        "Draft an email and stage it for human approval in the Greenlight queue (it is NEVER sent "
+        "automatically — a person reviews, edits, and approves it before it goes out). YOU author "
+        "the complete, personalized body and pass it in `body`; this tool stages it verbatim and "
+        "never writes content for you. Use this whenever the user wants an email drafted, queued, "
+        "or sent."
     )
+    channel = "email"  # so the compliance floor applies CAN-SPAM to the staged draft
+    # Agent-facing name is draft_email; the queued action is the canonical, gated send_email.
+    proposal_action = "send_email"
     input_schema = {
         "type": "object",
         "properties": {
@@ -30,14 +57,24 @@ class DraftEmail(Tool):
         },
         "required": ["to", "body"],
     }
-    policy = Policy.AUTO  # drafting is safe
+    policy = Policy.ALWAYS_ASK  # staging an email is a customer-facing action → human approval
 
     def _execute(self, ctx: ToolContext, *, to: str, body: str, subject: str = "",
                  goal: str = "") -> dict:
-        # The body is MODEL-AUTHORED (the calling agent IS the model) and returned verbatim —
-        # never a server-side placeholder (audit P0-1), never a nested model call (the worker
-        # carries no Anthropic key by design; shared/config.py key posture).
-        return {"to": to, "subject": subject or goal or "Draft", "body": body}
+        # The body is MODEL-AUTHORED (the calling agent IS the model) and carried verbatim into the
+        # proposal — never a server-side placeholder (audit P0-1), never a nested model call (the
+        # worker carries no Anthropic key by design; shared/config.py key posture). The opt-out
+        # footer is appended only when missing, so the staged email is CAN-SPAM compliant by
+        # construction. Build the canonical send_email PROPOSAL only — the base class routes it to
+        # Greenlight and the real send never runs until approval (record_only applier).
+        return {
+            "action": "send_email",
+            "reasoning": f"Send email to {to}" + (f": {goal}" if goal else ""),
+            "value_at_stake": None,
+            "to": to,
+            "subject": subject or goal or "Follow-up",
+            "body": _ensure_opt_out(body),
+        }
 
 
 class SendEmail(Tool):

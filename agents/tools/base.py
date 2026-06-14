@@ -60,6 +60,13 @@ class Tool(abc.ABC):
     # Comms channel for the compliance validator (None = not a comms send). Server-side truth: the
     # action gate derives side_effecting/channel from the tool class, NEVER from the request body.
     channel: str | None = None
+    # The GATED action this tool stages when its agent-facing `name` differs from the canonical
+    # action a human approves (None = the proposal's action IS `name`). draft_email sets this to
+    # "send_email": the model reaches for "draft", but the queue item, its compliance class, and its
+    # applier are the canonical send_email. SERVER-SIDE + trusted (a class constant, never
+    # client-supplied) and may only point at another REGISTERED action — it can add gating, never
+    # route around it.
+    proposal_action: str | None = None
 
     @property
     def is_side_effecting(self) -> bool:
@@ -89,13 +96,17 @@ class Tool(abc.ABC):
         if self.policy is Policy.AUTO:
             return {"status": "ok", "result": self._execute(ctx, **kwargs)}
 
-        # ALWAYS_ASK: build the proposal (no side effect) and hand it to Greenlight.
+        # ALWAYS_ASK: build the proposal (no side effect) and hand it to Greenlight under the
+        # GATED action name (proposal_action when this tool stages a different canonical action,
+        # else its own name). Greenlight.propose forces payload['action'] to this same trusted
+        # name, so compliance classification and applier dispatch agree on one discriminator.
+        action = self.proposal_action or self.name
         proposal = self._execute(ctx, **kwargs)
         if ctx.greenlight is None:
             return {"status": "pending_approval", "proposal": proposal, "greenlight": "unconfigured"}
         record = ctx.greenlight.propose(
             tenant_id=ctx.tenant_id,
-            action=self.name,
+            action=action,
             agent=ctx.agent,
             reasoning=proposal.get("reasoning", ""),
             value_at_stake=proposal.get("value_at_stake"),

@@ -29,14 +29,16 @@ class SpyDB:
 
 @pytest.mark.unit
 def test_readonly_tools_are_auto():
-    for tool in (SearchRag(), QueryCube(), ReadCrm(), DraftEmail()):
+    for tool in (SearchRag(), QueryCube(), ReadCrm()):
         assert tool.policy is Policy.AUTO
 
 
 @pytest.mark.unit
 def test_side_effecting_tools_are_always_ask():
+    # draft_email is gated too — it STAGES a send_email approval (never composes-and-drops).
     for tool in (
-        SendEmail(), UpdateDeal(), UpdateContact(), CreateActivity(), CreateDeal(), IssueQuote()
+        DraftEmail(), SendEmail(), UpdateDeal(), UpdateContact(), CreateActivity(), CreateDeal(),
+        IssueQuote(),
     ):
         assert tool.policy is Policy.ALWAYS_ASK
 

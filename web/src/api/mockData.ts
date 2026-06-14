@@ -549,6 +549,11 @@ const DATA_NOT_ON_PLATFORM =
 const VIEW_INTENT_RE =
   /\b(graphs?|charts?|plots?|dashboards?|visuali[sz]ations?|visuali[sz]e[ds]?|views?)\b/i;
 
+// A draft/email/send ask STAGES a send_email approval (mirrors draft_email -> Greenlight). The
+// canned digest carries a routed pending_approval so the ChatDock surfaces the "Review in
+// Greenlight" affordance offline (Playwright), matching the real worker's digest shape.
+const DRAFT_EMAIL_INTENT_RE = /\b(draft|e-?mail|follow.?up|reach out|nudge|reply)\b/i;
+
 // Tokens of the demo tenant's member catalog (Deals.count / Deals.totalValue / Deals.stage /
 // Deals.createdAt / Contacts.count) — the data-not-found gate checks the ask against these.
 const MOCK_MEMBER_TOKENS = new Set([
@@ -809,6 +814,33 @@ export class MockApi {
         tenant_id: MOCK_TENANT,
         view_intent: true,
         view_request: message,
+      };
+    }
+    if (DRAFT_EMAIL_INTENT_RE.test(message)) {
+      return {
+        answer:
+          "I've drafted that email and queued it for your approval — it won't be sent until you " +
+          "review and approve it in Greenlight.",
+        citations: [],
+        pending_approvals: [
+          {
+            status: "pending_approval",
+            tool_name: "draft_email",
+            custom_tool_use_id: "mock-ctu-email-1",
+            proposal: {
+              action: "send_email",
+              to: "contact@example.com",
+              subject: "Following up",
+              body: "Hi — following up on our conversation.\n\nReply \"unsubscribe\" to opt out.",
+            },
+          },
+        ],
+        slots: {},
+        needs_disambiguation: [],
+        delegations: ["echo"],
+        session_id: "mock-session",
+        tenant_id: MOCK_TENANT,
+        settled: true,
       };
     }
     return cannedChat(message);
