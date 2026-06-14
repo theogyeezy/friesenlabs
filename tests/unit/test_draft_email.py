@@ -146,3 +146,35 @@ def test_draft_email_lands_pending_through_the_real_greenlight_and_registry_reso
     assert rec["proposed_action"]["action"] == "send_email"
     assert "unsubscribe" in rec["proposed_action"]["body"].lower()
     assert gl.count_pending("t-9") == 1
+
+
+@pytest.mark.unit
+def test_draft_email_approves_to_record_only_never_sends():
+    # The full draft-only guarantee for the NEW path: stage -> human approves -> the applier is
+    # record_only (performed=False, no real send), so an approved drafted email can never read as
+    # "sent". There is deliberately NO `draft_email` applier — the proposal action is send_email.
+    from api.control.appliers import APPLIERS, apply_approved_action, was_performed
+    from api.control.greenlight import Greenlight, InMemoryApprovalStore
+
+    assert "draft_email" not in APPLIERS  # the staged action dispatches as send_email
+    gl = Greenlight(store=InMemoryApprovalStore())
+    out = DraftEmail().invoke(
+        ToolContext(tenant_id="t-7", agent="nadia", greenlight=gl),
+        to="vada@example.com", subject="Renewal", body="Hi Vada — renewal follow-up.",
+    )
+    approved = gl.decide("t-7", out["approval"]["id"], "approve", decided_by="user-1")
+    assert approved["status"] == "approved"
+    result = apply_approved_action(None, "t-7", approved["proposed_action"])
+    assert was_performed(result) is False  # record-only — the real send never ran
+    assert result["performed"] is False
+
+
+@pytest.mark.unit
+def test_opt_out_footer_handles_empty_and_missing_bodies():
+    # Defensive: the compliance floor must never be skippable on a malformed/empty body. A blank
+    # body still yields a body that contains a real unsubscribe mechanism.
+    from agents.tools.sideeffecting import _ensure_opt_out
+
+    for raw in ("", None):
+        out = _ensure_opt_out(raw)  # type: ignore[arg-type]
+        assert "unsubscribe" in out.lower()

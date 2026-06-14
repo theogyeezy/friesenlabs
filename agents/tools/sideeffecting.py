@@ -23,11 +23,13 @@ _OPT_OUT_FOOTER = "Reply \"unsubscribe\" and we'll stop sending these right away
 def _ensure_opt_out(body: str) -> str:
     """Return `body` unchanged when it already carries an unsubscribe mechanism (case-insensitive),
     else append the standard opt-out footer. The model's words are always preserved verbatim — the
-    footer is a system-level compliance addendum, never a rewrite of the draft."""
-    if "unsubscribe" in (body or "").lower():
-        return body
-    sep = "" if body.endswith("\n") else "\n\n"
-    return f"{body}{sep}{_OPT_OUT_FOOTER}"
+    footer is a system-level compliance addendum, never a rewrite of the draft. Null-safe: a missing
+    body still yields a compliant footer (the floor must never be skippable on a malformed call)."""
+    text = body or ""
+    if "unsubscribe" in text.lower():
+        return text
+    sep = "" if text.endswith("\n") else "\n\n"
+    return f"{text}{sep}{_OPT_OUT_FOOTER}" if text else _OPT_OUT_FOOTER
 
 
 class DraftEmail(Tool):
