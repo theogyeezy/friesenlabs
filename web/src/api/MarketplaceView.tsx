@@ -166,9 +166,62 @@ export function MarketplaceView({ client, onOpenStudio }: MarketplaceViewProps) 
 
   return (
     <div data-testid="marketplace-view" className="screen-anim">
-      <div style={{ ...muted, fontSize: 13, marginBottom: 16 }}>
-        Hire a ready-made agent. It’s added to your library as a draft playbook you can review,
-        tune, and activate in Studio — nothing runs until you activate it.
+      {/* Intro banner — a deliberate section header instead of an orphaned line of
+          gray text under the topbar title. Mirrors Switchboard's banner styling so
+          the top of the page reads as intentional. */}
+      <div
+        data-testid="marketplace-intro"
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 14,
+          padding: "15px 18px",
+          borderRadius: 14,
+          border: "1px solid var(--accent-soft, #e9e3d7)",
+          background: "linear-gradient(120deg, var(--accent-softer, #f6f3ec), var(--surface, #fff))",
+          marginBottom: 20,
+        }}
+      >
+        <div
+          aria-hidden
+          style={{
+            width: 38,
+            height: 38,
+            borderRadius: 11,
+            background: "var(--surface, #fff)",
+            border: "1px solid var(--line, #e3ddd3)",
+            display: "grid",
+            placeItems: "center",
+            flexShrink: 0,
+            fontSize: 19,
+          }}
+        >
+          🛒
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontWeight: 720, fontSize: 14.5, color: "var(--ink, #2a2622)" }}>
+            Hire a ready-made agent
+          </div>
+          <div style={{ ...muted, fontSize: 12.5, lineHeight: 1.5, marginTop: 2 }}>
+            Each one lands in your library as a <b style={{ color: "var(--ink-2, #5d564d)" }}>draft</b> playbook
+            you can review, tune, and activate in Studio. Nothing runs until you activate it.
+          </div>
+        </div>
+        <span
+          style={{
+            fontSize: 12,
+            fontWeight: 650,
+            color: "var(--ink-3, #8a8278)",
+            background: "var(--surface, #fff)",
+            border: "1px solid var(--line, #e3ddd3)",
+            borderRadius: 999,
+            padding: "4px 11px",
+            whiteSpace: "nowrap",
+            flexShrink: 0,
+          }}
+        >
+          {templates.length} available
+        </span>
       </div>
       <div style={{ display: "grid", gap: 14, gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))" }}>
         {templates.map((t) => (

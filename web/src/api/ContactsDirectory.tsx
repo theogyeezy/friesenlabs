@@ -205,6 +205,10 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample, onOpen
   const [companyDetail, setCompanyDetail] = useState<CompanyDetailResponse | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
+  // Full-page contact record (HubSpot-style): the drawer's "Expand" promotes the
+  // open contact to a full-screen, three-column record + activity timeline. Same
+  // data (contactDetail) and the same write paths — just a roomier layout.
+  const [expanded, setExpanded] = useState(false);
 
   // A monotonically growing id per load so a stale response can never clobber
   // a newer one (search keystrokes race their fetches).
@@ -354,6 +358,7 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample, onOpen
     setDetailError(null);
     setQuickDeal(null);
     setNoteText("");
+    setExpanded(false);
   }, []);
 
   // Pull a page of companies the first time the form opens; company is optional,
@@ -560,15 +565,18 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample, onOpen
     }
   }, [api, formMode, formFields, closeForm, forceListRefresh, tab, loadPeople, query]);
 
-  // Esc closes the drawer (house pattern for slide-overs).
+  // Esc closes the drawer (house pattern for slide-overs). When the contact is
+  // expanded to the full-page record, Esc first collapses back to the drawer.
   useEffect(() => {
     if (drawer === null) return;
     const k = (e: KeyboardEvent) => {
-      if (e.key === "Escape") closeDrawer();
+      if (e.key !== "Escape") return;
+      if (expanded) setExpanded(false);
+      else closeDrawer();
     };
     window.addEventListener("keydown", k);
     return () => window.removeEventListener("keydown", k);
-  }, [drawer, closeDrawer]);
+  }, [drawer, expanded, closeDrawer]);
 
   const active = tab === "people" ? people : companies;
 
@@ -1043,6 +1051,14 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample, onOpen
                   </h2>
                   <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
                     <button
+                      data-testid="expand-contact-btn"
+                      title="Open full page"
+                      onClick={() => setExpanded(true)}
+                      style={{ ...ghostBtn, padding: "5px 12px", fontSize: 12.5, display: "inline-flex", alignItems: "center", gap: 5 }}
+                    >
+                      <span aria-hidden style={{ fontSize: 14, lineHeight: 1 }}>⤢</span> Expand
+                    </button>
+                    <button
                       data-testid="edit-contact-btn"
                       onClick={() => openEditForm(contactDetail.contact)}
                       style={{ ...ghostBtn, padding: "5px 12px", fontSize: 12.5 }}
@@ -1224,6 +1240,182 @@ export function ContactsDirectory({ client, onOpenPipeline, onLoadSample, onOpen
             )}
           </div>
         </>
+      )}
+
+      {/* ----------------------------------------------------------------- full-page contact record */}
+      {expanded && drawer?.kind === "contact" && contactDetail !== null && (
+        <div
+          data-testid="contact-fullpage"
+          role="dialog"
+          aria-label="Contact record"
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "var(--bg, #faf8f4)",
+            zIndex: 58,
+            overflowY: "auto",
+            fontFamily: "system-ui, sans-serif",
+          }}
+        >
+          {(() => {
+            const c = contactDetail.contact;
+            const initials = (c.name ?? "?").split(" ").map((w) => w[0]).filter(Boolean).slice(0, 2).join("").toUpperCase() || "?";
+            const allDeals = [...(contactDetail.contact_deals ?? []), ...contactDetail.company_deals];
+            const KIND_ICON: Record<string, string> = { note: "📝", call: "📞", email: "✉️", task: "✓", meeting: "📅" };
+            const KIND_COLOR: Record<string, string> = {
+              note: "var(--clay, #b5613f)", call: "oklch(0.55 0.13 250)", email: "oklch(0.52 0.12 152)",
+              task: "oklch(0.55 0.14 60)", meeting: "oklch(0.5 0.14 300)",
+            };
+            return (
+              <div style={{ maxWidth: 1080, margin: "0 auto", padding: "20px 28px 60px" }}>
+                {/* top bar */}
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "6px 0 18px" }}>
+                  <button
+                    data-testid="fullpage-back"
+                    onClick={() => setExpanded(false)}
+                    style={{ ...ghostBtn, padding: "6px 13px", fontSize: 13, display: "inline-flex", alignItems: "center", gap: 6 }}
+                  >
+                    <span aria-hidden>←</span> Back to contacts
+                  </button>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button
+                      data-testid="fullpage-edit"
+                      onClick={() => openEditForm(c)}
+                      style={{ ...ghostBtn, padding: "6px 14px", fontSize: 13 }}
+                    >
+                      Edit
+                    </button>
+                    {showArchived ? (
+                      <button data-testid="fullpage-restore" disabled={archiveBusy} onClick={() => void restore("contacts", c.id)} style={{ ...ghostBtn, padding: "6px 14px", fontSize: 13, opacity: archiveBusy ? 0.6 : 1 }}>Restore</button>
+                    ) : (
+                      <button data-testid="fullpage-archive" disabled={archiveBusy} onClick={() => void archive("contacts", c.id)} style={{ ...ghostBtn, padding: "6px 14px", fontSize: 13, opacity: archiveBusy ? 0.6 : 1 }}>Archive</button>
+                    )}
+                  </div>
+                </div>
+
+                {/* identity header */}
+                <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 22 }}>
+                  <div
+                    aria-hidden
+                    style={{
+                      width: 60, height: 60, borderRadius: "50%", flexShrink: 0,
+                      background: "linear-gradient(145deg, var(--accent, #2a2622), var(--accent-press, #14100c))",
+                      color: "#fff", display: "grid", placeItems: "center", fontSize: 22, fontWeight: 720,
+                    }}
+                  >
+                    {initials}
+                  </div>
+                  <div style={{ minWidth: 0 }}>
+                    <h1 data-testid="fullpage-name" style={{ fontSize: 27, fontWeight: 780, letterSpacing: "-.02em", margin: 0 }}>
+                      {c.name ?? "Unnamed contact"}
+                    </h1>
+                    <div style={{ fontSize: 14, ...muted, marginTop: 3 }}>
+                      {c.title ? `${c.title} · ` : ""}{c.company_name ?? "No company"}
+                    </div>
+                  </div>
+                </div>
+
+                {/* two columns: about + deals (left) · timeline (right) */}
+                <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 320px) minmax(0, 1fr)", gap: 22, alignItems: "start" }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                    <div style={{ ...card }}>
+                      <div style={{ fontSize: 11.5, fontWeight: 700, letterSpacing: ".06em", textTransform: "uppercase", ...muted, marginBottom: 12 }}>About</div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 11, fontSize: 13.5 }}>
+                        <div><div style={{ fontSize: 11.5, ...muted, marginBottom: 1 }}>Email</div><div data-testid="fullpage-email">{c.email ?? "—"}</div></div>
+                        <div><div style={{ fontSize: 11.5, ...muted, marginBottom: 1 }}>Phone</div><div>{c.phone ?? "—"}</div></div>
+                        <div><div style={{ fontSize: 11.5, ...muted, marginBottom: 1 }}>Company</div><div>{c.company_name ?? "—"}</div></div>
+                        <div><div style={{ fontSize: 11.5, ...muted, marginBottom: 1 }}>Added</div><div>{formatWhen(c.created_at)}</div></div>
+                        <div><div style={{ fontSize: 11.5, ...muted, marginBottom: 1 }}>Last activity</div><div>{c.last_activity_at ? formatWhen(c.last_activity_at) : "—"}</div></div>
+                      </div>
+                    </div>
+                    <div style={{ ...card }}>
+                      <div style={{ fontSize: 11.5, fontWeight: 700, letterSpacing: ".06em", textTransform: "uppercase", ...muted, marginBottom: 10 }}>
+                        Deals {allDeals.length > 0 ? `(${allDeals.length})` : ""}
+                      </div>
+                      {allDeals.length === 0 ? (
+                        <div style={{ fontSize: 13, ...muted }}>No deals linked to this contact.</div>
+                      ) : (
+                        allDeals.map(dealLink)
+                      )}
+                    </div>
+                  </div>
+
+                  {/* timeline */}
+                  <div style={{ ...card }}>
+                    <div style={{ fontSize: 11.5, fontWeight: 700, letterSpacing: ".06em", textTransform: "uppercase", ...muted, marginBottom: 14 }}>Activity timeline</div>
+                    {/* composer */}
+                    <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
+                      <select
+                        data-testid="fullpage-note-kind"
+                        value={noteKind}
+                        onChange={(e) => setNoteKind(e.target.value)}
+                        style={{ padding: "9px 8px", borderRadius: 8, border: "1px solid var(--line, #e3ddd3)", fontSize: 13, fontFamily: "inherit", background: "var(--surface, #fff)" }}
+                      >
+                        <option value="note">Note</option>
+                        <option value="call">Call</option>
+                        <option value="email">Email</option>
+                        <option value="task">Task</option>
+                      </select>
+                      <input
+                        data-testid="fullpage-note-input"
+                        value={noteText}
+                        onChange={(e) => setNoteText(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === "Enter") void logNote(c.id); }}
+                        placeholder="Log a note, call, email, or task…"
+                        style={{ flex: 1, padding: "9px 12px", borderRadius: 8, border: "1px solid var(--line, #e3ddd3)", fontSize: 13.5, fontFamily: "inherit" }}
+                      />
+                      <button
+                        data-testid="fullpage-note-submit"
+                        disabled={noteBusy || !noteText.trim()}
+                        onClick={() => void logNote(c.id)}
+                        style={{ ...ghostBtn, padding: "9px 16px", fontSize: 13, opacity: noteBusy || !noteText.trim() ? 0.6 : 1 }}
+                      >
+                        {noteBusy ? "Logging…" : "Log"}
+                      </button>
+                    </div>
+
+                    {contactDetail.activities.length === 0 ? (
+                      <div data-testid="fullpage-activities-empty" style={{ fontSize: 13.5, ...muted, padding: "10px 0" }}>
+                        No activity logged yet. Log the first note, call, or task above.
+                      </div>
+                    ) : (
+                      <div style={{ position: "relative", paddingLeft: 30 }}>
+                        {/* vertical connector line */}
+                        <div aria-hidden style={{ position: "absolute", left: 13, top: 6, bottom: 6, width: 2, background: "var(--line, #e3ddd3)" }} />
+                        {contactDetail.activities.map((a, i) => {
+                          const kind = (a.kind ?? "note").toLowerCase();
+                          return (
+                            <div key={a.id ?? i} data-testid="fullpage-activity-item" style={{ position: "relative", paddingBottom: i === contactDetail.activities.length - 1 ? 0 : 20 }}>
+                              <div
+                                aria-hidden
+                                style={{
+                                  position: "absolute", left: -30, top: 0, width: 28, height: 28, borderRadius: "50%",
+                                  background: "var(--surface, #fff)", border: `2px solid ${KIND_COLOR[kind] ?? "var(--line, #e3ddd3)"}`,
+                                  display: "grid", placeItems: "center", fontSize: 13,
+                                }}
+                              >
+                                {KIND_ICON[kind] ?? "•"}
+                              </div>
+                              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}>
+                                <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: ".04em", textTransform: "uppercase", color: KIND_COLOR[kind] ?? "var(--ink-2, #5d564d)" }}>
+                                  {kind}
+                                </span>
+                                <span style={{ fontSize: 12, ...muted }}>{formatWhen(a.occurred_at)}</span>
+                              </div>
+                              {a.body && (
+                                <p style={{ fontSize: 13.5, color: "var(--ink, #2a2622)", lineHeight: 1.55, margin: "5px 0 0" }}>{a.body}</p>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+        </div>
       )}
 
       {/* ----------------------------------------------------------------- create/edit form modal */}

@@ -220,6 +220,40 @@ test("drawer opens with contact detail: activities + company open deals linking 
   expect(errors, `page errors: ${errors.join("\n")}`).toHaveLength(0);
 });
 
+test("Expand promotes the contact to the full-page record + activity timeline; Esc collapses back", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+
+  await page.route("**/contacts?*", (route) =>
+    route.fulfill({ json: contactsPage([CONTACT_DANA, CONTACT_MARCUS]) }),
+  );
+  await page.route("**/contacts/*", (route) => route.fulfill({ json: DANA_DETAIL }));
+
+  await page.goto("/?view=contacts");
+  await expect(page.getByTestId("contact-row").first()).toBeVisible({ timeout: 15_000 });
+  await page.locator(`[data-contact-id="${CONTACT_DANA.id}"]`).click();
+  await expect(page.getByTestId("dir-drawer")).toBeVisible({ timeout: 15_000 });
+
+  // Expand -> the full-page record with the activity timeline.
+  await page.getByTestId("expand-contact-btn").click();
+  const full = page.getByTestId("contact-fullpage");
+  await expect(full).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId("fullpage-name")).toContainText("Dana Whitfield");
+  await expect(page.getByTestId("fullpage-email")).toContainText("dana@birchwoodcap.example");
+  // The same activities render as a vertical timeline (no data invented).
+  await expect(page.getByTestId("fullpage-activity-item")).toHaveCount(2);
+
+  // Esc collapses the full page back to the drawer (not all the way closed).
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("contact-fullpage")).toHaveCount(0);
+  await expect(page.getByTestId("dir-drawer")).toBeVisible();
+  // A second Esc closes the drawer.
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("dir-drawer")).toHaveCount(0);
+
+  expect(errors, `page errors: ${errors.join("\n")}`).toHaveLength(0);
+});
+
 test("companies toggle lists counts and opens the company drawer", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(String(e)));
