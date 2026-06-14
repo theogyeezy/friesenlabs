@@ -607,6 +607,23 @@ def mount_integrations(app: FastAPI, deps: IntegrationsDeps, current_tenant) -> 
                 last_runs = deps.sync_runs.latest(claims.tenant_id)  # claims ONLY
             except Exception as exc:  # noqa: BLE001 — history is auxiliary to the listing
                 log.warning("integrations: last-sync lookup failed (%s)", type(exc).__name__)
+        # OAuth feature-detection (advertised per-connector so the web leads with
+        # the one-click "Connect with {Provider}" button instead of the paste-key
+        # fallback). A connector is OAuth-capable when EVERY shared gate the
+        # start/callback routes enforce is satisfied EXCEPT the per-provider
+        # client-creds vault read (deferred to /oauth/start, which answers an
+        # honest 503 if the app isn't registered). Computed once — the module +
+        # runtime config don't vary per connector — then the per-name provider
+        # lookup decides each card. Any provider added to oauth.PROVIDERS picks
+        # this up automatically; no per-connector list to keep in sync.
+        oauth_mod = _oauth_module()
+        oauth_runtime_ready = False
+        if oauth_mod is not None and secrets_configured and deps.secret_reader is not None:
+            oauth_runtime_ready = oauth_mod.OAuthConfig(
+                state_secret=deps.oauth_state_secret,
+                redirect_base=deps.oauth_redirect_base,
+                app_return_url=deps.oauth_app_return_url,
+            ).configured()
         items = []
         for name, meta in KNOWN_INTEGRATIONS.items():
             connected: bool | None = None
@@ -624,6 +641,13 @@ def mount_integrations(app: FastAPI, deps: IntegrationsDeps, current_tenant) -> 
                                     ref, type(exc).__name__)
                         connected = None
                 status = _STATUS[connected]
+            # A sync-kind connector with a registered OAuth provider + ready
+            # runtime advertises the login path; file-kind (csv) never does.
+            oauth_available = (
+                meta["kind"] != "file"
+                and oauth_runtime_ready
+                and oauth_mod.get_provider(name) is not None
+            )
             items.append({
                 "name": name,
                 "label": meta["label"],
@@ -633,6 +657,10 @@ def mount_integrations(app: FastAPI, deps: IntegrationsDeps, current_tenant) -> 
                 "experimental": meta["experimental"],
                 "connected": connected,           # null = honestly unknown / not applicable
                 "status": status,
+                # True = lead with "Connect with {Provider}" (browser OAuth);
+                # the web feature-detects this field and falls back to its own
+                # known-capable set only when it is absent (older API images).
+                "oauth_available": oauth_available,
                 # null = no run recorded (or history not configured) — never invented.
                 "last_sync": last_runs.get(meta["source"]) if meta["kind"] == "sync" else None,
             })

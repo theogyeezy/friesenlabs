@@ -214,15 +214,20 @@ const OAUTH_PROVIDER_LABEL: Record<string, string> = {
   stripe: "Stripe",
   gohighlevel: "GoHighLevel",
   pipedrive: "Pipedrive",
+  google: "Google",
+  microsoft: "Microsoft",
+  salesforce: "Salesforce",
 };
 
 // Connectors known to support the browser-OAuth path before the API advertises
-// it explicitly. The API may add an `oauth_available` boolean to each integration
-// in the list response; until it does for a given connector, these names are
-// treated as OAuth-capable (graceful degrade). HubSpot and GoHighLevel ship the
-// `/integrations/{name}/oauth/start` redirect on the API, so both lead with the
-// one-click login button.
-const OAUTH_DEFAULT_CONNECTORS = new Set(["hubspot", "gohighlevel"]);
+// it explicitly. The API now ships an `oauth_available` boolean on each
+// integration (computed from the registered OAuth providers), and the server's
+// word is authoritative when present. This set is only the graceful-degrade
+// fallback for older API images that predate the flag: every provider with an
+// `/integrations/{name}/oauth/start` redirect registered in ingest oauth.py.
+const OAUTH_DEFAULT_CONNECTORS = new Set([
+  "hubspot", "gohighlevel", "google", "microsoft", "salesforce", "pipedrive",
+]);
 
 // Feature-detect whether a connector offers the browser-OAuth path. This reads
 // the optional `oauth_available` field — the server's word is authoritative when
