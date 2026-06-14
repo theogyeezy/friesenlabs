@@ -322,7 +322,7 @@ export function KnowledgeView({ client, initialPageRef, onInitialPageConsumed }:
         void openPage(target);
       }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps — fires per prop change only;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fires per prop change only;
     // re-running on openPage recreation must not re-open a page the user navigated away from.
   }, [initialPageRef]);
 

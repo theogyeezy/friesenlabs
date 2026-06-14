@@ -30,10 +30,24 @@ export default defineConfig({
     headless: true,
     trace: "off",
   },
+  // Visual-regression tolerance: a few stray antialiased pixels must not fail a run, a real layout
+  // change must. Baselines are PLATFORM-SPECIFIC (font hinting differs macOS vs CI Linux), so they
+  // are generated in the CI environment — see TESTING.md and the `visual` project below.
+  expect: {
+    toHaveScreenshot: { maxDiffPixelRatio: 0.01, animations: "disabled" },
+  },
   projects: [
     {
       name: "chromium",
-      testIgnore: [/realmode\.spec\.ts/, /integrations\.spec\.ts/, /pipeline\.spec\.ts/, /contacts\.spec\.ts/, /tasks\.spec\.ts/, /merge\.spec\.ts/, /agents\.spec\.ts/, /workflows\.spec\.ts/, /reports\.spec\.ts/, /dashboards\.spec\.ts/, /dashboard-real\.spec\.ts/, /knowledge\.spec\.ts/, /onboarding\.spec\.ts/, /signup-real\.spec\.ts/, /auth\.spec\.ts/, /conversion\.spec\.ts/, /billing\.spec\.ts/, /cortex\.spec\.ts/, /depth-ui\.spec\.ts/, /studio\.spec\.ts/, /sidecar\.spec\.ts/, /sell\.spec\.ts/, /greenlight-real\.spec\.ts/],
+      testIgnore: [/realmode\.spec\.ts/, /integrations\.spec\.ts/, /pipeline\.spec\.ts/, /contacts\.spec\.ts/, /tasks\.spec\.ts/, /merge\.spec\.ts/, /agents\.spec\.ts/, /workflows\.spec\.ts/, /reports\.spec\.ts/, /dashboards\.spec\.ts/, /dashboard-real\.spec\.ts/, /knowledge\.spec\.ts/, /onboarding\.spec\.ts/, /signup-real\.spec\.ts/, /auth\.spec\.ts/, /conversion\.spec\.ts/, /billing\.spec\.ts/, /cortex\.spec\.ts/, /depth-ui\.spec\.ts/, /studio\.spec\.ts/, /sidecar\.spec\.ts/, /sell\.spec\.ts/, /greenlight-real\.spec\.ts/, /visual\.spec\.ts/, /prod-smoke\.spec\.ts/],
+      use: { ...devices["Desktop Chrome"], baseURL: "http://localhost:4173" },
+    },
+    {
+      // Visual-regression project (opt-in: the spec self-skips unless RUN_VISUAL=1). Renders the
+      // mock build at :4173 and pixel-diffs against committed baselines — the layer that catches
+      // CSS/layout breaks the DOM-assertion tests cannot. Run: npm run test:visual[:update].
+      name: "visual",
+      testMatch: /visual\.spec\.ts/,
       use: { ...devices["Desktop Chrome"], baseURL: "http://localhost:4173" },
     },
     {

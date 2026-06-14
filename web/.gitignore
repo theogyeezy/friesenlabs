@@ -1,3 +1,9 @@
 # Real-mode e2e bundle (npm run build:real — see playwright.config.ts).
 # web/dist/ is already ignored at the repo root.
 dist-real/
+dist-auth/
+
+# Vitest coverage output (the report is generated, never committed).
+coverage/
+
+# NOTE: e2e/**/*-snapshots/ (Playwright visual baselines) ARE committed — do not ignore them.

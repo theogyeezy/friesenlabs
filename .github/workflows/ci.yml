@@ -111,13 +111,15 @@ jobs:
           node-version: "20"
       - name: Install
         run: npm ci || npm install
+      - name: Lint (static layer — react-hooks, jsx-a11y, dead code)
+        run: npm run lint
       - name: Typecheck
         run: npm run typecheck
-      - name: Unit tests (auth core, node --test)
+      - name: Unit + component tests (vitest + auth-core node --test)
         run: npm test
       - name: Build
         run: npm run build
-      - name: Playwright e2e
+      - name: Playwright e2e + a11y (axe)
         run: |
           npx playwright install --with-deps chromium
           npx playwright test
