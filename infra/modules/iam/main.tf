@@ -259,11 +259,30 @@ resource "aws_iam_role_policy" "api_task_connector_write" {
         "secretsmanager:GetSecretValue",
       ]
       # The connector vault slot is uplift/{tenant_id}/{source}; cover ALL supported sync
-      # connectors, not just hubspot (Stripe + GoHighLevel were AccessDenied before this).
+      # connectors (google/microsoft/salesforce/pipedrive were AccessDenied on the OAuth callback's
+      # token store before this — surfaced live connecting Google 2026-06-13).
       Resource = [
-        for src in ["hubspot", "stripe", "gohighlevel"] :
+        for src in ["hubspot", "stripe", "gohighlevel", "google", "microsoft", "salesforce", "pipedrive"] :
         "arn:aws:secretsmanager:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:secret:uplift/*/${src}*"
       ]
+    }]
+  })
+}
+
+# OAuth APP credentials (client_id/client_secret) live under uplift/oauth/{provider}/* — a DIFFERENT
+# namespace from the per-tenant connector slots above. The /oauth/start + /oauth/callback routes
+# READ these to build the authorize URL + exchange the code. HubSpot/GHL happened to be covered by
+# the connector-write ARN pattern (uplift/*/hubspot* matches uplift/oauth/hubspot/*); google et al.
+# do NOT, so the Google connect 502'd "oauth credential read failed" until this (live 2026-06-13).
+resource "aws_iam_role_policy" "api_task_oauth_creds_read" {
+  name = "oauth-app-creds-read"
+  role = aws_iam_role.task["api"].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
+      Resource = "arn:aws:secretsmanager:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:secret:uplift/oauth/*"
     }]
   })
 }
