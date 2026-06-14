@@ -155,6 +155,19 @@ const LAYOUT_CSS = `
   @media (max-width: 800px) { .kn-grid { grid-template-columns: 1fr; } .kn-rail { position: static; } }
 `;
 
+// A monochrome page glyph (Notion-style) for the sidebar tree and the reader
+// header. Outline only — it inherits a calm gray so titles stay the emphasis.
+function PageIcon({ size = 16, color = "var(--ink-4, #b0a89c)", filled = false }: { size?: number; color?: string; filled?: boolean }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={1.7}
+      strokeLinecap="round" strokeLinejoin="round" aria-hidden style={{ flexShrink: 0, display: "block" }}>
+      <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" fill={filled ? "var(--accent-soft, #f4f1ea)" : "none"} />
+      <path d="M14 3v5h5" />
+      <path d="M9 13h6M9 17h4" opacity={0.7} />
+    </svg>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -725,13 +738,12 @@ export function KnowledgeView({ client, initialPageRef, onInitialPageConsumed }:
       >
         <span
           style={{
-            display: "block",
+            display: "flex",
+            alignItems: "center",
             fontSize: 13.5,
-            fontWeight: sel ? 750 : 650,
+            fontWeight: sel ? 750 : 600,
             color: "var(--ink, #2a2622)",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
+            minWidth: 0,
           }}
         >
           {hasKids && (
@@ -750,31 +762,19 @@ export function KnowledgeView({ client, initialPageRef, onInitialPageConsumed }:
                   return next;
                 });
               }}
-              style={{ display: "inline-block", width: 14, marginRight: 3, color: "var(--ink-4, #b0a89c)", fontSize: 10 }}
+              style={{ display: "inline-flex", justifyContent: "center", width: 14, marginRight: 2, color: "var(--ink-4, #b0a89c)", fontSize: 10 }}
             >
               {isCollapsed ? "\u25B8" : "\u25BE"}
             </span>
           )}
-          {p.title}
+          <span style={{ marginRight: 7, marginLeft: hasKids ? 0 : 1, display: "inline-flex" }}>
+            <PageIcon size={15} color={sel ? "var(--accent, #b3552e)" : "var(--ink-4, #b0a89c)"} filled={sel} />
+          </span>
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.title}</span>
           {!p.editable && (
             <span style={{ fontSize: 10.5, fontWeight: 700, marginLeft: 6, ...muted }}>read-only</span>
           )}
         </span>
-        {p.preview && (
-          <span
-            style={{
-              display: "block",
-              fontSize: 11.5,
-              marginTop: 2,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-              ...muted,
-            }}
-          >
-            {p.preview}
-          </span>
-        )}
       </button>
     );
   };
@@ -996,7 +996,7 @@ export function KnowledgeView({ client, initialPageRef, onInitialPageConsumed }:
   );
 
   const readerPane = editor.mode === "closed" && openRef !== null && (
-    <div data-testid="knowledge-doc" style={{ ...card, padding: "22px 24px" }}>
+    <div data-testid="knowledge-doc" style={{ ...card, padding: "30px 40px 40px" }}>
       {docLoading && <Spinner testid="knowledge-doc-loading" label="Opening the page..." />}
       {docError && (
         <div data-testid="knowledge-doc-error" style={{ fontSize: 13.5 }}>
@@ -1029,13 +1029,16 @@ export function KnowledgeView({ client, initialPageRef, onInitialPageConsumed }:
           )}
           <div style={{ display: "flex", alignItems: "flex-start", gap: 10, flexWrap: "wrap" }}>
             <div style={{ flex: 1, minWidth: 200 }}>
+              <div style={{ marginBottom: 6 }}>
+                <PageIcon size={40} color="var(--ink-3, #8a8278)" filled />
+              </div>
               <h2
                 data-testid="knowledge-doc-title"
-                style={{ fontSize: 24, fontWeight: 760, letterSpacing: "-.02em", margin: 0 }}
+                style={{ fontSize: 32, fontWeight: 800, letterSpacing: "-.025em", lineHeight: 1.15, margin: 0 }}
               >
                 {doc.title}
               </h2>
-              <div style={{ fontSize: 12, marginTop: 5, ...muted }}>
+              <div style={{ fontSize: 12, marginTop: 7, ...muted }}>
                 updated {fmtWhen(doc.updated_at)} · {fmtCount(doc.chunks)}{" "}
                 {doc.chunks === 1 ? "section" : "sections"} indexed
                 {!doc.editable && " · read-only"}
@@ -1169,7 +1172,7 @@ export function KnowledgeView({ client, initialPageRef, onInitialPageConsumed }:
 
           <div
             data-testid="knowledge-doc-body"
-            style={{ marginTop: 18, fontSize: 14.5, lineHeight: 1.65, color: "var(--ink, #2a2622)", maxWidth: 720 }}
+            style={{ marginTop: 22, fontSize: 15.5, lineHeight: 1.7, color: "var(--ink, #2a2622)", maxWidth: 740 }}
           >
             {doc.content !== null ? (
               <SafeMarkdown body={doc.content} />

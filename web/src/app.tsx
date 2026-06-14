@@ -94,34 +94,205 @@ const ModuleNotEnabled = ({ title, icon, onManage }) => (
   </div>
 );
 
-// Slide-over panel hosting the API-wired ChatDock in real mode. Reuses the
-// prototype's .chat/.scrim chrome so "Ask agents" feels identical, but the
-// content is the real /chat surface (grounded answers, citations, honest
-// "Agents unavailable" copy on 503). Stays mounted so the thread survives
-// close/reopen, exactly like the prototype AgentChat.
-function RealChatPanel({ open, onClose, onOpenKnowledgePage }) {
+// Floating, draggable Ask-agents panel hosting the API-wired ChatDock in real
+// mode. Unlike a modal slide-over, this is a NON-modal window: there's no scrim,
+// so you can keep clicking around the app (the left-nav tabs) while it stays put.
+// Because it's mounted ONCE at the app shell (outside the route switch), its
+// geometry naturally survives navigation; geometry also persists to localStorage
+// across reloads. It can be dragged by its header, resized from the corner,
+// maximized, and minimized with a shrink-into-the-button animation. It stays
+// mounted (display:none when closed) so the thread survives close/reopen.
+const CHAT_GEO_KEY = "fl_chat_geo_v1";
+const CHAT_MIN_W = 320, CHAT_MIN_H = 360;
+
+function loadChatGeo() {
+  try {
+    const raw = localStorage.getItem(CHAT_GEO_KEY);
+    if (raw) {
+      const g = JSON.parse(raw);
+      if (typeof g.x === "number" && typeof g.y === "number" && typeof g.w === "number" && typeof g.h === "number") return g;
+    }
+  } catch (e) { /* ignore */ }
+  return null;
+}
+
+function defaultChatGeo() {
+  const w = 420;
+  const h = Math.min(580, Math.max(CHAT_MIN_H, (typeof window !== "undefined" ? window.innerHeight : 800) - 120));
+  const x = (typeof window !== "undefined" ? window.innerWidth : 1200) - w - 28;
+  return { x: Math.max(12, x), y: 74, w, h };
+}
+
+function clampChatGeo(g) {
+  const vw = typeof window !== "undefined" ? window.innerWidth : 1200;
+  const vh = typeof window !== "undefined" ? window.innerHeight : 800;
+  const w = Math.min(Math.max(CHAT_MIN_W, g.w), vw - 16);
+  const h = Math.min(Math.max(CHAT_MIN_H, g.h), vh - 16);
+  const x = Math.min(Math.max(8, g.x), vw - w - 8);
+  const y = Math.min(Math.max(8, g.y), vh - h - 8);
+  return { x, y, w, h };
+}
+
+function RealChatPanel({ open, onClose, onOpenKnowledgePage, anchorRef }) {
+  const [geo, setGeo] = useState(() => clampChatGeo(loadChatGeo() || defaultChatGeo()));
+  const [maximized, setMaximized] = useState(false);
+  // Collapse animation phase: "" (rest) | "collapsed" (shrunk into the button).
+  // We drive a CSS transform transition toward the anchor button's center.
+  const [collapsed, setCollapsed] = useState(false);
+  const preMax = useRef(null);
+  const drag = useRef(null);
+
+  // Persist geometry (debounced via rAF-free simple write; geometry changes are coarse).
+  useEffect(() => {
+    try { localStorage.setItem(CHAT_GEO_KEY, JSON.stringify(geo)); } catch (e) { /* ignore */ }
+  }, [geo]);
+
+  // Restore animation: when the panel opens, start collapsed-into-the-button and
+  // expand out. (Reverse of minimize.) prevOpen guards so it only fires on the
+  // closed -> open edge, not on every re-render.
+  const prevOpen = useRef(open);
+  useEffect(() => {
+    if (open && !prevOpen.current) {
+      setCollapsed(true);
+      const r1 = requestAnimationFrame(() => requestAnimationFrame(() => setCollapsed(false)));
+      prevOpen.current = open;
+      return () => cancelAnimationFrame(r1);
+    }
+    prevOpen.current = open;
+  }, [open]);
+
+  // Esc minimizes (animated), matching the minimize control.
+  const minimize = useCallback(() => {
+    setCollapsed(true);
+    window.setTimeout(() => { setCollapsed(false); onClose(); }, 240);
+  }, [onClose]);
+
   useEffect(() => {
     if (!open) return;
-    const k = (e) => { if (e.key === "Escape") onClose(); };
+    const k = (e) => { if (e.key === "Escape") minimize(); };
     window.addEventListener("keydown", k);
     return () => window.removeEventListener("keydown", k);
-  }, [open, onClose]);
+  }, [open, minimize]);
+
+  // Keep the window on-screen if the viewport shrinks.
+  useEffect(() => {
+    const onResize = () => setGeo((g) => clampChatGeo(g));
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  // Drag by the header.
+  const onDragStart = useCallback((e) => {
+    if (maximized) return;
+    e.preventDefault();
+    const startX = e.clientX, startY = e.clientY;
+    drag.current = { mode: "move", startX, startY, geo };
+    const move = (ev) => {
+      const d = drag.current; if (!d) return;
+      setGeo(clampChatGeo({ ...d.geo, x: d.geo.x + (ev.clientX - d.startX), y: d.geo.y + (ev.clientY - d.startY) }));
+    };
+    const up = () => { drag.current = null; window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  }, [geo, maximized]);
+
+  // Resize from the bottom-right corner.
+  const onResizeStart = useCallback((e) => {
+    if (maximized) return;
+    e.preventDefault(); e.stopPropagation();
+    const startX = e.clientX, startY = e.clientY;
+    const base = geo;
+    const move = (ev) => {
+      setGeo(clampChatGeo({ ...base, w: base.w + (ev.clientX - startX), h: base.h + (ev.clientY - startY) }));
+    };
+    const up = () => { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  }, [geo, maximized]);
+
+  const toggleMax = useCallback(() => {
+    setMaximized((m) => {
+      if (!m) { preMax.current = geo; return true; }
+      if (preMax.current) setGeo(clampChatGeo(preMax.current));
+      return false;
+    });
+  }, [geo]);
+
+  // The maximized frame fills most of the viewport with a margin.
+  const frame = maximized
+    ? { left: 16, top: 64, width: (typeof window !== "undefined" ? window.innerWidth : 1200) - 32, height: (typeof window !== "undefined" ? window.innerHeight : 800) - 80 }
+    : { left: geo.x, top: geo.y, width: geo.w, height: geo.h };
+
+  // Compute the collapse transform toward the "Ask agents" button center.
+  let collapseTransform = "scale(.06)";
+  if (anchorRef && anchorRef.current) {
+    const r = anchorRef.current.getBoundingClientRect();
+    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    const panelCx = frame.left + frame.width / 2, panelCy = frame.top + frame.height / 2;
+    collapseTransform = `translate(${cx - panelCx}px, ${cy - panelCy}px) scale(.05)`;
+  }
+
   return (
-    <>
-      <div className={"scrim" + (open ? " show" : "")} style={{ pointerEvents: open ? "auto" : "none" }} onClick={onClose} />
-      <div className={"chat" + (open ? " show" : "")} data-testid="real-chat-panel" aria-hidden={!open}>
-        <div className="chat-head">
-          <div style={{ flex: 1 }}>
-            <b style={{ fontSize: 14.5, fontWeight: 700, display: "flex", alignItems: "center", gap: 7 }}>Ask your agents</b>
-            <span style={{ fontSize: 11.5, color: "var(--ink-3)" }}>grounded answers with citations</span>
-          </div>
-          <button className="icon-btn" onClick={onClose}><Icon name="x" size={18} /></button>
+    <div
+      data-testid="real-chat-panel"
+      role="dialog"
+      aria-label="Ask your agents"
+      aria-hidden={!open}
+      style={{
+        position: "fixed",
+        left: frame.left, top: frame.top, width: frame.width, height: frame.height,
+        zIndex: 61,
+        background: "var(--bg)",
+        border: "1px solid var(--line)",
+        borderRadius: 16,
+        boxShadow: "0 18px 60px rgba(20,16,12,.22)",
+        display: open || collapsed ? "flex" : "none",
+        flexDirection: "column",
+        overflow: "hidden",
+        transformOrigin: "top right",
+        transform: collapsed ? collapseTransform : "none",
+        opacity: collapsed ? 0 : 1,
+        transition: "transform .24s cubic-bezier(.4,.0,.2,1), opacity .24s ease",
+        willChange: "transform",
+      }}
+    >
+      <div
+        className="chat-head"
+        data-testid="chat-drag-handle"
+        onMouseDown={onDragStart}
+        onDoubleClick={toggleMax}
+        style={{ cursor: maximized ? "default" : "move", userSelect: "none", flexShrink: 0 }}
+      >
+        <div style={{ flex: 1 }}>
+          <b style={{ fontSize: 14.5, fontWeight: 700, display: "flex", alignItems: "center", gap: 7 }}>Ask your agents</b>
+          <span style={{ fontSize: 11.5, color: "var(--ink-3)" }}>grounded answers with citations</span>
         </div>
-        <div className="chat-body" style={{ padding: 0 }}>
-          <ChatDock embedded onOpenKnowledgePage={onOpenKnowledgePage} />
-        </div>
+        <button className="icon-btn" title={maximized ? "Restore size" : "Maximize"} data-testid="chat-maximize"
+          onClick={toggleMax} onMouseDown={(e) => e.stopPropagation()}
+          style={{ fontSize: 15, lineHeight: 1 }}>
+          <span aria-hidden>{maximized ? "⤡" : "⤢"}</span>
+        </button>
+        <button className="icon-btn" title="Minimize" data-testid="chat-minimize"
+          onClick={minimize} onMouseDown={(e) => e.stopPropagation()}>
+          <Icon name="x" size={18} />
+        </button>
       </div>
-    </>
+      <div className="chat-body" style={{ padding: 0, flex: 1, minHeight: 0 }}>
+        <ChatDock embedded onOpenKnowledgePage={onOpenKnowledgePage} />
+      </div>
+      {!maximized && (
+        <div
+          data-testid="chat-resize"
+          onMouseDown={onResizeStart}
+          aria-hidden
+          style={{
+            position: "absolute", right: 2, bottom: 2, width: 16, height: 16, cursor: "nwse-resize",
+            background: "linear-gradient(135deg, transparent 50%, var(--ink-4, #b8b0a4) 50%, var(--ink-4, #b8b0a4) 60%, transparent 60%, transparent 70%, var(--ink-4, #b8b0a4) 70%, var(--ink-4, #b8b0a4) 80%, transparent 80%)",
+            borderBottomRightRadius: 14,
+          }}
+        />
+      )}
+    </div>
   );
 }
 
@@ -199,6 +370,9 @@ function App() {
   const [cmdk, setCmdk] = useState(false);
   const [deal, setDeal] = useState(null);
   const [chat, setChat] = useState(false);
+  // Ref to the "Ask agents" topbar button so the floating chat can animate its
+  // minimize/restore toward the button's on-screen position.
+  const askBtnRef = useRef(null);
   const [mnav, setMnav] = useState(false);
   const [market, setMarket] = useState(false);
   const [intake, setIntake] = useState(false);
@@ -435,7 +609,7 @@ function App() {
             <span className="kbd">⌘K</span>
           </button>
           )}
-          <button className="btn btn-soft" onClick={() => setChat(true)}><Icon name="spark" size={16} /><span>Ask agents</span></button>
+          <button ref={askBtnRef} className="btn btn-soft" onClick={() => setChat((c) => !c)}><Icon name="spark" size={16} /><span>Ask agents</span></button>
           <div style={{ position: "relative" }}>
             {/* The feed is FLStore prototype activity. In real mode there is no
                 notification source yet: no fake unread dot, and the panel says
@@ -708,7 +882,7 @@ function App() {
 
       <SlideOver deal={deal} agents={agents} stages={STAGES} onClose={() => setDeal(null)} />
       {realMode
-        ? <RealChatPanel open={chat} onClose={() => setChat(false)}
+        ? <RealChatPanel open={chat} onClose={() => setChat(false)} anchorRef={askBtnRef}
             onOpenKnowledgePage={(ref) => { setKnowledgePageRef(ref); setChat(false); navTo("knowledge"); }} />
         : <AgentChat open={chat} agents={agents} onClose={() => setChat(false)} />}
       {/* Prototype overlays (palette, onboarding, tour, marketplace, intake)

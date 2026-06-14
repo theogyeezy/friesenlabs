@@ -84,10 +84,19 @@ test("real mode mounts the api-wired surfaces in the shell — no demo data", as
   await expect(page.getByTestId("gl-empty")).toContainText("Inbox zero");
   await expect(page.getByTestId("pending-count")).toContainText("0 pending");
 
-  // Ask agents -> the API-wired chat dock inside the slide-over (panel gets
-  // .show only once opened; the dock itself stays mounted off-screen).
+  // Ask agents -> the API-wired chat dock inside the floating panel (the panel
+  // is display:none until opened; the dock stays mounted so the thread survives).
+  const panel = page.getByTestId("real-chat-panel");
   await page.getByRole("button", { name: "Ask agents" }).click();
-  await expect(page.locator(".chat.show").getByTestId("chat-dock")).toBeVisible({ timeout: 15_000 });
+  await expect(panel.getByTestId("chat-dock")).toBeVisible({ timeout: 15_000 });
+
+  // Minimize shrinks the floating panel back into the button (display:none after
+  // the animation); the dock stays mounted so the thread survives. Re-opening
+  // restores it.
+  await page.getByTestId("chat-minimize").click();
+  await expect(panel).toBeHidden({ timeout: 5_000 });
+  await page.getByRole("button", { name: "Ask agents" }).click();
+  await expect(panel.getByTestId("chat-dock")).toBeVisible({ timeout: 15_000 });
 
   expect(errors, `page errors: ${errors.join("\n")}`).toHaveLength(0);
 });
