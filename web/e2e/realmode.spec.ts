@@ -530,3 +530,53 @@ test("chat recovers an edge-504 turn through /chat/continue — never an error w
 
   expect(errors, `page errors: ${errors.join("\n")}`).toHaveLength(0);
 });
+
+// --- Multi-thread chat history (conversations + rename + New chat) ---------
+test("Ask agents: chat history lists past threads, opening one loads its transcript, New chat resets", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+
+  await page.route("**/views/*", (r) => r.fulfill({ status: 404, json: { detail: "no view" } }));
+  await page.route("**/approvals", (r) => r.fulfill({ json: { approvals: [] } }));
+  await page.route("**/onboarding", (r) => r.fulfill({ json: {
+    tenant_id: "t", steps: { load_data: true, try_chat: true, invite_team: true },
+    dismissed: true, sample_loaded: true } }));
+  await page.route("**/conversations?scope=active*", (r) => r.fulfill({ json: {
+    conversations: [
+      { id: "c-1", title: "Pipeline questions", archived_at: null,
+        created_at: "2026-06-10T00:00:00Z", updated_at: "2026-06-12T00:00:00Z" },
+      { id: "c-2", title: "Renewal risks", archived_at: null,
+        created_at: "2026-06-09T00:00:00Z", updated_at: "2026-06-09T00:00:00Z" },
+    ], count: 2, has_more: false, scope: "active" } }));
+  await page.route("**/conversations/c-1/messages*", (r) => r.fulfill({ json: {
+    conversation_id: "c-1", messages: [
+      { id: "m1", role: "user", content: "what's my pipeline?", citations: [],
+        grounding_status: null, created_at: "2026-06-12T00:00:00Z" },
+      { id: "m2", role: "agent", content: "Your open pipeline is $48k.", citations: [],
+        grounding_status: "grounded", created_at: "2026-06-12T00:00:01Z" },
+    ] } }));
+
+  await page.goto("/");
+  await expect(page.getByTestId("dashboard-view")).toBeVisible({ timeout: 15_000 });
+
+  const panel = page.getByTestId("real-chat-panel");
+  await page.getByRole("button", { name: "Ask agents" }).click();
+  await expect(panel.getByTestId("chat-dock")).toBeVisible({ timeout: 15_000 });
+
+  // Open the history list -> the two past threads appear.
+  await panel.getByTestId("chat-history-toggle").click();
+  await expect(panel.getByTestId("chat-history-item")).toHaveCount(2, { timeout: 15_000 });
+  await expect(panel.getByTestId("chat-history")).toContainText("Pipeline questions");
+
+  // Opening a thread loads its persisted transcript into the dock.
+  await panel.getByTestId("chat-history-item").first().click();
+  await expect(panel.getByTestId("chat-body")).toContainText("Your open pipeline is $48k.");
+  await expect(panel.getByTestId("chat-title")).toHaveText("Pipeline questions");
+
+  // New chat resets to the greeting and clears the active title.
+  await panel.getByTestId("chat-new").click();
+  await expect(panel.getByTestId("chat-title")).toHaveText("New chat");
+  await expect(panel.getByTestId("chat-body")).toContainText("Ask anything about your pipeline");
+
+  expect(errors, `page errors: ${errors.join("\n")}`).toHaveLength(0);
+});

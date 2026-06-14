@@ -65,21 +65,26 @@ class _Entry:
 
 
 class CachedConversation:
-    """Per-tenant send() proxy over the cache: serializes turns on the tenant's ONE MA session
-    and transparently re-leases after eviction or a terminated session."""
+    """send() proxy over the cache: serializes turns on this (tenant, conversation) thread's MA
+    session and transparently re-leases after eviction or a terminated session. conversation_id is
+    None for the legacy tenant-level thread, or a specific thread's id for multi-conversation chat —
+    distinct conversations of one tenant get distinct cache slots, sessions, and turn locks."""
 
-    def __init__(self, cache: "TenantConversationCache", tenant_id: str):
+    def __init__(self, cache: "TenantConversationCache", tenant_id: str,
+                 conversation_id: str | None = None):
         self._cache = cache
         self._tenant_id = tenant_id
+        self._conversation_id = conversation_id
 
     def send(self, message: str, **kwargs: Any):
-        # Per-tenant serialization: two concurrent turns on ONE MA session would interleave two
-        # stream-drains; chat turns are seconds-long and the lock is PER TENANT — it never
-        # serializes other tenants (hygiene contract #2). The lease below may rebuild after an
-        # eviction; that network I/O runs under THIS tenant's turn lock only, never the cache's
+        # Per-THREAD serialization: two concurrent turns on ONE MA session would interleave two
+        # stream-drains; the lock is per (tenant, conversation) — it never serializes other tenants
+        # or other conversations (hygiene contract #2). The lease below may rebuild after an
+        # eviction; that network I/O runs under THIS thread's turn lock only, never the cache's
         # registry mutex (hygiene contract #1).
-        with self._cache.turn_lock(self._tenant_id):
-            convo = self._cache.lease(self._tenant_id)
+        tid, cid = self._tenant_id, self._conversation_id
+        with self._cache.turn_lock(tid, cid):
+            convo = self._cache.lease(tid, cid)
             if convo is None:
                 _raise_unavailable()
             try:
@@ -90,16 +95,17 @@ class CachedConversation:
                 # The cached session died (irreversible) — clear the PERSISTED id first so the
                 # rebuild starts a fresh session instead of resuming the corpse, then rebuild.
                 getattr(convo, "forget_session", lambda: None)()
-                convo = self._cache.rebuild(self._tenant_id, dead=convo)
+                convo = self._cache.rebuild(tid, cid, dead=convo)
                 return convo.send(message, **kwargs)
 
     def continue_turn(self):
-        """Pass-through for the async turn contract (POST /chat/continue) — same per-tenant
+        """Pass-through for the async turn contract (POST /chat/continue) — same per-thread
         turn lock as send() so a continue never interleaves with another drain on the ONE MA
         session. A terminated cached session rebuilds fresh; the fresh session has no turn in
         flight, so the continue settles empty and the client simply stops."""
-        with self._cache.turn_lock(self._tenant_id):
-            convo = self._cache.lease(self._tenant_id)
+        tid, cid = self._tenant_id, self._conversation_id
+        with self._cache.turn_lock(tid, cid):
+            convo = self._cache.lease(tid, cid)
             if convo is None:
                 _raise_unavailable()
             try:
@@ -108,7 +114,7 @@ class CachedConversation:
                 if "terminated" not in str(e):
                     raise
                 getattr(convo, "forget_session", lambda: None)()
-                convo = self._cache.rebuild(self._tenant_id, dead=convo)
+                convo = self._cache.rebuild(tid, cid, dead=convo)
                 return convo.continue_turn()
 
 
@@ -153,72 +159,89 @@ class TenantConversationCache:
         self._turn_locks: dict[str, threading.Lock] = {}
 
     # ------------------------------------------------------------------ public surface
-    def __call__(self, tenant_id: str):
-        """The conversation-factory surface the /chat route calls: returns the per-tenant proxy,
-        or None when the tenant is not provisioned (the route's graceful 503)."""
-        if self.lease(tenant_id) is None:
-            return None  # not provisioned — never cached
-        return CachedConversation(self, tenant_id)
+    @staticmethod
+    def _key(tenant_id: str, conversation_id: str | None) -> str:
+        # The cache/lock dict key. conversation_id=None reuses the tenant-only key, so existing
+        # tenant-level sessions are byte-for-byte unaffected by this feature (back-compat).
+        return tenant_id if conversation_id is None else f"{tenant_id}\x00{conversation_id}"
 
-    def turn_lock(self, tenant_id: str) -> threading.Lock:
-        """This tenant's turn-serialization lock (created on first use, pruned with eviction)."""
+    def _invoke_build(self, tenant_id: str, conversation_id: str | None):
+        # Arity-safe: per-conversation factories take (tenant_id, conversation_id); a legacy/test
+        # 1-arg factory takes just tenant_id (conversation_id then has no effect — tenant session).
+        try:
+            return self._build(tenant_id, conversation_id)
+        except TypeError:
+            return self._build(tenant_id)
+
+    def __call__(self, tenant_id: str, conversation_id: str | None = None):
+        """The conversation-factory surface the /chat route calls: returns the per-thread proxy,
+        or None when the tenant is not provisioned (the route's graceful 503)."""
+        if self.lease(tenant_id, conversation_id) is None:
+            return None  # not provisioned — never cached
+        return CachedConversation(self, tenant_id, conversation_id)
+
+    def turn_lock(self, tenant_id: str, conversation_id: str | None = None) -> threading.Lock:
+        """This thread's turn-serialization lock (created on first use, pruned with eviction)."""
+        key = self._key(tenant_id, conversation_id)
         with self._mutex:
-            lock = self._turn_locks.get(tenant_id)
+            lock = self._turn_locks.get(key)
             if lock is None:
-                lock = self._turn_locks[tenant_id] = threading.Lock()
+                lock = self._turn_locks[key] = threading.Lock()
             return lock
 
-    def lease(self, tenant_id: str):
-        """The tenant's live Conversation: cache hit refreshes LRU/TTL; miss or expiry builds —
+    def lease(self, tenant_id: str, conversation_id: str | None = None):
+        """The thread's live Conversation: cache hit refreshes LRU/TTL; miss or expiry builds —
         UNLOCKED (network I/O), then re-validates under the mutex (a racing build loses)."""
+        key = self._key(tenant_id, conversation_id)
         now = self._clock()
         with self._mutex:
-            entry = self._entries.get(tenant_id)
+            entry = self._entries.get(key)
             if entry is not None and self._fresh(entry, now):
                 entry.last_used = now
-                self._entries.move_to_end(tenant_id)
+                self._entries.move_to_end(key)
                 return entry.convo
             if entry is not None:
-                del self._entries[tenant_id]  # expired — drop before rebuilding
-        convo = self._build(tenant_id)  # NETWORK I/O — no lock held (hygiene contract #1)
+                del self._entries[key]  # expired — drop before rebuilding
+        convo = self._invoke_build(tenant_id, conversation_id)  # NETWORK I/O — no lock (contract #1)
         if convo is None:
             return None
-        return self._adopt(tenant_id, convo)
+        return self._adopt(key, convo)
 
-    def rebuild(self, tenant_id: str, *, dead: Any = None):
+    def rebuild(self, tenant_id: str, conversation_id: str | None = None, *, dead: Any = None):
         """Replace a dead conversation with a fresh one (terminated-session recovery). If another
         thread already replaced it (the entry is fresh and is not the dead object), reuse theirs
         instead of building a second session."""
+        key = self._key(tenant_id, conversation_id)
         now = self._clock()
         with self._mutex:
-            entry = self._entries.get(tenant_id)
+            entry = self._entries.get(key)
             if entry is not None:
                 if entry.convo is not dead and self._fresh(entry, now):
                     entry.last_used = now
-                    self._entries.move_to_end(tenant_id)
+                    self._entries.move_to_end(key)
                     return entry.convo  # someone else already rebuilt — reuse
-                del self._entries[tenant_id]
-        convo = self._build(tenant_id)  # NETWORK I/O — no lock held
+                del self._entries[key]
+        convo = self._invoke_build(tenant_id, conversation_id)  # NETWORK I/O — no lock held
         if convo is None:
             _raise_unavailable()
-        return self._adopt(tenant_id, convo)
+        return self._adopt(key, convo)
 
     # ------------------------------------------------------------------ internals
     def _fresh(self, entry: _Entry, now: float) -> bool:
         return (now - entry.last_used) < self._ttl
 
-    def _adopt(self, tenant_id: str, convo: Any):
+    def _adopt(self, key: str, convo: Any):
         """RE-VALIDATE after an unlocked build: if a concurrent build won the race, use the
         winner's entry and drop ours; otherwise insert and evict overflow/expiry."""
         now = self._clock()
         with self._mutex:
-            entry = self._entries.get(tenant_id)
+            entry = self._entries.get(key)
             if entry is not None and self._fresh(entry, now):
                 entry.last_used = now
-                self._entries.move_to_end(tenant_id)
+                self._entries.move_to_end(key)
                 return entry.convo  # lost the race — the winner's conversation serves
-            self._entries[tenant_id] = _Entry(convo, now)
-            self._entries.move_to_end(tenant_id)
+            self._entries[key] = _Entry(convo, now)
+            self._entries.move_to_end(key)
             self._evict_locked(now)
             return convo
 
