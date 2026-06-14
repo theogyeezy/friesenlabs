@@ -24,6 +24,18 @@ def test_model_tiering():
 
 
 @pytest.mark.unit
+def test_email_drafters_are_sonnet_not_haiku():
+    # Live finding (2026-06-14 prod verify): echo on HAIKU would not AUTHOR a full email body — it
+    # repeatedly called draft_email with only a goal/subject and ignored the tool's clear
+    # "you must write the body" error. Drafting a customer email is workhorse authoring, not a
+    # Haiku classify/extract task, so both email drafters (nadia + echo) run on Sonnet.
+    by_name = {s.name: s for s in roster()}
+    for name in ("nadia", "echo"):
+        assert by_name[name].model == SONNET, f"{name} must be Sonnet to author email bodies"
+        assert "draft_email" in by_name[name].tools
+
+
+@pytest.mark.unit
 def test_roster_within_limit():
     assert len(roster()) <= MAX_AGENTS_PER_ROSTER
 
