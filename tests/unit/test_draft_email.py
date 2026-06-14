@@ -117,6 +117,44 @@ def test_draft_email_never_emits_the_audit_placeholder():
 
 
 @pytest.mark.unit
+def test_draft_email_without_a_body_returns_a_clear_error_never_crashes():
+    # Live finding (2026-06-14 prod verify): echo (Haiku) called draft_email with {to, subject,
+    # goal} and NO body, expecting the tool to write the email. _execute then raised a TypeError
+    # ("missing required argument 'body'") which the worker surfaced as a cryptic result and the
+    # model gave up — nothing staged. The tool must FAIL CLOSED with an actionable message the model
+    # can recover from: no crash, no proposal queued, a clear instruction to author + pass `body`.
+    gl = InMemoryGreenlight()
+    out = DraftEmail().invoke(
+        ToolContext(tenant_id="t-1", agent="echo", greenlight=gl),
+        to="x@y.com", subject="Following up",  # NO body
+    )
+    assert out["status"] == "input_error"
+    assert "body" in out["error"].lower()
+    assert gl.queue == []  # nothing was staged — fail closed, no half-baked approval
+
+
+@pytest.mark.unit
+def test_draft_email_with_blank_body_is_also_a_clear_error():
+    gl = InMemoryGreenlight()
+    for blank in ("", "   ", "\n\n"):
+        out = DraftEmail().invoke(
+            ToolContext(tenant_id="t-1", agent="nadia", greenlight=gl),
+            to="x@y.com", body=blank,
+        )
+        assert out["status"] == "input_error", blank
+    assert gl.queue == []
+
+
+@pytest.mark.unit
+def test_draft_email_schema_does_not_advertise_a_goal_escape_hatch():
+    # `goal` invited the model to pass intent INSTEAD of authoring the body (the live failure).
+    # The model-facing schema exposes only to/subject/body, so the only place for content is `body`.
+    props = DraftEmail.input_schema["properties"]
+    assert set(props) <= {"to", "subject", "body"}
+    assert "goal" not in props
+
+
+@pytest.mark.unit
 def test_draft_email_without_a_greenlight_is_pending_not_executed():
     # No queue wired (the worker boots without a DSN): still NEVER a silent send — surfaces
     # pending_approval/unconfigured, never status ok.
