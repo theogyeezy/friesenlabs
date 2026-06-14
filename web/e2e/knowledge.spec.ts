@@ -850,7 +850,7 @@ test("in the shell, a citation opens the page WITHOUT a reload (soft route switc
   await expect(page.getByTestId("dashboard-empty")).toBeVisible({ timeout: 15_000 });
 
   await page.getByRole("button", { name: "Ask agents" }).click();
-  const dock = page.locator(".chat.show").getByTestId("chat-dock");
+  const dock = page.getByTestId("real-chat-panel").getByTestId("chat-dock");
   await expect(dock).toBeVisible({ timeout: 15_000 });
   await dock.getByTestId("chat-input").fill("What's our discount policy?");
   await dock.getByTestId("chat-send").click();

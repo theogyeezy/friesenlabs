@@ -311,6 +311,10 @@ GHL_API_BASE = "https://services.leadconnectorhq.com"
 # GHL API v2 requires a pinned Version header on every call.
 # "2021-07-28" is the stable canonical value documented for the v2 API.
 GHL_API_VERSION = "2021-07-28"
+# GHL fronts the API with Cloudflare, which BANS urllib's default "Python-urllib/x.y" User-Agent
+# (Cloudflare error 1010 "browser_signature_banned" → 403 on EVERY call → sync fails). A named,
+# non-default UA clears it. LIVE-CONFIRMED 2026-06-13 (default UA → 403 1010; this UA → 200).
+GHL_USER_AGENT = "Uplift-Connector/1.0 (+https://friesenlabs.com)"
 
 
 class GoHighLevelRestClient:
@@ -359,6 +363,7 @@ class GoHighLevelRestClient:
                 "Authorization": f"Bearer {self._token}",
                 "Version": GHL_API_VERSION,
                 "Accept": "application/json",
+                "User-Agent": GHL_USER_AGENT,  # avoid Cloudflare 1010 ban (see GHL_USER_AGENT note)
             },
             method="GET",
         )

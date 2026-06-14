@@ -280,3 +280,88 @@ def build_sync_connector(
         spec.client_arg: client,
     }
     return spec.connector_cls(tenant_id, **kwargs)
+
+
+def build_hubspot_full_connector(
+    tenant_id: str,
+    *,
+    secrets=None,
+    dsn: str | None = None,
+    conn_factory=None,
+    client: Any = None,
+    secret_writer=None,
+    token: str | None = None,
+):
+    """Build a ready-to-run HubSpot FULL-extract connector for one tenant.
+
+    ADDITIVE: this is a SEPARATE path from `build_sync_connector` (the typed contacts/companies/
+    deals + vector sync) — it lands the full-fidelity `crm_records` and never touches the existing
+    flow. The tenant's OAuth token is resolved by REUSING `HubSpotConnector.authenticate()` (same
+    vault read + refresh + write-back — never duplicated); pass `token` to skip auth (the pasted-key
+    path / tests). Exactly one of `dsn`/`conn_factory` feeds the sink (PgCrmRecordsSink validates).
+    """
+    from ingest.connectors.hubspot import HubSpotConnector  # noqa: PLC0415 — avoid import cycle
+    from ingest.connectors.hubspot_full import (  # noqa: PLC0415
+        HubSpotFullClient,
+        HubSpotFullConnector,
+    )
+    from ingest.sinks import PgCrmRecordsSink  # noqa: PLC0415 — psycopg2 only here
+
+    full_client = client if client is not None else HubSpotFullClient()
+    if token is not None:
+        full_client.set_token(token)
+    else:
+        # The sinks are unused during authenticate(); it only resolves + set_token's the client.
+        HubSpotConnector(
+            tenant_id, client=full_client, secrets=secrets,
+            raw_sink=None, structured_sink=None, secret_writer=secret_writer,
+        ).authenticate()
+    sink = PgCrmRecordsSink(dsn=dsn, conn_factory=conn_factory)
+    return HubSpotFullConnector(full_client, sink)
+
+
+def build_gohighlevel_full_connector(
+    tenant_id: str,
+    *,
+    secrets=None,
+    dsn: str | None = None,
+    conn_factory=None,
+    client: Any = None,
+    secret_writer=None,
+    token: str | None = None,
+    location_id: str | None = None,
+):
+    """Build a ready-to-run GoHighLevel FULL-extract connector for one tenant.
+
+    ADDITIVE: a SEPARATE path from `build_sync_connector` (the typed contacts/opportunities + vector
+    sync) — it lands the source-agnostic `crm_records` (`source='gohighlevel'`) and never touches the
+    existing flow. The tenant's OAuth token AND location_id are resolved by REUSING
+    `GoHighLevelConnector.authenticate()` (same vault read + refresh + write-back, never duplicated) —
+    it set_token's AND set_location's the full client (both duck-typed). Pass `token` (+ optional
+    `location_id`) to skip auth (the pasted-key path / tests). Exactly one of `dsn`/`conn_factory`
+    feeds the sink (PgCrmRecordsSink validates).
+    """
+    from ingest.connectors.gohighlevel import GoHighLevelConnector  # noqa: PLC0415 — avoid import cycle
+    from ingest.connectors.gohighlevel_full import (  # noqa: PLC0415
+        GoHighLevelFullClient,
+        GoHighLevelFullConnector,
+    )
+    from ingest.sinks import PgCrmRecordsSink  # noqa: PLC0415 — psycopg2 only here
+
+    full_client = client if client is not None else GoHighLevelFullClient()
+    if token is not None:
+        full_client.set_token(token)
+        if location_id is not None:
+            full_client.set_location(location_id)
+    else:
+        # The sinks are unused during authenticate(); it only resolves the token + location_id and
+        # set_token's/set_location's the client.
+        GoHighLevelConnector(
+            tenant_id, client=full_client, secrets=secrets,
+            raw_sink=None, structured_sink=None, secret_writer=secret_writer,
+        ).authenticate()
+    # source="gohighlevel" is REQUIRED: PgCrmRecordsSink defaults to "hubspot", and crm_records'
+    # PK is (tenant_id, source, object_type, source_ref_id) — without this, GHL rows land mislabeled
+    # as HubSpot and collide with real HubSpot rows.
+    sink = PgCrmRecordsSink(dsn=dsn, conn_factory=conn_factory, source="gohighlevel")
+    return GoHighLevelFullConnector(full_client, sink)
