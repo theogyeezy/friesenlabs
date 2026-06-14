@@ -242,10 +242,12 @@ function RealChatPanel({ open, onClose, onOpenKnowledgePage, anchorRef }) {
         position: "fixed",
         left: frame.left, top: frame.top, width: frame.width, height: frame.height,
         zIndex: 61,
-        background: "var(--bg)",
+        // Slightly darker than the page (--panel vs --bg) + a touch stronger
+        // border/shadow so the floating panel reads as a distinct surface.
+        background: "var(--panel)",
         border: "1px solid var(--line)",
         borderRadius: 16,
-        boxShadow: "0 18px 60px rgba(20,16,12,.22)",
+        boxShadow: "0 22px 64px rgba(20,16,12,.28)",
         display: open || collapsed ? "flex" : "none",
         flexDirection: "column",
         overflow: "hidden",
