@@ -35,38 +35,62 @@ def _ensure_opt_out(body: str) -> str:
 class DraftEmail(Tool):
     name = "draft_email"
     description = (
-        "Draft an email and stage it for human approval in the Greenlight queue (it is NEVER sent "
-        "automatically — a person reviews, edits, and approves it before it goes out). YOU author "
-        "the complete, personalized body and pass it in `body`; this tool stages it verbatim and "
-        "never writes content for you. Use this whenever the user wants an email drafted, queued, "
-        "or sent."
+        "Stage an email for human approval in the Greenlight queue (it is NEVER sent automatically "
+        "— a person reviews, edits, and approves it first). YOU write the COMPLETE email yourself — "
+        "greeting through sign-off — and pass that full text in `body`. This tool stages your text "
+        "verbatim; it does NOT write the email for you, so `body` is required every time. Use it "
+        "whenever the user wants an email drafted, queued, or sent."
     )
     channel = "email"  # so the compliance floor applies CAN-SPAM to the staged draft
     # Agent-facing name is draft_email; the queued action is the canonical, gated send_email.
     proposal_action = "send_email"
+    # Model-facing schema: ONLY to/subject/body. There is deliberately no `goal`/intent field — it
+    # invited the model to describe what it wanted INSTEAD of authoring the email (the 2026-06-14
+    # live failure: echo passed a goal and no body), so the only place for content is `body`.
     input_schema = {
         "type": "object",
         "properties": {
-            "to": {"type": "string"},
-            "subject": {"type": "string"},
+            "to": {"type": "string", "description": "Recipient email address."},
+            "subject": {"type": "string", "description": "The email subject line you wrote."},
             "body": {
                 "type": "string",
-                "description": "The FULL email body, written by you — greeting to sign-off.",
+                "description": (
+                    "REQUIRED. The FULL email you wrote — greeting to sign-off. You author this "
+                    "text; the tool will not generate it. Never call this tool without it."
+                ),
             },
-            "goal": {"type": "string", "description": "What this email is trying to achieve."},
         },
         "required": ["to", "body"],
     }
     policy = Policy.ALWAYS_ASK  # staging an email is a customer-facing action → human approval
 
-    def _execute(self, ctx: ToolContext, *, to: str, body: str, subject: str = "",
+    def invoke(self, ctx: ToolContext, **kwargs) -> dict:
+        # FAIL CLOSED on a missing body. The Managed-Agents framework does not hard-enforce the
+        # required schema field, so a model can (and did, 2026-06-14) call draft_email with only a
+        # subject/goal and no body. Returning a clear, actionable error here — rather than letting
+        # _execute raise a cryptic TypeError the model can't recover from — steers the model to
+        # re-call with the email it authored, and never queues a half-baked approval.
+        body = kwargs.get("body")
+        if not (isinstance(body, str) and body.strip()):
+            return {
+                "status": "input_error",
+                "error": (
+                    "draft_email requires the full email body. Write the complete email yourself "
+                    "(greeting through sign-off) and pass it as `body` — this tool never writes the "
+                    "content for you. Do not call it with only a `to`/`subject`."
+                ),
+            }
+        return super().invoke(ctx, **kwargs)
+
+    def _execute(self, ctx: ToolContext, *, to: str, body: str = "", subject: str = "",
                  goal: str = "") -> dict:
-        # The body is MODEL-AUTHORED (the calling agent IS the model) and carried verbatim into the
+        # Reached only with a non-empty body (invoke guards it; `body` still defaults so a direct
+        # call can never TypeError). The body is MODEL-AUTHORED and carried verbatim into the
         # proposal — never a server-side placeholder (audit P0-1), never a nested model call (the
-        # worker carries no Anthropic key by design; shared/config.py key posture). The opt-out
-        # footer is appended only when missing, so the staged email is CAN-SPAM compliant by
-        # construction. Build the canonical send_email PROPOSAL only — the base class routes it to
-        # Greenlight and the real send never runs until approval (record_only applier).
+        # worker carries no Anthropic key by design). The opt-out footer is appended only when
+        # missing, so the staged email is CAN-SPAM compliant by construction. Build the canonical
+        # send_email PROPOSAL only — the base class routes it to Greenlight and the real send never
+        # runs until approval (record_only applier).
         return {
             "action": "send_email",
             "reasoning": f"Send email to {to}" + (f": {goal}" if goal else ""),
