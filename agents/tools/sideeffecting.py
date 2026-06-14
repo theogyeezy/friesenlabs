@@ -75,9 +75,11 @@ class DraftEmail(Tool):
             return {
                 "status": "input_error",
                 "error": (
-                    "draft_email requires the full email body. Write the complete email yourself "
-                    "(greeting through sign-off) and pass it as `body` — this tool never writes the "
-                    "content for you. Do not call it with only a `to`/`subject`."
+                    "draft_email was NOT staged: the `body` is missing. Nothing has been queued. "
+                    "Write the complete email yourself now — greeting through sign-off — and "
+                    "immediately re-call draft_email with that full text in the `body` field. This "
+                    "tool never writes the content for you; do not report the email as queued until "
+                    "a call with a real `body` succeeds."
                 ),
             }
         return super().invoke(ctx, **kwargs)
