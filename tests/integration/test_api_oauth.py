@@ -205,3 +205,33 @@ def test_callback_exchange_failure_redirects_with_error(monkeypatch):
     assert r.status_code == 302
     assert "error=exchange_failed" in r.headers["location"]
     assert writer.put == {}  # nothing stored on a failed exchange
+
+
+# --------------------------------------------------------------------------- #
+# GET /integrations advertises oauth_available so the web leads with the
+# one-click "Connect with {Provider}" button instead of paste-a-key.
+# --------------------------------------------------------------------------- #
+@pytest.mark.integration
+def test_list_advertises_oauth_available_per_provider():
+    client = _client(_deps())
+    body = client.get("/integrations", headers=H).json()
+    by_name = {i["name"]: i for i in body["integrations"]}
+    # Every connector with a registered OAuth provider AND a ready runtime
+    # advertises the login path — including Google (the case that was rendering
+    # only a paste-a-key field).
+    for name in ("google", "hubspot", "gohighlevel", "microsoft", "salesforce", "pipedrive"):
+        assert by_name[name]["oauth_available"] is True, name
+    # stripe is a known integration with NO OAuth provider -> never advertised.
+    assert by_name["stripe"]["oauth_available"] is False
+    # csv is file-kind -> never an OAuth login.
+    if "csv" in by_name:
+        assert by_name["csv"]["oauth_available"] is False
+
+
+@pytest.mark.integration
+def test_list_oauth_available_false_when_unconfigured():
+    # No state secret / redirect base -> the runtime isn't ready -> no connector
+    # advertises OAuth (the web falls back to its own known-capable set).
+    client = _client(_deps(configured=False))
+    body = client.get("/integrations", headers=H).json()
+    assert all(i["oauth_available"] is False for i in body["integrations"])
