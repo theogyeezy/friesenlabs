@@ -459,7 +459,7 @@ function App() {
 
   const routeMeta = {
     dashboard: { h1: "Command Center", p: "Your agents, your pipeline, your morning at a glance" },
-    crm:       { h1: "Uplift", p: "Deals worked autonomously, with you in the loop" },
+    crm:       { h1: "Pipeline", p: "Deals worked autonomously, with you in the loop" },
     contacts:  { h1: "Contacts", p: "Everyone your business talks to" },
     tasks:     { h1: "Tasks", p: "Follow-ups and reminders across your CRM" },
     billing:   { h1: "Billing", p: "Invoices, payments and revenue" },
