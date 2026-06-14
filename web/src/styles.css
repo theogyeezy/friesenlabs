@@ -17,7 +17,7 @@
   --amber-soft: oklch(0.95 0.05 75);
   --green: oklch(0.62 0.13 152);
   --green-soft: oklch(0.95 0.045 152);
-  --rose: oklch(0.62 0.15 18);
+  --rose: oklch(0.55 0.16 18);
   --rose-soft: oklch(0.95 0.04 18);
   --sky: oklch(0.66 0.12 235);
 
@@ -28,7 +28,9 @@
   --panel: oklch(0.965 0.008 74);
   --ink: oklch(0.27 0.018 60);
   --ink-2: oklch(0.44 0.016 62);
-  --ink-3: oklch(0.6 0.014 64);
+  /* --ink-3 darkened oklch 0.6 -> 0.52 for WCAG AA: muted text was 3.78:1 on the cream surface
+     (axe a11y gate), now clears the 4.5:1 minimum while staying lighter than --ink-2. */
+  --ink-3: oklch(0.52 0.014 64);
   --ink-4: oklch(0.72 0.012 66);
   --line: oklch(0.91 0.008 72);
   --line-2: oklch(0.94 0.006 74);

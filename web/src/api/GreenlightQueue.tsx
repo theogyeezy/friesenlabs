@@ -352,6 +352,7 @@ export function GreenlightQueue({ client }: GreenlightQueueProps) {
                 </div>
                 <textarea
                   data-testid="approval-draft"
+                  aria-label="Editable draft of the proposed action"
                   value={drafts[a.id] ?? ""}
                   disabled={busy[a.id]}
                   onChange={(e) => setDrafts((d) => ({ ...d, [a.id]: e.target.value }))}
@@ -391,6 +392,7 @@ export function GreenlightQueue({ client }: GreenlightQueueProps) {
               <input
                 data-testid="deny-reason"
                 type="text"
+                aria-label="Reason for denying (optional)"
                 placeholder="Reason (optional — helps the agent learn)"
                 value={denyReasons[a.id] ?? ""}
                 disabled={busy[a.id]}

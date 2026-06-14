@@ -189,10 +189,20 @@ not left implicit.
 ## How we build
 - **Dependency order, not feature order.** Phase 0 → 12. Don't start a phase whose inputs
   don't exist. The Build Guide (`docs/`, local-only) is the source of truth for order + commands.
-- **Test every step.** A unit isn't done until its applicable levels pass: unit · integration
-  (`tests/integration/`) · smoke (`scripts/smoke/`) · Playwright e2e (`web/e2e/`, UI only) ·
-  multi-tenant isolation (`scripts/isolation_test.py`, after any data/agent/auth change). Plus
-  basics: `terraform validate/fmt`, `python -c import`, `npm run build`.
+- **Test every step — the trophy. `TESTING.md` is the source of truth for layers, commands, and
+  WHICH to run for a given change.** A unit isn't done until its applicable levels pass:
+  - **static** — `web` ESLint (`npm run lint`) + `tsc` (`npm run typecheck`); `python -c import`.
+  - **unit + component** — Vitest + Testing Library for `web/src` (`npm run test:unit`, the bulk of
+    UI logic); pytest for the backend.
+  - **integration** — `tests/integration/` + the real-Postgres multi-tenant isolation gate
+    (`scripts/isolation_test.py`, after any data/agent/auth change).
+  - **e2e + a11y** — Playwright real-Chromium flows (`web/e2e/`) including the axe accessibility
+    spec; both run in CI.
+  - **opt-in** — visual regression (`npm run test:visual`, CI-generated baselines) and the
+    post-deploy production smoke (`PROD_SMOKE_URL=… npm run test:smoke`, the live-site check
+    mock e2e can't do).
+  - basics: `terraform validate/fmt`, `npm run build`.
+  Don't claim a UI works off backend tests alone — run the component test and the screen's e2e spec.
 - **Review every feature** (self + cross) and record the outcome in `BUILD_STATUS.md`.
 
 ## Hard constraints (do not violate)

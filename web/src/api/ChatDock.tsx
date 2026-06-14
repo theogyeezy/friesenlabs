@@ -76,7 +76,7 @@ interface Message {
 /** A turn's `pending_approvals` carries TWO kinds of entry: routed items the worker actually staged
  * (they carry a `tool_name`) and async-settle markers (`{reason: ...}`, no tool_name). Count only
  * the real queued items — the markers are plumbing, never user-facing. */
-function routedApprovalCount(pending: unknown[] | undefined, seenIds: Set<string>): number {
+export function routedApprovalCount(pending: unknown[] | undefined, seenIds: Set<string>): number {
   if (!Array.isArray(pending)) return 0;
   let n = 0;
   for (const raw of pending) {
