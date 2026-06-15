@@ -90,15 +90,22 @@ What remains is **owner-gated** (infra flips/seeding — see P0/P1 below), **web
   conversation factory re-provisions a fresh roster + coordinator and starts a FRESH session
   (the old one is server-side pinned to the old coordinator) whenever the stamp is stale — each
   tenant self-heals on its next chat after a deploy, per-tenant locked, with a failure backoff.
-  Remaining follow-ups (orphan-cost, not correctness — B1 makes the upgrade land even under a race):
-  - **Orphan agent GC** — every upgrade (and every mid-provision failure) leaves the old/partial
-    agents in the shared `UPLIFT_ENV_ID` env; over many deploys × tenants they accumulate (MA has a
-    per-env agent cap). Needs a reaper (delete agents not referenced by any tenant's current
-    coordinator). No GC anywhere in the repo yet.
-  - **Cross-process upgrade claim** — the per-tenant lock is per-process; two api Fargate tasks can
-    both upgrade the same tenant at deploy time (last-writer-wins on the store + one orphan roster
-    each). A Pg advisory lock / compare-and-set claim before creating agents would make it
-    exactly-once. (Session correctness already holds via B1 regardless.)
+  Follow-ups (orphan-cost, not correctness — B1 makes the upgrade land even under a race) — **DONE**:
+  - [x] **Orphan agent GC** **DONE 2026-06-14 (#361/#362/#363, verified live):** every supersession
+    records the retired roster in the RLS-EXEMPT `retired_rosters` ledger (a cross-tenant "which
+    coordinators are live?" scan is impossible — no Aurora role bypasses the FORCE'd tenant policy —
+    and unsafe); `scripts/ops/reap_orphan_agents.py` + the weekly `reap.yml` archive those MA agents
+    after a grace window and mark the row reaped. Safe by construction (only system-recorded
+    superseded coordinators; unique specialist ids; grace window; coordinator kept as the anchor on a
+    partial failure; WIN-case rows deferred when MA can't be listed). Verified live: the pre-existing
+    demo orphan (coordinator + 7 specialists) reaped, demo's current coordinator untouched, active
+    agents 36→28. Caught two beta-shape bugs live en route (`agents.list` returns agent reference
+    objects; MA **archives**, has no hard delete).
+  - [x] **Cross-process upgrade claim** **DONE 2026-06-14 (#361):** `upgrade_roster` mints the fresh
+    roster then a compare-and-set (`upsert_coordinator_if_version`, NULL-safe `IS NOT DISTINCT FROM`)
+    stamps the row only if roster_version is still what it read — exactly one of two concurrent api
+    tasks wins, the row never flip-flops, the loser serves the winner and records its own orphan for
+    the reaper. (Session correctness already held via B1.)
 - [ ] **One shared MA session per tenant — concurrent turns interfere** _(live matrix finding
   2026-06-12, sev medium)_: two browser tabs (or two users) of the same tenant interleave
   `user.message`s into the SAME coordinator session. Turns serialize on the tenant turn lock
