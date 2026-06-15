@@ -350,12 +350,35 @@ def test_managed_list_agents_normalizes_coordinator_topology():
 
 
 @pytest.mark.unit
-def test_managed_delete_agent_calls_sdk_with_beta_header():
+def test_managed_delete_agent_archives_via_sdk_with_beta_header():
+    # MA has no hard delete — the reaper "removes" an agent by ARCHIVING it (confirmed live
+    # 2026-06-15: client.beta.agents exposes archive, not delete).
     r = _managed()
     r.delete_agent("agent_xyz")
-    call = r._client.beta.agents.delete.call_args
+    call = r._client.beta.agents.archive.call_args
     assert call.args == ("agent_xyz",)
     assert call.kwargs["extra_headers"]["anthropic-beta"] == MA_BETA_HEADER
+
+
+@pytest.mark.unit
+def test_managed_delete_agent_treats_404_as_already_reaped():
+    # A re-run after a partial failure must be idempotent: archiving an already-gone agent 404s,
+    # which is success (already reaped), not a failure the reaper should retry forever.
+    import anthropic
+    r = _managed()
+    r._client.beta.agents.archive.side_effect = anthropic.NotFoundError(
+        "missing", response=mock.MagicMock(status_code=404), body=None)
+    r.delete_agent("agent_gone")          # must NOT raise
+
+
+@pytest.mark.unit
+def test_managed_delete_agent_reraises_non_404_errors():
+    import anthropic
+    r = _managed()
+    r._client.beta.agents.archive.side_effect = anthropic.APIError(
+        "boom", request=mock.MagicMock(), body=None)
+    with pytest.raises(anthropic.APIError):
+        r.delete_agent("agent_x")
 
 
 @pytest.mark.unit
