@@ -74,6 +74,19 @@ def _is_stream_drop(exc: BaseException) -> bool:
         return False
     return isinstance(exc, APIConnectionError)
 
+
+def _is_not_found(exc: BaseException) -> bool:
+    """True for a 404 / not-found from the Anthropic SDK — used by the reaper's archive so an
+    already-gone agent reads as success (idempotent re-run), not a retryable failure."""
+    try:
+        from anthropic import NotFoundError  # noqa: PLC0415 — lazy (SDK may be absent in tests)
+        if isinstance(exc, NotFoundError):
+            return True
+    except Exception:  # noqa: BLE001 — SDK absent: fall back to the status code
+        pass
+    return getattr(exc, "status_code", None) == 404
+
+
 # The MA built-in toolset id (versioned, static resource). DELIBERATELY NOT GRANTED to any
 # agent (live finding 2026-06-10, #147): nothing in this deployment serves native toolset calls
 # — the self-hosted worker serves ONLY registry custom tools — so a granted toolset lets the
@@ -388,9 +401,18 @@ class ManagedAgentsRuntime(AgentRuntime):
         return out
 
     def delete_agent(self, agent_id: str) -> None:
-        # VERIFY: client.beta.agents.delete(agent_id) — DELETE /v1/agents/{id}. Irreversible; the
-        # reaper only ever calls this for an agent it recorded as a SUPERSEDED roster member.
-        self._c().beta.agents.delete(agent_id, extra_headers=self._beta_headers())
+        # MA has NO hard delete — an agent is ARCHIVED (client.beta.agents.archive; confirmed live
+        # 2026-06-15: client.beta.agents exposes archive/create/list/retrieve/update/versions, no
+        # delete). Archived agents drop out of the default agents.list() (include_archived defaults
+        # off) and free the active roster slot — exactly what the orphan reaper needs. A 404 (already
+        # gone) is success so a re-run after a partial failure is idempotent. The reaper only ever
+        # calls this for an agent it recorded as a SUPERSEDED roster member.
+        try:
+            self._c().beta.agents.archive(agent_id, extra_headers=self._beta_headers())
+        except Exception as exc:  # noqa: BLE001 — 404 = already reaped (idempotent); re-raise else
+            if _is_not_found(exc):
+                return
+            raise
 
     def create_session(self, coordinator_id, tenant_id, vault_id=None, environment_id=None) -> Session:
         # PER-TENANT environment binding: the caller resolves THIS tenant's persisted environment
