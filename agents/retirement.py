@@ -86,49 +86,69 @@ def reap_orphans(runtime: Any, source: RetirementSource, *, now: datetime,
     stragglers. apply=False (default) reports the targets and changes nothing.
 
     Returns a report: {apply, considered, due, rosters:[{row_id, tenant_id, coordinator_id, targets,
-    deleted, failed, reaped}]}.
+    deleted, failed, reaped, deferred}]}. `deferred` is a WIN-case row whose specialists couldn't be
+    resolved (MA listing down) — left due so a later sweep reaps it whole rather than orphaning them.
     """
     rows = source.list_unreaped()
     due = due_retirements(rows, now, grace_seconds)
 
     # Resolve the live MA topology ONCE so a WIN-case retirement (empty agent_ids) can find the
     # superseded coordinator's pinned specialists. Best-effort: if MA can't be listed we still reap
-    # whatever ids the ledger stored.
+    # whatever ids the ledger stored, and DEFER any row whose specialists we therefore couldn't see.
     pinned_by_coord: dict[str, list[str]] = {}
+    listed_ok = True
     if due:
         try:
             for a in runtime.list_agents():
                 if a.get("is_coordinator") and a.get("id"):
                     pinned_by_coord[a["id"]] = [x for x in (a.get("agents") or []) if x]
         except Exception:  # noqa: BLE001 — degrade to stored ids only
+            listed_ok = False
             log.warning("reaper: could not list MA agents; reaping stored ids only", exc_info=True)
 
     report: dict = {"apply": apply, "considered": len(rows), "due": len(due), "rosters": []}
     for r in due:
         coord = r.get("coordinator_id")
-        # De-dup, stable order: specialists first, coordinator LAST (so a roster whose coordinator
-        # delete fails still attempted its specialists). dict.fromkeys preserves insertion order.
-        targets = list(dict.fromkeys(
-            [x for x in r.get("agent_ids", []) if x]
-            + pinned_by_coord.get(coord, [])
-            + ([coord] if coord else [])
-        ))
-        entry = {"row_id": r.get("id"), "tenant_id": r.get("tenant_id"),
-                 "coordinator_id": coord, "targets": targets,
-                 "deleted": [], "failed": [], "reaped": False}
+        stored = [x for x in r.get("agent_ids", []) if x]
+        # Specialists = stored ids UNION the coordinator's currently-pinned specialists (resolved
+        # from MA, covering the WIN-case empty agent_ids). De-dup, stable order.
+        specialists = list(dict.fromkeys(stored + pinned_by_coord.get(coord, [])))
+        entry = {"row_id": r.get("id"), "tenant_id": r.get("tenant_id"), "coordinator_id": coord,
+                 "targets": list(dict.fromkeys(specialists + ([coord] if coord else []))),
+                 "deleted": [], "failed": [], "reaped": False, "deferred": False}
 
         if not apply:
             report["rosters"].append(entry)
             continue
 
-        for aid in targets:
+        # DEFER a WIN-case row (no stored specialist ids) whose specialists we couldn't resolve
+        # because the MA listing failed: reaping just the coordinator would orphan them forever.
+        # Leave it due so a later sweep with a working listing reaps the whole roster.
+        if not stored and not specialists and not listed_ok:
+            entry["deferred"] = True
+            report["rosters"].append(entry)
+            continue
+
+        ok_specialists = True
+        for aid in specialists:
             try:
                 runtime.delete_agent(aid)
                 entry["deleted"].append(aid)
             except Exception:  # noqa: BLE001 — one bad delete must not abort the sweep
                 entry["failed"].append(aid)
+                ok_specialists = False
                 log.warning("reaper: failed to delete agent %s (ledger row %s)",
                             aid, r.get("id"), exc_info=True)
+        # Delete the coordinator (the WIN-case resolution anchor) ONLY once every specialist is gone;
+        # a partial failure keeps it so the next sweep can re-resolve the survivors from MA.
+        if coord and ok_specialists:
+            try:
+                runtime.delete_agent(coord)
+                entry["deleted"].append(coord)
+            except Exception:  # noqa: BLE001
+                entry["failed"].append(coord)
+                log.warning("reaper: failed to delete coordinator %s (ledger row %s)",
+                            coord, r.get("id"), exc_info=True)
         if not entry["failed"]:
             source.mark_reaped(r["id"])
             entry["reaped"] = True

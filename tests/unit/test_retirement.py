@@ -162,3 +162,51 @@ def test_reaper_survives_an_unlistable_ma_and_still_reaps_stored_ids():
     reap_orphans(rt, src, now=NOW, grace_seconds=3600, apply=True)
     assert set(rt.deleted) == {coord, *agents}   # stored ids still reaped despite no MA listing
     assert src.reaped == [1]
+
+
+# ---------------------------------------------------------------- robustness (adversarial review)
+@pytest.mark.unit
+def test_win_case_deferred_when_ma_listing_fails_so_specialists_are_not_orphaned():
+    # A WIN-case retirement stores NO specialist ids — they can only be resolved from the live MA
+    # listing. If that listing fails, reaping just the coordinator would orphan its 7 specialists
+    # forever. The reaper must DEFER the row (leave it due) instead of marking it reaped.
+    class _NoListRuntime(FakeRuntime):
+        def list_agents(self):
+            raise RuntimeError("MA list unavailable")
+
+    rt = _NoListRuntime()
+    src = InMemoryRetirementSource([_row(1, "coord-OLD", [], age_seconds=10_000)])  # WIN-case
+
+    report = reap_orphans(rt, src, now=NOW, grace_seconds=3600, apply=True)
+
+    assert src.reaped == []                                   # NOT reaped — retried later
+    assert report["rosters"][0]["reaped"] is False
+    assert report["rosters"][0].get("deferred") is True
+
+
+@pytest.mark.unit
+def test_partial_specialist_failure_keeps_coordinator_as_the_resolution_anchor():
+    # If a specialist delete fails, the coordinator must NOT be deleted — it stays as the anchor the
+    # next sweep re-resolves the surviving specialists from (a WIN-case row has no stored ids).
+    coord, agents = "coord-X", ["s1", "s2"]
+
+    class _FlakyRuntime(FakeRuntime):
+        def list_agents(self):
+            return [{"id": coord, "name": "c", "created_at": None,
+                     "is_coordinator": True, "agents": agents}]
+        def delete_agent(self, agent_id):
+            if agent_id == "s2":
+                raise RuntimeError("MA delete failed")
+            self.deleted = getattr(self, "deleted", [])
+            self.deleted.append(agent_id)
+
+    rt = _FlakyRuntime()
+    src = InMemoryRetirementSource([_row(1, coord, [], age_seconds=10_000)])  # WIN-case, resolves s1,s2
+
+    report = reap_orphans(rt, src, now=NOW, grace_seconds=3600, apply=True)
+
+    assert coord not in getattr(rt, "deleted", [])           # coordinator preserved as the anchor
+    assert "s1" in report["rosters"][0]["deleted"]
+    assert "s2" in report["rosters"][0]["failed"]
+    assert report["rosters"][0]["reaped"] is False
+    assert src.reaped == []

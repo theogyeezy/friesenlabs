@@ -172,6 +172,12 @@ def upgrade_roster(runtime: Any, store: Any, row: dict, tenant_id: str, current:
     if serve and serve != coordinator_id:
         _record_retirement_safe(store, tenant_id, coordinator_id, agent_ids)
         return serve
+    # Unreachable in practice: the winner's CAS always stamped a non-null, different coordinator, so
+    # `serve` is that id. If we somehow get here (a NULL/own-id row — a broken provisioning state)
+    # serve our own fresh roster rather than orphan a coordinator we're handing out, and flag it.
+    log.warning("upgrade_roster: lost the claim for tenant=%s but the row shows no distinct winner "
+                "(serve=%s, ours=%s) — serving our fresh roster this turn", tenant_id, serve,
+                coordinator_id)
     return coordinator_id
 
 
