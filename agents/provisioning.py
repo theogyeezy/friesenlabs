@@ -111,6 +111,76 @@ def provision_roster(runtime: Any, store: Any, tenant_id: str, *,
             "environment_id": environment_id, "workspace_id": workspace_id}
 
 
+def _record_retirement_safe(store: Any, tenant_id: str, coordinator_id: str | None,
+                            agent_ids: list[str]) -> None:
+    """Record a superseded roster for the reaper — BEST EFFORT. A failure here (retired_rosters not
+    yet migrated, a transient DB blip) must never break the chat turn or the upgrade: the orphan is
+    simply not auto-reaped until the next supersession records it. `record_retirement` is optional on
+    the store protocol (older stores / FakeRuntime paths may not have it)."""
+    recorder = getattr(store, "record_retirement", None)
+    if not callable(recorder):
+        return
+    try:
+        recorder(tenant_id, coordinator_id, list(agent_ids))
+    except Exception:  # noqa: BLE001 — retirement is housekeeping, never turn-critical
+        log.warning("could not record retired roster for tenant=%s coordinator=%s (will retry on "
+                    "the next supersession)", tenant_id, coordinator_id, exc_info=True)
+
+
+def upgrade_roster(runtime: Any, store: Any, row: dict, tenant_id: str, current: str) -> str:
+    """Upgrade ONE tenant's stale roster with a CROSS-PROCESS exactly-once claim, and record the
+    orphaned roster for the reaper. Returns the coordinator_id to serve THIS turn.
+
+    The per-tenant lock in `maybe_upgrade_roster` only spans one process; at deploy time two api
+    tasks can both observe the stale stamp and both reach here. Both mint a fresh roster, then race
+    a compare-and-set against the stamp they each read:
+
+      * WIN  — the CAS moved the row from the stale stamp to `current` (clearing the old session).
+        The OLD coordinator is now superseded -> retire it (its specialist ids resolve from MA at
+        reap time; the row only knew the coordinator id). Serve the new coordinator.
+      * LOSE — a peer already moved the row off the stale stamp. OUR just-minted roster is the
+        orphan -> retire it (we know its exact agent ids). Serve the WINNER's coordinator (re-read),
+        so the row never flip-flops and the tenant doesn't bounce between coordinators.
+
+    SAFETY INVARIANT the reaper relies on: every provision mints FRESH specialists (create_agent ->
+    new ids), so a retired coordinator's specialists are unique to it and can never be pinned by any
+    current coordinator — reaping a retired roster can never delete a live agent.
+
+    Raises on a CREATE failure (nothing recorded; caller degrades to the existing coordinator)."""
+    from .coordinator import COORDINATOR  # noqa: PLC0415
+    from .roster import roster  # noqa: PLC0415
+
+    expected = row.get("roster_version")
+    old_coordinator = row.get("coordinator_id")
+
+    agent_ids = [runtime.create_agent(spec) for spec in roster()]
+    coordinator_id = runtime.create_coordinator(COORDINATOR, agent_ids)
+
+    won = store.upsert_coordinator_if_version(
+        tenant_id, coordinator_id, new_version=current, expected_version=expected)
+    if won:
+        if old_coordinator:
+            _record_retirement_safe(store, tenant_id, old_coordinator, [])
+        return coordinator_id
+
+    # Lost the claim: a peer already stamped the row. Serve the WINNER and retire OUR fresh roster as
+    # the orphan — but ONLY after confirming the winner's coordinator is a DIFFERENT id, so we can
+    # never record-for-reaping a coordinator we are about to hand out (defends a vanished/odd row:
+    # tenant_workspaces is never DELETEd, but fail safe rather than orphan a live coordinator).
+    fresh = store.get(tenant_id) or row
+    serve = fresh.get("coordinator_id")
+    if serve and serve != coordinator_id:
+        _record_retirement_safe(store, tenant_id, coordinator_id, agent_ids)
+        return serve
+    # Unreachable in practice: the winner's CAS always stamped a non-null, different coordinator, so
+    # `serve` is that id. If we somehow get here (a NULL/own-id row — a broken provisioning state)
+    # serve our own fresh roster rather than orphan a coordinator we're handing out, and flag it.
+    log.warning("upgrade_roster: lost the claim for tenant=%s but the row shows no distinct winner "
+                "(serve=%s, ours=%s) — serving our fresh roster this turn", tenant_id, serve,
+                coordinator_id)
+    return coordinator_id
+
+
 def maybe_upgrade_roster(runtime: Any, store: Any, row: dict, tenant_id: str) -> str:
     """Return the coordinator_id to serve THIS turn with, upgrading the tenant's roster first if it
     is stale. No-op (returns the existing coordinator) when the stamp is already current. A failed
@@ -130,18 +200,14 @@ def maybe_upgrade_roster(runtime: Any, store: Any, row: dict, tenant_id: str) ->
             _failed_upgrade.pop(tenant_id, None)
             return fresh.get("coordinator_id") or row["coordinator_id"]
         try:
-            result = provision_roster(
-                runtime, store, tenant_id,
-                environment_id=fresh.get("environment_id") or row.get("environment_id"),
-                workspace_id=fresh.get("workspace_id") or row.get("workspace_id"),
-            )
+            coordinator_id = upgrade_roster(runtime, store, fresh, tenant_id, current)
             _failed_upgrade.pop(tenant_id, None)  # success clears the backoff
             log.info(
                 "roster auto-upgrade: tenant=%s %s -> %s (new coordinator=%s)",
                 tenant_id, row.get("roster_version") or "unstamped", current,
-                result["coordinator_id"],
+                coordinator_id,
             )
-            return result["coordinator_id"]
+            return coordinator_id
         except Exception:  # noqa: BLE001 — never fail a chat turn on an upgrade hiccup
             _failed_upgrade[tenant_id] = (current, time.monotonic())  # arm the cooldown
             log.exception(

@@ -77,6 +77,21 @@ GRANT SELECT, INSERT, UPDATE ON accounts, stripe_events TO crm_app;
 REVOKE DELETE ON accounts, stripe_events FROM crm_app;
 
 -- ---------------------------------------------------------------------------
+-- retired_rosters — superseded-roster GC ledger (RLS-EXEMPT cross-tenant ops table; see schema.sql).
+-- EXPLICIT grant for the same fresh-load reason as accounts/stripe_events: schema.sql creates the
+-- table BEFORE roles.sql's ALTER DEFAULT PRIVILEGES runs, so crm_app has ZERO privileges on it until
+-- this line lands — without it the upgrade path's retirement INSERT and the reaper's read/mark
+-- permission-deny.
+--   INSERT: agents/provisioning.upgrade_roster records a superseded roster.
+--   SELECT:  the reaper (scripts/ops/reap_orphan_agents.py) reads due, unreaped rows across tenants.
+--   UPDATE:  the reaper stamps reaped_at after deleting the agents from MA.
+-- NO DELETE: an append-only ops audit trail — rows are marked reaped, never erased.
+GRANT SELECT, INSERT, UPDATE ON retired_rosters TO crm_app;
+-- retired_rosters predates the ALTER DEFAULT PRIVILEGES block so it never received DELETE; the
+-- REVOKE is defensive + idempotent (converges a grant-history live DB to the append-only intent).
+REVOKE DELETE ON retired_rosters FROM crm_app;
+
+-- ---------------------------------------------------------------------------
 -- Append-only audit trail — explicit REVOKEs (idempotent; safe on fresh AND live loads).
 -- GRANT is additive, so a live database that ever held the old broad
 -- SELECT/INSERT/UPDATE/DELETE grant keeps DELETE until it is revoked here. Re-asserting the

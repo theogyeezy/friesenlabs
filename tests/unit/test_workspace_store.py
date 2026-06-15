@@ -217,3 +217,167 @@ def test_schema_tenant_workspaces_enables_and_forces_rls_explicitly():
         r"WITH CHECK \(tenant_id = current_setting\('app\.current_tenant', true\)::uuid\)",
         sql,
     )
+
+
+# ---------------------------------------------------------------------------
+# Compare-and-set upgrade claim (cross-process exactly-once stamp) + retirement record
+# ---------------------------------------------------------------------------
+# Two api tasks can both detect a stale roster at deploy time and both re-provision; the per-process
+# lock can't see across processes. upsert_coordinator_if_version makes the STORE the arbiter: the
+# UPDATE only lands if roster_version is still the value the caller read, so exactly one process
+# wins and the row never flip-flops. The loser records its just-minted (now-orphan) roster for the
+# reaper via record_retirement.
+
+@pytest.mark.unit
+def test_inmemory_cas_wins_when_expected_matches_and_clears_session():
+    store = InMemoryWorkspaceStore()
+    store.upsert("t-A", "ws", "env", "coord-OLD", roster_version="rv1-stale")
+    store.set_session_id("t-A", "sess-OLD")
+
+    won = store.upsert_coordinator_if_version(
+        "t-A", "coord-NEW", new_version="rv1-current", expected_version="rv1-stale")
+    assert won is True
+    row = store.get("t-A")
+    assert row["coordinator_id"] == "coord-NEW"
+    assert row["roster_version"] == "rv1-current"
+    assert row["session_id"] is None          # the old session belongs to the old coordinator
+
+
+@pytest.mark.unit
+def test_inmemory_cas_loses_when_expected_no_longer_matches():
+    store = InMemoryWorkspaceStore()
+    store.upsert("t-A", "ws", "env", "coord-WINNER", roster_version="rv1-current")  # a peer won
+
+    won = store.upsert_coordinator_if_version(
+        "t-A", "coord-MINE", new_version="rv1-current", expected_version="rv1-stale")
+    assert won is False
+    row = store.get("t-A")
+    assert row["coordinator_id"] == "coord-WINNER"   # untouched — the winner's row stands
+    assert row["roster_version"] == "rv1-current"
+
+
+@pytest.mark.unit
+def test_inmemory_cas_matches_none_expected_for_unstamped_row():
+    store = InMemoryWorkspaceStore()
+    store.upsert("t-A", "ws", "env", "coord-OLD")    # roster_version None (legacy/unstamped)
+    won = store.upsert_coordinator_if_version(
+        "t-A", "coord-NEW", new_version="rv1-current", expected_version=None)
+    assert won is True
+    assert store.get("t-A")["roster_version"] == "rv1-current"
+
+
+@pytest.mark.unit
+def test_inmemory_cas_on_missing_row_is_a_loss():
+    store = InMemoryWorkspaceStore()
+    won = store.upsert_coordinator_if_version(
+        "t-absent", "coord", new_version="rv1-current", expected_version=None)
+    assert won is False
+
+
+@pytest.mark.unit
+def test_inmemory_record_retirement_captures_superseded_roster():
+    store = InMemoryWorkspaceStore()
+    store.record_retirement("t-A", "coord-OLD", ["agent-1", "agent-2"])
+    assert store.retirements == [
+        {"tenant_id": "t-A", "coordinator_id": "coord-OLD", "agent_ids": ["agent-1", "agent-2"]}
+    ]
+
+
+# --- Pg CAS over a fake pool that reports rowcount (won=1 / lost=0) ----------------------------
+class _RowcountCursor:
+    def __init__(self, log, rowcount):
+        self.log = log
+        self.rowcount = rowcount
+
+    def execute(self, sql, params=None):
+        self.log.append((" ".join(sql.split()), params))
+
+    def fetchone(self):
+        return None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+class _RowcountConn:
+    def __init__(self, log, rowcount):
+        self.log = log
+        self._rowcount = rowcount
+
+    def cursor(self, cursor_factory=None):
+        return _RowcountCursor(self.log, self._rowcount)
+
+    def commit(self):
+        pass
+
+    def rollback(self):
+        pass
+
+
+class _RowcountPool:
+    def __init__(self, minconn, maxconn, dsn, rowcount=1):
+        self.log: list = []
+        self._conn = _RowcountConn(self.log, rowcount)
+
+    def getconn(self):
+        return self._conn
+
+    def putconn(self, conn):
+        pass
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("rowcount,expected_won", [(1, True), (0, False)])
+def test_pg_cas_issues_conditional_update_and_returns_won(monkeypatch, rowcount, expected_won):
+    pool = _RowcountPool(1, 10, None, rowcount=rowcount)
+    monkeypatch.setattr(psycopg2.pool, "ThreadedConnectionPool",
+                        lambda minc, maxc, dsn: pool)
+    store = PgWorkspaceStore("postgresql://crm_app@h/db")
+
+    won = store.upsert_coordinator_if_version(
+        "A", "coord-NEW", new_version="rv1-current", expected_version="rv1-stale")
+    assert won is expected_won
+
+    sql = [s for s, _ in pool.log]
+    assert sql[0].startswith("SET LOCAL app.current_tenant")     # RLS bind first
+    update = sql[1]
+    assert update.startswith("UPDATE tenant_workspaces SET")
+    assert "coordinator_id = %s" in update
+    assert "roster_version = %s" in update
+    assert "session_id = NULL" in update                          # stale session cleared on swap
+    # the guard: only land if the stamp is still what we read (NULL-safe equality)
+    assert "roster_version IS NOT DISTINCT FROM %s" in update
+    _, params = pool.log[1]
+    assert params == ("coord-NEW", "rv1-current", "A", "rv1-stale")
+
+
+@pytest.mark.unit
+def test_pg_record_retirement_inserts_into_retired_rosters(monkeypatch):
+    pool = _RowcountPool(1, 10, None, rowcount=1)
+    monkeypatch.setattr(psycopg2.pool, "ThreadedConnectionPool",
+                        lambda minc, maxc, dsn: pool)
+    store = PgWorkspaceStore("postgresql://crm_app@h/db")
+    store.record_retirement("A", "coord-OLD", ["agent-1", "agent-2"])
+
+    sql = [s for s, _ in pool.log]
+    assert sql[0].startswith("SET LOCAL app.current_tenant")
+    assert "INSERT INTO retired_rosters" in sql[1]
+    _, params = pool.log[1]
+    assert params == ("A", "coord-OLD", ["agent-1", "agent-2"])
+
+
+# --- schema gate: retired_rosters is RLS-EXEMPT (a pre/cross-tenant ops ledger) ---------------
+@pytest.mark.unit
+def test_schema_has_retired_rosters_table_rls_exempt():
+    sql = _schema()
+    assert re.search(r"CREATE TABLE IF NOT EXISTS retired_rosters \(", sql), \
+        "retired_rosters table missing"
+    # MUST NOT be in the tenant RLS DO-block array — the reaper reads it across ALL tenants, which a
+    # FORCE'd tenant_isolation policy (no app.current_tenant set) would return zero rows for.
+    m = re.search(r"tenant_tables text\[\] := ARRAY\[(.*?)\];", sql, re.S)
+    assert "'retired_rosters'" not in m.group(1)
+    # and no explicit FORCE ROW LEVEL SECURITY for it either
+    assert not re.search(r"ALTER TABLE retired_rosters\s+FORCE ROW LEVEL SECURITY", sql)

@@ -269,3 +269,80 @@ def test_concurrent_upgrades_provision_exactly_once():
     # All callers converge on ONE coordinator, and only one roster was actually created.
     assert len(set(results)) == 1
     assert len(rt.coordinators) == 1
+
+
+# --------------------------------------------------------------------------------------------
+# Cross-process upgrade claim + orphan retirement (2026-06-14). The per-tenant lock only spans ONE
+# process; at deploy time two api tasks can both detect a stale roster and both re-provision. The
+# CAS upsert makes the store the arbiter (exactly-once stamp) and the loser records its just-minted
+# (now-orphan) roster for the reaper; the winner records the superseded OLD roster.
+
+from agents.provisioning import upgrade_roster
+
+
+@pytest.mark.unit
+def test_upgrade_roster_wins_serves_new_and_retires_old():
+    rt, store = FakeRuntime(), InMemoryWorkspaceStore()
+    _seed(store, "t-1", version="rv1-stale")            # row points at coord-OLD
+    row = store.get("t-1")
+
+    cid = upgrade_roster(rt, store, row, "t-1", current_roster_version())
+
+    assert cid != "coord-OLD" and cid in rt.coordinators          # the fresh coordinator is served
+    after = store.get("t-1")
+    assert after["coordinator_id"] == cid
+    assert after["roster_version"] == current_roster_version()
+    assert after["session_id"] is None                            # stale session cleared by the CAS
+    # the SUPERSEDED old roster is recorded for the reaper (its specialist ids resolve from MA at
+    # reap time — the row only knew the coordinator id).
+    assert store.retirements == [
+        {"tenant_id": "t-1", "coordinator_id": "coord-OLD", "agent_ids": []}
+    ]
+
+
+@pytest.mark.unit
+def test_upgrade_roster_loses_serves_winner_and_retires_own_orphan():
+    rt, store = FakeRuntime(), InMemoryWorkspaceStore()
+    # A peer api task already upgraded this tenant: the store row is at the current version and points
+    # at the winner's coordinator. THIS process still holds a stale snapshot (row) and provisions.
+    store.upsert("t-1", "ws", "env", "coord-WINNER", roster_version=current_roster_version())
+    stale_row = {"tenant_id": "t-1", "workspace_id": "ws", "environment_id": "env",
+                 "coordinator_id": "coord-OLD", "roster_version": "rv1-stale", "session_id": None}
+
+    cid = upgrade_roster(rt, store, stale_row, "t-1", current_roster_version())
+
+    assert cid == "coord-WINNER"                                  # serve the winner, do not clobber
+    assert store.get("t-1")["coordinator_id"] == "coord-WINNER"   # the row never flip-flopped
+    # OUR just-minted roster is the orphan — recorded with the exact agent ids we created.
+    assert len(store.retirements) == 1
+    rec = store.retirements[0]
+    assert rec["coordinator_id"] in rt.coordinators               # the coordinator WE created
+    assert len(rec["agent_ids"]) == 7                             # all 7 specialists we minted
+
+
+@pytest.mark.unit
+def test_upgrade_roster_retirement_record_failure_never_breaks_the_upgrade():
+    # Recording a retirement is best-effort: if retired_rosters is absent (migrate ordering) or the
+    # insert fails, the upgrade still completes (the orphan just isn't auto-reaped yet).
+    rt = FakeRuntime()
+
+    class _RetireBoomStore(InMemoryWorkspaceStore):
+        def record_retirement(self, *a, **k):
+            raise RuntimeError("retired_rosters does not exist yet")
+
+    store = _RetireBoomStore()
+    _seed(store, "t-1", version="rv1-stale")
+    row = store.get("t-1")
+
+    cid = upgrade_roster(rt, store, row, "t-1", current_roster_version())
+    assert cid in rt.coordinators
+    assert store.get("t-1")["roster_version"] == current_roster_version()
+
+
+@pytest.mark.unit
+def test_maybe_upgrade_records_retirement_on_a_normal_upgrade():
+    rt, store = FakeRuntime(), InMemoryWorkspaceStore()
+    _seed(store, "t-1", version="rv1-stale")
+    row = store.get("t-1")
+    maybe_upgrade_roster(rt, store, row, "t-1")
+    assert [r["coordinator_id"] for r in store.retirements] == ["coord-OLD"]

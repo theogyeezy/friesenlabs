@@ -300,3 +300,77 @@ def test_managed_beta_header_present_on_every_call():
     assert len(calls) >= 7  # env + 2 agents + vault + session + stream + send
     for call in calls:
         assert call.kwargs["extra_headers"]["anthropic-beta"] == MA_BETA_HEADER
+
+
+# ---------------------------------------------------------------- list/delete agents (GC seam)
+# The orphan-roster reaper (agents/retirement.py) needs to enumerate and delete Managed-Agents
+# agents created by superseded rosters. These pin the seam on both impls.
+@pytest.mark.unit
+def test_fake_runtime_lists_and_deletes_agents():
+    r = FakeRuntime()
+    a1 = r.create_agent(SCOUT)
+    a2 = r.create_agent(SCOUT)
+    coord = r.create_coordinator(COORDINATOR, [a1, a2])
+
+    listed = {a["id"]: a for a in r.list_agents()}
+    assert set(listed) == {a1, a2, coord}
+    assert listed[coord]["is_coordinator"] is True
+    assert listed[coord]["agents"] == [a1, a2]
+    assert listed[a1]["is_coordinator"] is False
+
+    r.delete_agent(a1)
+    assert a1 not in {a["id"] for a in r.list_agents()}
+    r.delete_agent(coord)                 # deleting a coordinator drops it from the roster map too
+    assert coord not in r.coordinators
+    assert {a["id"] for a in r.list_agents()} == {a2}
+
+
+@pytest.mark.unit
+def test_fake_runtime_delete_unknown_agent_is_idempotent():
+    r = FakeRuntime()
+    r.delete_agent("agent_does_not_exist")   # a double-reap / partial-state delete must not raise
+
+
+@pytest.mark.unit
+def test_managed_list_agents_normalizes_coordinator_topology():
+    r = _managed()
+    r._client.beta.agents.list.return_value = [
+        SimpleNamespace(id="agent_1", name="scout", created_at="2026-06-10T00:00:00Z",
+                        multiagent=None),
+        SimpleNamespace(id="coord_1", name="coordinator", created_at="2026-06-10T00:00:00Z",
+                        multiagent=SimpleNamespace(type="coordinator", agents=["agent_1"])),
+    ]
+    listed = {a["id"]: a for a in r.list_agents()}
+    assert listed["agent_1"]["is_coordinator"] is False
+    assert listed["coord_1"]["is_coordinator"] is True
+    assert listed["coord_1"]["agents"] == ["agent_1"]
+    assert listed["coord_1"]["created_at"] == "2026-06-10T00:00:00Z"
+    assert r._client.beta.agents.list.call_args.kwargs["extra_headers"]["anthropic-beta"] \
+        == MA_BETA_HEADER
+
+
+@pytest.mark.unit
+def test_managed_delete_agent_calls_sdk_with_beta_header():
+    r = _managed()
+    r.delete_agent("agent_xyz")
+    call = r._client.beta.agents.delete.call_args
+    assert call.args == ("agent_xyz",)
+    assert call.kwargs["extra_headers"]["anthropic-beta"] == MA_BETA_HEADER
+
+
+@pytest.mark.unit
+def test_base_runtime_agent_management_is_unsupported_by_default():
+    # SelfHosted/other runtimes don't manage MA agents — the seam must default to a clear error,
+    # not silently no-op (which would let the reaper believe it deleted something).
+    class _Bare(AgentRuntime):
+        def create_environment(self, name): return "e"
+        def create_agent(self, spec): return "a"
+        def create_coordinator(self, spec, agent_ids): return "c"
+        def create_vault(self, display_name, external_user_id): return "v"
+        def create_session(self, coordinator_id, tenant_id, vault_id=None, environment_id=None): ...
+        def send_message(self, session, message): return {}
+    b = _Bare()
+    with pytest.raises(NotImplementedError):
+        b.list_agents()
+    with pytest.raises(NotImplementedError):
+        b.delete_agent("a")
