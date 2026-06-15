@@ -62,6 +62,21 @@ app shell → real RLS-scoped tenant rows. Unauth `/api/*` → 401; **`/chat` is
   `ref_id`s (the `doc:0` placeholder bug is fixed), and every `/chat` turn reports
   `grounding_status` + `retrieved_count`. The demo tenant's corpus was SEEDED 2026-06-12 (26 kb docs,
   Titan V2, one-off task; retrieval verified in-VPC — top hit `demo:kb:pricing-discount-authority#0`).
+- ✅ **Self-upgrading rosters + orphan GC LIVE (2026-06-14, #360/#361/#362/#363, verified live):** MA
+  agents are created once with the code's specs frozen in, so a spec change never reached existing
+  tenants (the live `draft_email` bug). `tenant_workspaces.roster_version` now stamps the spec hash
+  (`agents/provisioning.current_roster_version`); the conversation factory transparently re-provisions
+  + starts a fresh session whenever the stamp is stale — each tenant self-heals on its next chat after
+  a deploy (per-tenant locked, failure backoff, B1 session-invalidation). A **cross-process upgrade
+  claim** (compare-and-set `upsert_coordinator_if_version`, NULL-safe) makes two api tasks upgrading at
+  deploy time exactly-once (no coordinator flip-flop; the loser serves the winner + records its
+  orphan). Superseded rosters are logged to the RLS-EXEMPT `retired_rosters` ledger and reaped by
+  `scripts/ops/reap_orphan_agents.py` + the weekly **`reap.yml`** (archive after a grace window; MA has
+  no hard delete — agents are **archived**, which frees the active slot). Safe by construction (only
+  system-recorded superseded coordinators; unique specialist ids; grace window). **Live-verified:** the
+  pre-existing demo orphan (coordinator + 7 specialists) reaped, demo's current coordinator untouched,
+  active agents 36→28; live-caught two beta SDK shapes (`agents.list` returns reference objects;
+  archive-not-delete). See `agent-provisioning-create-once` memory.
 - 🟙 **Domain:** friesenlabs.com on Route53 — the Squarespace NS cutover is **DONE** and the
   wildcard ACM cert is **ISSUED** (confirmed 2026-06-10). The apex+www Amplify domain association
   initially FAILED (CNAMEAlreadyExists): a stale us-east-2 Amplify app ("friesenlabs", branch
