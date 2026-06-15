@@ -25,7 +25,8 @@ class WorkspaceStore(Protocol):
     """What the rest of the system needs from per-tenant workspace persistence."""
 
     def upsert(self, tenant_id: str, workspace_id: str | None,
-               environment_id: str | None, coordinator_id: str | None) -> None: ...
+               environment_id: str | None, coordinator_id: str | None,
+               roster_version: str | None = None) -> None: ...
     def get(self, tenant_id: str) -> dict | None: ...
 
     def set_session_id(self, tenant_id: str, session_id: str | None) -> None: ...
@@ -38,8 +39,11 @@ class InMemoryWorkspaceStore:
         self._rows: dict[str, dict] = {}
 
     def upsert(self, tenant_id: str, workspace_id: str | None,
-               environment_id: str | None, coordinator_id: str | None) -> None:
+               environment_id: str | None, coordinator_id: str | None,
+               roster_version: str | None = None) -> None:
         # Same semantics as the Pg ON CONFLICT (tenant_id) DO UPDATE: one row per tenant.
+        # roster_version PRESERVES the prior value when not passed (mirrors the Pg COALESCE), so a
+        # bare upsert never clobbers the stamp — only a provisioning call (which passes it) updates.
         prior = self._rows.get(str(tenant_id)) or {}
         self._rows[str(tenant_id)] = {
             "tenant_id": str(tenant_id),
@@ -47,6 +51,8 @@ class InMemoryWorkspaceStore:
             "environment_id": environment_id,
             "coordinator_id": coordinator_id,
             "session_id": prior.get("session_id"),
+            "roster_version": roster_version if roster_version is not None
+            else prior.get("roster_version"),
         }
 
     def get(self, tenant_id: str) -> dict | None:
@@ -120,17 +126,23 @@ class PgWorkspaceStore:
             self._pool.putconn(conn)
 
     def upsert(self, tenant_id: str, workspace_id: str | None,
-               environment_id: str | None, coordinator_id: str | None) -> None:
+               environment_id: str | None, coordinator_id: str | None,
+               roster_version: str | None = None) -> None:
         # RLS WITH CHECK enforces tenant_id == app.current_tenant on both the INSERT and UPDATE arm.
+        # roster_version uses COALESCE(EXCLUDED, existing) so a bare upsert (no version) PRESERVES the
+        # stamp — only a provisioning call (which passes it) updates the version alongside the
+        # coordinator_id it is paired with.
         with self._tx(tenant_id) as cur:
             cur.execute(
-                "INSERT INTO tenant_workspaces (tenant_id, workspace_id, environment_id, coordinator_id) "
-                "VALUES (%s,%s,%s,%s) "
+                "INSERT INTO tenant_workspaces "
+                "(tenant_id, workspace_id, environment_id, coordinator_id, roster_version) "
+                "VALUES (%s,%s,%s,%s,%s) "
                 "ON CONFLICT (tenant_id) DO UPDATE SET "
                 "workspace_id = EXCLUDED.workspace_id, "
                 "environment_id = EXCLUDED.environment_id, "
-                "coordinator_id = EXCLUDED.coordinator_id",
-                (str(tenant_id), workspace_id, environment_id, coordinator_id),
+                "coordinator_id = EXCLUDED.coordinator_id, "
+                "roster_version = COALESCE(EXCLUDED.roster_version, tenant_workspaces.roster_version)",
+                (str(tenant_id), workspace_id, environment_id, coordinator_id, roster_version),
             )
 
     def get(self, tenant_id: str) -> dict | None:

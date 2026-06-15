@@ -457,6 +457,9 @@ def test_provisioning_upserts_workspace_ids_after_agent_plane_ensure():
         "environment_id": "env-tenant-a1",
         "coordinator_id": "coord-tenant-a1",
         "session_id": None,
+        # The stub agent plane returns no stamp, so the row is unstamped (None) → the conversation
+        # factory will lazily upgrade it on first chat. A real ensure returns current_roster_version.
+        "roster_version": None,
     }
 
 

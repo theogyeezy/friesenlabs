@@ -318,6 +318,7 @@ class Provisioner:
                 plane.get("workspace_id", ws_id),
                 plane.get("environment_id"),
                 plane.get("coordinator_id"),
+                roster_version=plane.get("roster_version"),
             )
 
     def _step_cognito_tenant(self, account: Account, created: dict | None) -> None:
