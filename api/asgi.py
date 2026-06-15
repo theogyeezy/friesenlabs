@@ -192,7 +192,20 @@ def make_conversation_factory(
         coordinator_id = row["coordinator_id"]
         if not isinstance(runtime, FakeRuntime):
             from agents.provisioning import maybe_upgrade_roster  # noqa: PLC0415 — lazy
-            coordinator_id = maybe_upgrade_roster(runtime, workspace_store, row, tenant_id)
+            new_coordinator_id = maybe_upgrade_roster(runtime, workspace_store, row, tenant_id)
+            if new_coordinator_id != coordinator_id:
+                # The roster was upgraded. The persisted MA session is SERVER-SIDE bound to the OLD
+                # coordinator and resume_session is network-free, so resuming it would keep the
+                # tenant talking to the STALE agents — defeating the upgrade. Force a FRESH session
+                # against the new coordinator (persisted_sid=None) and DROP this thread's stale
+                # session so a crash before the new id persists can't resume the old one. This
+                # covers BOTH homes: the per-conversation conversation_store (the #354 default) and
+                # the legacy tenant session (provision_roster already cleared the latter in the
+                # store; here we also null the local id read before the upgrade ran).
+                coordinator_id = new_coordinator_id
+                persisted_sid = None
+                if conversation_id and conversation_store is not None:
+                    conversation_store.set_session_id(tenant_id, conversation_id, None)
 
         # Tool-side CRM client: a fresh per-request tenant adapter (never shared across requests).
         db = crm.for_tenant(tenant_id) if hasattr(crm, "for_tenant") else crm

@@ -82,6 +82,23 @@ What remains is **owner-gated** (infra flips/seeding — see P0/P1 below), **web
     `stream_interrupted` forever (observed live: 10+ continues on a session idle for
     minutes). A zero-progress drop on a log ending at a non-`requires_action` idle now
     force-replays the tail past the ledger and settles with the real answer.
+- [x] **Self-upgrading rosters — tenants auto-heal stale agents** **DONE 2026-06-14:** MA agents
+  are created once per tenant with the code's specs (model/prompt/tool-schema) frozen in; a later
+  spec change never reached existing tenants (the live `draft_email` bug — a 2026-06-10 tenant kept
+  the old schema after the fix). Now `tenant_workspaces.roster_version` stamps the specs the agents
+  were created with (a deterministic hash; `agents/provisioning.current_roster_version`); the
+  conversation factory re-provisions a fresh roster + coordinator and starts a FRESH session
+  (the old one is server-side pinned to the old coordinator) whenever the stamp is stale — each
+  tenant self-heals on its next chat after a deploy, per-tenant locked, with a failure backoff.
+  Remaining follow-ups (orphan-cost, not correctness — B1 makes the upgrade land even under a race):
+  - **Orphan agent GC** — every upgrade (and every mid-provision failure) leaves the old/partial
+    agents in the shared `UPLIFT_ENV_ID` env; over many deploys × tenants they accumulate (MA has a
+    per-env agent cap). Needs a reaper (delete agents not referenced by any tenant's current
+    coordinator). No GC anywhere in the repo yet.
+  - **Cross-process upgrade claim** — the per-tenant lock is per-process; two api Fargate tasks can
+    both upgrade the same tenant at deploy time (last-writer-wins on the store + one orphan roster
+    each). A Pg advisory lock / compare-and-set claim before creating agents would make it
+    exactly-once. (Session correctness already holds via B1 regardless.)
 - [ ] **One shared MA session per tenant — concurrent turns interfere** _(live matrix finding
   2026-06-12, sev medium)_: two browser tabs (or two users) of the same tenant interleave
   `user.message`s into the SAME coordinator session. Turns serialize on the tenant turn lock

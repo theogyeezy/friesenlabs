@@ -26,10 +26,18 @@ import hashlib
 import json
 import logging
 import threading
+import time
 from collections import defaultdict
 from typing import Any
 
 log = logging.getLogger("agents.provisioning")
+
+# Failure backoff: a persistent provisioning failure (e.g. a per-environment agent limit, a flapping
+# MA endpoint) must NOT re-mint a fresh roster on EVERY chat turn — that floods orphans and hammers
+# MA. After a failed upgrade to a given version, skip re-attempting THAT version for this tenant for
+# the cooldown; serve the existing (stale) coordinator meanwhile. {tenant_id: (version, monotonic)}.
+_UPGRADE_BACKOFF_SECONDS = 300.0
+_failed_upgrade: dict[str, tuple[str, float]] = {}
 
 # Hash prefix — bump only if the hashing SCHEME changes (forces a one-time re-provision of all
 # tenants), never for content (content auto-bumps the digest).
@@ -110,10 +118,16 @@ def maybe_upgrade_roster(runtime: Any, store: Any, row: dict, tenant_id: str) ->
     current = current_roster_version()
     if row.get("roster_version") == current:
         return row["coordinator_id"]
+    # Backoff: a recent failure to reach THIS version for this tenant -> don't re-attempt yet
+    # (serve stale), so a persistent failure can't flood orphans / hammer MA every turn.
+    failed = _failed_upgrade.get(tenant_id)
+    if failed and failed[0] == current and (time.monotonic() - failed[1]) < _UPGRADE_BACKOFF_SECONDS:
+        return row["coordinator_id"]
     with _tenant_locks[tenant_id]:
         # Re-read under the lock: a peer turn may have just upgraded this tenant.
         fresh = store.get(tenant_id) or row
         if fresh.get("roster_version") == current:
+            _failed_upgrade.pop(tenant_id, None)
             return fresh.get("coordinator_id") or row["coordinator_id"]
         try:
             result = provision_roster(
@@ -121,6 +135,7 @@ def maybe_upgrade_roster(runtime: Any, store: Any, row: dict, tenant_id: str) ->
                 environment_id=fresh.get("environment_id") or row.get("environment_id"),
                 workspace_id=fresh.get("workspace_id") or row.get("workspace_id"),
             )
+            _failed_upgrade.pop(tenant_id, None)  # success clears the backoff
             log.info(
                 "roster auto-upgrade: tenant=%s %s -> %s (new coordinator=%s)",
                 tenant_id, row.get("roster_version") or "unstamped", current,
@@ -128,7 +143,8 @@ def maybe_upgrade_roster(runtime: Any, store: Any, row: dict, tenant_id: str) ->
             )
             return result["coordinator_id"]
         except Exception:  # noqa: BLE001 — never fail a chat turn on an upgrade hiccup
+            _failed_upgrade[tenant_id] = (current, time.monotonic())  # arm the cooldown
             log.exception(
                 "roster auto-upgrade FAILED for tenant=%s — serving the existing coordinator, "
-                "will retry next turn", tenant_id)
+                "backing off %.0fs before re-attempting", tenant_id, _UPGRADE_BACKOFF_SECONDS)
             return row["coordinator_id"]
