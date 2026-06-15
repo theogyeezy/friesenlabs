@@ -31,12 +31,19 @@ class WorkspaceStore(Protocol):
 
     def set_session_id(self, tenant_id: str, session_id: str | None) -> None: ...
 
+    def upsert_coordinator_if_version(self, tenant_id: str, coordinator_id: str | None, *,
+                                      new_version: str, expected_version: str | None) -> bool: ...
+
+    def record_retirement(self, tenant_id: str, coordinator_id: str | None,
+                          agent_ids: list[str]) -> None: ...
+
 
 class InMemoryWorkspaceStore:
     """Offline workspace store (for FakeRuntime/tests; the real one is `PgWorkspaceStore`)."""
 
     def __init__(self):
         self._rows: dict[str, dict] = {}
+        self.retirements: list[dict] = []   # superseded rosters recorded for the reaper (test-visible)
 
     def upsert(self, tenant_id: str, workspace_id: str | None,
                environment_id: str | None, coordinator_id: str | None,
@@ -65,6 +72,28 @@ class InMemoryWorkspaceStore:
         row = self._rows.get(str(tenant_id))
         if row is not None:
             row["session_id"] = session_id
+
+    def upsert_coordinator_if_version(self, tenant_id: str, coordinator_id: str | None, *,
+                                      new_version: str, expected_version: str | None) -> bool:
+        # Same arbiter semantics as the Pg conditional UPDATE: swap the coordinator + stamp ONLY if
+        # the roster_version is still what the caller read (NULL-safe). Returns True iff THIS caller
+        # made the transition (cross-process exactly-once). Clears the session on a win — the old
+        # session belongs to the old coordinator.
+        row = self._rows.get(str(tenant_id))
+        if row is None or row.get("roster_version") != expected_version:
+            return False
+        row["coordinator_id"] = coordinator_id
+        row["roster_version"] = new_version
+        row["session_id"] = None
+        return True
+
+    def record_retirement(self, tenant_id: str, coordinator_id: str | None,
+                          agent_ids: list[str]) -> None:
+        self.retirements.append({
+            "tenant_id": str(tenant_id),
+            "coordinator_id": coordinator_id,
+            "agent_ids": list(agent_ids),
+        })
 
 
 class PgWorkspaceStore:
@@ -159,4 +188,37 @@ class PgWorkspaceStore:
             cur.execute(
                 "UPDATE tenant_workspaces SET session_id = %s WHERE tenant_id = %s",
                 (session_id, str(tenant_id)),
+            )
+
+    def upsert_coordinator_if_version(self, tenant_id: str, coordinator_id: str | None, *,
+                                      new_version: str, expected_version: str | None) -> bool:
+        """Compare-and-set the coordinator + roster stamp: land the swap ONLY if roster_version is
+        still the value the caller read (the cross-process upgrade claim). Two api tasks that both
+        detect a stale roster and both re-provision call this with the SAME expected_version — the
+        first commits and moves the row off it; the second's WHERE no longer matches (rowcount 0)
+        and it serves the winner, so the row never flip-flops between coordinators. `IS NOT DISTINCT
+        FROM` makes the guard NULL-safe (an unstamped legacy row claims with expected=NULL). Clears
+        session_id in the SAME statement — the old session is pinned to the old coordinator. Returns
+        True iff THIS call won the claim. RLS scopes the UPDATE to the bound tenant."""
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "UPDATE tenant_workspaces SET coordinator_id = %s, roster_version = %s, "
+                "session_id = NULL "
+                "WHERE tenant_id = %s AND roster_version IS NOT DISTINCT FROM %s",
+                (coordinator_id, new_version, str(tenant_id), expected_version),
+            )
+            return cur.rowcount == 1
+
+    def record_retirement(self, tenant_id: str, coordinator_id: str | None,
+                          agent_ids: list[str]) -> None:
+        """Append a superseded roster (its coordinator + every specialist id) to retired_rosters for
+        the orphan reaper. APPEND-ONLY ops ledger (crm_app has no DELETE; the reaper marks reaped_at).
+        retired_rosters is RLS-EXEMPT so the cross-tenant reaper can read it, but the WRITE still
+        rides the tenant-scoped txn (the SET LOCAL is harmless on a non-RLS table) and stamps the
+        owning tenant_id for the audit trail."""
+        with self._tx(tenant_id) as cur:
+            cur.execute(
+                "INSERT INTO retired_rosters (tenant_id, coordinator_id, agent_ids) "
+                "VALUES (%s, %s, %s)",
+                (str(tenant_id), coordinator_id, list(agent_ids)),
             )

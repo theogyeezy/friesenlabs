@@ -178,6 +178,32 @@ ALTER TABLE tenant_workspaces ADD COLUMN IF NOT EXISTS session_id text;
 ALTER TABLE tenant_workspaces ADD COLUMN IF NOT EXISTS roster_version text;
 
 -- ---------------------------------------------------------------------------
+-- retired_rosters — superseded Managed-Agents rosters awaiting GC (orphan reaper, 2026-06-14).
+-- RLS-EXEMPT by design: the reaper (scripts/ops/reap_orphan_agents.py) is a CROSS-tenant ops sweep
+-- that must read EVERY tenant's retired rows in one pass — a FORCE'd tenant_isolation policy (with
+-- no app.current_tenant set) would return zero rows, and on Aurora no role can bypass RLS. Access
+-- is GRANT-restricted to crm_app (SELECT/INSERT/UPDATE, no DELETE — append-only; the reaper stamps
+-- reaped_at, it never erases). The only columns are opaque MA id strings + the owning tenant_id (an
+-- opaque uuid) — no tenant PII. When the roster auto-upgrade supersedes a coordinator
+-- (agents/provisioning.upgrade_roster), it records the OLD roster here (or, if it LOST the
+-- cross-process claim, its own just-minted orphan); the reaper deletes those agents from MA after a
+-- grace window and marks the row reaped. NOTE: declared BEFORE the RLS DO block (the block executes
+-- when reached) and DELIBERATELY NOT in the tenant_tables array — keeping every CREATE above the
+-- block preserves the fresh-load ordering psql ON_ERROR_STOP=1 / api.migrate's single batch rely on.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS retired_rosters (
+    id             bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    tenant_id      uuid NOT NULL,
+    coordinator_id text,
+    agent_ids      text[] NOT NULL DEFAULT '{}',
+    retired_at     timestamptz NOT NULL DEFAULT now(),
+    reaped_at      timestamptz
+);
+-- The reaper's hot path: the oldest still-unreaped rows. Partial index keeps it tiny.
+CREATE INDEX IF NOT EXISTS retired_rosters_unreaped_idx
+    ON retired_rosters (retired_at) WHERE reaped_at IS NULL;
+
+-- ---------------------------------------------------------------------------
 -- accounts — signup/provisioning lifecycle rows (Build Guide Phase 10, Steps 52-55).
 -- RLS-EXEMPT (pre-tenant): rows exist before a tenant_id is provisioned; access is restricted to
 -- crm_app DML via GRANTs, not RLS

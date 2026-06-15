@@ -113,6 +113,16 @@ class AgentRuntime(abc.ABC):
     @abc.abstractmethod
     def send_message(self, session: Session, message: str) -> dict[str, Any]: ...
 
+    # Agent lifecycle management (the orphan-roster GC seam). NOT abstract: only the
+    # Managed-Agents impl owns a fleet of agents to enumerate/reap — runtimes that don't
+    # (self-hosted, fakes that don't need it) inherit a loud default rather than a silent no-op
+    # (which would let the reaper believe it deleted something it didn't).
+    def list_agents(self) -> list[dict[str, Any]]:
+        raise NotImplementedError("this runtime does not manage Managed-Agents agents")
+
+    def delete_agent(self, agent_id: str) -> None:
+        raise NotImplementedError("this runtime does not manage Managed-Agents agents")
+
 
 class ManagedAgentsRuntime(AgentRuntime):
     """Real Claude Managed Agents adapter. BETA — never exercised against live Anthropic in tests
@@ -340,6 +350,36 @@ class ManagedAgentsRuntime(AgentRuntime):
             extra_headers=self._beta_headers(),
         )
         return vault.id
+
+    def list_agents(self) -> list[dict[str, Any]]:
+        # VERIFY: client.beta.agents.list() returns a (paginable) iterable of agent objects with
+        # flat id/name/created_at and, for coordinators, a top-level `multiagent` block
+        # ({type, agents:[ids]}) — the same shape create returns. Normalized to a plain dict so the
+        # reaper never depends on the beta object surface. Coordinators are flagged so a reaper can
+        # tell a roster's coordinator from its specialists; `agents` lists the pinned specialist ids.
+        out: list[dict[str, Any]] = []
+        for a in self._c().beta.agents.list(extra_headers=self._beta_headers()):
+            multi = getattr(a, "multiagent", None)
+            if multi is None and isinstance(a, dict):
+                multi = a.get("multiagent")
+            pinned = []
+            if multi:
+                pinned = list((multi.get("agents") if isinstance(multi, dict)
+                               else getattr(multi, "agents", None)) or [])
+            getf = (lambda k: a.get(k)) if isinstance(a, dict) else (lambda k: getattr(a, k, None))
+            out.append({
+                "id": getf("id"),
+                "name": getf("name"),
+                "created_at": getf("created_at"),
+                "is_coordinator": bool(multi),
+                "agents": pinned,
+            })
+        return out
+
+    def delete_agent(self, agent_id: str) -> None:
+        # VERIFY: client.beta.agents.delete(agent_id) — DELETE /v1/agents/{id}. Irreversible; the
+        # reaper only ever calls this for an agent it recorded as a SUPERSEDED roster member.
+        self._c().beta.agents.delete(agent_id, extra_headers=self._beta_headers())
 
     def create_session(self, coordinator_id, tenant_id, vault_id=None, environment_id=None) -> Session:
         # PER-TENANT environment binding: the caller resolves THIS tenant's persisted environment
@@ -766,6 +806,23 @@ class FakeRuntime(AgentRuntime):
         vid = self._id("vault")
         self.vaults.append(vid)
         return vid
+
+    def list_agents(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": aid,
+                "name": getattr(spec, "name", None),
+                "created_at": None,
+                "is_coordinator": aid in self.coordinators,
+                "agents": list(self.coordinators.get(aid, [])),
+            }
+            for aid, spec in self.agents.items()
+        ]
+
+    def delete_agent(self, agent_id: str) -> None:
+        # Idempotent: a double-reap / partial-state delete is a no-op, never a raise.
+        self.agents.pop(agent_id, None)
+        self.coordinators.pop(agent_id, None)
 
     def create_session(self, coordinator_id, tenant_id, vault_id=None, environment_id=None) -> Session:
         s = Session(
