@@ -374,3 +374,20 @@ def test_base_runtime_agent_management_is_unsupported_by_default():
         b.list_agents()
     with pytest.raises(NotImplementedError):
         b.delete_agent("a")
+
+
+@pytest.mark.unit
+def test_managed_list_agents_extracts_ids_from_agent_reference_objects():
+    # Live MA returns multiagent.agents as reference OBJECTS (BetaManagedAgentsAgentReference with an
+    # `.id`), NOT bare strings (caught live 2026-06-15). The normalizer must extract the ids so the
+    # reaper targets real id strings, not repr'd objects.
+    r = _managed()
+    ref1 = SimpleNamespace(id="agent_pinned_1", type="agent", version=1)
+    ref2 = SimpleNamespace(id="agent_pinned_2", type="agent", version=2)
+    r._client.beta.agents.list.return_value = [
+        SimpleNamespace(id="coord_1", name="orchestrator", created_at=None,
+                        multiagent=SimpleNamespace(type="coordinator", agents=[ref1, ref2])),
+    ]
+    listed = {a["id"]: a for a in r.list_agents()}
+    assert listed["coord_1"]["agents"] == ["agent_pinned_1", "agent_pinned_2"]   # ids, not objects
+    assert all(isinstance(x, str) for x in listed["coord_1"]["agents"])
