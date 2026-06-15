@@ -100,12 +100,14 @@ def test_second_ensure_is_a_noop_returning_the_stored_ids():
     fake = FakeRuntime()
     first = _plane(store=store, runtime_factory=lambda: fake).ensure(
         tenant_id="t1", workspace_id="ws_1")
-    # Provisioning persists AFTER ensure (signup/provisioning._step_agent_plane).
-    store.upsert("t1", first["workspace_id"], first["environment_id"], first["coordinator_id"])
+    # Provisioning persists AFTER ensure (signup/provisioning._step_agent_plane), including the
+    # roster_version stamp ensure now returns.
+    store.upsert("t1", first["workspace_id"], first["environment_id"], first["coordinator_id"],
+                 roster_version=first.get("roster_version"))
 
     again = _plane(store=store, runtime_factory=_refusing_factory()).ensure(
         tenant_id="t1", workspace_id="ws_1")
-    assert again == first  # no second roster, same ids back
+    assert again == first  # no second roster, same ids + same stamp back
 
 
 @pytest.mark.unit
@@ -117,7 +119,7 @@ def test_store_hit_with_null_workspace_id_falls_back_to_the_callers():
     out = _plane(store=store, runtime_factory=_refusing_factory()).ensure(
         tenant_id="t1", workspace_id="ws_resolved")
     assert out == {"workspace_id": "ws_resolved", "environment_id": "env_live",
-                   "coordinator_id": "coord_live"}
+                   "coordinator_id": "coord_live", "roster_version": None}
 
 
 @pytest.mark.unit

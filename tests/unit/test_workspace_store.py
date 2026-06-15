@@ -32,7 +32,7 @@ def test_inmemory_round_trip():
     row = store.get("t-A")
     assert row == {"tenant_id": "t-A", "workspace_id": "wrkspc_1",
                    "environment_id": "env_1", "coordinator_id": "coord_1",
-                   "session_id": None}
+                   "session_id": None, "roster_version": None}
 
 
 @pytest.mark.unit
@@ -157,7 +157,11 @@ def test_pg_upsert_is_on_conflict_do_update(patched):
     assert "workspace_id = EXCLUDED.workspace_id" in insert_sql
     assert "environment_id = EXCLUDED.environment_id" in insert_sql
     assert "coordinator_id = EXCLUDED.coordinator_id" in insert_sql
-    assert params == ("A", "wrkspc_1", "env_1", "coord_1")
+    # roster_version is COALESCE-preserved (a bare upsert keeps the prior stamp); it rides as a
+    # trailing param (None here, since the caller didn't pass a version).
+    assert "roster_version = COALESCE(EXCLUDED.roster_version, tenant_workspaces.roster_version)" \
+        in insert_sql
+    assert params == ("A", "wrkspc_1", "env_1", "coord_1", None)
 
 
 @pytest.mark.unit

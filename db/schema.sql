@@ -170,6 +170,12 @@ CREATE TABLE IF NOT EXISTS tenant_workspaces (
 -- resumes the same session after a deploy roll (in-flight turns + history survive). Cleared
 -- when the session terminates (the cache's rebuild path) and rewritten on create.
 ALTER TABLE tenant_workspaces ADD COLUMN IF NOT EXISTS session_id text;
+-- Roster self-upgrade (2026-06-14): a deterministic stamp of the roster/tool/coordinator specs the
+-- tenant's agents were created with (agents/provisioning.py current_roster_version). When a deploy
+-- changes any spec, the stamp goes stale and the conversation builder re-provisions the tenant's
+-- agents transparently on its next chat (maybe_upgrade_roster) — no batch job, no human. NULL on
+-- legacy rows reads as stale, so they upgrade on first use.
+ALTER TABLE tenant_workspaces ADD COLUMN IF NOT EXISTS roster_version text;
 
 -- ---------------------------------------------------------------------------
 -- accounts — signup/provisioning lifecycle rows (Build Guide Phase 10, Steps 52-55).

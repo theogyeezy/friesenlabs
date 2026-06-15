@@ -113,22 +113,30 @@ class AgentPlaneEnsure:
                 "workspace_id": row.get("workspace_id") or workspace_id,
                 "environment_id": row["environment_id"],
                 "coordinator_id": row["coordinator_id"],
+                # Carry the existing stamp through (the no-op path persists same-values); the
+                # conversation factory's lazy upgrade handles a tenant whose stamp is stale.
+                "roster_version": row.get("roster_version"),
             }
 
         # EAGER create — the verify_agent_plane step-[1] sequence: 7 specialists + coordinator in
         # the existing environment. Any failure RAISES (partial roster -> park, retryable); the
         # caller upserts only after success, so a retry rebuilds cleanly from the top.
         from agents.coordinator import COORDINATOR  # noqa: PLC0415 — lazy (import-safety)
+        from agents.provisioning import current_roster_version  # noqa: PLC0415
         from agents.roster import roster  # noqa: PLC0415
 
         runtime = self._runtime_factory()
         agent_ids = [runtime.create_agent(spec) for spec in roster()]
         coordinator_id = runtime.create_coordinator(COORDINATOR, agent_ids)
+        version = current_roster_version()
         log.info("agent_plane.ensure: tenant %s provisioned %d specialists + coordinator %s "
-                 "in environment %s", tenant_id, len(agent_ids), coordinator_id,
-                 self._environment_id)
+                 "(roster_version=%s) in environment %s", tenant_id, len(agent_ids), coordinator_id,
+                 version, self._environment_id)
         return {
             "workspace_id": workspace_id,
             "environment_id": self._environment_id,
             "coordinator_id": coordinator_id,
+            # Stamp the version the agents were CREATED with, so the conversation factory only
+            # re-provisions this tenant when a future deploy changes a spec.
+            "roster_version": version,
         }
