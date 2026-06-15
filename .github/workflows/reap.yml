@@ -1,0 +1,88 @@
+# Scheduled orphan-roster GC — delete the Managed-Agents agents of SUPERSEDED rosters.
+#
+# The self-upgrading roster (agents/provisioning.py) mints a fresh coordinator + specialists whenever
+# the code's specs change and repoints the tenant at them; each supersession is recorded in the
+# RLS-EXEMPT retired_rosters ledger. This workflow runs scripts/ops/reap_orphan_agents.py as a one-off
+# Fargate task to delete those agents from MA after a grace window — so the GC needs NO human (the
+# build principle: no manual promotion). Safe by construction (see agents/retirement.py): only ever
+# targets coordinators the system recorded as superseded; unique specialist ids; grace window.
+#
+# Runs the reaper on a clone of the LIVE uplift-api task def (it already carries the org key
+# ANTHROPIC_API_KEY + the DB env/secrets + the current code image), through the SAME OIDC deploy role
+# the pipeline uses — never a laptop AWS session.
+#
+#   * weekly schedule  -> --apply (REAP_REAL_DELETES=1): actually reaps.
+#   * manual dispatch  -> DRY RUN by default; set apply=true to reap on demand.
+name: Reap orphan agents
+
+on:
+  schedule:
+    - cron: "17 4 * * 0"        # Sundays 04:17 UTC — low-traffic; off the top-of-hour rush
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: "true = actually delete superseded agents; false (default) = dry run (report only)"
+        required: false
+        default: "false"
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  CLUSTER: uplift-cluster
+
+jobs:
+  reap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Run the reaper on the live api task def
+        env:
+          # schedule => apply; dispatch => only if the operator set apply=true. Bound via env (not
+          # inline ${{ }}) per workflow-injection best practice.
+          DO_APPLY: ${{ github.event_name == 'schedule' || github.event.inputs.apply == 'true' }}
+        run: |
+          set -euo pipefail
+          # The live api task def already runs the current code image AND carries ANTHROPIC_API_KEY
+          # (org key) + DB_HOST/DB_NAME/DB_USER/DB_PASS — exactly what the reaper needs. Run it
+          # directly (no re-register: we are not swapping the image).
+          TD=$(aws ecs describe-task-definition --task-definition uplift-api \
+                 --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "reaping on: $TD (apply=$DO_APPLY)"
+          # Same subnets/SG as the live api service (in-VPC reach to MA + Aurora).
+          aws ecs describe-services --cluster "$CLUSTER" --services uplift-api \
+            --query 'services[0].networkConfiguration' > netcfg.json
+          # UPLIFT_DB_URL is composed IN-CONTAINER from the task's own DB env + secrets (libpq
+          # keyword form — robust to special chars; the password never appears in logs or the API
+          # call). The $DB_* stay literal here (single-quoted) and expand inside the container.
+          if [ "$DO_APPLY" = "true" ]; then
+            CMD='["sh","-c","UPLIFT_DB_URL=\"host=$DB_HOST dbname=$DB_NAME user=$DB_USER password=$DB_PASS\" REAP_REAL_DELETES=1 python scripts/ops/reap_orphan_agents.py --apply"]'
+          else
+            CMD='["sh","-c","UPLIFT_DB_URL=\"host=$DB_HOST dbname=$DB_NAME user=$DB_USER password=$DB_PASS\" python scripts/ops/reap_orphan_agents.py"]'
+          fi
+          TASK=$(aws ecs run-task --cluster "$CLUSTER" \
+            --task-definition "$TD" \
+            --launch-type FARGATE \
+            --network-configuration file://netcfg.json \
+            --overrides "{\"containerOverrides\":[{\"name\":\"api\",\"command\":$CMD}]}" \
+            --query 'tasks[0].taskArn' --output text)
+          echo "reaper task: $TASK"
+          aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$TASK"
+          # Read the APP container's exit code BY NAME — describe-tasks returns containers in
+          # arbitrary order and this task def carries an aws-otel-collector sidecar (exit 0); reading
+          # containers[0] can false-green a failed run (proven 2026-06-12).
+          CODE=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK" \
+            --query "tasks[0].containers[?name=='api'] | [0].exitCode" --output text)
+          ID=${TASK##*/}
+          echo "--- reaper log tail ---"
+          aws logs get-log-events --log-group-name /ecs/uplift-api \
+            --log-stream-name "api/api/$ID" --limit 80 \
+            --query 'events[].message' --output text || true
+          echo "--- reaper exit code: $CODE ---"
+          [ "$CODE" = "0" ]

@@ -357,15 +357,26 @@ class ManagedAgentsRuntime(AgentRuntime):
         # ({type, agents:[ids]}) — the same shape create returns. Normalized to a plain dict so the
         # reaper never depends on the beta object surface. Coordinators are flagged so a reaper can
         # tell a roster's coordinator from its specialists; `agents` lists the pinned specialist ids.
+        def _ref_id(ref: Any) -> str | None:
+            # multiagent.agents entries are reference OBJECTS (BetaManagedAgentsAgentReference with an
+            # `.id`) live — NOT bare strings (the test mocks once used strings; live shape confirmed
+            # 2026-06-15). Accept str / {"id":...} / obj.id so the reaper always gets an id string.
+            if ref is None or isinstance(ref, str):
+                return ref
+            if isinstance(ref, dict):
+                return ref.get("id")
+            return getattr(ref, "id", None)
+
         out: list[dict[str, Any]] = []
         for a in self._c().beta.agents.list(extra_headers=self._beta_headers()):
             multi = getattr(a, "multiagent", None)
             if multi is None and isinstance(a, dict):
                 multi = a.get("multiagent")
-            pinned = []
+            pinned: list[str] = []
             if multi:
-                pinned = list((multi.get("agents") if isinstance(multi, dict)
-                               else getattr(multi, "agents", None)) or [])
+                raw = (multi.get("agents") if isinstance(multi, dict)
+                       else getattr(multi, "agents", None)) or []
+                pinned = [rid for rid in (_ref_id(x) for x in raw) if rid]
             getf = (lambda k: a.get(k)) if isinstance(a, dict) else (lambda k: getattr(a, k, None))
             out.append({
                 "id": getf("id"),
